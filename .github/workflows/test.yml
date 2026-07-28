@@ -6,7 +6,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Run headless test suite
+      - name: Run CI pipeline (test-only outside the droplet)
         run: |
-          chmod +x test/run.sh
-          CHROME="$(command -v google-chrome || command -v chromium-browser)" test/run.sh
+          chmod +x ci/pipeline.sh test/run.sh
+          CHROME="$(command -v google-chrome || command -v chromium-browser || command -v chromium)" ci/pipeline.sh
