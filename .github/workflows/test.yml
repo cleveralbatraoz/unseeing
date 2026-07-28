@@ -1,12 +1,17 @@
 name: tests
 on: [push, pull_request]
 jobs:
-  test:
+  boot-check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Run CI pipeline (test-only outside the droplet)
+      - name: Fetch Godot
         run: |
-          chmod +x ci/pipeline.sh web-reference/test/run.sh
-          CHROME="$(command -v google-chrome || command -v chromium-browser || command -v chromium)" ci/pipeline.sh
+          curl -sL -o godot.zip https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
+          python3 -m zipfile -e godot.zip .
+          chmod +x Godot_v4.7.1-stable_linux.x86_64
+      - name: Run CI pipeline (boot check only)
+        run: |
+          chmod +x ci/pipeline.sh
+          GODOT="$PWD/Godot_v4.7.1-stable_linux.x86_64" SKIP_EXPORT=1 ci/pipeline.sh
