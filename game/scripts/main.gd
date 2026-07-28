@@ -66,22 +66,19 @@ func _process(dt: float) -> void:
 # Dev-only: fires one wall tap shortly after boot so input-less runs can
 # verify the renderer visually — movie-maker locally (UNSEEING_DEMO=1 env),
 # or the deployed web build (?demo in the URL).
-var _demo_done := false
+var _demo_next := 0.6
 var _demo_checked := false
 var _demo_wanted := false
 func _demo_tap(now: float) -> void:
-	if _demo_done or now < 0.6:
-		return
-	if not _demo_checked:
+	if not _demo_checked and now >= 0.5:
 		_demo_checked = true
 		_demo_wanted = not OS.get_environment("UNSEEING_DEMO").is_empty()
 		if OS.has_feature("web"):
 			var search := str(JavaScriptBridge.eval("window.location.search", true))
 			_demo_wanted = _demo_wanted or search.contains("demo")
-	if not _demo_wanted:
-		_demo_done = true
+	if not _demo_wanted or now < _demo_next:
 		return
-	_demo_done = true
+	_demo_next = now + 4.0   # repeat, so any screenshot timing catches a wave
 	pulses.emit(0, Vector3(6.4, 0.8, 4.0), 6.0, 5.5, 1.0, now)
 
 ## The "hearing" pass: a fullscreen quad glued to the camera. It edge-detects

@@ -48,7 +48,7 @@ if [ -d "$DEPLOY_DIR" ] && [ -w "$DEPLOY_DIR" ]; then
   echo "ci: deployed Web build -> $DEPLOY_DIR"
   URL="${CHECK_URL:-http://127.0.0.1/}"
   TMP="$(mktemp)"
-  if curl -s --max-time 10 "$URL" > "$TMP" && cmp -s "$TMP" "$DIR/game/build/web/index.html"; then
+  if curl -sL --max-time 10 "$URL" > "$TMP" && cmp -s "$TMP" "$DIR/game/build/web/index.html"; then
     echo "ci: served bytes verified at $URL"
   else
     echo "ci: WARNING — could not verify served bytes at $URL"
