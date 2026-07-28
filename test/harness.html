@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Unseeing test harness</title>
+<style>
+  body { margin: 0; background: #111; color: #ccc; font: 12px/1.6 monospace; }
+  main { position: relative; width: 640px; height: 360px; }
+  #cv { width: 640px; height: 360px; display: block; }
+  .begin, .nogl, .reticle { position: absolute; inset: 0; pointer-events: none; }
+  .begin.gone { opacity: 0; }
+  .nogl { display: none; }
+  #log { padding: 12px; white-space: pre-wrap; }
+  .b2 {}
+</style>
+<main>
+  <canvas id="cv"></canvas>
+  <div class="reticle"></div>
+  <div class="begin" id="begin"><div><div>test</div><div class="b2">test</div></div></div>
+  <div class="nogl" id="nogl"></div>
+</main>
+<pre id="log"></pre>
+<script>
+(async () => {
+  'use strict';
+  // ---- reporting: document.title is polled over the DevTools endpoint ------
+  let passes = 0, fails = 0, done = false;
+  const lines = [];
+  const render = () => {
+    const firstFail = lines.find((l) => l.startsWith('FAIL'));
+    document.title = 'T ' + (done ? 'done ' : '') + 'pass=' + passes + ' fail=' + fails +
+      (firstFail ? ' F0=' + firstFail.replace(/[^A-Za-z0-9 =:.,_-]/g, '_').slice(0, 110) : '');
+    document.getElementById('log').textContent = lines.join('\n');
+  };
+  const assert = (cond, name, detail) => {
+    if (cond) passes++; else fails++;
+    lines.push((cond ? 'PASS ' : 'FAIL ') + name + (detail !== undefined && !cond ? ' [' + detail + ']' : ''));
+    render();
+  };
+  const finish = () => { done = true; render(); };
+  window.addEventListener('error', (e) => { lines.push('UNCAUGHT ' + e.message); fails++; render(); });
+
+  // ---- GL error proxy: getError after every call ---------------------------
+  const glErrors = [];
+  const origGetContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (type, opts) {
+    const ctx = origGetContext.call(this, type, opts);
+    if (!ctx || type !== 'webgl2') return ctx;
+    return new Proxy(ctx, {
+      get(t, k) {
+        const v = t[k];
+        if (typeof v !== 'function') return v;
+        return (...args) => {
+          const r = v.apply(t, args);
+          if (k !== 'getError') {
+            const e = t.getError();
+            if (e) glErrors.push(String(k) + ':' + e);
+          }
+          return r;
+        };
+      },
+    });
+  };
+
+  // ---- load and boot the actual game --------------------------------------
+  let src;
+  try { src = await (await fetch('../index.html')).text(); }
+  catch (e) { assert(false, 'fetch ../index.html', e); finish(); return; }
+  const m = src.match(/<script>([\s\S]*?)<\/script>/);
+  assert(!!m, 'game <script> found');
+  if (!m) { finish(); return; }
+
+  window.__UNSEEING_TEST__ = true;
+  try { (0, eval)(m[1]); assert(true, 'game boots without exception'); }
+  catch (e) { assert(false, 'game boots without exception', e); finish(); return; }
+  const T = window.__unseeingTest;
+  assert(!!T, 'test hook exposed');
+  if (!T) { finish(); return; }
+
+  // ---- helpers -------------------------------------------------------------
+  const cv = document.getElementById('cv');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // sampling in a rAF registered after the game's runs in the same frame batch,
+  // so the (non-preserved) drawing buffer is still valid
+  const samp = document.createElement('canvas');
+  samp.width = 160; samp.height = 90;
+  const sctx = samp.getContext('2d', { willReadFrequently: true });
+  const frameSample = () => new Promise((r) => requestAnimationFrame(() => {
+    sctx.drawImage(cv, 0, 0, 160, 90);
+    const d = sctx.getImageData(0, 0, 160, 90).data;
+    let lit = 0, maxL = 0, topLit = 0, botLit = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i] > 20) {
+        lit++;
+        if (((i / 4 / 160) | 0) < 45) topLit++; else botLit++;
+      }
+      if (d[i] > maxL) maxL = d[i];
+    }
+    r({ lit, maxL, topLit, botLit });
+  }));
+  const liveSlots = () => {
+    const nowS = T.nowSec();
+    let n = 0;
+    for (let i = 0; i < T.MAXP; i++) if (T.meta[i] && nowS <= T.meta[i].end) n++;
+    return n;
+  };
+  const newestSlot = () => {
+    let best = -1, bestT = -1;
+    for (let i = 0; i < T.MAXP; i++) if (T.meta[i] && T.meta[i].t0 > bestT) { bestT = T.meta[i].t0; best = i; }
+    return best;
+  };
+  const key = (code, down) => window.dispatchEvent(new KeyboardEvent(down ? 'keydown' : 'keyup', { code }));
+  const click = () => cv.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 320, clientY: 180 }));
+
+  // ---- unit tests: the math that keeps the world honest --------------------
+  assert(Math.abs(T.segDist(1, 0, 0, -1, 0, 1)) - 1 < 1e-9, 'segDist: point beside segment');
+  assert(T.segDist(0, 5, 0, -1, 0, 1) === 4, 'segDist: point past segment end');
+  const d0 = T.castRay(3, 4, 1, 0, 10);
+  assert(Math.abs(d0 - 3.4) < 0.01, 'castRay: hits x=6.4 wall from (3,4)', d0);
+  assert(T.castRay(10, 12, 0, 1, 2) === Infinity, 'castRay: miss returns Infinity');
+  assert(T.blocked(6.4, 4) === true, 'blocked: inside wall');
+  assert(T.blocked(3, 4) === false, 'blocked: open floor');
+  {
+    const vp = T.mul(T.perspective(1.15, 1, 0.05, 60), T.lookAt([0, 0, 0], [0, 0, -1]));
+    const p = [0, 0, -5, 1];
+    const o = [0, 0, 0, 0];
+    for (let r = 0; r < 4; r++) o[r] = vp[r] * p[0] + vp[4 + r] * p[1] + vp[8 + r] * p[2] + vp[12 + r] * p[3];
+    assert(Math.abs(o[0]) < 1e-6 && Math.abs(o[1]) < 1e-6 && o[3] > 0, 'projection: straight-ahead point lands center');
+  }
+
+  // ---- scenario: boot stability -------------------------------------------
+  for (let i = 0; i < 60; i++) await frameSample();
+  assert(glErrors.length === 0, 'boot: 60 frames, zero GL errors', glErrors.slice(0, 3).join(','));
+
+  // ---- scenario: idle = cane only -----------------------------------------
+  const idle = await frameSample();
+  assert(idle.topLit <= 4, 'idle: nothing above the horizon', idle.topLit);
+  assert(idle.botLit >= 2 && idle.botLit <= 900, 'idle: only the cane below', idle.botLit);
+
+  // ---- scenario: air tap is silent ----------------------------------------
+  T.player.x = 3; T.player.z = 4; T.player.yaw = 1.9; T.player.pitch = 0;
+  await frameSample();
+  const slotsA = liveSlots();
+  click();
+  await sleep(200); await frameSample();
+  assert(liveSlots() === slotsA, 'air tap: emits no wave', liveSlots() - slotsA);
+
+  // ---- scenario: wall tap strikes where it sounds -------------------------
+  // pitch down so the wall-floor junction is in frame: outlines live on edges,
+  // and a face-on flat wall has none in view
+  T.player.x = 5.2; T.player.z = 4; T.player.yaw = Math.PI / 2; T.player.pitch = -0.85;
+  await sleep(200); await frameSample();
+  const slotsB = liveSlots();
+  click();
+  await sleep(120);
+  assert(liveSlots() === slotsB + 1, 'wall tap: emits exactly one wave', liveSlots() - slotsB);
+  const w = newestSlot();
+  const wx = T.pPos[w * 3], wy = T.pPos[w * 3 + 1], wz = T.pPos[w * 3 + 2];
+  assert(Math.abs(wx - 6.4) < 0.25 && Math.abs(wz - 4) < 0.25, 'wall tap: wave origin on the wall', wx + ',' + wz);
+  assert(wy > 0.1 && wy < 1.55, 'wall tap: strike height within cane reach', wy);
+  await sleep(400);
+  const hit1 = await frameSample();
+  assert(hit1.lit > idle.lit + 20, 'wall tap: outlines appear', hit1.lit + ' vs ' + idle.lit);
+  await sleep(2600);
+  const hit2 = await frameSample();
+  assert(hit2.maxL <= hit1.maxL + 12, 'wall tap: reveal decays over time', hit2.maxL + ' vs ' + hit1.maxL);
+
+  // ---- scenario: floor tap only when aiming down, lands close -------------
+  T.player.x = 10; T.player.z = 12; T.player.yaw = 0; T.player.pitch = -0.5;
+  await sleep(200);
+  const slotsC = liveSlots();
+  click();
+  await sleep(120);
+  assert(liveSlots() === slotsC + 1, 'floor tap: emits one wave');
+  const f = newestSlot();
+  const fy = T.pPos[f * 3 + 1];
+  const fdx = T.pPos[f * 3] - 10, fdz = T.pPos[f * 3 + 2] - 12;
+  const fdist = Math.hypot(fdx, fdz);
+  assert(fy < 0.1, 'floor tap: wave born on the floor', fy);
+  assert(fdist <= 1.65, 'floor tap: within believable cane reach', fdist);
+
+  // ---- scenario: walking emits footsteps from the shoes -------------------
+  T.player.pitch = 0;
+  const slotsD = liveSlots();
+  key('KeyW', true);
+  await sleep(1200);
+  key('KeyW', false);
+  assert(liveSlots() > slotsD, 'walking: footstep waves emitted');
+  const s = newestSlot();
+  const sdist = Math.hypot(T.pPos[s * 3] - T.player.x, T.pPos[s * 3 + 2] - T.player.z);
+  assert(sdist < 1.2, 'walking: footsteps ripple near the hero', sdist);
+  key('KeyW', true);
+  window.dispatchEvent(new Event('blur'));
+  assert(T.keys.size === 0, 'blur clears held keys');
+
+  // ---- invariants ----------------------------------------------------------
+  let finite = true;
+  for (let i = 0; i < T.MAXP * 3; i++) if (!Number.isFinite(T.pPos[i])) finite = false;
+  for (let i = 0; i < T.MAXP * 4; i++) if (!Number.isFinite(T.pDat[i]) && T.pDat[i] !== -1) finite = false;
+  assert(finite, 'invariant: pulse arrays contain no NaN');
+  assert(liveSlots() <= T.MAXP, 'invariant: live slots within capacity');
+  assert(glErrors.length === 0, 'invariant: zero GL errors across all scenarios', glErrors.slice(0, 3).join(','));
+
+  finish();
+})();
+</script>
+</html>

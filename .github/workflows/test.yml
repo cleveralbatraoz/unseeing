@@ -1,0 +1,12 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run headless test suite
+        run: |
+          chmod +x test/run.sh
+          CHROME="$(command -v google-chrome || command -v chromium-browser)" test/run.sh
