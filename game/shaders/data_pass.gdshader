@@ -4,9 +4,10 @@ render_mode unshaded, cull_disabled, shadows_disabled, ambient_light_disabled, f
 // DATA PASS — the world is never drawn. This material renders geometry as
 // DATA for the hearing pass to read from the screen texture:
 //   R — reveal: how recently/strongly a wave swept this point
-//   G, B — world normal xy (for crease edge detection)
-//   (depth comes from the depth texture; the web version packed it in alpha)
-// Ported from web-reference/index.html scene fragment shader.
+//   G — normal id: axis-weighted normal encoding (crease edge detection)
+//   B — camera distance / 40 (silhouette edges + wave occlusion)
+// Distance is packed here on purpose: the depth texture is unreliable on
+// WebGL2/Compatibility, and the web build is a first-class target.
 
 const int MAXP = 64;
 
@@ -55,5 +56,8 @@ void fragment() {
 	reveal = max(reveal, u_base);
 	float vd = length(v_world - CAMERA_POSITION_WORLD);
 	reveal *= (0.9 + 0.1 * u_flick) * exp(-vd * 0.05);
-	ALBEDO = vec3(clamp(reveal, 0.0, 1.0), v_nworld.x * 0.5 + 0.5, v_nworld.y * 0.5 + 0.5);
+	// normal id: distinct levels for the six axis directions, continuous for
+	// curved surfaces — one channel is enough for crease detection
+	float nid = 0.5 + v_nworld.x * 0.30 + v_nworld.y * 0.17 + v_nworld.z * 0.09;
+	ALBEDO = vec3(clamp(reveal, 0.0, 1.0), nid, clamp(vd / 40.0, 0.0, 1.0));
 }

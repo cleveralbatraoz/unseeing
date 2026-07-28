@@ -63,11 +63,23 @@ func _process(dt: float) -> void:
 	pulses.apply(now, [data_mat, post_mat])
 	_demo_tap(now)
 
-# Dev-only: UNSEEING_DEMO=1 fires one wall tap shortly after boot, so headless
-# movie-maker runs (which take no input) can verify the renderer visually.
+# Dev-only: fires one wall tap shortly after boot so input-less runs can
+# verify the renderer visually — movie-maker locally (UNSEEING_DEMO=1 env),
+# or the deployed web build (?demo in the URL).
 var _demo_done := false
+var _demo_checked := false
+var _demo_wanted := false
 func _demo_tap(now: float) -> void:
-	if _demo_done or OS.get_environment("UNSEEING_DEMO").is_empty() or now < 0.6:
+	if _demo_done or now < 0.6:
+		return
+	if not _demo_checked:
+		_demo_checked = true
+		_demo_wanted = not OS.get_environment("UNSEEING_DEMO").is_empty()
+		if OS.has_feature("web"):
+			var search := str(JavaScriptBridge.eval("window.location.search", true))
+			_demo_wanted = _demo_wanted or search.contains("demo")
+	if not _demo_wanted:
+		_demo_done = true
 		return
 	_demo_done = true
 	pulses.emit(0, Vector3(6.4, 0.8, 4.0), 6.0, 5.5, 1.0, now)

@@ -15,7 +15,6 @@ render_mode unshaded, cull_disabled, depth_draw_never, depth_test_disabled, fog_
 const int MAXP = 64;
 
 uniform sampler2D screen_tex : hint_screen_texture, filter_nearest;
-uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
 uniform float u_time = 0.0;
 uniform float u_flick = 1.0;
 uniform float u_breath = 1.0;
@@ -49,18 +48,6 @@ float n2(vec2 p) {
 	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-// Euclidean camera->surface distance at a screen uv, normalized by /40 so the
-// edge-detection thresholds match the web reference's alpha encoding exactly.
-float scene_dist_n(vec2 uv, mat4 inv_proj, mat4 inv_view, vec3 cam) {
-	float depth = texture(depth_tex, uv).x;
-	// gl_compatibility uses OpenGL NDC: z in [-1, 1]
-	vec3 ndc = vec3(uv * 2.0 - 1.0, depth * 2.0 - 1.0);
-	vec4 view = inv_proj * vec4(ndc, 1.0);
-	view.xyz /= view.w;
-	vec4 world = inv_view * vec4(view.xyz, 1.0);
-	return clamp(length(world.xyz - cam) / 40.0, 0.0, 1.0);
-}
-
 void fragment() {
 	vec2 uv = SCREEN_UV;
 	vec2 px = 1.0 / VIEWPORT_SIZE;
@@ -72,17 +59,12 @@ void fragment() {
 	vec4 c_u = texture(screen_tex, uv + vec2(0.0, px.y));
 	vec4 c_d = texture(screen_tex, uv - vec2(0.0, px.y));
 
-	float d_c = scene_dist_n(uv, INV_PROJECTION_MATRIX, INV_VIEW_MATRIX, cam);
-	float d_l = scene_dist_n(uv - vec2(px.x, 0.0), INV_PROJECTION_MATRIX, INV_VIEW_MATRIX, cam);
-	float d_r = scene_dist_n(uv + vec2(px.x, 0.0), INV_PROJECTION_MATRIX, INV_VIEW_MATRIX, cam);
-	float d_u = scene_dist_n(uv + vec2(0.0, px.y), INV_PROJECTION_MATRIX, INV_VIEW_MATRIX, cam);
-	float d_d = scene_dist_n(uv - vec2(0.0, px.y), INV_PROJECTION_MATRIX, INV_VIEW_MATRIX, cam);
-
-	// thin white outlines: silhouettes (depth Laplacian) + creases (normals),
-	// visible only where a wave has swept (max of the five reveal taps)
-	float lap = abs(d_l + d_r + d_u + d_d - 4.0 * d_c);
-	float nrm = abs(c_l.g - c_r.g) + abs(c_u.g - c_d.g) + abs(c_l.b - c_r.b) + abs(c_u.b - c_d.b);
-	float edge = max(smoothstep(0.012, 0.03, lap), smoothstep(0.25, 0.45, nrm));
+	// thin white outlines: silhouettes (Laplacian of the packed distance in B)
+	// + creases (normal-id differences in G), visible only where a wave has
+	// swept (max of the five reveal taps in R)
+	float lap = abs(c_l.b + c_r.b + c_u.b + c_d.b - 4.0 * c_c.b);
+	float nrm = abs(c_l.g - c_r.g) + abs(c_u.g - c_d.g);
+	float edge = max(smoothstep(0.012, 0.03, lap), smoothstep(0.04, 0.08, nrm));
 	float reveal = max(c_c.r, max(max(c_l.r, c_r.r), max(c_u.r, c_d.r)));
 	vec3 col = vec3(edge * reveal);
 
@@ -92,7 +74,7 @@ void fragment() {
 	vf.xyz /= vf.w;
 	vec3 world_far = (INV_VIEW_MATRIX * vec4(vf.xyz, 1.0)).xyz;
 	vec3 rd = normalize(world_far - cam);
-	float scene_d = d_c * 40.0;
+	float scene_d = c_c.b * 40.0;
 
 	for (int i = 0; i < MAXP; i++) {
 		if (i >= u_count) { break; }
