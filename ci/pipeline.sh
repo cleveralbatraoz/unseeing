@@ -5,15 +5,15 @@ set -eu
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "ci: running test suite"
-"$DIR/test/run.sh"
+"$DIR/web-reference/test/run.sh"
 
 DEPLOY_DIR="${DEPLOY_DIR:-/var/www/unseeing}"
 if [ -d "$DEPLOY_DIR" ] && [ -w "$DEPLOY_DIR" ]; then
-  cp "$DIR/index.html" "$DEPLOY_DIR/index.html"
+  cp "$DIR/web-reference/index.html" "$DEPLOY_DIR/index.html"
   echo "ci: deployed index.html -> $DEPLOY_DIR"
   URL="${CHECK_URL:-http://127.0.0.1/}"
   TMP="$(mktemp)"
-  if curl -s --max-time 10 "$URL" > "$TMP" && cmp -s "$TMP" "$DIR/index.html"; then
+  if curl -s --max-time 10 "$URL" > "$TMP" && cmp -s "$TMP" "$DIR/web-reference/index.html"; then
     echo "ci: served bytes verified at $URL"
   else
     echo "ci: WARNING — could not verify served bytes at $URL"

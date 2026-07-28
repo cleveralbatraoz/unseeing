@@ -5,7 +5,7 @@ set -eu
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "== local tests =="
-"$DIR/test/run.sh"
+"$DIR/web-reference/test/run.sh"
 
 echo "== pushing to production (server-side CI takes over) =="
 git -C "$DIR" push production main

@@ -1,0 +1,56 @@
+extends RefCounted
+## The map: a 20 x 20 m room with interior walls forming corridors.
+## Geometry and collision are built from wall CENTERLINE segments — the same
+## numbers as the web reference, so both versions play identically.
+## All segments are axis-aligned, which keeps the boxes trivial.
+
+const WALL_H := 3.0    # walls run floor to ceiling
+const WALL_T := 0.15   # half-thickness of a wall
+
+## Wall centerlines [x1, z1, x2, z2] in meters. First four are the border.
+const SEGS := [
+	[0.6, 0.6, 19.4, 0.6],
+	[19.4, 0.6, 19.4, 19.4],
+	[19.4, 19.4, 0.6, 19.4],
+	[0.6, 19.4, 0.6, 0.6],
+	[6.4, 0.6, 6.4, 8.0],
+	[6.4, 12.4, 6.4, 19.4],
+	[6.4, 8.0, 14.0, 8.0],
+	[14.0, 8.0, 14.0, 15.6],
+	[9.0, 15.6, 14.0, 15.6],
+	[0.6, 13.0, 4.0, 13.0],
+]
+
+static func build_world(parent: Node3D, mat: Material) -> void:
+	# floor and ceiling as thin slabs; only their inward faces are ever seen
+	_add_box(parent, mat, Vector3(10, -0.05, 10), Vector3(20, 0.1, 20))
+	_add_box(parent, mat, Vector3(10, WALL_H + 0.05, 10), Vector3(20, 0.1, 20))
+	for s: Array in SEGS:
+		var horizontal: bool = absf(s[3] - s[1]) < 0.001
+		var cx: float = (s[0] + s[2]) * 0.5
+		var cz: float = (s[1] + s[3]) * 0.5
+		var size: Vector3
+		if horizontal:
+			size = Vector3(absf(s[2] - s[0]) + WALL_T * 2.0, WALL_H, WALL_T * 2.0)
+		else:
+			size = Vector3(WALL_T * 2.0, WALL_H, absf(s[3] - s[1]) + WALL_T * 2.0)
+		_add_box(parent, mat, Vector3(cx, WALL_H * 0.5, cz), size)
+
+## One wall = a mesh for the data pass + a static collider for the cane
+## raycast and player movement (Godot physics replaces the hand-rolled
+## segment collision of the web version).
+static func _add_box(parent: Node3D, mat: Material, center: Vector3, size: Vector3) -> void:
+	var body := StaticBody3D.new()
+	body.position = center
+	var mesh := MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = size
+	mesh.mesh = box
+	mesh.material_override = mat
+	body.add_child(mesh)
+	var col := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = size
+	col.shape = shape
+	body.add_child(col)
+	parent.add_child(body)

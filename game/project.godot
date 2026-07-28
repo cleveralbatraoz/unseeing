@@ -1,0 +1,20 @@
+; Unseeing — Godot 4 project.
+; Compatibility renderer is REQUIRED: it is the only renderer that works in the
+; Web (wasm) export, and this game targets web + native from one codebase.
+config_version=5
+
+[application]
+
+config/name="Unseeing"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.7")
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

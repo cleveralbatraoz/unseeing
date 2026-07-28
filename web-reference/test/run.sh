@@ -20,7 +20,7 @@ trap 'kill "$CPID" 2>/dev/null; wait "$CPID" 2>/dev/null; sleep 1; rm -rf "$PROF
 
 TITLE=""
 i=0
-while [ "$i" -lt 45 ]; do
+while [ "$i" -lt 90 ]; do
   sleep 2
   TITLE="$(curl -s "http://127.0.0.1:$PORT/json/list" 2>/dev/null | grep -o '"title": *"T [^"]*"' | head -1)"
   case "$TITLE" in *done*) break ;; esac

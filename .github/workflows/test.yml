@@ -8,5 +8,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run CI pipeline (test-only outside the droplet)
         run: |
-          chmod +x ci/pipeline.sh test/run.sh
+          chmod +x ci/pipeline.sh web-reference/test/run.sh
           CHROME="$(command -v google-chrome || command -v chromium-browser || command -v chromium)" ci/pipeline.sh
