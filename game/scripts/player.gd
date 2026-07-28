@@ -18,9 +18,8 @@ const TAP_COOLDOWN := 0.15
 
 var pulses            # injected by main.gd
 var camera: Camera3D
-var _step_t := 0.0
-var _step_side := 1.0
-var _last_tap := -10.0
+var last_tap := -10.0          # drives the cane strike animation
+var tap_target := Vector3.ZERO # where the last tap landed (wall/floor/air)
 
 func _init() -> void:
 	position = Vector3(3, 0.9, 4)
@@ -60,30 +59,13 @@ func _physics_process(dt: float) -> void:
 	velocity.z = dir3.z * SPEED
 	velocity.y = 0.0   # flat map: no gravity, no jumping — walking is the verb
 	move_and_slide()
-	_footsteps(dt, input != Vector2.ZERO)
-
-## Each footfall: a small wave rippling out around that shoe.
-## (Body/viewmodel geometry is the next porting stage; until then the wave
-## originates beside the hero's feet, alternating left/right.)
-func _footsteps(dt: float, moving: bool) -> void:
-	if not moving:
-		_step_t = 0.1
-		return
-	_step_t -= dt
-	if _step_t > 0.0:
-		return
-	var now: float = get_parent().now   # the one simulated game clock lives in main
-	var right := transform.basis.x
-	var foot := global_position + right * 0.12 * _step_side
-	pulses.emit(2, Vector3(foot.x, 0.04, foot.z), 1.6, 4.0, 0.8, now)
-	_step_side = -_step_side
-	_step_t = 0.42
+	# footsteps live in hero_body.gd: they ripple from the animated shoes
 
 func _cane_tap() -> void:
 	var now: float = get_parent().now   # the one simulated game clock lives in main
-	if now - _last_tap < TAP_COOLDOWN:
+	if now - last_tap < TAP_COOLDOWN:
 		return
-	_last_tap = now
+	last_tap = now
 	var pitch := camera.rotation.x
 	var aim := -camera.global_transform.basis.z
 	var flat := Vector3(aim.x, 0, aim.z).normalized()
@@ -93,9 +75,15 @@ func _cane_tap() -> void:
 	if hit:
 		var d: float = (hit.position - from).length()
 		var hy := clampf(EYE + tan(pitch) * d, 0.12, 1.5)
-		pulses.emit(0, Vector3(hit.position.x, hy, hit.position.z), 6.0, 5.5, 1.0, now)
+		tap_target = Vector3(hit.position.x, hy, hit.position.z)
+		pulses.emit(0, tap_target, 6.0, 5.5, 1.0, now)
 	elif pitch <= -0.12:
 		var df := minf(1.6, EYE / tan(-pitch))
 		var p := from + flat * df
-		pulses.emit(0, Vector3(p.x, 0.02, p.z), 5.0, 5.5, 0.85, now)
-	# else: air swish — silence; air reflects nothing
+		tap_target = Vector3(p.x, 0.02, p.z)
+		pulses.emit(0, tap_target, 5.0, 5.5, 0.85, now)
+	else:
+		# air swish: the cane still reaches out, but air reflects nothing
+		var hy := clampf(EYE + tan(pitch) * 1.5, 0.3, 1.7)
+		var p := from + flat * 1.5
+		tap_target = Vector3(p.x, hy, p.z)

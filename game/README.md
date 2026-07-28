@@ -26,8 +26,8 @@ Renderer is `gl_compatibility` — mandatory for the Web (wasm) export.
 | Map, collision, movement, mouse look | done |
 | Wave pool + data/hearing shaders | done |
 | Cane tap modes (wall / floor / silent air) | done |
-| Footstep ripples | done (from feet; shoe-accurate after body port) |
-| Hero body + cane viewmodel (bob/sway/strike) | TODO |
+| Footstep ripples | done (from the animated shoes) |
+| Hero body + cane viewmodel (bob/sway/strike) | done |
 | Audio ticks (wall/floor/phantom) | TODO |
 | Phantom sounds | TODO |
 | gdUnit test port of web-reference scenarios | TODO |

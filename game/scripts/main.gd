@@ -18,11 +18,15 @@ const POST_SHADER := preload("res://shaders/hearing_post.gdshader")
 const MapBuilder := preload("res://scripts/map_builder.gd")
 const Pulses := preload("res://scripts/pulses.gd")
 const PlayerBody := preload("res://scripts/player.gd")
+const HeroBody := preload("res://scripts/hero_body.gd")
 
 var pulses: Pulses
 var data_mat := ShaderMaterial.new()
+var cane_mat := ShaderMaterial.new()   # standing reveal: the hero knows their grip
+var body_mat := ShaderMaterial.new()   # legs/torso: revealed only by waves
 var post_mat := ShaderMaterial.new()
 var player: CharacterBody3D
+var hero: HeroBody
 
 ## The game clock: simulated seconds accumulated from frame deltas — NOT wall
 ## time, so offline rendering (movie maker) and time scaling stay correct.
@@ -38,11 +42,21 @@ func _ready() -> void:
 	_setup_input()
 	data_mat.shader = DATA_SHADER
 	post_mat.shader = POST_SHADER
+	for m: ShaderMaterial in [cane_mat, body_mat]:
+		m.shader = DATA_SHADER
+	cane_mat.set_shader_parameter("u_base", 0.85)
 	pulses = Pulses.new()
 	MapBuilder.build_world(self, data_mat)
 	player = PlayerBody.new()
 	player.pulses = pulses
 	add_child(player)
+	hero = HeroBody.new()
+	hero.player = player
+	hero.camera = player.camera
+	hero.pulses = pulses
+	hero.cane_mat = cane_mat
+	hero.body_mat = body_mat
+	add_child(hero)
 	_setup_post_quad(player.camera)
 
 func _process(dt: float) -> void:
@@ -55,12 +69,13 @@ func _process(dt: float) -> void:
 		_next_drop = 8.0 + randf() * 10.0
 	if now < _drop_until:
 		_flick *= 0.55
-	for m: ShaderMaterial in [data_mat, post_mat]:
+	for m: ShaderMaterial in [data_mat, cane_mat, body_mat, post_mat]:
 		m.set_shader_parameter("u_time", now)
 		m.set_shader_parameter("u_flick", _flick)
 	post_mat.set_shader_parameter("u_breath", 1.0 + sin(now * 0.5) * 0.045)
 	post_mat.set_shader_parameter("u_grain_t", fmod(now, 1.0) * 61.7)
-	pulses.apply(now, [data_mat, post_mat])
+	pulses.apply(now, [data_mat, cane_mat, body_mat, post_mat])
+	hero.update(now, dt)
 	_demo_tap(now)
 
 # Dev-only: fires one wall tap shortly after boot so input-less runs can
