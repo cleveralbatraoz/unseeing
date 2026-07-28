@@ -70,13 +70,17 @@ func _cane_tap() -> void:
 	var aim := -camera.global_transform.basis.z
 	var flat := Vector3(aim.x, 0, aim.z).normalized()
 	var from := camera.global_position
-	var query := PhysicsRayQueryParameters3D.create(from, from + flat * CANE_REACH)
+	# a true 3D gaze ray: strikes whatever the cane can actually reach —
+	# walls, furniture, or nearby floor — at the exact aimed point
+	var query := PhysicsRayQueryParameters3D.create(from, from + aim * CANE_REACH)
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
 	if hit:
-		var d: float = (hit.position - from).length()
-		var hy := clampf(EYE + tan(pitch) * d, 0.12, 1.5)
-		tap_target = Vector3(hit.position.x, hy, hit.position.z)
-		pulses.emit(0, tap_target, 6.0, 5.5, 1.0, now)
+		tap_target = hit.position
+		var floorish: bool = hit.normal.y > 0.7 and hit.position.y < 0.2
+		if floorish:
+			pulses.emit(0, tap_target, 5.0, 5.5, 0.85, now)
+		else:
+			pulses.emit(0, tap_target, 6.0, 5.5, 1.0, now)
 	elif pitch <= -0.12:
 		var df := minf(1.6, EYE / tan(-pitch))
 		var p := from + flat * df
