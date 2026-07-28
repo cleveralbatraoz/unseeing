@@ -16,7 +16,7 @@ PORT="${PORT:-9333}"
   --allow-file-access-from-files --remote-debugging-port="$PORT" \
   --user-data-dir="$PROFILE" "file://$DIR/harness.html" >/dev/null 2>&1 &
 CPID=$!
-trap 'kill "$CPID" 2>/dev/null; rm -rf "$PROFILE"' EXIT
+trap 'kill "$CPID" 2>/dev/null; wait "$CPID" 2>/dev/null; sleep 1; rm -rf "$PROFILE" 2>/dev/null || true' EXIT
 
 TITLE=""
 i=0
