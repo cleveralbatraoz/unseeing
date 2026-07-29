@@ -48,13 +48,15 @@ void fragment() {
 		reveal = max(reveal, min(flare, 1.0) * atten * cone * gain * peak);
 	}
 	reveal = max(reveal, u_base);
-	// the material speaks: cartoon marks (cracks, grain, weave) modulate
-	// what the echo shows — marks rise above the dim base and pop in the sweep
-	reveal *= material_pattern(v_world, v_nworld, u_material);
 	float vd = length(v_world - CAMERA_POSITION_WORLD);
 	reveal *= (0.9 + 0.1 * u_flick) * exp(-vd * 0.05);
 	// normal id: distinct levels for the six axis directions, continuous for
 	// curved surfaces — one channel is enough for crease detection
 	float nid = 0.5 + v_nworld.x * 0.30 + v_nworld.y * 0.17 + v_nworld.z * 0.09;
-	ALBEDO = vec3(clamp(reveal, 0.0, 1.0), nid, clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));
+	// material glyphs are ENGRAVED into the distance channel: the hearing
+	// pass's edge detector draws them itself, in the same thin stroke as the
+	// outlines, gated by the same reveal — the fill stays fully transparent
+	float glyph = material_pattern(v_world, v_nworld, u_material);
+	ALBEDO = vec3(clamp(reveal, 0.0, 1.0), nid,
+			clamp(vd / DIST_PACK_RANGE + 0.028 * glyph, 0.0, 1.0));
 }
