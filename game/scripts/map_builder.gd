@@ -1,7 +1,8 @@
+class_name MapBuilder
 extends RefCounted
 ## The map: a 20 x 20 m room with interior walls forming corridors.
 ## Geometry and collision are built from wall CENTERLINE segments — the same
-## numbers as the web reference, so both versions play identically.
+## numbers as the validated original design, so both versions play identically.
 ## All segments are axis-aligned, which keeps the boxes trivial.
 
 const WALL_H := 3.0    # walls run floor to ceiling
@@ -28,6 +29,10 @@ static func build_world(parent: Node3D, mat: Material) -> void:
 	_build_furniture(parent, mat)
 	for s: Array in SEGS:
 		var horizontal: bool = absf(s[3] - s[1]) < 0.001
+		# the box math trusts axis alignment; a diagonal segment would silently
+		# produce a wrong-sized wall instead of failing
+		assert(horizontal or absf(s[2] - s[0]) < 0.001,
+				"map segment %s is not axis-aligned" % [s])
 		var cx: float = (s[0] + s[2]) * 0.5
 		var cz: float = (s[1] + s[3]) * 0.5
 		var size: Vector3
@@ -55,9 +60,8 @@ static func _build_furniture(parent: Node3D, mat: Material) -> void:
 			_add_box(parent, mat, c + Vector3(lx, 0.22, lz), Vector3(0.04, 0.45, 0.04))
 	_add_box(parent, mat, c + Vector3(-0.18, 0.72, 0), Vector3(0.05, 0.5, 0.4))
 
-## One wall = a mesh for the data pass + a static collider for the cane
-## raycast and player movement (Godot physics replaces the hand-rolled
-## segment collision of the web version).
+## One box = a mesh for the data pass + a static collider for the cane rays
+## and player movement.
 static func _add_box(parent: Node3D, mat: Material, center: Vector3, size: Vector3) -> void:
 	var body := StaticBody3D.new()
 	body.position = center

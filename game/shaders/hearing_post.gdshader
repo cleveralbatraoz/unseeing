@@ -3,27 +3,20 @@ render_mode unshaded, cull_disabled, depth_draw_never, depth_test_disabled, fog_
 
 // HEARING PASS — a fullscreen quad pinned to the camera. Everything the
 // player ever sees is produced here, from two ingredients:
-//   1. thin white OUTLINES where geometry breaks (silhouettes via a depth
-//      Laplacian, creases via normal differences), gated by the per-pixel
+//   1. thin white OUTLINES where geometry breaks (silhouettes via a distance
+//      Laplacian, creases via normal-id differences), gated by the per-pixel
 //      "reveal" the data pass wrote — outlines exist only where a wave swept;
 //   2. the WAVES themselves: expanding spherical shells ray-traced in air,
 //      limb-brightened into rings, occluded by the world (walls carve bites
 //      out of a ring — absence of wave IS the shape of the world).
 // Plus the mood layer: breathing vignette and film grain.
-// Ported from web-reference/index.html post fragment shader.
 
-const int MAXP = 64;
+#include "res://shaders/pulse_pool.gdshaderinc"
 
 uniform sampler2D screen_tex : hint_screen_texture, filter_nearest;
-uniform float u_time = 0.0;
-uniform float u_flick = 1.0;
 uniform float u_breath = 1.0;
 uniform float u_grain_amp = 0.034;
 uniform float u_grain_t = 0.0;
-uniform int u_count = 0;
-uniform vec3 u_ppos[MAXP];
-uniform vec4 u_pdat[MAXP];
-uniform vec4 u_pdir[MAXP];
 
 varying vec2 v_ndc;
 
@@ -74,7 +67,7 @@ void fragment() {
 	vf.xyz /= vf.w;
 	vec3 world_far = (INV_VIEW_MATRIX * vec4(vf.xyz, 1.0)).xyz;
 	vec3 rd = normalize(world_far - cam);
-	float scene_d = c_c.b * 40.0;
+	float scene_d = c_c.b * DIST_PACK_RANGE;
 
 	for (int i = 0; i < MAXP; i++) {
 		if (i >= u_count) { break; }
@@ -85,8 +78,8 @@ void fragment() {
 		float radius = d.z * age;
 		float prog = radius / d.y;
 		if (prog >= 1.0) { continue; }
-		float typ = floor(d.w / 10.0);
-		float gain = mod(d.w, 10.0) / 9.0;
+		float typ = pulse_type(d);
+		float gain = pulse_gain(d);
 		float peak = typ < 0.5 ? 0.5 : (typ < 1.5 ? 0.45 : 0.18);
 		vec3 oc = cam - u_ppos[i];
 		float b = dot(oc, rd);
@@ -100,7 +93,7 @@ void fragment() {
 			if (t <= 0.05 || t >= scene_d) { continue; }
 			vec3 hp = cam + rd * t;
 			vec3 sn = (hp - u_ppos[i]) / radius;
-			float cone = smoothstep(cn.w - 0.15, cn.w + 0.05, dot(sn, cn.xyz));
+			float cone = pulse_cone(cn, sn);
 			if (cone <= 0.0) { continue; }
 			float grz = 1.0 - abs(dot(rd, sn));
 			float ink = 0.55 + 0.45 * n2(hp.xz * 1.7 + hp.y * 0.9);

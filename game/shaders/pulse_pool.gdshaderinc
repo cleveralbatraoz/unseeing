@@ -1,0 +1,36 @@
+// The pulse-pool contract shared by data_pass and hearing_post.
+// The two shaders are one system communicating through packed channels;
+// this include is the single definition of that protocol.
+//
+// Slot layout (mirrors pulses.gd):
+//   u_ppos[i] — world origin of the sound
+//   u_pdat[i] — (birth time, max radius, speed m/s, type*10 + gain*9)
+//   u_pdir[i] — beam direction xyz + cos(half-angle); w = -2 means omni
+
+const int MAXP = 64;
+
+// Camera distance is packed into the data pass's BLUE channel divided by
+// this range; the hearing pass multiplies it back. Camera far (60) exceeds
+// it, which is safe only because the room is 20 m across.
+const float DIST_PACK_RANGE = 40.0;
+
+uniform float u_time = 0.0;
+uniform float u_flick = 1.0;
+uniform int u_count = 0;
+uniform vec3 u_ppos[MAXP];
+uniform vec4 u_pdat[MAXP];
+uniform vec4 u_pdir[MAXP];
+
+float pulse_type(vec4 d) {
+	return floor(d.w / 10.0);
+}
+
+float pulse_gain(vec4 d) {
+	return mod(d.w, 10.0) / 9.0;
+}
+
+// Directed sound: only the cone the sound was aimed into carries information.
+// dir_from_src must be the unit vector from the pulse origin toward the point.
+float pulse_cone(vec4 cn, vec3 dir_from_src) {
+	return smoothstep(cn.w - 0.15, cn.w + 0.05, dot(dir_from_src, cn.xyz));
+}

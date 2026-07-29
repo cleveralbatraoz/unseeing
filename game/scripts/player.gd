@@ -1,29 +1,47 @@
+class_name UnseeingPlayer
 extends CharacterBody3D
-## The blind hero: first-person movement, mouse look, cane taps, footsteps.
+## The blind hero: first-person movement, mouse look, cane taps.
 ##
-## The cane is the ONLY deliberate instrument. A tap picks one of three modes
-## by what a real ~1.7 m arm-plus-cane could actually touch:
-##   wall strike — raycast hit within reach: the wave is born ON the wall at
-##                 the height the player is aiming (pitch-projected);
-##   floor tap   — no wall and genuinely aiming down: wave born on the floor
-##                 where the gaze lands, clamped to cane reach;
-##   air swish   — nothing in reach: NO wave at all. Air reflects nothing,
-##                 so nothing may appear. (Sound-only once audio lands.)
-## Footsteps ripple as small waves from alternating feet while walking.
+## The cane is the ONLY deliberate instrument. A tap picks its mode by what a
+## real ~1.7 m arm-plus-cane could actually touch:
+##   aimed strike — the 3D gaze ray connects within reach: the wave is born
+##                  exactly where the player looked (wall, furniture, floor);
+##   rest tap     — no aimed hit: the tap lands wherever the cane tip is
+##                  physically resting (tabletop, chair seat, or — when the
+##                  player is looking down — the floor);
+##   air swish    — the cane rests on nothing raised and the player is not
+##                  aiming down: NO wave. Air reflects nothing.
+##
+## PHYSICS CONTEXT: every raycast in the game runs inside _physics_process.
+## Input handlers only queue intent; hero_body and main queue wave requests.
+## This keeps all space queries inside Godot's supported physics window.
 
-const EYE := 1.6           # eye height above the floor
-const SPEED := 2.1         # m/s — a careful walk, not a run
-const CANE_REACH := 1.7    # arm + white cane: what can truly be touched
+const EYE := 1.6            # eye height above the floor
+const SPEED := 2.1          # m/s — a careful walk, not a run
+const CANE_REACH := 1.7     # arm + white cane: what can truly be touched
 const TAP_COOLDOWN := 0.15
+const MOUSE_SENS := 0.0026  # radians per pixel, both axes
+const PITCH_LIMIT := 1.35   # radians up/down
+const CANE_SCAN_HEIGHT := 0.85   # wall-detection ray height (below tabletops)
+const CANE_SCAN_LENGTH := 3.4
+const WALL_BACKOFF := 0.06
 
-var pulses            # injected by main.gd
+var pulses: Pulses             # injected by main.gd
 var camera: Camera3D
+var now := 0.0                 # pushed by main every frame (the one clock)
 var last_tap := -10.0          # drives the cane strike animation
 var tap_target := Vector3.ZERO # where the last tap landed (wall/floor/air)
+## Cached cane rest, recomputed every physics tick at the sweep offset the
+## viewmodel requested — hero_body reads this instead of raycasting itself.
+var cane_rest: Dictionary = { tip = Vector3.ZERO, supported = false }
+var cane_rest_offset := 0.0    # written by hero_body each frame
+
+var _tap_queued := false
+var _wave_queue: Array[Dictionary] = []
 
 func _init() -> void:
 	position = Vector3(3, 0.9, 4)
-	rotation.y = -1.9   # same spawn facing as the web reference
+	rotation.y = -1.9   # same spawn facing as the original design
 	var col := CollisionShape3D.new()
 	var capsule := CapsuleShape3D.new()
 	capsule.radius = 0.35
@@ -34,35 +52,56 @@ func _init() -> void:
 	camera.position = Vector3(0, EYE - 0.9, 0)
 	camera.near = 0.05
 	camera.far = 60.0
-	camera.fov = 66.0   # matches the web reference's 1.15 rad vertical FOV
+	camera.fov = 66.0   # ~1.15 rad vertical, the validated design FOV
 	add_child(camera)
 
 func _ready() -> void:
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	# on web the browser only grants capture on a user gesture; the click
+	# handler below recaptures, so skip the doomed attempt and console noise
+	if not OS.has_feature("web"):
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		rotate_y(-event.relative.x * 0.0026)
-		camera.rotation.x = clampf(camera.rotation.x - event.relative.y * 0.0026, -1.35, 1.35)
-	elif event is InputEventKey and event.pressed and event.physical_keycode == KEY_ESCAPE:
+		rotate_y(-event.relative.x * MOUSE_SENS)
+		camera.rotation.x = clampf(camera.rotation.x - event.relative.y * MOUSE_SENS,
+				-PITCH_LIMIT, PITCH_LIMIT)
+	elif event.is_action_pressed("ui_cancel"):
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	elif event is InputEventMouseButton and event.pressed:
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		if event.button_index == MOUSE_BUTTON_LEFT:
-			_cane_tap()
+			_tap_queued = true   # executed next physics tick, in physics context
 
-func _physics_process(dt: float) -> void:
+## Other systems (hero footsteps, main's demo tap) request waves here; they
+## are emitted next physics tick so reflection raycasts run in-context.
+func queue_wave(type: int, at: Vector3, max_r: float, speed: float, gain: float,
+		max_echoes: int, origin_normal := Vector3.ZERO) -> void:
+	_wave_queue.append({
+		type = type, at = at, max_r = max_r, speed = speed,
+		gain = gain, echoes = max_echoes, normal = origin_normal,
+	})
+
+func _physics_process(_dt: float) -> void:
 	var input := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
 	var dir3 := (transform.basis * Vector3(input.x, 0, input.y))
 	velocity.x = dir3.x * SPEED
 	velocity.z = dir3.z * SPEED
 	velocity.y = 0.0   # flat map: no gravity, no jumping — walking is the verb
 	move_and_slide()
-	# footsteps live in hero_body.gd: they ripple from the animated shoes
+
+	cane_rest = _compute_cane_rest(cane_rest_offset)
+	if _tap_queued:
+		_tap_queued = false
+		_cane_tap()
+	var space := get_world_3d().direct_space_state
+	for w: Dictionary in _wave_queue:
+		pulses.emit_reflecting(w.type, w.at, w.max_r, w.speed, w.gain, now,
+				space, w.echoes, w.normal)
+	_wave_queue.clear()
 
 func _cane_tap() -> void:
-	var now: float = get_parent().now   # the one simulated game clock lives in main
 	if now - last_tap < TAP_COOLDOWN:
 		return
 	last_tap = now
@@ -70,11 +109,9 @@ func _cane_tap() -> void:
 	var aim := -camera.global_transform.basis.z
 	var flat := Vector3(aim.x, 0, aim.z).normalized()
 	var from := camera.global_position
-	# a true 3D gaze ray: strikes whatever the cane can actually reach —
-	# walls, furniture, or nearby floor — at the exact aimed point
-	var query := PhysicsRayQueryParameters3D.create(from, from + aim * CANE_REACH)
-	var hit := get_world_3d().direct_space_state.intersect_ray(query)
 	var space := get_world_3d().direct_space_state
+	var query := PhysicsRayQueryParameters3D.create(from, from + aim * CANE_REACH)
+	var hit := space.intersect_ray(query)
 	if hit:
 		# aimed strike: the wave is born exactly where you looked
 		tap_target = hit.position
@@ -83,7 +120,7 @@ func _cane_tap() -> void:
 		var g := 0.85 if floorish else 1.0
 		pulses.emit_reflecting(0, tap_target, r, 5.5, g, now, space, 6, hit.normal)
 		return
-	var rest := cane_tip_rest(0.0)
+	var rest := _compute_cane_rest(0.0)
 	var raised: bool = rest.supported and rest.tip.y > 0.15
 	if raised or (rest.supported and pitch <= -0.12):
 		# no aim needed: tap whatever the cane is physically resting on —
@@ -102,16 +139,18 @@ func _cane_tap() -> void:
 ## (walls shorten the reach at cane height), then settle onto the first
 ## supporting surface below — floor, tabletop, chair seat. This is the cane
 ## "touching" the world; the tap and the visuals both use it.
-func cane_tip_rest(yaw_offset: float) -> Dictionary:
+## Physics-context only: called from _physics_process.
+func _compute_cane_rest(yaw_offset: float) -> Dictionary:
 	var fw := -global_transform.basis.z
 	var dir := Vector3(fw.x, 0, fw.z).normalized().rotated(Vector3.UP, yaw_offset)
 	var space := get_world_3d().direct_space_state
-	var from := Vector3(global_position.x, 0.85, global_position.z)
-	var wall := space.intersect_ray(PhysicsRayQueryParameters3D.create(from, from + dir * 3.4))
-	var wall_d := 3.4
+	var from := Vector3(global_position.x, CANE_SCAN_HEIGHT, global_position.z)
+	var wall := space.intersect_ray(
+			PhysicsRayQueryParameters3D.create(from, from + dir * CANE_SCAN_LENGTH))
+	var wall_d := CANE_SCAN_LENGTH
 	if wall:
 		wall_d = (wall.position - from).length()
-	var reach := minf(CANE_REACH, wall_d - 0.06)
+	var reach := minf(CANE_REACH, wall_d - WALL_BACKOFF)
 	var px := global_position.x + dir.x * reach
 	var pz := global_position.z + dir.z * reach
 	var down := space.intersect_ray(PhysicsRayQueryParameters3D.create(

@@ -1,3 +1,4 @@
 .DS_Store
 game/.godot/
-game/build/
+game/build/*
+!game/build/.gdignore

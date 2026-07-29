@@ -1,16 +1,17 @@
+class_name Pulses
 extends RefCounted
 ## The wave system: a fixed pool of 64 pulse slots shared with BOTH shaders
 ## as uniform arrays. A pulse is an expanding spherical wavefront; shaders
 ## derive everything (ring position, outline reveal, fade) from its birth
 ## time — the CPU never animates waves, it only records that a sound happened.
 ##
-## Slot data layout (mirrors the web reference exactly):
+## Slot data layout (the shader-side contract lives in pulse_pool.gdshaderinc):
 ##   pos[i]         — world origin of the sound
 ##   dat[i]         — (birth time, max radius, speed m/s, type*10 + gain*9)
 ##   dir[i]         — beam direction xyz + cos(half-angle); w = -2 means
 ##                    omnidirectional (cane taps, footsteps)
 ## Types: 0 = cane tap, 1 = ECHO (secondary reflection), 2 = footstep,
-##        3 = phantom (audio-only, never emitted as light).
+##        3 = phantom (reserved for the audio stage; never emitted as light).
 ##
 ## REFLECTIONS — the heart of echo-location. A primary sound samples the
 ## world with real physics rays from its origin; every surface point struck
@@ -20,6 +21,11 @@ extends RefCounted
 ## object ever answer. Echoes never spawn further echoes.
 
 const MAXP := 64
+## Uniform spherical ray fan uses the golden angle for even coverage.
+const GOLDEN_ANGLE := 2.399963
+## Reflection hits within the same cell merge, so flat walls answer as a few
+## points instead of one point per ray.
+const CLUSTER_CELL := 0.9
 
 var pos := PackedVector3Array()
 var dat := PackedVector4Array()
@@ -27,7 +33,7 @@ var dir := PackedVector4Array()
 var _t0 := PackedFloat64Array()
 var _end := PackedFloat64Array()
 var _type := PackedInt32Array()
-var _echoes: Array = []   # scheduled reflections: {at_t, pos, gain}
+var _echoes: Array[Dictionary] = []   # scheduled reflections: {at_t, pos, gain}
 
 func _init() -> void:
 	pos.resize(MAXP)
@@ -66,15 +72,16 @@ func emit(type: int, at: Vector3, max_r: float, speed: float, gain: float,
 	var omni := beam_dir == Vector3.ZERO
 	dir[slot] = Vector4(beam_dir.x, beam_dir.y, beam_dir.z, -2.0 if omni else cos_half)
 	_t0[slot] = now
-	# ring time + outline-fade tail; echoes and footsteps expire sooner so the
-	# live-slot count (which both shaders loop over per pixel) stays small
-	var tail := 6.0
-	if type == 1:
-		tail = 3.5
-	elif type == 2:
-		tail = 2.5
-	_end[slot] = now + max_r / speed + tail
+	_end[slot] = now + max_r / speed + _fade_tail(type)
 	_type[slot] = type
+
+## Ring time + outline-fade tail; echoes and footsteps expire sooner so the
+## live-slot count (which both shaders loop over per pixel) stays small.
+func _fade_tail(type: int) -> float:
+	match type:
+		1: return 3.5
+		2: return 2.5
+		_: return 6.0
 
 ## Emit a primary sound AND schedule its reflections off the environment.
 ## `space` is the physics space to sample; `max_echoes` caps slot pressure.
@@ -89,14 +96,12 @@ func emit_reflecting(type: int, at: Vector3, max_r: float, speed: float,
 	if space == null:
 		return
 	var origin := at + origin_normal * 0.08
-	# Fibonacci-sphere ray fan: uniform directions, each ray asks the real
-	# colliders what the wave will touch first in that direction
 	const RAYS := 26
 	var cells := {}
 	for i: int in RAYS:
 		var y := 1.0 - 2.0 * (float(i) + 0.5) / RAYS
 		var r := sqrt(maxf(0.0, 1.0 - y * y))
-		var phi := float(i) * 2.399963
+		var phi := float(i) * GOLDEN_ANGLE
 		var d3 := Vector3(r * cos(phi), y, r * sin(phi))
 		if origin_normal != Vector3.ZERO and d3.dot(origin_normal) < 0.05:
 			continue   # into the surface: that direction is the wave's shadow
@@ -107,12 +112,11 @@ func emit_reflecting(type: int, at: Vector3, max_r: float, speed: float,
 		var dist: float = (hit.position - origin).length()
 		if dist < 0.3:
 			continue   # the surface the sound itself was born on
-		# cluster nearby hits so a flat wall answers as a few points, not 26
-		var key := Vector3i((hit.position / 0.9).floor())
+		var key := Vector3i((hit.position / CLUSTER_CELL).floor())
 		if not cells.has(key) or cells[key].d > dist:
 			cells[key] = { d = dist, p = hit.position + hit.normal * 0.02 }
 	var found: Array = cells.values()
-	found.sort_custom(func(a, b): return a.d < b.d)
+	found.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.d < b.d)
 	for j: int in mini(found.size(), max_echoes):
 		var e: Dictionary = found[j]
 		_echoes.append({
@@ -146,4 +150,3 @@ func apply(now: float, mats: Array) -> void:
 		m.set_shader_parameter("u_ppos", pos)
 		m.set_shader_parameter("u_pdat", dat)
 		m.set_shader_parameter("u_pdir", dir)
-

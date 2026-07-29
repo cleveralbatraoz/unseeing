@@ -4,7 +4,7 @@ extends Node3D
 ## The hero is BLIND. Nothing on screen is ever "the world": the player sees
 ## only sound — expanding wave rings in the air, and thin white outlines that
 ## flare where a wave strikes geometry, then fade within seconds. The design
-## laws (validated in web-reference/, the playable spec):
+## laws (validated in the original web prototype, frozen since):
 ##   - waves exist only when the player causes them (cane taps, footsteps);
 ##   - geometry appears only as edge outlines near a strike, never whole shapes;
 ##   - everything fades; nothing is ever in inventory-style "known" state.
@@ -15,17 +15,13 @@ extends Node3D
 
 const DATA_SHADER := preload("res://shaders/data_pass.gdshader")
 const POST_SHADER := preload("res://shaders/hearing_post.gdshader")
-const MapBuilder := preload("res://scripts/map_builder.gd")
-const Pulses := preload("res://scripts/pulses.gd")
-const PlayerBody := preload("res://scripts/player.gd")
-const HeroBody := preload("res://scripts/hero_body.gd")
 
 var pulses: Pulses
 var data_mat := ShaderMaterial.new()
 var cane_mat := ShaderMaterial.new()   # standing reveal: the hero knows their grip
 var body_mat := ShaderMaterial.new()   # legs/torso: revealed only by waves
 var post_mat := ShaderMaterial.new()
-var player: CharacterBody3D
+var player: UnseeingPlayer
 var hero: HeroBody
 
 ## The game clock: simulated seconds accumulated from frame deltas — NOT wall
@@ -33,13 +29,21 @@ var hero: HeroBody
 var now := 0.0
 
 # Nervous light: the reveal intensity wavers, with rare brief dropouts.
-# Ported verbatim from the web reference — it is part of the mood, not noise.
+# Part of the mood, not noise; envelope carried over from the validated design.
 var _flick := 1.0
 var _drop_until := -1.0
 var _next_drop := 9.0
 
+# Dev-only demo tap (see _demo_tap below).
+var _demo_next := 0.6
+var _demo_checked := false
+var _demo_wanted := false
+
 func _ready() -> void:
 	_setup_input()
+	# deterministic flicker for offline frame-comparison runs
+	if not OS.get_environment("UNSEEING_DEMO").is_empty():
+		seed(0x5EED)
 	data_mat.shader = DATA_SHADER
 	post_mat.shader = POST_SHADER
 	for m: ShaderMaterial in [cane_mat, body_mat]:
@@ -47,7 +51,7 @@ func _ready() -> void:
 	cane_mat.set_shader_parameter("u_base", 0.85)
 	pulses = Pulses.new()
 	MapBuilder.build_world(self, data_mat)
-	player = PlayerBody.new()
+	player = UnseeingPlayer.new()
 	player.pulses = pulses
 	add_child(player)
 	hero = HeroBody.new()
@@ -61,6 +65,7 @@ func _ready() -> void:
 
 func _process(dt: float) -> void:
 	now += dt
+	player.now = now
 	_flick += (1.0 - _flick) * 0.12 + (randf() - 0.5) * 0.09
 	_flick = clampf(_flick, 0.72, 1.2)
 	_next_drop -= dt
@@ -76,15 +81,13 @@ func _process(dt: float) -> void:
 	post_mat.set_shader_parameter("u_grain_t", fmod(now, 1.0) * 61.7)
 	pulses.apply(now, [data_mat, cane_mat, body_mat, post_mat])
 	hero.update(now, dt)
-	_demo_tap(now)
+	_demo_tap()
 
-# Dev-only: fires one wall tap shortly after boot so input-less runs can
-# verify the renderer visually — movie-maker locally (UNSEEING_DEMO=1 env),
-# or the deployed web build (?demo in the URL).
-var _demo_next := 0.6
-var _demo_checked := false
-var _demo_wanted := false
-func _demo_tap(now: float) -> void:
+## Dev-only: fires a wall tap every few seconds so input-less runs can verify
+## the renderer visually — movie-maker locally (UNSEEING_DEMO=1 env), or the
+## deployed web build (?demo in the URL). Queued through the player so its
+## reflection raycasts run in physics context.
+func _demo_tap() -> void:
 	if not _demo_checked and now >= 0.5:
 		_demo_checked = true
 		_demo_wanted = not OS.get_environment("UNSEEING_DEMO").is_empty()
@@ -94,12 +97,11 @@ func _demo_tap(now: float) -> void:
 	if not _demo_wanted or now < _demo_next:
 		return
 	_demo_next = now + 4.0   # repeat, so any screenshot timing catches a wave
-	pulses.emit_reflecting(0, Vector3(6.4, 0.8, 4.0), 6.0, 5.5, 1.0, now,
-			player.get_world_3d().direct_space_state, 8, Vector3(-1, 0, 0))
+	player.queue_wave(0, Vector3(6.4, 0.8, 4.0), 6.0, 5.5, 1.0, 6, Vector3(-1, 0, 0))
 
 ## The "hearing" pass: a fullscreen quad glued to the camera. It edge-detects
-## the data the world pass wrote (reveal / normals / depth) and ray-traces the
-## wave shells — the only two ways anything becomes visible.
+## the data the world pass wrote (reveal / normals / distance) and ray-traces
+## the wave shells — the only two ways anything becomes visible.
 func _setup_post_quad(cam: Camera3D) -> void:
 	var quad := MeshInstance3D.new()
 	var mesh := QuadMesh.new()
@@ -127,9 +129,3 @@ func _setup_input() -> void:
 			var ev := InputEventKey.new()
 			ev.physical_keycode = keys[action]
 			InputMap.action_add_event(action, ev)
-	if not InputMap.has_action("tap"):
-		InputMap.add_action("tap")
-		var mb := InputEventMouseButton.new()
-		mb.button_index = MOUSE_BUTTON_LEFT
-		InputMap.action_add_event("tap", mb)
-

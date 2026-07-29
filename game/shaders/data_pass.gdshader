@@ -5,19 +5,13 @@ render_mode unshaded, cull_disabled, shadows_disabled, ambient_light_disabled, f
 // DATA for the hearing pass to read from the screen texture:
 //   R — reveal: how recently/strongly a wave swept this point
 //   G — normal id: axis-weighted normal encoding (crease edge detection)
-//   B — camera distance / 40 (silhouette edges + wave occlusion)
+//   B — camera distance / DIST_PACK_RANGE (silhouette edges + wave occlusion)
 // Distance is packed here on purpose: the depth texture is unreliable on
 // WebGL2/Compatibility, and the web build is a first-class target.
 
-const int MAXP = 64;
+#include "res://shaders/pulse_pool.gdshaderinc"
 
-uniform float u_time = 0.0;
-uniform float u_flick = 1.0;
 uniform float u_base = 0.0;   // standing reveal; >0 only for the hero's cane
-uniform int u_count = 0;
-uniform vec3 u_ppos[MAXP];
-uniform vec4 u_pdat[MAXP];    // birth, maxR, speed, type*10 + gain*9
-uniform vec4 u_pdir[MAXP];    // beam dir xyz + cos(half-angle); w = -2 = omni
 
 varying vec3 v_world;
 varying vec3 v_nworld;
@@ -36,17 +30,15 @@ void fragment() {
 		float age = u_time - d.x;
 		if (age <= 0.0) { continue; }
 
-		float typ = floor(d.w / 10.0);
-		float gain = mod(d.w, 10.0) / 9.0;
+		float typ = pulse_type(d);
+		float gain = pulse_gain(d);
 		float peak = typ < 0.5 ? 1.0 : (typ < 1.5 ? 0.9 : 0.35);
 
 		float dist = distance(v_world, u_ppos[i]);
 		float radius = d.z * age;
 		if (dist > min(radius, d.y)) { continue; }
 		vec3 to_src = (u_ppos[i] - v_world) / max(dist, 0.001);
-		// directed sound: only the cone the sound was aimed into carries info
-		vec4 cn = u_pdir[i];
-		float cone = smoothstep(cn.w - 0.15, cn.w + 0.05, dot(-to_src, cn.xyz));
+		float cone = pulse_cone(u_pdir[i], -to_src);
 		// only the struck spot lights: ignition falls off fast from the source
 		float atten = 1.0 / (1.0 + dist * dist * 0.06);
 		float ga = age - dist / d.z;
@@ -59,5 +51,5 @@ void fragment() {
 	// normal id: distinct levels for the six axis directions, continuous for
 	// curved surfaces — one channel is enough for crease detection
 	float nid = 0.5 + v_nworld.x * 0.30 + v_nworld.y * 0.17 + v_nworld.z * 0.09;
-	ALBEDO = vec3(clamp(reveal, 0.0, 1.0), nid, clamp(vd / 40.0, 0.0, 1.0));
+	ALBEDO = vec3(clamp(reveal, 0.0, 1.0), nid, clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));
 }

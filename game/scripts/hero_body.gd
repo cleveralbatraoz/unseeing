@@ -1,7 +1,7 @@
+class_name HeroBody
 extends Node3D
-## The hero's visible body — cane, arm, legs, torso — ported from the web
-## reference. Everything renders through the data pass, so the body is
-## OUTLINE-ONLY like the world:
+## The hero's visible body — cane, arm, legs, torso. Everything renders
+## through the data pass, so the body is OUTLINE-ONLY like the world:
 ##   - the cane and the arm holding it carry a standing reveal (u_base):
 ##     the hero always knows their own grip;
 ##   - legs and torso are revealed ONLY while a wave sweeps them — each
@@ -10,12 +10,14 @@ extends Node3D
 ## with a figure-eight walk bob, look-sway lag, and a strike kick that
 ## reaches the cane tip out to the actual tap target and eases back.
 ## The cane is BODY-anchored in yaw, so it doubles as a pitch indicator.
+##
+## No raycasts here: the cane rest comes pre-computed from the player's
+## physics tick (player.cane_rest), and footsteps are queued to the player
+## so their reflection rays also run in physics context.
 
-const EYE := 1.6
-
-var player: CharacterBody3D
+var player: UnseeingPlayer
 var camera: Camera3D
-var pulses
+var pulses: Pulses
 var cane_mat: ShaderMaterial
 var body_mat: ShaderMaterial
 
@@ -23,7 +25,7 @@ var _cane_mesh := ImmediateMesh.new()
 var _body_mesh := ImmediateMesh.new()
 var _cam_base_y := 0.0
 
-# animation state — constants ported verbatim from the web reference
+# animation state — constants carried over verbatim from the validated design
 var _walk_amp := 0.0
 var _leg_phase := 0.0
 var _swing_phase := 0.0
@@ -34,9 +36,12 @@ var _last_yaw := 0.0
 var _last_pitch := 0.0
 var _step_t := 0.0
 var _step_side := 1
-var _shoe := [Vector3.ZERO, Vector3.ZERO]
+var _shoe: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO]
 
 func _ready() -> void:
+	assert(player != null and camera != null, "hero_body: player/camera not injected")
+	assert(pulses != null and cane_mat != null and body_mat != null,
+			"hero_body: pulses/materials not injected")
 	for pair: Array in [[_cane_mesh, cane_mat], [_body_mesh, body_mat]]:
 		var mi := MeshInstance3D.new()
 		mi.mesh = pair[0]
@@ -74,9 +79,12 @@ func update(now: float, dt: float) -> void:
 	# classic head-bob while walking
 	camera.position.y = _cam_base_y + 0.028 * sin(_leg_phase * 2.0) * _walk_amp
 
+	# ask the player's next physics tick to compute the rest at our sweep angle
+	player.cane_rest_offset = _cane_swing * (1.0 - thrust)
+
 	_build_cane(thrust)
 	_build_body()
-	_footsteps(now, dt, moving)
+	_footsteps(dt, moving)
 
 func _build_cane(thrust: float) -> void:
 	var cb := camera.global_transform.basis
@@ -89,10 +97,9 @@ func _build_cane(thrust: float) -> void:
 	var elbow: Vector3 = v2w.call(0.48 + bx * 0.5, -0.64 + by * 0.5, 0.26)
 
 	# rest: the tip lies on whatever surface the cane reaches — floor, table,
-	# chair seat — via the shared physics helper; a small hover animates the
-	# sweep so the tip touches down at the extremes like real technique
-	var rest: Dictionary = player.cane_tip_rest(_cane_swing * (1.0 - thrust))
-	var rest_tip: Vector3 = rest.tip
+	# chair seat — pre-computed by the player's physics tick; a small hover
+	# animates the sweep so the tip touches down at the extremes
+	var rest_tip: Vector3 = player.cane_rest.tip
 	var moving := _walk_amp > 0.5
 	var lift := maxf(0.0, 1.0 - absf(_cane_swing) / 0.26) if moving else 0.3
 	rest_tip.y += 0.12 * lift * (1.0 - thrust)
@@ -141,8 +148,9 @@ func _build_body() -> void:
 		_sphere(_body_mesh, shoe, 0.08)
 	_body_mesh.surface_end()
 
-## Each footfall: a small wave rippling out around that very shoe.
-func _footsteps(now: float, dt: float, moving: bool) -> void:
+## Each footfall: a small wave rippling out around that very shoe, queued to
+## the player so its reflection rays run in the physics tick.
+func _footsteps(dt: float, moving: bool) -> void:
 	if not moving:
 		_step_t = 0.1
 		return
@@ -150,9 +158,7 @@ func _footsteps(now: float, dt: float, moving: bool) -> void:
 	if _step_t > 0.0:
 		return
 	var shoe: Vector3 = _shoe[0 if _step_side < 0 else 1]
-	# footsteps reflect too, weakly — walking quietly sketches what is near
-	pulses.emit_reflecting(2, Vector3(shoe.x, 0.04, shoe.z), 1.6, 4.0, 0.8, now,
-			player.get_world_3d().direct_space_state, 2, Vector3.UP)
+	player.queue_wave(2, Vector3(shoe.x, 0.04, shoe.z), 1.6, 4.0, 0.8, 2, Vector3.UP)
 	_step_side = -_step_side
 	_step_t = 0.42
 
@@ -171,8 +177,8 @@ func _sphere(mesh: ImmediateMesh, c: Vector3, r: float) -> void:
 			var n01 := Vector3(sin(t0) * cos(p1), cos(t0), sin(t0) * sin(p1))
 			var n10 := Vector3(sin(t1) * cos(p0), cos(t1), sin(t1) * sin(p0))
 			var n11 := Vector3(sin(t1) * cos(p1), cos(t1), sin(t1) * sin(p1))
-			for pair: Array in [[n00, n10, n11], [n00, n11, n01]]:
-				for n: Vector3 in pair:
+			for tri: Array in [[n00, n10, n11], [n00, n11, n01]]:
+				for n: Vector3 in tri:
 					mesh.surface_set_normal(n)
 					mesh.surface_add_vertex(c + n * r)
 
