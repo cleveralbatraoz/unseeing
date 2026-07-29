@@ -59,8 +59,6 @@ void fragment() {
 	float nrm = abs(c_l.g - c_r.g) + abs(c_u.g - c_d.g);
 	float edge = max(smoothstep(0.012, 0.03, lap), smoothstep(0.04, 0.08, nrm));
 	float reveal = max(c_c.r, max(max(c_l.r, c_r.r), max(c_u.r, c_d.r)));
-	// fills are fully transparent: material glyphs arrive through the
-	// distance channel and are drawn by the edge detection above
 	vec3 col = vec3(edge * reveal);
 
 	// the waves themselves: rings in the air, cut where the world stands

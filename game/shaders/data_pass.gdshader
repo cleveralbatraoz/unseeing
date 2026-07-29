@@ -10,10 +10,8 @@ render_mode unshaded, cull_disabled, shadows_disabled, ambient_light_disabled, f
 // WebGL2/Compatibility, and the web build is a first-class target.
 
 #include "res://shaders/pulse_pool.gdshaderinc"
-#include "res://shaders/materials.gdshaderinc"
 
-uniform float u_base = 0.0;     // standing reveal; >0 only for the hero's cane
-uniform int u_material = 0;     // Materials.Kind — chooses the reveal signature
+uniform float u_base = 0.0;   // standing reveal; >0 only for the hero's cane
 
 varying vec3 v_world;
 varying vec3 v_nworld;
@@ -53,11 +51,5 @@ void fragment() {
 	// normal id: distinct levels for the six axis directions, continuous for
 	// curved surfaces — one channel is enough for crease detection
 	float nid = 0.5 + v_nworld.x * 0.30 + v_nworld.y * 0.17 + v_nworld.z * 0.09;
-	// the material is the object's CONSTRUCTION: boundaries between its
-	// pieces (stones, planks, panes) are engraved into the distance channel,
-	// so the hearing pass's edge detector outlines each piece in the same
-	// thin stroke as everything else — fills stay fully transparent
-	float piece_border = material_pattern(v_world, v_nworld, u_material);
-	ALBEDO = vec3(clamp(reveal, 0.0, 1.0), nid,
-			clamp(vd / DIST_PACK_RANGE + 0.028 * piece_border, 0.0, 1.0));
+	ALBEDO = vec3(clamp(reveal, 0.0, 1.0), nid, clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));
 }

@@ -8,7 +8,7 @@ project ports it system by system.
 
 - `scenes/main.tscn` — one root node; everything else is built in code.
 - `scripts/main.gd` — composition root: input actions (physical keycodes),
-  materials, world build, player, the fullscreen hearing quad, per-frame
+  world build, player, the fullscreen hearing quad, per-frame
   globals (clock, flicker).
 - `scripts/map_builder.gd` — wall centerlines → box meshes + colliders.
 - `scripts/pulses.gd` — the 64-slot wave pool shared with both shaders.
@@ -28,8 +28,7 @@ Renderer is `gl_compatibility` — mandatory for the Web (wasm) export.
 | Cane tap modes (wall / floor / silent air) | done |
 | Footstep ripples | done (from the animated shoes) |
 | Hero body + cane viewmodel (bob/sway/strike) | done |
-| Materials (rock/wood/wool/cloth/glass signatures) | done |
-| Audio ticks (wall/floor/phantom, per-material) | TODO |
+| Audio ticks (wall/floor/phantom) | TODO |
 | Phantom sounds | TODO |
 | Headless unit tests + browser smoke gate | done (`tests/`, `../test/`) |
 | Web (wasm) export + droplet CI/CD deploy | done |
