@@ -59,11 +59,12 @@ void fragment() {
 	float nrm = abs(c_l.g - c_r.g) + abs(c_u.g - c_d.g);
 	float edge = max(smoothstep(0.012, 0.03, lap), smoothstep(0.04, 0.08, nrm));
 	float reveal = max(c_c.r, max(max(c_l.r, c_r.r), max(c_u.r, c_d.r)));
-	// surfaces stay transparent — pure void inside, so future sound sources
-	// behind walls can render through; the material signature lives in the
-	// OUTLINE instead (the pattern is baked into R, so edge brightness varies
-	// along the line: rock breaks it roughly, wood interrupts it with grain)
 	vec3 col = vec3(edge * reveal);
+	// cartoon material fill: the data pass bakes sparse iconic marks (rock
+	// cracks, wood grain, weave, shine) into R — a faint fill shows them
+	// inside the swept area while the base stays near-void, keeping surfaces
+	// effectively transparent for future behind-wall sound sources
+	col += vec3(0.16 * c_c.r);
 
 	// the waves themselves: rings in the air, cut where the world stands
 	vec3 ndc_far = vec3(uv * 2.0 - 1.0, 1.0);

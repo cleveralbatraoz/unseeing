@@ -48,8 +48,9 @@ void fragment() {
 		reveal = max(reveal, min(flare, 1.0) * atten * cone * gain * peak);
 	}
 	reveal = max(reveal, u_base);
-	// the material speaks: roughness/grain/weave modulates what the echo shows
-	reveal *= material_pattern(v_world, u_material);
+	// the material speaks: cartoon marks (cracks, grain, weave) modulate
+	// what the echo shows — marks rise above the dim base and pop in the sweep
+	reveal *= material_pattern(v_world, v_nworld, u_material);
 	float vd = length(v_world - CAMERA_POSITION_WORLD);
 	reveal *= (0.9 + 0.1 * u_flick) * exp(-vd * 0.05);
 	// normal id: distinct levels for the six axis directions, continuous for
