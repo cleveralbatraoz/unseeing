@@ -53,10 +53,11 @@ void fragment() {
 	// normal id: distinct levels for the six axis directions, continuous for
 	// curved surfaces — one channel is enough for crease detection
 	float nid = 0.5 + v_nworld.x * 0.30 + v_nworld.y * 0.17 + v_nworld.z * 0.09;
-	// material glyphs are ENGRAVED into the distance channel: the hearing
-	// pass's edge detector draws them itself, in the same thin stroke as the
-	// outlines, gated by the same reveal — the fill stays fully transparent
-	float glyph = material_pattern(v_world, v_nworld, u_material);
+	// the material is the object's CONSTRUCTION: boundaries between its
+	// pieces (stones, planks, panes) are engraved into the distance channel,
+	// so the hearing pass's edge detector outlines each piece in the same
+	// thin stroke as everything else — fills stay fully transparent
+	float piece_border = material_pattern(v_world, v_nworld, u_material);
 	ALBEDO = vec3(clamp(reveal, 0.0, 1.0), nid,
-			clamp(vd / DIST_PACK_RANGE + 0.028 * glyph, 0.0, 1.0));
+			clamp(vd / DIST_PACK_RANGE + 0.028 * piece_border, 0.0, 1.0));
 }
