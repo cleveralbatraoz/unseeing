@@ -32,28 +32,29 @@ float mat_noise(vec3 p) {
 			mix(mix(e, g, f.x), mix(h, k, f.x), f.y), f.z);
 }
 
-// Returns a multiplier around 1.0 for the reveal; each material's range is
-// tuned so the pattern reads at a glance yet stays a whisper.
+// Returns a multiplier around 1.0 for the reveal. Surfaces have no fill —
+// the signature shows as ROUGHNESS OF THE OUTLINE (edge brightness varies
+// along the line), so contrast is tuned to read on a thin stroke.
 float material_pattern(vec3 p, int kind) {
 	if (kind == MAT_ROCK) {
 		// coarse, harsh speckle: a rough surface answers unevenly
 		float n = mat_noise(p * 7.0);
-		return mix(0.72, 1.0, smoothstep(0.35, 0.75, n));
+		return mix(0.45, 1.0, smoothstep(0.35, 0.75, n));
 	}
 	if (kind == MAT_WOOD) {
 		// thin grain lines flowing with a slow wobble
 		float grain = 0.5 + 0.5 * sin((p.x + p.y * 0.6) * 40.0 + mat_noise(p * 3.0) * 6.0);
-		return mix(1.0, 0.74, smoothstep(0.78, 0.95, grain));
+		return mix(1.0, 0.45, smoothstep(0.78, 0.95, grain));
 	}
 	if (kind == MAT_WOOL) {
 		// soft, blobby fuzz: no hard features at all
 		float n = 0.5 * mat_noise(p * 9.0) + 0.5 * mat_noise(p * 21.0);
-		return mix(0.82, 1.0, n);
+		return mix(0.68, 1.0, n);
 	}
 	if (kind == MAT_CLOTH) {
 		// fine crosshatch weave
 		float w = sin(p.x * 90.0 + p.y * 30.0) * sin(p.z * 90.0 + p.y * 90.0);
-		return mix(0.86, 1.0, 0.5 + 0.5 * w);
+		return mix(0.72, 1.0, 0.5 + 0.5 * w);
 	}
 	// MAT_GLASS: smooth and clean, with a rare bright diagonal streak
 	float streak = smoothstep(0.965, 1.0, 0.5 + 0.5 * sin((p.x + p.y + p.z) * 18.0));
