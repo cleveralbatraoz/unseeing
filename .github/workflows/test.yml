@@ -1,17 +1,36 @@
 name: tests
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  boot-check:
+  checks:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Read pinned Godot version
+        id: godot
+        run: echo "version=$(cut -d. -f1-3 .godot-version)" >> "$GITHUB_OUTPUT"
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: godot-bin
+          key: godot-${{ steps.godot.outputs.version }}-linux-x86_64
       - name: Fetch Godot
+        if: steps.cache-godot.outputs.cache-hit != 'true'
         run: |
-          curl -sL -o godot.zip https://github.com/godotengine/godot/releases/download/4.7.1-stable/Godot_v4.7.1-stable_linux.x86_64.zip
+          V="${{ steps.godot.outputs.version }}"
+          curl -sL -o godot.zip "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_linux.x86_64.zip"
           python3 -m zipfile -e godot.zip .
-          chmod +x Godot_v4.7.1-stable_linux.x86_64
-      - name: Run CI pipeline (boot check only)
+          mkdir -p godot-bin
+          mv "Godot_v${V}-stable_linux.x86_64" godot-bin/godot
+          chmod +x godot-bin/godot
+      - name: Run CI pipeline (checks only)
         run: |
           chmod +x ci/pipeline.sh
-          GODOT="$PWD/Godot_v4.7.1-stable_linux.x86_64" SKIP_EXPORT=1 ci/pipeline.sh
+          GODOT="$PWD/godot-bin/godot" SKIP_EXPORT=1 ci/pipeline.sh
