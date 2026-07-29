@@ -31,4 +31,4 @@ CHR=$!
 trap 'kill "$CHR" "$SRV" 2>/dev/null || true; wait "$CHR" "$SRV" 2>/dev/null || true; sleep 1; rm -rf "$PROFILE" 2>/dev/null || true' EXIT
 
 sleep 3
-python3 "$DIR/web_probe.py" "$DBG" 22
+python3 "$DIR/web_probe.py" "$DBG" "${SMOKE_WAIT:-22}"

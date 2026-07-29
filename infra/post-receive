@@ -1,0 +1,19 @@
+#!/bin/sh
+# The droplet's git hook — versioned copy of ~/git/unseeing.git/hooks/post-receive.
+# Bootstrap only: check out the pushed main and run the repo's own pipeline.
+set -e
+REPO="$HOME/git/unseeing.git"
+WORK="$HOME/ci/work"
+while read old new ref; do
+  [ "$ref" = "refs/heads/main" ] || { echo "ci: ignoring $ref"; continue; }
+  echo "ci: building $new on $(hostname)"
+  rm -rf "$WORK"; mkdir -p "$WORK"
+  git --git-dir="$REPO" archive "$new" | tar -x -C "$WORK"
+  chmod +x "$WORK/ci/pipeline.sh" "$WORK/test/web_smoke.sh" "$WORK/test/web_probe.py" 2>/dev/null || true
+  if (cd "$WORK" && sh ci/pipeline.sh); then
+    echo "ci: SUCCESS — $new is live"
+  else
+    echo "ci: FAILED — nothing deployed"
+    exit 1
+  fi
+done

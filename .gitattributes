@@ -1,0 +1,13 @@
+* text=auto eol=lf
+*.gd text
+*.tscn text
+*.gdshader text
+*.gdshaderinc text
+*.cfg text
+*.md text
+*.sh text
+*.yml text
+*.svg text
+*.png binary
+*.wav binary
+*.ogg binary

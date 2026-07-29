@@ -1,30 +1,60 @@
 # Unseeing
 
-A first-person blind-person simulator built in Godot 4. The hero cannot see —
-the player perceives the world only through sound: cane taps and footsteps send
-visible waves through the dark, and thin white outlines flare where a wave
-strikes geometry, then fade. Black and white, outlines only, everything fades.
+[![tests](https://github.com/cleveralbatraoz/unseeing/actions/workflows/test.yml/badge.svg)](https://github.com/cleveralbatraoz/unseeing/actions/workflows/test.yml)
 
-**Play:** http://dggrus.hlab.kz (Web/wasm build; best in a Chromium browser)
+A first-person echolocation game built in Godot 4. The hero is blind: the
+world exists only as sound. Cane taps and footsteps send visible waves through
+the dark; thin white outlines flare where a wave strikes geometry and fade
+away; every surface answers back — echoes bloom from what the wavefront
+touches, and materials reveal their character as minimal monochrome signatures
+(rock speckle, wood grain, cloth weave).
+
+![A cane tap revealing a rock-walled room and a wooden table in white outlines](docs/screenshot.png)
+
+**Play:** https://dggrus.hlab.kz — best in a Chromium browser.
+(`?demo` makes the game tap by itself, if you just want to watch.)
 
 ## Controls
 
 - `W A S D` — walk (physical key positions; works on any keyboard layout)
 - mouse — look
-- click — tap the cane: strikes walls at the aimed height, taps the floor when
-  aiming down, swishes silently through empty air (air reflects nothing)
+- click — tap the cane: strikes what you aim at within reach, otherwise taps
+  whatever the cane tip is resting on; sweeping empty air answers with nothing
 - `Esc` — release the mouse
 
-## Project layout
+## How it works
 
-- `game/` — the Godot 4 project (single source of truth; see `game/README.md`
-  for architecture and porting status)
-- `ci/pipeline.sh` — boot-check gate → Web export → deploy; the same POSIX
-  script runs locally, on the droplet, and in cloud CI
-- `deploy.sh` — local fast gate, then `git push production` (the droplet's
-  post-receive hook runs the pipeline server-side)
+Everything visible is sound. A **data pass** renders the world not as an
+image but as data — how recently a wave swept each point, a normal id, and
+camera distance — packed into color channels (deliberately: the depth texture
+is unreliable on WebGL2, and the web build is a first-class target). A
+fullscreen **hearing pass** turns that data into everything you see: edge
+detection draws thin white outlines only where waves have swept; expanding
+wave shells are ray-traced in air and occluded by the world, so obstacles
+carve visible bites out of the rings. **Echo reflections** sample the world
+with physics ray fans from every sound — each struck surface point becomes a
+secondary emitter firing exactly when the wavefront arrives, and anything in
+acoustic shadow stays silent. **Materials** (`game/scripts/materials.gd`)
+modulate the reveal with procedural signatures — no texture assets exist.
+
+See `game/README.md` for the architecture and porting status.
 
 ## Development
 
-Open `game/project.godot` in Godot 4.7+ and press play. Renderer is
-`gl_compatibility` — required for the Web export; keep it that way.
+Open `game/project.godot` in Godot (version pinned in `.godot-version`) and
+press play. Renderer is `gl_compatibility` — required for the Web export.
+
+- `ci/pipeline.sh` — the full gauntlet: headless boot check, unit tests
+  (`game/tests/`), clean Web export, build stamping, precompression, and a
+  browser smoke test that boots the exported wasm in headless Chrome and
+  asserts it renders. The same POSIX script runs locally, on the droplet,
+  and in cloud CI.
+- `deploy.sh` — local checks, then `git push production` (the droplet's
+  post-receive hook runs the pipeline server-side and deploys only on green),
+  then `git push origin`.
+- `infra/` — versioned copies of the droplet's hook and nginx config.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The name "Unseeing" and any future art/audio
+assets are not covered by the code license.

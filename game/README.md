@@ -28,7 +28,8 @@ Renderer is `gl_compatibility` — mandatory for the Web (wasm) export.
 | Cane tap modes (wall / floor / silent air) | done |
 | Footstep ripples | done (from the animated shoes) |
 | Hero body + cane viewmodel (bob/sway/strike) | done |
-| Audio ticks (wall/floor/phantom) | TODO |
+| Materials (rock/wood/wool/cloth/glass signatures) | done |
+| Audio ticks (wall/floor/phantom, per-material) | TODO |
 | Phantom sounds | TODO |
-| gdUnit test port of web-reference scenarios | TODO |
-| Web (wasm) export preset + droplet deploy | TODO |
+| Headless unit tests + browser smoke gate | done (`tests/`, `../test/`) |
+| Web (wasm) export + droplet CI/CD deploy | done |
