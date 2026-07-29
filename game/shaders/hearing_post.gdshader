@@ -80,7 +80,7 @@ void fragment() {
 		if (prog >= 1.0) { continue; }
 		float typ = pulse_type(d);
 		float gain = pulse_gain(d);
-		float peak = typ < 0.5 ? 0.5 : (typ < 1.5 ? 0.45 : 0.18);
+		float peak = typ < 0.5 ? 0.5 : (typ < 1.5 ? 0.45 : (typ < 2.5 ? 0.18 : 0.5));
 		vec3 oc = cam - u_ppos[i];
 		float b = dot(oc, rd);
 		float disc = b * b - (dot(oc, oc) - radius * radius);
@@ -90,14 +90,25 @@ void fragment() {
 		vec4 cn = u_pdir[i];
 		for (int s = 0; s < 2; s++) {
 			float t = -b + (s == 0 ? -sq : sq);
-			if (t <= 0.05 || t >= scene_d) { continue; }
+			if (t <= 0.05) { continue; }
+			// player-made sounds are cut by the world; a source hum (type 3)
+			// passes through walls muffled — a constant source is FELT from
+			// another room long before it is ever tapped
+			float mute = 1.0;
+			if (t >= scene_d) {
+				if (typ < 2.5) { continue; }
+				mute = 0.55;
+			}
 			vec3 hp = cam + rd * t;
 			vec3 sn = (hp - u_ppos[i]) / radius;
 			float cone = pulse_cone(cn, sn);
 			if (cone <= 0.0) { continue; }
 			float grz = 1.0 - abs(dot(rd, sn));
+			// a hum's shell has a diffuse body, not just a grazing ring — a
+			// constant source is a throb the whole room can feel
+			float body = typ > 2.5 ? 0.22 : 0.05;
 			float ink = 0.55 + 0.45 * n2(hp.xz * 1.7 + hp.y * 0.9);
-			col += vec3(env * cone * (0.05 + 0.95 * pow(max(grz, 0.0), 4.0)) * ink * exp(-t * 0.09));
+			col += vec3(env * mute * cone * (body + (1.0 - body) * pow(max(grz, 0.0), 4.0)) * ink * exp(-t * 0.09));
 		}
 	}
 

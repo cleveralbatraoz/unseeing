@@ -15,6 +15,8 @@ func _init() -> void:
 	_test_live_count_is_highest_slot()
 	_test_null_space_schedules_no_echoes()
 	_test_map_segments_axis_aligned()
+	_test_hum_pulses()
+	_test_fan_motion_envelope()
 	print("tests: %d passed, %d failed" % [_passes, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -78,6 +80,32 @@ func _test_null_space_schedules_no_echoes() -> void:
 	p.emit_reflecting(0, Vector3.ZERO, 6.0, 5.5, 1.0, 0.0, null, 6, Vector3.UP)
 	check(p.live_count(0.1) == 1, "null space: primary emitted")
 	check(p._echoes.size() == 0, "null space: no echoes scheduled")
+
+## The fan's hum is type 3: omnidirectional, short-tailed (it recurs every
+## second, so slots must free fast), and packed like every other pulse.
+func _test_hum_pulses() -> void:
+	var p := Pulses.new()
+	p.emit(3, Vector3(8.6, 1.15, 4.4), 9.0, 4.5, 0.75, 0.0)
+	check(int(floor(p.dat[0].w / 10.0)) == 3, "hum: type 3 packs")
+	check(p.dir[0].w < -1.5, "hum: omnidirectional")
+	# ring time 9/4.5 = 2s, tail 2s -> gone just after 4s
+	check(p.live_count(3.9) == 1 and p.live_count(4.1) == 0,
+			"hum: expires at ring + 2s tail")
+
+## The head's oscillation must actually sweep, and never exceed its range —
+## the collider rides the same curve, so this is also a physics bound.
+func _test_fan_motion_envelope() -> void:
+	var lo := 0.0
+	var hi := 0.0
+	for i: int in 200:
+		var a := SoundFan.pivot_angle(float(i) * 0.1)
+		lo = minf(lo, a)
+		hi = maxf(hi, a)
+	check(hi <= SoundFan.PIVOT_RANGE + 0.001 and lo >= -SoundFan.PIVOT_RANGE - 0.001,
+			"fan: pivot never exceeds its sweep")
+	check(hi > SoundFan.PIVOT_RANGE * 0.9 and lo < -SoundFan.PIVOT_RANGE * 0.9,
+			"fan: pivot sweeps fully both ways")
+	check(SoundFan.spin_angle(1.0) != SoundFan.spin_angle(1.1), "fan: blades spin")
 
 ## The map builder's box math trusts axis alignment.
 func _test_map_segments_axis_aligned() -> void:

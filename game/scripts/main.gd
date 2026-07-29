@@ -23,6 +23,7 @@ var body_mat := ShaderMaterial.new()   # legs/torso: revealed only by waves
 var post_mat := ShaderMaterial.new()
 var player: UnseeingPlayer
 var hero: HeroBody
+var fan: SoundFan
 
 ## The game clock: simulated seconds accumulated from frame deltas — NOT wall
 ## time, so offline rendering (movie maker) and time scaling stay correct.
@@ -51,6 +52,14 @@ func _ready() -> void:
 	cane_mat.set_shader_parameter("u_base", 0.85)
 	pulses = Pulses.new()
 	MapBuilder.build_world(self, data_mat)
+	# a constant sound source in the NEXT room, behind the wall the spawn
+	# faces: its hum is felt through the wall before it is ever found
+	fan = SoundFan.new()
+	fan.pulses = pulses
+	fan.data_mat = data_mat
+	fan.position = Vector3(8.6, 0, 4.4)
+	fan.rotation.y = PI * 0.5   # mounted facing the shared wall
+	add_child(fan)
 	player = UnseeingPlayer.new()
 	player.pulses = pulses
 	add_child(player)
@@ -79,6 +88,7 @@ func _process(dt: float) -> void:
 		m.set_shader_parameter("u_flick", _flick)
 	post_mat.set_shader_parameter("u_breath", 1.0 + sin(now * 0.5) * 0.045)
 	post_mat.set_shader_parameter("u_grain_t", fmod(now, 1.0) * 61.7)
+	fan.update(now)
 	pulses.apply(now, [data_mat, cane_mat, body_mat, post_mat])
 	hero.update(now, dt)
 	_demo_tap()

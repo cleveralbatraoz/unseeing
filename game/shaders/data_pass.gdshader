@@ -32,7 +32,7 @@ void fragment() {
 
 		float typ = pulse_type(d);
 		float gain = pulse_gain(d);
-		float peak = typ < 0.5 ? 1.0 : (typ < 1.5 ? 0.9 : 0.35);
+		float peak = typ < 0.5 ? 1.0 : (typ < 1.5 ? 0.9 : (typ < 2.5 ? 0.35 : 0.8));
 
 		float dist = distance(v_world, u_ppos[i]);
 		float radius = d.z * age;

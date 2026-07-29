@@ -11,7 +11,8 @@ extends RefCounted
 ##   dir[i]         — beam direction xyz + cos(half-angle); w = -2 means
 ##                    omnidirectional (cane taps, footsteps)
 ## Types: 0 = cane tap, 1 = ECHO (secondary reflection), 2 = footstep,
-##        3 = phantom (reserved for the audio stage; never emitted as light).
+##        3 = source hum (constant world sources like the fan — the one
+##        sound the hero did not make; drawn through walls, muffled).
 ##
 ## REFLECTIONS — the heart of echo-location. A primary sound samples the
 ## world with real physics rays from its origin; every surface point struck
@@ -47,7 +48,7 @@ func _init() -> void:
 		_end[i] = -1.0
 
 ## Record a sound. Slot eviction prefers expired slots, then the oldest
-## footstep (least precious memory), then the oldest of anything.
+## footstep or hum (least precious — both recur), then the oldest of anything.
 func emit(type: int, at: Vector3, max_r: float, speed: float, gain: float,
 		now: float, beam_dir := Vector3.ZERO, cos_half := -2.0) -> void:
 	var slot := -1
@@ -59,7 +60,7 @@ func emit(type: int, at: Vector3, max_r: float, speed: float, gain: float,
 		if _end[i] < now:
 			slot = i
 			break
-		if _type[i] == 2 and _t0[i] < t_old_step:
+		if _type[i] >= 2 and _t0[i] < t_old_step:
 			t_old_step = _t0[i]
 			old_step = i
 		if _t0[i] < t_old:
@@ -81,6 +82,7 @@ func _fade_tail(type: int) -> float:
 	match type:
 		1: return 3.5
 		2: return 2.5
+		3: return 2.0
 		_: return 6.0
 
 ## Emit a primary sound AND schedule its reflections off the environment.
@@ -103,8 +105,10 @@ func emit_reflecting(type: int, at: Vector3, max_r: float, speed: float,
 		var r := sqrt(maxf(0.0, 1.0 - y * y))
 		var phi := float(i) * GOLDEN_ANGLE
 		var d3 := Vector3(r * cos(phi), y, r * sin(phi))
-		if origin_normal != Vector3.ZERO and d3.dot(origin_normal) < 0.05:
+		if origin_normal != Vector3.ZERO and d3.dot(origin_normal) < -0.05:
 			continue   # into the surface: that direction is the wave's shadow
+		# (along-surface rays are kept: the surroundings of the tapped point
+		# answer in every direction AROUND it, not only toward the listener)
 		var query := PhysicsRayQueryParameters3D.create(origin, origin + d3 * minf(max_r * 0.8, 6.0))
 		var hit := space.intersect_ray(query)
 		if hit.is_empty():
