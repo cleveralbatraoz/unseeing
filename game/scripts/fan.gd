@@ -3,15 +3,18 @@ extends Node3D
 ## A constant sound source: an oscillating pedestal fan. A blind person
 ## FEELS a steady source even from another room, so the fan's hum is pulse
 ## type 3 ("source hum"): its wave shells pass through walls muffled instead
-## of being cut like every player-made sound. The head pivots left and right
-## while the blades spin; each hum is born at the moving hub, and the head
-## carries a real collider that pivots with it, so the cane and echo rays
-## strike the fan like anything else in the world.
+## of being cut like every player-made sound — but its waves REVEAL only
+## the fan's own room (the shader clips them to u_hum_room). The fan blows
+## a steady DIRECTED wash: a cone of waves out of the pivoting head, born
+## so often they read as one continuous stream sweeping the room like a
+## lighthouse. The head carries a real collider that pivots with it, so the
+## cane and echo rays strike the fan like anything else in the world.
 
-const WHOOSH_EVERY := 1.15   # seconds between hums — the room breathes
+const WHOOSH_EVERY := 0.4    # so frequent the wash reads as continuous
 const HUM_RANGE := 9.0       # meters a hum travels
 const HUM_SPEED := 4.5
 const HUM_GAIN := 0.75
+const BEAM_COS := 0.85       # cos of the wash cone's half-angle (~32°)
 const PIVOT_RANGE := 0.85    # rad each way from the mounting yaw
 const PIVOT_SPEED := 0.55
 const SPIN_SPEED := 9.0      # rad/s — reads as motion across reveals
@@ -84,7 +87,10 @@ func update(t: float) -> void:
 	if t < _next_whoosh:
 		return
 	_next_whoosh = t + WHOOSH_EVERY
-	pulses.emit(3, _spinner.global_position, HUM_RANGE, HUM_SPEED, HUM_GAIN, t)
+	# the wash blows where the head points right now: a sweeping beam
+	var fwd := -_pivot.global_transform.basis.z
+	pulses.emit(3, _spinner.global_position, HUM_RANGE, HUM_SPEED, HUM_GAIN, t,
+			fwd, BEAM_COS)
 
 func _mesh(parent: Node3D, m: Mesh, at: Vector3, rx := 0.0) -> void:
 	var mi := MeshInstance3D.new()

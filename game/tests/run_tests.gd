@@ -106,6 +106,11 @@ func _test_fan_motion_envelope() -> void:
 	check(hi > SoundFan.PIVOT_RANGE * 0.9 and lo < -SoundFan.PIVOT_RANGE * 0.9,
 			"fan: pivot sweeps fully both ways")
 	check(SoundFan.spin_angle(1.0) != SoundFan.spin_angle(1.1), "fan: blades spin")
+	# a hum slot lives ring + 2s; the constant wash must not flood the pool
+	var concurrent := (SoundFan.HUM_RANGE / SoundFan.HUM_SPEED + 2.0) / SoundFan.WHOOSH_EVERY
+	check(concurrent <= 12.0, "fan: constant wash stays within slot headroom")
+	check(SoundFan.BEAM_COS > 0.7 and SoundFan.BEAM_COS < 0.95,
+			"fan: wash is a directed cone, not a laser and not omni")
 
 ## The map builder's box math trusts axis alignment.
 func _test_map_segments_axis_aligned() -> void:

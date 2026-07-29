@@ -38,7 +38,7 @@ void fragment() {
 		float radius = d.z * age;
 		if (dist > min(radius, d.y)) { continue; }
 		vec3 to_src = (u_ppos[i] - v_world) / max(dist, 0.001);
-		float cone = pulse_cone(u_pdir[i], -to_src);
+		float cone = pulse_cone(u_pdir[i], -to_src) * hum_room_mask(typ, v_world);
 		// only the struck spot lights: ignition falls off fast from the source
 		float atten = 1.0 / (1.0 + dist * dist * 0.06);
 		float ga = age - dist / d.z;

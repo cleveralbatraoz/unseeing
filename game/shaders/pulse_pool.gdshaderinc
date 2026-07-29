@@ -21,6 +21,21 @@ uniform vec3 u_ppos[MAXP];
 uniform vec4 u_pdat[MAXP];
 uniform vec4 u_pdir[MAXP];
 
+// The sound source's room as an XZ rect (min_x, min_z, max_x, max_z), set
+// by the composition root from level data. A source's waves REVEAL only
+// geometry inside its own room — air can't strike what walls enclose —
+// while its shells are still felt through the walls, muffled. Zero rect
+// means no source, so nothing is clipped.
+uniform vec4 u_hum_room = vec4(0.0);
+
+// 1.0 where a pulse of this type may reveal geometry at world point p.
+float hum_room_mask(float typ, vec3 p) {
+	if (typ < 2.5 || u_hum_room.z <= u_hum_room.x) { return 1.0; }
+	bool inside = p.x >= u_hum_room.x && p.x <= u_hum_room.z
+			&& p.z >= u_hum_room.y && p.z <= u_hum_room.w;
+	return inside ? 1.0 : 0.0;
+}
+
 float pulse_type(vec4 d) {
 	return floor(d.w / 10.0);
 }

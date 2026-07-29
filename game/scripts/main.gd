@@ -60,6 +60,10 @@ func _ready() -> void:
 	fan.position = Vector3(8.6, 0, 4.4)
 	fan.rotation.y = PI * 0.5   # mounted facing the shared wall
 	add_child(fan)
+	# the fan's room (east area, wall centerlines): its waves reveal nothing
+	# beyond these bounds — walls stop air, even though the shells are felt
+	for m: ShaderMaterial in [data_mat, cane_mat, body_mat, post_mat]:
+		m.set_shader_parameter("u_hum_room", Vector4(6.4, 0.6, 19.4, 8.0))
 	player = UnseeingPlayer.new()
 	player.pulses = pulses
 	add_child(player)
