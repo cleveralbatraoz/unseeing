@@ -66,16 +66,29 @@ func emit(type: int, at: Vector3, max_r: float, speed: float, gain: float,
 	var omni := beam_dir == Vector3.ZERO
 	dir[slot] = Vector4(beam_dir.x, beam_dir.y, beam_dir.z, -2.0 if omni else cos_half)
 	_t0[slot] = now
-	_end[slot] = now + max_r / speed + 6.0   # ring time + outline fade tail
+	# ring time + outline-fade tail; echoes and footsteps expire sooner so the
+	# live-slot count (which both shaders loop over per pixel) stays small
+	var tail := 6.0
+	if type == 1:
+		tail = 3.5
+	elif type == 2:
+		tail = 2.5
+	_end[slot] = now + max_r / speed + tail
 	_type[slot] = type
 
 ## Emit a primary sound AND schedule its reflections off the environment.
 ## `space` is the physics space to sample; `max_echoes` caps slot pressure.
+## `origin_normal` is the normal of the surface the sound was born on: rays
+## sample only the hemisphere in FRONT of it, cast from just off the surface —
+## otherwise rays start inside the struck collider and leak through into the
+## acoustic shadow, answering from places the wave never reached.
 func emit_reflecting(type: int, at: Vector3, max_r: float, speed: float,
-		gain: float, now: float, space: PhysicsDirectSpaceState3D, max_echoes: int) -> void:
+		gain: float, now: float, space: PhysicsDirectSpaceState3D, max_echoes: int,
+		origin_normal := Vector3.ZERO) -> void:
 	emit(type, at, max_r, speed, gain, now)
 	if space == null:
 		return
+	var origin := at + origin_normal * 0.08
 	# Fibonacci-sphere ray fan: uniform directions, each ray asks the real
 	# colliders what the wave will touch first in that direction
 	const RAYS := 26
@@ -85,11 +98,13 @@ func emit_reflecting(type: int, at: Vector3, max_r: float, speed: float,
 		var r := sqrt(maxf(0.0, 1.0 - y * y))
 		var phi := float(i) * 2.399963
 		var d3 := Vector3(r * cos(phi), y, r * sin(phi))
-		var query := PhysicsRayQueryParameters3D.create(at, at + d3 * minf(max_r * 0.8, 6.0))
+		if origin_normal != Vector3.ZERO and d3.dot(origin_normal) < 0.05:
+			continue   # into the surface: that direction is the wave's shadow
+		var query := PhysicsRayQueryParameters3D.create(origin, origin + d3 * minf(max_r * 0.8, 6.0))
 		var hit := space.intersect_ray(query)
 		if hit.is_empty():
 			continue
-		var dist: float = (hit.position - at).length()
+		var dist: float = (hit.position - origin).length()
 		if dist < 0.3:
 			continue   # the surface the sound itself was born on
 		# cluster nearby hits so a flat wall answers as a few points, not 26
@@ -131,3 +146,4 @@ func apply(now: float, mats: Array) -> void:
 		m.set_shader_parameter("u_ppos", pos)
 		m.set_shader_parameter("u_pdat", dat)
 		m.set_shader_parameter("u_pdir", dir)
+

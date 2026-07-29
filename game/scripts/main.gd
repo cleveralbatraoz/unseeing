@@ -95,7 +95,7 @@ func _demo_tap(now: float) -> void:
 		return
 	_demo_next = now + 4.0   # repeat, so any screenshot timing catches a wave
 	pulses.emit_reflecting(0, Vector3(6.4, 0.8, 4.0), 6.0, 5.5, 1.0, now,
-			player.get_world_3d().direct_space_state, 8)
+			player.get_world_3d().direct_space_state, 8, Vector3(-1, 0, 0))
 
 ## The "hearing" pass: a fullscreen quad glued to the camera. It edge-detects
 ## the data the world pass wrote (reveal / normals / depth) and ray-traces the
@@ -132,3 +132,4 @@ func _setup_input() -> void:
 		var mb := InputEventMouseButton.new()
 		mb.button_index = MOUSE_BUTTON_LEFT
 		InputMap.action_add_event("tap", mb)
+

@@ -88,28 +88,16 @@ func _build_cane(thrust: float) -> void:
 	var hand: Vector3 = v2w.call(0.30 + bx, -0.40 + by - 0.03 * thrust, 0.55 + 0.16 * thrust)
 	var elbow: Vector3 = v2w.call(0.48 + bx * 0.5, -0.64 + by * 0.5, 0.26)
 
-	# rest tip: on the ground ahead (body yaw + sweep), never through a wall
-	var fw := -player.global_transform.basis.z
-	var dir := Vector3(fw.x, 0, fw.z).normalized().rotated(Vector3.UP, _cane_swing * (1.0 - thrust))
-	var from := player.global_position
-	var query := PhysicsRayQueryParameters3D.create(
-		Vector3(from.x, EYE, from.z), Vector3(from.x, EYE, from.z) + dir * 3.4)
-	var hit := player.get_world_3d().direct_space_state.intersect_ray(query)
-	var wall_d := 3.4
-	if hit:
-		wall_d = (hit.position - Vector3(from.x, EYE, from.z)).length()
-	var reach := minf(1.7, wall_d - 0.06)
+	# rest: the tip lies on whatever surface the cane reaches — floor, table,
+	# chair seat — via the shared physics helper; a small hover animates the
+	# sweep so the tip touches down at the extremes like real technique
+	var rest: Dictionary = player.cane_tip_rest(_cane_swing * (1.0 - thrust))
+	var rest_tip: Vector3 = rest.tip
 	var moving := _walk_amp > 0.5
 	var lift := maxf(0.0, 1.0 - absf(_cane_swing) / 0.26) if moving else 0.3
-	var rest_tip := Vector3(from.x + dir.x * reach, 0.03 + 0.14 * lift * (1.0 - thrust), from.z + dir.z * reach)
+	rest_tip.y += 0.12 * lift * (1.0 - thrust)
 	var target: Vector3 = player.tap_target
 	var tip := rest_tip.lerp(target, clampf(thrust, 0.0, 1.0))
-	# the cane is a physical object: clamp the shaft against whatever it
-	# actually touches — tables, chairs, walls — at any height
-	var shaft_q := PhysicsRayQueryParameters3D.create(hand, tip)
-	var shaft_hit := player.get_world_3d().direct_space_state.intersect_ray(shaft_q)
-	if shaft_hit:
-		tip = shaft_hit.position - (tip - hand).normalized() * 0.03
 
 	_cane_mesh.clear_surfaces()
 	_cane_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -164,7 +152,7 @@ func _footsteps(now: float, dt: float, moving: bool) -> void:
 	var shoe: Vector3 = _shoe[0 if _step_side < 0 else 1]
 	# footsteps reflect too, weakly — walking quietly sketches what is near
 	pulses.emit_reflecting(2, Vector3(shoe.x, 0.04, shoe.z), 1.6, 4.0, 0.8, now,
-			player.get_world_3d().direct_space_state, 4)
+			player.get_world_3d().direct_space_state, 2, Vector3.UP)
 	_step_side = -_step_side
 	_step_t = 0.42
 

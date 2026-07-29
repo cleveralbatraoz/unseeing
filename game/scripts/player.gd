@@ -76,19 +76,46 @@ func _cane_tap() -> void:
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
 	var space := get_world_3d().direct_space_state
 	if hit:
+		# aimed strike: the wave is born exactly where you looked
 		tap_target = hit.position
 		var floorish: bool = hit.normal.y > 0.7 and hit.position.y < 0.2
-		if floorish:
-			pulses.emit_reflecting(0, tap_target, 5.0, 5.5, 0.85, now, space, 8)
-		else:
-			pulses.emit_reflecting(0, tap_target, 6.0, 5.5, 1.0, now, space, 8)
-	elif pitch <= -0.12:
-		var df := minf(1.6, EYE / tan(-pitch))
-		var p := from + flat * df
-		tap_target = Vector3(p.x, 0.02, p.z)
-		pulses.emit_reflecting(0, tap_target, 5.0, 5.5, 0.85, now, space, 8)
+		var r := 5.0 if floorish else 6.0
+		var g := 0.85 if floorish else 1.0
+		pulses.emit_reflecting(0, tap_target, r, 5.5, g, now, space, 6, hit.normal)
+		return
+	var rest := cane_tip_rest(0.0)
+	var raised: bool = rest.supported and rest.tip.y > 0.15
+	if raised or (rest.supported and pitch <= -0.12):
+		# no aim needed: tap whatever the cane is physically resting on —
+		# tabletop, chair seat, or (when looking down) the floor
+		tap_target = rest.tip
+		var r2 := 6.0 if raised else 5.0
+		var g2 := 1.0 if raised else 0.85
+		pulses.emit_reflecting(0, tap_target, r2, 5.5, g2, now, space, 6, Vector3.UP)
 	else:
-		# air swish: the cane still reaches out, but air reflects nothing
+		# air swish: the cane sweeps up through nothing; air reflects nothing
 		var hy := clampf(EYE + tan(pitch) * 1.5, 0.3, 1.7)
 		var p := from + flat * 1.5
 		tap_target = Vector3(p.x, hy, p.z)
+
+## Where the cane tip naturally rests for a given sweep offset: reach forward
+## (walls shorten the reach at cane height), then settle onto the first
+## supporting surface below — floor, tabletop, chair seat. This is the cane
+## "touching" the world; the tap and the visuals both use it.
+func cane_tip_rest(yaw_offset: float) -> Dictionary:
+	var fw := -global_transform.basis.z
+	var dir := Vector3(fw.x, 0, fw.z).normalized().rotated(Vector3.UP, yaw_offset)
+	var space := get_world_3d().direct_space_state
+	var from := Vector3(global_position.x, 0.85, global_position.z)
+	var wall := space.intersect_ray(PhysicsRayQueryParameters3D.create(from, from + dir * 3.4))
+	var wall_d := 3.4
+	if wall:
+		wall_d = (wall.position - from).length()
+	var reach := minf(CANE_REACH, wall_d - 0.06)
+	var px := global_position.x + dir.x * reach
+	var pz := global_position.z + dir.z * reach
+	var down := space.intersect_ray(PhysicsRayQueryParameters3D.create(
+			Vector3(px, 1.05, pz), Vector3(px, -0.1, pz)))
+	if down:
+		return { tip = Vector3(px, down.position.y + 0.02, pz), supported = true }
+	return { tip = Vector3(px, 0.02, pz), supported = false }
