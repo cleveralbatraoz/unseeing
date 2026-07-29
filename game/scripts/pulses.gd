@@ -9,8 +9,15 @@ extends RefCounted
 ##   dat[i]         — (birth time, max radius, speed m/s, type*10 + gain*9)
 ##   dir[i]         — beam direction xyz + cos(half-angle); w = -2 means
 ##                    omnidirectional (cane taps, footsteps)
-## Types: 0 = cane tap, 1 = beam (unused, kept for shader parity),
-##        2 = footstep, 3 = phantom (audio-only, never emitted as light).
+## Types: 0 = cane tap, 1 = ECHO (secondary reflection), 2 = footstep,
+##        3 = phantom (audio-only, never emitted as light).
+##
+## REFLECTIONS — the heart of echo-location. A primary sound samples the
+## world with real physics rays from its origin; every surface point struck
+## becomes a secondary emitter that fires exactly when the primary wavefront
+## arrives there (t = distance / speed). Parts in the wave's shadow receive
+## no rays and stay silent — only the swept, line-of-sight parts of an
+## object ever answer. Echoes never spawn further echoes.
 
 const MAXP := 64
 
@@ -20,6 +27,7 @@ var dir := PackedVector4Array()
 var _t0 := PackedFloat64Array()
 var _end := PackedFloat64Array()
 var _type := PackedInt32Array()
+var _echoes: Array = []   # scheduled reflections: {at_t, pos, gain}
 
 func _init() -> void:
 	pos.resize(MAXP)
@@ -61,6 +69,51 @@ func emit(type: int, at: Vector3, max_r: float, speed: float, gain: float,
 	_end[slot] = now + max_r / speed + 6.0   # ring time + outline fade tail
 	_type[slot] = type
 
+## Emit a primary sound AND schedule its reflections off the environment.
+## `space` is the physics space to sample; `max_echoes` caps slot pressure.
+func emit_reflecting(type: int, at: Vector3, max_r: float, speed: float,
+		gain: float, now: float, space: PhysicsDirectSpaceState3D, max_echoes: int) -> void:
+	emit(type, at, max_r, speed, gain, now)
+	if space == null:
+		return
+	# Fibonacci-sphere ray fan: uniform directions, each ray asks the real
+	# colliders what the wave will touch first in that direction
+	const RAYS := 26
+	var cells := {}
+	for i: int in RAYS:
+		var y := 1.0 - 2.0 * (float(i) + 0.5) / RAYS
+		var r := sqrt(maxf(0.0, 1.0 - y * y))
+		var phi := float(i) * 2.399963
+		var d3 := Vector3(r * cos(phi), y, r * sin(phi))
+		var query := PhysicsRayQueryParameters3D.create(at, at + d3 * minf(max_r * 0.8, 6.0))
+		var hit := space.intersect_ray(query)
+		if hit.is_empty():
+			continue
+		var dist: float = (hit.position - at).length()
+		if dist < 0.3:
+			continue   # the surface the sound itself was born on
+		# cluster nearby hits so a flat wall answers as a few points, not 26
+		var key := Vector3i((hit.position / 0.9).floor())
+		if not cells.has(key) or cells[key].d > dist:
+			cells[key] = { d = dist, p = hit.position + hit.normal * 0.02 }
+	var found: Array = cells.values()
+	found.sort_custom(func(a, b): return a.d < b.d)
+	for j: int in mini(found.size(), max_echoes):
+		var e: Dictionary = found[j]
+		_echoes.append({
+			at_t = now + e.d / speed,
+			pos = e.p,
+			gain = gain * 0.55 / (1.0 + e.d * 0.4),
+		})
+
+## Fire reflections whose moment has come (the wavefront reached them).
+func _drain_echoes(now: float) -> void:
+	for i: int in range(_echoes.size() - 1, -1, -1):
+		if _echoes[i].at_t <= now:
+			var e: Dictionary = _echoes[i]
+			_echoes.remove_at(i)
+			emit(1, e.pos, 2.2, 5.5, e.gain, now)
+
 ## Highest live slot + 1 — lets the shaders break out of dead loop iterations.
 func live_count(now: float) -> int:
 	var n := 0
@@ -71,6 +124,7 @@ func live_count(now: float) -> int:
 
 ## Push the pool into every material that renders waves.
 func apply(now: float, mats: Array) -> void:
+	_drain_echoes(now)
 	var count := live_count(now)
 	for m: ShaderMaterial in mats:
 		m.set_shader_parameter("u_count", count)

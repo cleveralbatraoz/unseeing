@@ -94,7 +94,8 @@ func _demo_tap(now: float) -> void:
 	if not _demo_wanted or now < _demo_next:
 		return
 	_demo_next = now + 4.0   # repeat, so any screenshot timing catches a wave
-	pulses.emit(0, Vector3(6.4, 0.8, 4.0), 6.0, 5.5, 1.0, now)
+	pulses.emit_reflecting(0, Vector3(6.4, 0.8, 4.0), 6.0, 5.5, 1.0, now,
+			player.get_world_3d().direct_space_state, 8)
 
 ## The "hearing" pass: a fullscreen quad glued to the camera. It edge-detects
 ## the data the world pass wrote (reveal / normals / depth) and ray-traces the

@@ -104,6 +104,12 @@ func _build_cane(thrust: float) -> void:
 	var rest_tip := Vector3(from.x + dir.x * reach, 0.03 + 0.14 * lift * (1.0 - thrust), from.z + dir.z * reach)
 	var target: Vector3 = player.tap_target
 	var tip := rest_tip.lerp(target, clampf(thrust, 0.0, 1.0))
+	# the cane is a physical object: clamp the shaft against whatever it
+	# actually touches — tables, chairs, walls — at any height
+	var shaft_q := PhysicsRayQueryParameters3D.create(hand, tip)
+	var shaft_hit := player.get_world_3d().direct_space_state.intersect_ray(shaft_q)
+	if shaft_hit:
+		tip = shaft_hit.position - (tip - hand).normalized() * 0.03
 
 	_cane_mesh.clear_surfaces()
 	_cane_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
@@ -156,7 +162,9 @@ func _footsteps(now: float, dt: float, moving: bool) -> void:
 	if _step_t > 0.0:
 		return
 	var shoe: Vector3 = _shoe[0 if _step_side < 0 else 1]
-	pulses.emit(2, Vector3(shoe.x, 0.04, shoe.z), 1.6, 4.0, 0.8, now)
+	# footsteps reflect too, weakly — walking quietly sketches what is near
+	pulses.emit_reflecting(2, Vector3(shoe.x, 0.04, shoe.z), 1.6, 4.0, 0.8, now,
+			player.get_world_3d().direct_space_state, 4)
 	_step_side = -_step_side
 	_step_t = 0.42
 

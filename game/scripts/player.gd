@@ -74,18 +74,19 @@ func _cane_tap() -> void:
 	# walls, furniture, or nearby floor — at the exact aimed point
 	var query := PhysicsRayQueryParameters3D.create(from, from + aim * CANE_REACH)
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	var space := get_world_3d().direct_space_state
 	if hit:
 		tap_target = hit.position
 		var floorish: bool = hit.normal.y > 0.7 and hit.position.y < 0.2
 		if floorish:
-			pulses.emit(0, tap_target, 5.0, 5.5, 0.85, now)
+			pulses.emit_reflecting(0, tap_target, 5.0, 5.5, 0.85, now, space, 8)
 		else:
-			pulses.emit(0, tap_target, 6.0, 5.5, 1.0, now)
+			pulses.emit_reflecting(0, tap_target, 6.0, 5.5, 1.0, now, space, 8)
 	elif pitch <= -0.12:
 		var df := minf(1.6, EYE / tan(-pitch))
 		var p := from + flat * df
 		tap_target = Vector3(p.x, 0.02, p.z)
-		pulses.emit(0, tap_target, 5.0, 5.5, 0.85, now)
+		pulses.emit_reflecting(0, tap_target, 5.0, 5.5, 0.85, now, space, 8)
 	else:
 		# air swish: the cane still reaches out, but air reflects nothing
 		var hy := clampf(EYE + tan(pitch) * 1.5, 0.3, 1.7)
