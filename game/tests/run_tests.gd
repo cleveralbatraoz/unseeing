@@ -15,6 +15,7 @@ func _init() -> void:
 	_test_live_count_is_highest_slot()
 	_test_null_space_schedules_no_echoes()
 	_test_map_segments_axis_aligned()
+	_test_materials_module()
 	print("tests: %d passed, %d failed" % [_passes, _fails])
 	quit(1 if _fails > 0 else 0)
 
@@ -78,6 +79,23 @@ func _test_null_space_schedules_no_echoes() -> void:
 	p.emit_reflecting(0, Vector3.ZERO, 6.0, 5.5, 1.0, 0.0, null, 6, Vector3.UP)
 	check(p.live_count(0.1) == 1, "null space: primary emitted")
 	check(p._echoes.size() == 0, "null space: no echoes scheduled")
+
+## Materials are a separate concept: cached shared instances per kind,
+## private instances on demand, and a registry main can drive blindly.
+func _test_materials_module() -> void:
+	Materials.reset()
+	var rock1 := Materials.shared(Materials.Kind.ROCK)
+	var rock2 := Materials.shared(Materials.Kind.ROCK)
+	var wood := Materials.shared(Materials.Kind.WOOD)
+	var solo := Materials.unique(Materials.Kind.WOOD)
+	check(rock1 == rock2, "materials: shared instances cached per kind")
+	check(rock1 != wood, "materials: kinds are distinct materials")
+	check(solo != wood, "materials: unique() returns a private instance")
+	check(int(rock1.get_shader_parameter("u_material")) == int(Materials.Kind.ROCK),
+			"materials: kind id reaches the shader")
+	check(Materials.registry().size() == 3, "materials: registry tracks all created")
+	Materials.reset()
+	check(Materials.registry().size() == 0, "materials: reset clears static state")
 
 ## The map builder's box math trusts axis alignment.
 func _test_map_segments_axis_aligned() -> void:

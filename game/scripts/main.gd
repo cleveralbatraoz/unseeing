@@ -13,14 +13,13 @@ extends Node3D
 ## (clock, flicker) that both shader passes consume. Systems never reach
 ## into each other — they meet here.
 
-const DATA_SHADER := preload("res://shaders/data_pass.gdshader")
 const POST_SHADER := preload("res://shaders/hearing_post.gdshader")
 
 var pulses: Pulses
-var data_mat := ShaderMaterial.new()
-var cane_mat := ShaderMaterial.new()   # standing reveal: the hero knows their grip
-var body_mat := ShaderMaterial.new()   # legs/torso: revealed only by waves
+var cane_mat: ShaderMaterial   # wood, with a standing reveal: the hero knows their grip
+var body_mat: ShaderMaterial   # cloth, revealed only by waves
 var post_mat := ShaderMaterial.new()
+var _wave_mats: Array = []     # every material that renders waves
 var player: UnseeingPlayer
 var hero: HeroBody
 
@@ -44,13 +43,13 @@ func _ready() -> void:
 	# deterministic flicker for offline frame-comparison runs
 	if not OS.get_environment("UNSEEING_DEMO").is_empty():
 		seed(0x5EED)
-	data_mat.shader = DATA_SHADER
 	post_mat.shader = POST_SHADER
-	for m: ShaderMaterial in [cane_mat, body_mat]:
-		m.shader = DATA_SHADER
+	Materials.reset()
+	cane_mat = Materials.unique(Materials.Kind.WOOD)
 	cane_mat.set_shader_parameter("u_base", 0.85)
+	body_mat = Materials.unique(Materials.Kind.CLOTH)
 	pulses = Pulses.new()
-	MapBuilder.build_world(self, data_mat)
+	MapBuilder.build_world(self)
 	player = UnseeingPlayer.new()
 	player.pulses = pulses
 	add_child(player)
@@ -62,6 +61,8 @@ func _ready() -> void:
 	hero.body_mat = body_mat
 	add_child(hero)
 	_setup_post_quad(player.camera)
+	_wave_mats.append_array(Materials.registry())
+	_wave_mats.append(post_mat)
 
 func _process(dt: float) -> void:
 	now += dt
@@ -74,12 +75,12 @@ func _process(dt: float) -> void:
 		_next_drop = 8.0 + randf() * 10.0
 	if now < _drop_until:
 		_flick *= 0.55
-	for m: ShaderMaterial in [data_mat, cane_mat, body_mat, post_mat]:
+	for m: ShaderMaterial in _wave_mats:
 		m.set_shader_parameter("u_time", now)
 		m.set_shader_parameter("u_flick", _flick)
 	post_mat.set_shader_parameter("u_breath", 1.0 + sin(now * 0.5) * 0.045)
 	post_mat.set_shader_parameter("u_grain_t", fmod(now, 1.0) * 61.7)
-	pulses.apply(now, [data_mat, cane_mat, body_mat, post_mat])
+	pulses.apply(now, _wave_mats)
 	hero.update(now, dt)
 	_demo_tap()
 

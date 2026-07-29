@@ -60,6 +60,9 @@ void fragment() {
 	float edge = max(smoothstep(0.012, 0.03, lap), smoothstep(0.04, 0.08, nrm));
 	float reveal = max(c_c.r, max(max(c_l.r, c_r.r), max(c_u.r, c_d.r)));
 	vec3 col = vec3(edge * reveal);
+	// the material's cartoon signature: a faint fill inside the swept area —
+	// the pattern itself is baked into R by the data pass
+	col += vec3(0.14 * c_c.r);
 
 	// the waves themselves: rings in the air, cut where the world stands
 	vec3 ndc_far = vec3(uv * 2.0 - 1.0, 1.0);

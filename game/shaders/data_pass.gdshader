@@ -10,8 +10,10 @@ render_mode unshaded, cull_disabled, shadows_disabled, ambient_light_disabled, f
 // WebGL2/Compatibility, and the web build is a first-class target.
 
 #include "res://shaders/pulse_pool.gdshaderinc"
+#include "res://shaders/materials.gdshaderinc"
 
-uniform float u_base = 0.0;   // standing reveal; >0 only for the hero's cane
+uniform float u_base = 0.0;     // standing reveal; >0 only for the hero's cane
+uniform int u_material = 0;     // Materials.Kind — chooses the reveal signature
 
 varying vec3 v_world;
 varying vec3 v_nworld;
@@ -46,6 +48,8 @@ void fragment() {
 		reveal = max(reveal, min(flare, 1.0) * atten * cone * gain * peak);
 	}
 	reveal = max(reveal, u_base);
+	// the material speaks: roughness/grain/weave modulates what the echo shows
+	reveal *= material_pattern(v_world, u_material);
 	float vd = length(v_world - CAMERA_POSITION_WORLD);
 	reveal *= (0.9 + 0.1 * u_flick) * exp(-vd * 0.05);
 	// normal id: distinct levels for the six axis directions, continuous for
