@@ -13,7 +13,8 @@ Perception laws (non-negotiable):
 - The world is revealed by **waves** (sound, touch, wind). If nothing emits,
   nothing is visible.
 - UI/UX is simple and minimalistic.
-- Inspiration: modern codebases and games like *Perception*.
+- Inspiration: modern codebases and games in the blind-protagonist /
+  echolocation genre — *Perception*, *Dark Echo*, *Stifled*.
 
 ## Platforms and stack
 
