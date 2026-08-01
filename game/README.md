@@ -1,8 +1,7 @@
 # Unseeing — Godot project
 
-The Godot 4 port of the game. `web-reference/` at the repo root is the frozen,
-fully-tested WebGL version that serves as the playable design spec; this
-project ports it system by system.
+The Godot 4 project — the single source of truth. Every shipped platform is
+an export of this one project.
 
 ## Architecture
 

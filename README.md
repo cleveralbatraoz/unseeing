@@ -6,8 +6,7 @@ A first-person echolocation game built in Godot 4. The hero is blind: the
 world exists only as sound. Cane taps and footsteps send visible waves through
 the dark; thin white outlines flare where a wave strikes geometry and fade
 away; every surface answers back — echoes bloom from what the wavefront
-touches, and materials reveal their character as minimal monochrome signatures
-(rock speckle, wood grain, cloth weave).
+touches.
 
 ![A cane tap revealing a rock-walled room and a wooden table in white outlines](docs/screenshot.png)
 
@@ -34,8 +33,8 @@ wave shells are ray-traced in air and occluded by the world, so obstacles
 carve visible bites out of the rings. **Echo reflections** sample the world
 with physics ray fans from every sound — each struck surface point becomes a
 secondary emitter firing exactly when the wavefront arrives, and anything in
-acoustic shadow stays silent. **Materials** (`game/scripts/materials.gd`)
-modulate the reveal with procedural signatures — no texture assets exist.
+acoustic shadow stays silent. No texture assets exist — the world is nothing
+but thin white lines on black.
 
 See `game/README.md` for the architecture and porting status.
 
