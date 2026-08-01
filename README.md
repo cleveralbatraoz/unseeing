@@ -38,16 +38,29 @@ but thin white lines on black.
 
 See `game/README.md` for the architecture and porting status.
 
+## Platforms
+
+One Godot project, exported everywhere — no per-platform code:
+
+- **Web** — continuously deployed to https://dggrus.hlab.kz (wasm).
+- **macOS** — universal binary (x86_64 + arm64): `godot --headless --path
+  game --export-release macOS build/macos/unseeing.zip`
+- **Windows** — twin exports, `"Windows x86_64"` and `"Windows arm64"`
+  presets. The game never relies on a particular architecture.
+
 ## Development
 
-Open `game/project.godot` in Godot (version pinned in `.godot-version`) and
-press play. Renderer is `gl_compatibility` — required for the Web export.
+Open `game/project.godot` in Godot (version pinned in `.godot-version`,
+enforced by CI) and press play. Renderer is `gl_compatibility` — required
+for the Web export. One-time setup: `git config core.hooksPath .githooks`
+and `pipx install "gdtoolkit==4.*"` — every commit is gated by `gdformat`
+and `gdlint`.
 
-- `ci/pipeline.sh` — the full gauntlet: headless boot check, unit tests
-  (`game/tests/`), clean Web export, build stamping, precompression, and a
-  browser smoke test that boots the exported wasm in headless Chrome and
-  asserts it renders. The same POSIX script runs locally, on the droplet,
-  and in cloud CI.
+- `ci/pipeline.sh` — the full gauntlet: format + lint gate, headless boot
+  check, unit tests (`game/tests/`), clean Web export, build stamping,
+  precompression, and a browser smoke test that boots the exported wasm in
+  headless Chrome and asserts it renders. The same POSIX script runs
+  locally, on the droplet, and in cloud CI.
 - `deploy.sh` — local checks, then `git push production` (the droplet's
   post-receive hook runs the pipeline server-side and deploys only on green),
   then `git push origin`.

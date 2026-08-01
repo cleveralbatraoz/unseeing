@@ -18,7 +18,7 @@ an export of this one project.
 
 Renderer is `gl_compatibility` — mandatory for the Web (wasm) export.
 
-## Porting status
+## System status
 
 | System | Status |
 | --- | --- |
@@ -31,3 +31,6 @@ Renderer is `gl_compatibility` — mandatory for the Web (wasm) export.
 | Phantom sounds | TODO |
 | Headless unit tests + browser smoke gate | done (`tests/`, `../test/`) |
 | Web (wasm) export + droplet CI/CD deploy | done |
+| Desktop exports (macOS universal, Windows x86_64 + arm64) | done |
+| Wave/physics core as GDExtension Rust module | TODO (see CLAUDE.md) |
+| gdUnit4 test framework migration | TODO (see CLAUDE.md) |
