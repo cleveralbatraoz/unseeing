@@ -29,6 +29,11 @@ project. Never write a separate implementation per platform.
   byte-verify.
 - **Windows and macOS** are exported on demand (when the user asks), not on
   every push.
+- **Architecture independence: the game must work on both x86_64 and
+  arm64.** Never rely on a particular architecture — no arch-specific code
+  paths, intrinsics, or assumptions. macOS ships a universal binary; Windows
+  ships both x86_64 and arm64 exports; the Rust core must build for
+  x86_64 + aarch64 on every desktop platform, plus wasm32 for web.
 
 Keep the technology stack deliberately small. Approved: Godot, typed
 GDScript, GDExtension Rust (the wave/physics core), wasm, and the tooling
