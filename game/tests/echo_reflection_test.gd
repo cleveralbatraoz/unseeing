@@ -74,6 +74,29 @@ func test_no_echoes_in_acoustic_shadow() -> void:
 	assert_bool(struck_answering_wall).is_true()
 
 
+## An echo is an appointment: apply() must not fire it a moment early, and
+## must fire it once its at_t has passed — the reflection enters the pool
+## as type 1 with max radius 2.2 and speed 5.5, born at the drain time.
+func test_echo_drain_keeps_its_appointment() -> void:
+	var p := Pulses.new()
+	p.emit_reflecting(0, SOUND_AT, MAX_R, SPEED, GAIN, NOW, _space, 1, NORMAL)
+	assert_int(p.pending_echo_count()).is_equal(1)
+	var e: Dictionary = p.pending_echoes()[0]
+	var at_t: float = e.at_t
+	p.apply(at_t - 0.01, [])
+	assert_int(p.pending_echo_count()).is_equal(1)  # too early: still pending
+	assert_int(p.live_count(at_t - 0.01)).is_equal(1)  # only the primary
+	p.apply(at_t + 0.01, [])
+	assert_int(p.pending_echo_count()).is_equal(0)
+	assert_int(p.live_count(at_t + 0.01)).is_equal(2)
+	assert_int(int(floor(p.dat[1].w / 10.0))).is_equal(1)  # type: ECHO
+	assert_float(p.dat[1].x).is_equal_approx(at_t + 0.01, 0.0001)
+	assert_float(p.dat[1].y).is_equal_approx(2.2, 0.000001)
+	assert_float(p.dat[1].z).is_equal(5.5)
+	assert_float(fmod(p.dat[1].w, 10.0) / 9.0).is_equal_approx(e.gain, 0.001)
+	assert_vector(p.pos[1]).is_equal(e.pos)
+
+
 ## Each echo keeps the wave equation: it fires exactly when the wavefront
 ## arrives (at_t = now + d / speed) and its gain follows the distance law
 ## gain * 0.55 / (1 + 0.4 * d). The scheduled position sits d away from the
