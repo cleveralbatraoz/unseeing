@@ -1,0 +1,3 @@
+# gdlint configuration (godot-gdscript-toolkit). Defaults apply except where
+# pinned explicitly here, so every machine lints identically.
+max-line-length: 100

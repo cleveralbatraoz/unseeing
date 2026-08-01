@@ -1,0 +1,18 @@
+#!/bin/sh
+# Pre-commit gate — the constitution's "formatters run before every commit".
+# Checks only what is staged; the full-tree gate lives in ci/pipeline.sh.
+set -eu
+PATH="$PATH:$HOME/.local/bin"
+
+gd_files="$(git diff --cached --name-only --diff-filter=ACMR -- '*.gd')"
+if [ -n "$gd_files" ]; then
+  command -v gdformat >/dev/null 2>&1 && command -v gdlint >/dev/null 2>&1 || {
+    echo "pre-commit: gdformat/gdlint not found (pipx install 'gdtoolkit==4.*')"
+    exit 1
+  }
+  gdformat --check $gd_files || {
+    echo "pre-commit: unformatted GDScript — run: gdformat $gd_files"
+    exit 1
+  }
+  gdlint $gd_files
+fi

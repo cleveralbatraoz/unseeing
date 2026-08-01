@@ -12,6 +12,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Install gdtoolkit (gdformat + gdlint)
+        run: pipx install "gdtoolkit==4.*"
       - name: Read pinned Godot version
         id: godot
         run: echo "version=$(cut -d. -f1-3 .godot-version)" >> "$GITHUB_OUTPUT"

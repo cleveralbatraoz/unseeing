@@ -28,6 +28,18 @@ if [ -f "$DIR/.godot-version" ]; then
   esac
 fi
 
+echo "ci: gdscript format + lint"
+GDFORMAT="$(command -v gdformat || echo "$HOME/.local/bin/gdformat")"
+GDLINT="$(command -v gdlint || echo "$HOME/.local/bin/gdlint")"
+[ -x "$GDFORMAT" ] && [ -x "$GDLINT" ] || {
+  echo "ci: FAILED gdformat/gdlint not found (pipx install 'gdtoolkit==4.*')"
+  exit 2
+}
+GD_FILES="$(find "$DIR/game/scripts" "$DIR/game/tests" -name '*.gd')"
+"$GDFORMAT" --check $GD_FILES || { echo "ci: format check FAILED (run gdformat on the files above)"; exit 1; }
+"$GDLINT" $GD_FILES || { echo "ci: lint FAILED"; exit 1; }
+echo "ci: format + lint OK"
+
 echo "ci: import + headless boot check"
 "$GODOT" --headless --path "$DIR/game" --import >/dev/null 2>&1 || true
 OUT="$("$GODOT" --headless --path "$DIR/game" --quit-after 30 2>&1)" || {
