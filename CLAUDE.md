@@ -15,13 +15,23 @@ Perception laws (non-negotiable):
 - UI/UX is simple and minimalistic.
 - Inspiration: modern codebases and games like *Perception*.
 
-One codebase, two live targets, **both first-class**:
-- **`game/`** — the Godot 4.7 project; the single source of truth.
-- **Web** — the Godot wasm export, live at https://dggrus.hlab.kz. Deploys go
-  through the test-gated `deploy.sh` pipeline: headless test runner → strict
-  web export → browser smoke gate (`test/`, headless-Chrome DevTools probes)
-  → atomic deploy → HTTPS byte-verify. The web deployment keeps receiving
-  fixes and releases alongside Godot development.
+## Platforms and stack
+
+**One source of truth: `game/`, the Godot 4.7 project.** Supported platforms
+are **Windows, macOS, and web** — all produced by *exporting* that one
+project. Never write a separate implementation per platform.
+
+- **Web** ships continuously — the wasm export, live at
+  https://dggrus.hlab.kz, deployed through the test-gated `deploy.sh`
+  pipeline: headless test runner → strict web export → browser smoke gate
+  (`test/`, headless-Chrome DevTools probes) → atomic deploy → HTTPS
+  byte-verify.
+- **Windows and macOS** are exported on demand (when the user asks), not on
+  every push.
+
+Keep the technology stack deliberately small. Approved: Godot, typed
+GDScript, GDExtension C++ (the wave/physics core), wasm, and the tooling
+listed below. Before introducing any other technology, ask the user.
 
 ## Your role
 
@@ -48,6 +58,10 @@ must work perfectly.
    further confirmation: install anything, run anything, use the server,
    spawn agents, consume whatever resources the task needs — including
    deploys.
+4. **Keep memory and this file current.** When something new and *crucial*
+   is figured out — a decision, constraint, or gotcha that changes future
+   work — record it in persistent memory (crucial facts only, not
+   everything) and update CLAUDE.md itself when the rules or stack evolve.
 
 ## Strict TDD
 
@@ -73,8 +87,10 @@ must work perfectly.
 - Style: narrative, evocative subject line (matching the existing history,
   e.g. "The fan blows a real wind: a sweeping cone of waves, walled into its
   room"), with a body carrying the precise technical what/why.
-- No assistant attribution: no Co-Authored-By or "Generated with" trailers in
-  commits or PRs.
+- **All work is authored on behalf of the user, never the assistant.** No
+  Co-Authored-By or "Generated with" trailers; no mention of Claude, AI, or
+  any assistant anywhere in the repository — commits, code, comments, docs,
+  or PRs. Repo-local git identity: `Dmitrii Galchenko <dggrus@gmail.com>`.
 
 ## Code style
 
@@ -84,8 +100,19 @@ must work perfectly.
 - **Dependency injection / independent components**: split code into pieces
   that don't rely on unclear implicit guarantees of each other.
 - **Languages**: statically-typed GDScript for gameplay; the wave/physics
-  core is written in **C# from day one** (accept the mono-export
-  complexity).
+  core is a **GDExtension C++ module** — native speed on desktop, compiled
+  to wasm via Emscripten for the web export, so the single source of truth
+  holds on every platform. (C# was considered and rejected: Godot 4.x .NET
+  builds cannot export to web.)
+
+## Tooling
+
+Formatters and analyzers are mandatory, run before every commit:
+- **GDScript**: `gdformat` + `gdlint` (godot-gdscript-toolkit).
+- **C++ (GDExtension)**: `clang-format` + `clang-tidy`; run tests with
+  sanitizers (ASan/UBSan) where the harness allows.
+- Adopt further instruments (fuzzers, static analysis, profilers) whenever
+  they earn their keep — but they must not grow the shipped stack.
 
 ## Agents, reviews, tooling
 
