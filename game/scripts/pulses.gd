@@ -175,6 +175,14 @@ func pending_echo_count() -> int:
 	return _echoes.size()
 
 
+## The scheduled reflections themselves, copied out — observable for tests
+## and debug. Each entry: {at_t: float, pos: Vector3, gain: float}.
+func pending_echoes() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	out.assign(_echoes)
+	return out
+
+
 ## Highest live slot + 1 — lets the shaders break out of dead loop iterations.
 func live_count(now: float) -> int:
 	var n := 0

@@ -1,0 +1,93 @@
+extends GdUnitTestSuite
+## The reflection pipeline against REAL physics. A sound born on a wall
+## samples the world with a golden-angle ray fan; every struck surface point
+## becomes a scheduled echo that fires when the wavefront arrives. These
+## tests pin the fan's laws with live StaticBody3D geometry: echoes exist,
+## the max_echoes cap holds, acoustic shadows stay silent, and each echo's
+## timing and gain follow its distance.
+
+const SOUND_AT := Vector3(0, 1.5, 0)  # born on the origin wall's front face
+const NORMAL := Vector3(1, 0, 0)  # that wall faces +X; rays sample that side
+const ORIGIN := SOUND_AT + NORMAL * 0.08  # where emit_reflecting starts rays
+const MAX_R := 6.0
+const SPEED := 5.5
+const GAIN := 1.0
+const NOW := 10.0
+const RAY_LEN := 4.8  # min(MAX_R * 0.8, 6.0): the fan's reach
+
+var _space: PhysicsDirectSpaceState3D
+
+
+func before_test() -> void:
+	# the wall the sound is born on: its front face is the plane x = 0
+	_add_box(Vector3(-0.1, 1.5, 0), Vector3(0.2, 3, 6))
+	# the answering wall in front: face at x = 1.5, well inside the fan's reach
+	_add_box(Vector3(1.6, 1.5, 0), Vector3(0.2, 3, 6))
+	# in the acoustic shadow BEHIND the origin wall: must never answer
+	_add_box(Vector3(-2, 1, 0), Vector3(1, 2, 2))
+	# in range but occluded by the answering wall: must never answer either
+	_add_box(Vector3(3, 1.5, 0), Vector3(1, 2, 1))
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	_space = get_viewport().world_3d.direct_space_state
+
+
+## One box: a static collider the ray fan can strike, freed after the test.
+func _add_box(center: Vector3, size: Vector3) -> void:
+	var body: StaticBody3D = auto_free(StaticBody3D.new())
+	body.position = center
+	var col := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = size
+	col.shape = shape
+	body.add_child(col)
+	add_child(body)
+
+
+## The primary pulse lands in the pool, reflections ARE scheduled off the
+## line-of-sight geometry, and max_echoes caps how many.
+func test_echoes_scheduled_and_capped() -> void:
+	var p := Pulses.new()
+	p.emit_reflecting(0, SOUND_AT, MAX_R, SPEED, GAIN, NOW, _space, 6, NORMAL)
+	assert_int(p.live_count(NOW + 0.1)).is_equal(1)
+	assert_int(p.pending_echo_count()).is_between(2, 6)
+	var capped := Pulses.new()
+	capped.emit_reflecting(0, SOUND_AT, MAX_R, SPEED, GAIN, NOW, _space, 1, NORMAL)
+	assert_int(capped.pending_echo_count()).is_equal(1)
+
+
+## The acoustic shadow: no echo lands behind the plane the sound was born
+## on, and the box hidden behind the answering wall stays silent too — only
+## swept, line-of-sight surfaces answer. The answering wall itself does.
+func test_no_echoes_in_acoustic_shadow() -> void:
+	var p := Pulses.new()
+	p.emit_reflecting(0, SOUND_AT, MAX_R, SPEED, GAIN, NOW, _space, 6, NORMAL)
+	var echoes := p.pending_echoes()
+	assert_int(echoes.size()).is_greater(0)
+	var struck_answering_wall := false
+	for e: Dictionary in echoes:
+		var at: Vector3 = e.pos
+		assert_bool(at.x >= -0.05).is_true()  # never behind the birth plane
+		assert_bool(at.x <= 1.8).is_true()  # never past the answering wall
+		if at.x > 1.3:
+			struck_answering_wall = true
+	assert_bool(struck_answering_wall).is_true()
+
+
+## Each echo keeps the wave equation: it fires exactly when the wavefront
+## arrives (at_t = now + d / speed) and its gain follows the distance law
+## gain * 0.55 / (1 + 0.4 * d). The scheduled position sits d away from the
+## ray origin (plus the tiny off-surface offset).
+func test_echo_timing_and_gain_follow_distance() -> void:
+	var p := Pulses.new()
+	p.emit_reflecting(0, SOUND_AT, MAX_R, SPEED, GAIN, NOW, _space, 6, NORMAL)
+	var echoes := p.pending_echoes()
+	assert_int(echoes.size()).is_greater(0)
+	for e: Dictionary in echoes:
+		var at_t: float = e.at_t
+		var d := (at_t - NOW) * SPEED
+		assert_bool(d > 0.3).is_true()  # closer hits are the birth surface
+		assert_bool(d <= RAY_LEN + 0.01).is_true()
+		assert_float(e.gain).is_equal_approx(GAIN * 0.55 / (1.0 + 0.4 * d), 0.0001)
+		var pos: Vector3 = e.pos
+		assert_float((pos - ORIGIN).length()).is_equal_approx(d, 0.06)
