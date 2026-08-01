@@ -32,3 +32,6 @@ common/physics_interpolation=true
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 environment/defaults/default_clear_color=Color(0, 0, 0, 1)
+; Required by the arm64/universal macOS export; the game ships no textures
+; beyond the icon, so the import cost is nil.
+textures/vram_compression/import_etc2_astc=true
