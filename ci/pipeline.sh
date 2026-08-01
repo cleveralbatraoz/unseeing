@@ -21,7 +21,10 @@ if [ -f "$DIR/.godot-version" ]; then
   HAVE="$("$GODOT" --version 2>/dev/null | head -1)"
   case "$HAVE" in
     "$WANT"*) : ;;
-    *) echo "ci: WARNING godot version '$HAVE' != pinned '$WANT'" ;;
+    *)
+      echo "ci: FAILED godot version '$HAVE' != pinned '$WANT' (set GODOT= to a matching binary)"
+      exit 2
+      ;;
   esac
 fi
 
