@@ -10,15 +10,15 @@ extends Node3D
 ## lighthouse. The head carries a real collider that pivots with it, so the
 ## cane and echo rays strike the fan like anything else in the world.
 
-const WHOOSH_EVERY := 0.4    # so frequent the wash reads as continuous
-const HUM_RANGE := 9.0       # meters a hum travels
+const WHOOSH_EVERY := 0.4  # so frequent the wash reads as continuous
+const HUM_RANGE := 9.0  # meters a hum travels
 const HUM_SPEED := 4.5
 const HUM_GAIN := 0.75
-const BEAM_COS := 0.85       # cos of the wash cone's half-angle (~32°)
-const PIVOT_RANGE := 0.85    # rad each way from the mounting yaw
+const BEAM_COS := 0.85  # cos of the wash cone's half-angle (~32°)
+const PIVOT_RANGE := 0.85  # rad each way from the mounting yaw
 const PIVOT_SPEED := 0.55
-const SPIN_SPEED := 9.0      # rad/s — reads as motion across reveals
-const HEAD_H := 1.15         # hub height: within the cane's reach
+const SPIN_SPEED := 9.0  # rad/s — reads as motion across reveals
+const HEAD_H := 1.15  # hub height: within the cane's reach
 
 var pulses: Pulses
 var data_mat: Material
@@ -27,12 +27,15 @@ var _pivot: Node3D
 var _spinner: Node3D
 var _next_whoosh := 0.4
 
+
 ## Pure motion curves, split out for the headless tests.
 static func pivot_angle(t: float) -> float:
 	return sin(t * PIVOT_SPEED) * PIVOT_RANGE
 
+
 static func spin_angle(t: float) -> float:
 	return fmod(t * SPIN_SPEED, TAU)
+
 
 func _ready() -> void:
 	# pedestal: base disc + pole, as static as the walls
@@ -64,7 +67,7 @@ func _ready() -> void:
 	disc.radius = 0.45
 	disc.height = 0.30
 	head_col.shape = disc
-	head_col.rotation.x = PI * 0.5   # cylinder axis Y -> face along Z
+	head_col.rotation.x = PI * 0.5  # cylinder axis Y -> face along Z
 	head_col.position = Vector3(0, 0, -0.06)
 	head.add_child(head_col)
 
@@ -79,6 +82,7 @@ func _ready() -> void:
 		_spinner.add_child(arm)
 		_mesh(arm, _box(0.32, 0.11, 0.016), Vector3(0.24, 0, 0))
 
+
 ## Driven by main with the simulated clock, like every animated thing —
 ## movie-maker runs and time scaling stay correct.
 func update(t: float) -> void:
@@ -89,8 +93,8 @@ func update(t: float) -> void:
 	_next_whoosh = t + WHOOSH_EVERY
 	# the wash blows where the head points right now: a sweeping beam
 	var fwd := -_pivot.global_transform.basis.z
-	pulses.emit(3, _spinner.global_position, HUM_RANGE, HUM_SPEED, HUM_GAIN, t,
-			fwd, BEAM_COS)
+	pulses.emit(3, _spinner.global_position, HUM_RANGE, HUM_SPEED, HUM_GAIN, t, fwd, BEAM_COS)
+
 
 func _mesh(parent: Node3D, m: Mesh, at: Vector3, rx := 0.0) -> void:
 	var mi := MeshInstance3D.new()
@@ -100,12 +104,14 @@ func _mesh(parent: Node3D, m: Mesh, at: Vector3, rx := 0.0) -> void:
 	mi.rotation.x = rx
 	parent.add_child(mi)
 
+
 func _cyl(radius: float, height: float) -> CylinderMesh:
 	var c := CylinderMesh.new()
 	c.top_radius = radius
 	c.bottom_radius = radius
 	c.height = height
 	return c
+
 
 func _box(x: float, y: float, z: float) -> BoxMesh:
 	var b := BoxMesh.new()

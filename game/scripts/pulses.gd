@@ -34,7 +34,8 @@ var dir := PackedVector4Array()
 var _t0 := PackedFloat64Array()
 var _end := PackedFloat64Array()
 var _type := PackedInt32Array()
-var _echoes: Array[Dictionary] = []   # scheduled reflections: {at_t, pos, gain}
+var _echoes: Array[Dictionary] = []  # scheduled reflections: {at_t, pos, gain}
+
 
 func _init() -> void:
 	pos.resize(MAXP)
@@ -47,10 +48,19 @@ func _init() -> void:
 		dat[i] = Vector4(-1, 0, 0, 0)
 		_end[i] = -1.0
 
+
 ## Record a sound. Slot eviction prefers expired slots, then the oldest
 ## footstep or hum (least precious — both recur), then the oldest of anything.
-func emit(type: int, at: Vector3, max_r: float, speed: float, gain: float,
-		now: float, beam_dir := Vector3.ZERO, cos_half := -2.0) -> void:
+func emit(
+	type: int,
+	at: Vector3,
+	max_r: float,
+	speed: float,
+	gain: float,
+	now: float,
+	beam_dir := Vector3.ZERO,
+	cos_half := -2.0
+) -> void:
 	var slot := -1
 	var old_step := -1
 	var oldest := -1
@@ -76,14 +86,20 @@ func emit(type: int, at: Vector3, max_r: float, speed: float, gain: float,
 	_end[slot] = now + max_r / speed + _fade_tail(type)
 	_type[slot] = type
 
+
 ## Ring time + outline-fade tail; echoes and footsteps expire sooner so the
 ## live-slot count (which both shaders loop over per pixel) stays small.
 func _fade_tail(type: int) -> float:
 	match type:
-		1: return 3.5
-		2: return 2.5
-		3: return 2.0
-		_: return 6.0
+		1:
+			return 3.5
+		2:
+			return 2.5
+		3:
+			return 2.0
+		_:
+			return 6.0
+
 
 ## Emit a primary sound AND schedule its reflections off the environment.
 ## `space` is the physics space to sample; `max_echoes` caps slot pressure.
@@ -91,9 +107,17 @@ func _fade_tail(type: int) -> float:
 ## sample only the hemisphere in FRONT of it, cast from just off the surface —
 ## otherwise rays start inside the struck collider and leak through into the
 ## acoustic shadow, answering from places the wave never reached.
-func emit_reflecting(type: int, at: Vector3, max_r: float, speed: float,
-		gain: float, now: float, space: PhysicsDirectSpaceState3D, max_echoes: int,
-		origin_normal := Vector3.ZERO) -> void:
+func emit_reflecting(
+	type: int,
+	at: Vector3,
+	max_r: float,
+	speed: float,
+	gain: float,
+	now: float,
+	space: PhysicsDirectSpaceState3D,
+	max_echoes: int,
+	origin_normal := Vector3.ZERO
+) -> void:
 	emit(type, at, max_r, speed, gain, now)
 	if space == null:
 		return
@@ -106,28 +130,36 @@ func emit_reflecting(type: int, at: Vector3, max_r: float, speed: float,
 		var phi := float(i) * GOLDEN_ANGLE
 		var d3 := Vector3(r * cos(phi), y, r * sin(phi))
 		if origin_normal != Vector3.ZERO and d3.dot(origin_normal) < -0.05:
-			continue   # into the surface: that direction is the wave's shadow
+			continue  # into the surface: that direction is the wave's shadow
 		# (along-surface rays are kept: the surroundings of the tapped point
 		# answer in every direction AROUND it, not only toward the listener)
-		var query := PhysicsRayQueryParameters3D.create(origin, origin + d3 * minf(max_r * 0.8, 6.0))
+		var query := PhysicsRayQueryParameters3D.create(
+			origin, origin + d3 * minf(max_r * 0.8, 6.0)
+		)
 		var hit := space.intersect_ray(query)
 		if hit.is_empty():
 			continue
 		var dist: float = (hit.position - origin).length()
 		if dist < 0.3:
-			continue   # the surface the sound itself was born on
+			continue  # the surface the sound itself was born on
 		var key := Vector3i((hit.position / CLUSTER_CELL).floor())
 		if not cells.has(key) or cells[key].d > dist:
-			cells[key] = { d = dist, p = hit.position + hit.normal * 0.02 }
+			cells[key] = {d = dist, p = hit.position + hit.normal * 0.02}
 	var found: Array = cells.values()
 	found.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.d < b.d)
 	for j: int in mini(found.size(), max_echoes):
 		var e: Dictionary = found[j]
-		_echoes.append({
-			at_t = now + e.d / speed,
-			pos = e.p,
-			gain = gain * 0.55 / (1.0 + e.d * 0.4),
-		})
+		(
+			_echoes
+			. append(
+				{
+					at_t = now + e.d / speed,
+					pos = e.p,
+					gain = gain * 0.55 / (1.0 + e.d * 0.4),
+				}
+			)
+		)
+
 
 ## Fire reflections whose moment has come (the wavefront reached them).
 func _drain_echoes(now: float) -> void:
@@ -137,6 +169,7 @@ func _drain_echoes(now: float) -> void:
 			_echoes.remove_at(i)
 			emit(1, e.pos, 2.2, 5.5, e.gain, now)
 
+
 ## Highest live slot + 1 — lets the shaders break out of dead loop iterations.
 func live_count(now: float) -> int:
 	var n := 0
@@ -144,6 +177,7 @@ func live_count(now: float) -> int:
 		if _end[i] >= now:
 			n = i + 1
 	return n
+
 
 ## Push the pool into every material that renders waves.
 func apply(now: float, mats: Array) -> void:

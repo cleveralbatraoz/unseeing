@@ -5,8 +5,8 @@ extends RefCounted
 ## numbers as the validated original design, so both versions play identically.
 ## All segments are axis-aligned, which keeps the boxes trivial.
 
-const WALL_H := 3.0    # walls run floor to ceiling
-const WALL_T := 0.15   # half-thickness of a wall
+const WALL_H := 3.0  # walls run floor to ceiling
+const WALL_T := 0.15  # half-thickness of a wall
 
 ## Wall centerlines [x1, z1, x2, z2] in meters. First four are the border.
 const SEGS := [
@@ -22,6 +22,7 @@ const SEGS := [
 	[0.6, 13.0, 4.0, 13.0],
 ]
 
+
 static func build_world(parent: Node3D, mat: Material) -> void:
 	# floor and ceiling as thin slabs; only their inward faces are ever seen
 	_add_box(parent, mat, Vector3(10, -0.05, 10), Vector3(20, 0.1, 20))
@@ -31,8 +32,7 @@ static func build_world(parent: Node3D, mat: Material) -> void:
 		var horizontal: bool = absf(s[3] - s[1]) < 0.001
 		# the box math trusts axis alignment; a diagonal segment would silently
 		# produce a wrong-sized wall instead of failing
-		assert(horizontal or absf(s[2] - s[0]) < 0.001,
-				"map segment %s is not axis-aligned" % [s])
+		assert(horizontal or absf(s[2] - s[0]) < 0.001, "map segment %s is not axis-aligned" % [s])
 		var cx: float = (s[0] + s[2]) * 0.5
 		var cz: float = (s[1] + s[3]) * 0.5
 		var size: Vector3
@@ -41,6 +41,7 @@ static func build_world(parent: Node3D, mat: Material) -> void:
 		else:
 			size = Vector3(WALL_T * 2.0, WALL_H, absf(s[3] - s[1]) + WALL_T * 2.0)
 		_add_box(parent, mat, Vector3(cx, WALL_H * 0.5, cz), size)
+
 
 ## Furniture near the spawn: waist-height obstacles the border walls can't
 ## teach you about. Waves outline their edges, their bodies carve bites out
@@ -59,6 +60,7 @@ static func _build_furniture(parent: Node3D, mat: Material) -> void:
 		for lz: float in [-0.17, 0.17]:
 			_add_box(parent, mat, c + Vector3(lx, 0.22, lz), Vector3(0.04, 0.45, 0.04))
 	_add_box(parent, mat, c + Vector3(-0.18, 0.72, 0), Vector3(0.05, 0.5, 0.4))
+
 
 ## One box = a mesh for the data pass + a static collider for the cane rays
 ## and player movement.

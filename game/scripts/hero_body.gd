@@ -38,10 +38,13 @@ var _step_t := 0.0
 var _step_side := 1
 var _shoe: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO]
 
+
 func _ready() -> void:
 	assert(player != null and camera != null, "hero_body: player/camera not injected")
-	assert(pulses != null and cane_mat != null and body_mat != null,
-			"hero_body: pulses/materials not injected")
+	assert(
+		pulses != null and cane_mat != null and body_mat != null,
+		"hero_body: pulses/materials not injected"
+	)
 	for pair: Array in [[_cane_mesh, cane_mat], [_body_mesh, body_mat]]:
 		var mi := MeshInstance3D.new()
 		mi.mesh = pair[0]
@@ -51,6 +54,7 @@ func _ready() -> void:
 	_cam_base_y = camera.position.y
 	_last_yaw = player.rotation.y
 	_last_pitch = camera.rotation.x
+
 
 ## Called by main every frame after movement has settled.
 func update(now: float, dt: float) -> void:
@@ -65,14 +69,21 @@ func update(now: float, dt: float) -> void:
 
 	# strike envelope: quick visible reach-out to the tap target, ease back
 	var st_age: float = now - player.last_tap
-	var thrust: float = (maxf(st_age, 0.0) / 0.07) if st_age < 0.07 else exp(-(st_age - 0.07) / 0.28)
+	var thrust: float = (
+		(maxf(st_age, 0.0) / 0.07) if st_age < 0.07 else exp(-(st_age - 0.07) / 0.28)
+	)
 
 	# look-sway: the viewmodel lags a touch behind mouse movement
 	var inv_dt := 1.0 / maxf(dt, 0.001)
 	var yaw := player.rotation.y
 	var pitch := camera.rotation.x
-	_sway_x += (clampf((yaw - _last_yaw) * inv_dt * 0.02, -0.07, 0.07) - _sway_x) * minf(dt * 9.0, 1.0)
-	_sway_y += (clampf((pitch - _last_pitch) * inv_dt * 0.015, -0.06, 0.06) - _sway_y) * minf(dt * 9.0, 1.0)
+	_sway_x += (
+		(clampf((yaw - _last_yaw) * inv_dt * 0.02, -0.07, 0.07) - _sway_x) * minf(dt * 9.0, 1.0)
+	)
+	_sway_y += (
+		(clampf((pitch - _last_pitch) * inv_dt * 0.015, -0.06, 0.06) - _sway_y)
+		* minf(dt * 9.0, 1.0)
+	)
 	_last_yaw = yaw
 	_last_pitch = pitch
 
@@ -85,6 +96,7 @@ func update(now: float, dt: float) -> void:
 	_build_cane(thrust)
 	_build_body()
 	_footsteps(dt, moving)
+
 
 func _build_cane(thrust: float) -> void:
 	var cb := camera.global_transform.basis
@@ -113,6 +125,7 @@ func _build_cane(thrust: float) -> void:
 	_tube(_cane_mesh, hand, tip, 0.013, 0.010)
 	_sphere(_cane_mesh, tip, 0.040)
 	_cane_mesh.surface_end()
+
 
 func _build_body() -> void:
 	var p := player.global_position
@@ -148,6 +161,7 @@ func _build_body() -> void:
 		_sphere(_body_mesh, shoe, 0.08)
 	_body_mesh.surface_end()
 
+
 ## Each footfall: a small wave rippling out around that very shoe, queued to
 ## the player so its reflection rays run in the physics tick.
 func _footsteps(dt: float, moving: bool) -> void:
@@ -161,6 +175,7 @@ func _footsteps(dt: float, moving: bool) -> void:
 	player.queue_wave(2, Vector3(shoe.x, 0.04, shoe.z), 1.6, 4.0, 0.8, 2, Vector3.UP)
 	_step_side = -_step_side
 	_step_t = 0.42
+
 
 # --- smooth cartoon geometry: per-vertex normals mean the edge detector
 # --- draws only one clean silhouette per shape, never facet lines
@@ -182,9 +197,10 @@ func _sphere(mesh: ImmediateMesh, c: Vector3, r: float) -> void:
 					mesh.surface_set_normal(n)
 					mesh.surface_add_vertex(c + n * r)
 
+
 func _tube(mesh: ImmediateMesh, a: Vector3, b: Vector3, r1: float, r2: float) -> void:
 	const SEG := 10
-	var axis := (b - a)
+	var axis := b - a
 	var al := axis.length()
 	axis = axis / al if al > 0.0001 else Vector3.UP
 	var ref := Vector3(1, 0, 0) if absf(axis.y) > 0.9 else Vector3(0, 1, 0)

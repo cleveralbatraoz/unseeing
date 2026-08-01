@@ -18,8 +18,8 @@ const POST_SHADER := preload("res://shaders/hearing_post.gdshader")
 
 var pulses: Pulses
 var data_mat := ShaderMaterial.new()
-var cane_mat := ShaderMaterial.new()   # standing reveal: the hero knows their grip
-var body_mat := ShaderMaterial.new()   # legs/torso: revealed only by waves
+var cane_mat := ShaderMaterial.new()  # standing reveal: the hero knows their grip
+var body_mat := ShaderMaterial.new()  # legs/torso: revealed only by waves
 var post_mat := ShaderMaterial.new()
 var player: UnseeingPlayer
 var hero: HeroBody
@@ -40,6 +40,7 @@ var _demo_next := 0.6
 var _demo_checked := false
 var _demo_wanted := false
 
+
 func _ready() -> void:
 	_setup_input()
 	# deterministic flicker for offline frame-comparison runs
@@ -58,7 +59,7 @@ func _ready() -> void:
 	fan.pulses = pulses
 	fan.data_mat = data_mat
 	fan.position = Vector3(8.6, 0, 4.4)
-	fan.rotation.y = PI * 0.5   # mounted facing the shared wall
+	fan.rotation.y = PI * 0.5  # mounted facing the shared wall
 	add_child(fan)
 	# the fan's room (east area, wall centerlines): its waves reveal nothing
 	# beyond these bounds — walls stop air, even though the shells are felt
@@ -75,6 +76,7 @@ func _ready() -> void:
 	hero.body_mat = body_mat
 	add_child(hero)
 	_setup_post_quad(player.camera)
+
 
 func _process(dt: float) -> void:
 	now += dt
@@ -97,6 +99,7 @@ func _process(dt: float) -> void:
 	hero.update(now, dt)
 	_demo_tap()
 
+
 ## Dev-only: fires a wall tap every few seconds so input-less runs can verify
 ## the renderer visually — movie-maker locally (UNSEEING_DEMO=1 env), or the
 ## deployed web build (?demo in the URL). Queued through the player so its
@@ -110,8 +113,9 @@ func _demo_tap() -> void:
 			_demo_wanted = _demo_wanted or search.contains("demo")
 	if not _demo_wanted or now < _demo_next:
 		return
-	_demo_next = now + 4.0   # repeat, so any screenshot timing catches a wave
+	_demo_next = now + 4.0  # repeat, so any screenshot timing catches a wave
 	player.queue_wave(0, Vector3(6.4, 0.8, 4.0), 6.0, 5.5, 1.0, 6, Vector3(-1, 0, 0))
+
 
 ## The "hearing" pass: a fullscreen quad glued to the camera. It edge-detects
 ## the data the world pass wrote (reveal / normals / distance) and ray-traces
@@ -127,6 +131,7 @@ func _setup_post_quad(cam: Camera3D) -> void:
 	quad.extra_cull_margin = 16384.0
 	quad.position = Vector3(0, 0, -1)
 	cam.add_child(quad)
+
 
 ## Input actions are defined in code with PHYSICAL keycodes so WASD works on
 ## any keyboard layout (ЦФЫВ on Russian, ZQSD keys on AZERTY, etc.).
