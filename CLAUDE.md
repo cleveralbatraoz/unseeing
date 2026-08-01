@@ -31,7 +31,7 @@ project. Never write a separate implementation per platform.
   every push.
 
 Keep the technology stack deliberately small. Approved: Godot, typed
-GDScript, GDExtension C++ (the wave/physics core), wasm, and the tooling
+GDScript, GDExtension Rust (the wave/physics core), wasm, and the tooling
 listed below. Before introducing any other technology, ask the user.
 
 ## Your role
@@ -101,17 +101,27 @@ must work perfectly.
 - **Dependency injection / independent components**: split code into pieces
   that don't rely on unclear implicit guarantees of each other.
 - **Languages**: statically-typed GDScript for gameplay; the wave/physics
-  core is a **GDExtension C++ module** — native speed on desktop, compiled
-  to wasm via Emscripten for the web export, so the single source of truth
-  holds on every platform. (C# was considered and rejected: Godot 4.x .NET
-  builds cannot export to web.)
+  core is a **GDExtension Rust module** (godot-rust / `gdext`) — native
+  speed on desktop, compiled to wasm for the web export, so the single
+  source of truth holds on every platform. Rust's safety and testing
+  culture is why it won: it directly serves the total-functions and
+  fearless-refactoring doctrine. (C# was considered and rejected — Godot
+  4.x .NET builds cannot export to web. C++ was chosen briefly, then
+  replaced by Rust.)
+- **Rust web-export constraints** (as of 2026, gdext wasm rides the
+  bleeding edge): pin the nightly toolchain in `rust-toolchain.toml`, pin
+  the Emscripten version to match the Godot build, keep link flags in sync
+  with Godot's web export settings, and remember only ONE Rust GDExtension
+  can live in a wasm export. Verify the web build in CI on every core
+  change — toolchain churn is the known risk we accepted.
 
 ## Tooling
 
 Formatters and analyzers are mandatory, run before every commit:
 - **GDScript**: `gdformat` + `gdlint` (godot-gdscript-toolkit).
-- **C++ (GDExtension)**: `clang-format` + `clang-tidy`; run tests with
-  sanitizers (ASan/UBSan) where the harness allows.
+- **Rust (GDExtension)**: `cargo fmt` + `cargo clippy` (warnings are
+  errors) + `cargo test`; reach for Miri or `cargo-fuzz` on the trickiest
+  wave-math when it earns its keep.
 - Adopt further instruments (fuzzers, static analysis, profilers) whenever
   they earn their keep — but they must not grow the shipped stack.
 
