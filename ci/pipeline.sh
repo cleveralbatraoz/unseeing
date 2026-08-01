@@ -54,8 +54,9 @@ if printf '%s' "$OUT" | grep -qiE "SCRIPT ERROR|SHADER ERROR|Parse Error|ERROR: 
 fi
 echo "ci: boot check OK"
 
-echo "ci: unit tests"
-"$GODOT" --headless --path "$DIR/game" -s res://tests/run_tests.gd || {
+echo "ci: unit tests (gdUnit4)"
+"$GODOT" --headless --path "$DIR/game" -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
+  --ignoreHeadlessMode -c -a tests || {
   echo "ci: unit tests FAILED"
   exit 1
 }

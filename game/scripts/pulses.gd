@@ -170,6 +170,11 @@ func _drain_echoes(now: float) -> void:
 			emit(1, e.pos, 2.2, 5.5, e.gain, now)
 
 
+## Reflections scheduled but not yet fired — observable for tests and debug.
+func pending_echo_count() -> int:
+	return _echoes.size()
+
+
 ## Highest live slot + 1 — lets the shaders break out of dead loop iterations.
 func live_count(now: float) -> int:
 	var n := 0
