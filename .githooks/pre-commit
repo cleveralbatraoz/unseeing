@@ -4,7 +4,9 @@
 set -eu
 PATH="$PATH:$HOME/.local/bin"
 
-gd_files="$(git diff --cached --name-only --diff-filter=ACMR -- '*.gd')"
+# Vendored third-party code (game/addons/) is kept byte-pristine — never
+# reformat it; only our own GDScript is gated.
+gd_files="$(git diff --cached --name-only --diff-filter=ACMR -- '*.gd' ':!game/addons/')"
 if [ -n "$gd_files" ]; then
   command -v gdformat >/dev/null 2>&1 && command -v gdlint >/dev/null 2>&1 || {
     echo "pre-commit: gdformat/gdlint not found (pipx install 'gdtoolkit==4.*')"

@@ -3,3 +3,4 @@ game/.godot/
 game/build/*
 !game/build/.gdignore
 target/
+game/reports/
