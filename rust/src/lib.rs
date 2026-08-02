@@ -8,6 +8,7 @@
 //! Web builds are single-threaded (the export pins thread_support=false):
 //! no threads, no rayon, no parking primitives anywhere in this crate.
 
+pub mod echo_queue;
 pub mod pulse_pool;
 pub mod ray_fan;
 
