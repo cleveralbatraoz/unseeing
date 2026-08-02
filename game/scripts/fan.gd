@@ -43,7 +43,13 @@ func _ready() -> void:
 	if pulses == null or data_mat == null:
 		push_error("SoundFan: pulses/data_mat not injected — fan disabled")
 		return
-	# pedestal: base disc + pole, as static as the walls
+	_build_pedestal()
+	_build_head()
+	_build_blades()
+
+
+## Pedestal: base disc + pole, as static as the walls.
+func _build_pedestal() -> void:
 	var pedestal := StaticBody3D.new()
 	add_child(pedestal)
 	_mesh(pedestal, _cyl(0.22, 0.06), Vector3(0, 0.03, 0))
@@ -56,7 +62,9 @@ func _ready() -> void:
 	base_col.position = Vector3(0, HEAD_H * 0.5, 0)
 	pedestal.add_child(base_col)
 
-	# the pivoting head: motor, guard ring and a collider that swings along
+
+## The pivoting head: motor, guard ring and a collider that swings along.
+func _build_head() -> void:
 	_pivot = Node3D.new()
 	_pivot.position = Vector3(0, HEAD_H, 0)
 	add_child(_pivot)
@@ -76,7 +84,10 @@ func _ready() -> void:
 	head_col.position = Vector3(0, 0, -0.06)
 	head.add_child(head_col)
 
-	# the blades: three flat paddles around a hub, spinning about the facing axis
+
+## The blades: three flat paddles around a hub, spinning about the facing
+## axis. Mounted on the pivot, so _build_head must run first.
+func _build_blades() -> void:
 	_spinner = Node3D.new()
 	_spinner.position = Vector3(0, 0, -0.10)
 	_pivot.add_child(_spinner)
