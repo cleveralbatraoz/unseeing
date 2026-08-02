@@ -45,15 +45,21 @@ func _ready() -> void:
 		pulses != null and cane_mat != null and body_mat != null,
 		"hero_body: pulses/materials not injected"
 	)
-	for pair: Array in [[_cane_mesh, cane_mat], [_body_mesh, body_mat]]:
-		var mi := MeshInstance3D.new()
-		mi.mesh = pair[0]
-		mi.material_override = pair[1]
-		mi.extra_cull_margin = 16384.0
-		add_child(mi)
+	_add_layer(_cane_mesh, cane_mat)
+	_add_layer(_body_mesh, body_mat)
 	_cam_base_y = camera.position.y
 	_last_yaw = player.rotation.y
 	_last_pitch = camera.rotation.x
+
+
+## One render layer of the body: an immediate mesh drawn through the given
+## data-pass material, never frustum-culled (the mesh mutates every frame).
+func _add_layer(mesh: ImmediateMesh, mat: ShaderMaterial) -> void:
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	mi.extra_cull_margin = 16384.0
+	add_child(mi)
 
 
 ## Called by main every frame after movement has settled.
@@ -99,14 +105,10 @@ func update(now: float, dt: float) -> void:
 
 
 func _build_cane(thrust: float) -> void:
-	var cb := camera.global_transform.basis
-	var eye := camera.global_position
 	var bx := 0.016 * sin(_leg_phase) * _walk_amp + _sway_x
 	var by := 0.012 * sin(_leg_phase * 2.0) * _walk_amp + _sway_y
-	var v2w := func(x: float, y: float, z: float) -> Vector3:
-		return eye + cb.x * x + cb.y * y - cb.z * z
-	var hand: Vector3 = v2w.call(0.30 + bx, -0.40 + by - 0.03 * thrust, 0.55 + 0.16 * thrust)
-	var elbow: Vector3 = v2w.call(0.48 + bx * 0.5, -0.64 + by * 0.5, 0.26)
+	var hand := _view_to_world(0.30 + bx, -0.40 + by - 0.03 * thrust, 0.55 + 0.16 * thrust)
+	var elbow := _view_to_world(0.48 + bx * 0.5, -0.64 + by * 0.5, 0.26)
 
 	# rest: the tip lies on whatever surface the cane reaches — floor, table,
 	# chair seat — pre-computed by the player's physics tick; a small hover
@@ -125,6 +127,13 @@ func _build_cane(thrust: float) -> void:
 	_tube(_cane_mesh, hand, tip, 0.013, 0.010)
 	_sphere(_cane_mesh, tip, 0.040)
 	_cane_mesh.surface_end()
+
+
+## A classic viewmodel anchor: camera-space offsets (x right, y up, z depth
+## into the view) to a world point.
+func _view_to_world(x: float, y: float, z: float) -> Vector3:
+	var cb := camera.global_transform.basis
+	return camera.global_position + cb.x * x + cb.y * y - cb.z * z
 
 
 func _build_body() -> void:
