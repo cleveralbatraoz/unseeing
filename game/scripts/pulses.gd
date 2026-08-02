@@ -73,8 +73,11 @@ func _init() -> void:
 		_end[i] = -1.0
 
 
-## Record a sound. Slot eviction prefers expired slots, then the oldest
-## footstep or hum (least precious — both recur), then the oldest of anything.
+## Record a sound. Total at the door: gain is clamped to [0, 1] (a raw value
+## would bleed into the packed type digits) and non-positive speed or radius
+## is refused loudly — a zero-speed wave would occupy its slot forever.
+## Slot eviction prefers expired slots, then the oldest footstep or hum
+## (least precious — both recur), then the oldest of anything.
 func emit(
 	type: int,
 	at: Vector3,
@@ -85,6 +88,10 @@ func emit(
 	beam_dir := Vector3.ZERO,
 	cos_half := -2.0
 ) -> void:
+	if speed <= 0.0 or max_r <= 0.0:
+		push_error("Pulses.emit: speed and max_r must be positive — wave refused")
+		return
+	gain = clampf(gain, 0.0, 1.0)
 	var slot := -1
 	var old_step := -1
 	var oldest := -1
@@ -103,7 +110,7 @@ func emit(
 	if slot < 0:
 		slot = old_step if old_step >= 0 else oldest
 	pos[slot] = at
-	dat[slot] = Vector4(now, max_r, speed, type * 10.0 + minf(gain, 1.0) * 9.0)
+	dat[slot] = Vector4(now, max_r, speed, type * 10.0 + gain * 9.0)
 	var omni := beam_dir == Vector3.ZERO
 	dir[slot] = Vector4(beam_dir.x, beam_dir.y, beam_dir.z, -2.0 if omni else cos_half)
 	_t0[slot] = now
