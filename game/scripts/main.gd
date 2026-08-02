@@ -24,6 +24,7 @@ var post_mat := ShaderMaterial.new()
 var player: UnseeingPlayer
 var hero: HeroBody
 var fan: SoundFan
+var level: LevelData
 
 ## The game clock: simulated seconds accumulated from frame deltas — NOT wall
 ## time, so offline rendering (movie maker) and time scaling stay correct.
@@ -52,21 +53,23 @@ func _ready() -> void:
 		m.shader = DATA_SHADER
 	cane_mat.set_shader_parameter("u_base", 0.85)
 	pulses = Pulses.new()
-	MapBuilder.build_world(self, data_mat)
+	level = MapBuilder.build_world(self, data_mat)
 	# a constant sound source in the NEXT room, behind the wall the spawn
 	# faces: its hum is felt through the wall before it is ever found
 	fan = SoundFan.new()
 	fan.pulses = pulses
 	fan.data_mat = data_mat
-	fan.position = Vector3(8.6, 0, 4.4)
-	fan.rotation.y = PI * 0.5  # mounted facing the shared wall
+	fan.position = level.fan_spawn
+	fan.rotation.y = level.fan_yaw
 	add_child(fan)
 	# the fan's room (east area, wall centerlines): its waves reveal nothing
 	# beyond these bounds — walls stop air, even though the shells are felt
 	for m: ShaderMaterial in [data_mat, cane_mat, body_mat, post_mat]:
-		m.set_shader_parameter("u_hum_room", Vector4(6.4, 0.6, 19.4, 8.0))
+		m.set_shader_parameter("u_hum_room", level.hum_room)
 	player = UnseeingPlayer.new()
 	player.pulses = pulses
+	player.position = level.spawn_pos
+	player.rotation.y = level.spawn_yaw
 	add_child(player)
 	hero = HeroBody.new()
 	hero.player = player
@@ -114,7 +117,7 @@ func _demo_tap() -> void:
 	if not _demo_wanted or now < _demo_next:
 		return
 	_demo_next = now + 4.0  # repeat, so any screenshot timing catches a wave
-	player.queue_wave(0, Vector3(6.4, 0.8, 4.0), 6.0, 5.5, 1.0, 6, Vector3(-1, 0, 0))
+	player.queue_wave(0, level.demo_tap, 6.0, 5.5, 1.0, 6, level.demo_tap_normal)
 
 
 ## The "hearing" pass: a fullscreen quad glued to the camera. It edge-detects

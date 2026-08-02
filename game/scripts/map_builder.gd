@@ -23,7 +23,21 @@ const SEGS: Array[Vector4] = [
 ]
 
 
-static func build_world(parent: Node3D, mat: Material) -> void:
+## The placements that belong to THIS geometry. Every number here must agree
+## with SEGS — the tests hold each one against the wall centerlines.
+static func level() -> LevelData:
+	var data := LevelData.new()
+	data.spawn_pos = Vector3(3, 0.9, 4)
+	data.spawn_yaw = -1.9  # the validated design's spawn facing
+	data.fan_spawn = Vector3(8.6, 0, 4.4)
+	data.fan_yaw = PI * 0.5  # mounted facing the shared wall
+	data.hum_room = Vector4(6.4, 0.6, 19.4, 8.0)
+	data.demo_tap = Vector3(6.4, 0.8, 4.0)
+	data.demo_tap_normal = Vector3(-1, 0, 0)  # the wall's face toward spawn
+	return data
+
+
+static func build_world(parent: Node3D, mat: Material) -> LevelData:
 	# floor and ceiling as thin slabs; only their inward faces are ever seen
 	_add_box(parent, mat, Vector3(10, -0.05, 10), Vector3(20, 0.1, 20))
 	_add_box(parent, mat, Vector3(10, WALL_H + 0.05, 10), Vector3(20, 0.1, 20))
@@ -41,6 +55,7 @@ static func build_world(parent: Node3D, mat: Material) -> void:
 		else:
 			size = Vector3(WALL_T * 2.0, WALL_H, absf(s.w - s.y) + WALL_T * 2.0)
 		_add_box(parent, mat, Vector3(cx, WALL_H * 0.5, cz), size)
+	return level()
 
 
 ## Furniture near the spawn: waist-height obstacles the border walls can't

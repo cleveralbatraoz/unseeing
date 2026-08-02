@@ -40,9 +40,9 @@ var _tap_queued := false
 var _wave_queue: Array[Dictionary] = []
 
 
+## The player owns no spawn: main places it from LevelData. A bare instance
+## sits at the origin, which is exactly what the physics tests want.
 func _init() -> void:
-	position = Vector3(3, 0.9, 4)
-	rotation.y = -1.9  # same spawn facing as the original design
 	var col := CollisionShape3D.new()
 	var capsule := CapsuleShape3D.new()
 	capsule.radius = 0.35
