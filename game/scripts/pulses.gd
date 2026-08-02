@@ -26,12 +26,11 @@ extends RefCounted
 ## no rays and stay silent — only the swept, line-of-sight parts of an
 ## object ever answer. Echoes never spawn further echoes.
 
+## Pool capacity, mirroring the Rust core's source of truth
+## (rust/src/pulse_pool.rs, MAXP): the size of the uniform arrays both
+## shaders loop over per pixel. The shader include pins the same number —
+## shader_contract_test holds all three homes together.
 const MAXP := 64
-## Uniform spherical ray fan uses the golden angle for even coverage.
-const GOLDEN_ANGLE := 2.399963
-## Reflection hits within the same cell merge, so flat walls answer as a few
-## points instead of one point per ray.
-const CLUSTER_CELL := 0.9
 
 ## The shader-bound lanes, read straight from the core — copies of the
 ## uniform arrays, exactly what apply() pushes to the materials.
