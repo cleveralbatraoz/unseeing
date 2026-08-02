@@ -13,7 +13,6 @@ var _player: UnseeingPlayer
 
 
 func before_test() -> void:
-	_ensure_move_actions()
 	_pulses = Pulses.new()
 	_player = auto_free(UnseeingPlayer.new())
 	_player.pulses = _pulses
@@ -21,14 +20,6 @@ func before_test() -> void:
 	_player.rotation.y = 0.0  # face -Z: deterministic aim for every fixture
 	add_child(_player)
 	_player.now = NOW
-
-
-## _physics_process polls the move actions every tick; main.gd defines them
-## at boot, so a bare test scene must register them too.
-func _ensure_move_actions() -> void:
-	for action: String in ["move_forward", "move_left", "move_back", "move_right"]:
-		if not InputMap.has_action(action):
-			InputMap.add_action(action)
 
 
 ## One box: a static collider for the cane's rays, freed after the test.

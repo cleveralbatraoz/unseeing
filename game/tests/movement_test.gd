@@ -8,9 +8,6 @@ var _player: UnseeingPlayer
 
 
 func before_test() -> void:
-	for action: String in ["move_forward", "move_left", "move_back", "move_right"]:
-		if not InputMap.has_action(action):
-			InputMap.add_action(action)
 	_player = auto_free(UnseeingPlayer.new())
 	_player.pulses = Pulses.new()
 	_player.position = Vector3(0, 0.9, 0)
@@ -36,6 +33,17 @@ func _add_box(center: Vector3, size: Vector3) -> void:
 ## Open ground: TICKS physics frames of forward input advance the hero along
 ## its facing at ~SPEED, and the flat-map law holds — velocity.y is zero on
 ## every single tick.
+## The player registers its own senses: a bare instance defined the actions
+## in before_test, and re-registering leaves exactly one key event per action
+## — main's boot call plus any number of players never stack duplicates.
+func test_move_actions_register_once() -> void:
+	UnseeingPlayer.ensure_actions()
+	UnseeingPlayer.ensure_actions()
+	for action: String in UnseeingPlayer.MOVE_KEYS:
+		assert_bool(InputMap.has_action(action)).is_true()
+		assert_int(InputMap.action_get_events(action).size()).is_equal(1)
+
+
 func test_open_floor_walk_at_speed() -> void:
 	await get_tree().physics_frame
 	var start := _player.global_position

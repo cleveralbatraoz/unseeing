@@ -43,7 +43,7 @@ var _demo_wanted := false
 
 
 func _ready() -> void:
-	_setup_input()
+	UnseeingPlayer.ensure_actions()
 	# deterministic flicker for offline frame-comparison runs
 	if not OS.get_environment("UNSEEING_DEMO").is_empty():
 		seed(0x5EED)
@@ -134,20 +134,3 @@ func _setup_post_quad(cam: Camera3D) -> void:
 	quad.extra_cull_margin = 16384.0
 	quad.position = Vector3(0, 0, -1)
 	cam.add_child(quad)
-
-
-## Input actions are defined in code with PHYSICAL keycodes so WASD works on
-## any keyboard layout (ЦФЫВ on Russian, ZQSD keys on AZERTY, etc.).
-func _setup_input() -> void:
-	var keys := {
-		"move_forward": KEY_W,
-		"move_left": KEY_A,
-		"move_back": KEY_S,
-		"move_right": KEY_D,
-	}
-	for action: String in keys:
-		if not InputMap.has_action(action):
-			InputMap.add_action(action)
-			var ev := InputEventKey.new()
-			ev.physical_keycode = keys[action]
-			InputMap.action_add_event(action, ev)

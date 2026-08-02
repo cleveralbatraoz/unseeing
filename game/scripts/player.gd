@@ -26,6 +26,15 @@ const CANE_SCAN_HEIGHT := 0.85  # wall-detection ray height (below tabletops)
 const CANE_SCAN_LENGTH := 3.4
 const WALL_BACKOFF := 0.06
 
+## Move actions bind PHYSICAL keycodes so WASD works on any keyboard layout
+## (ЦФЫВ on Russian, ZQSD keys on AZERTY, etc.).
+const MOVE_KEYS: Dictionary[String, Key] = {
+	"move_forward": KEY_W,
+	"move_left": KEY_A,
+	"move_back": KEY_S,
+	"move_right": KEY_D,
+}
+
 var pulses: Pulses  # injected by main.gd
 var camera: Camera3D
 var now := 0.0  # pushed by main every frame (the one clock)
@@ -38,6 +47,19 @@ var cane_rest_offset := 0.0  # written by hero_body each frame
 
 var _tap_queued := false
 var _wave_queue: Array[Dictionary] = []
+
+
+## The player registers its own senses: idempotent, so a bare instance in a
+## test scene polls input without main's help, and main's boot-time call plus
+## every player _ready leave exactly one key event per action.
+static func ensure_actions() -> void:
+	for action: String in MOVE_KEYS:
+		if InputMap.has_action(action):
+			continue
+		InputMap.add_action(action)
+		var ev := InputEventKey.new()
+		ev.physical_keycode = MOVE_KEYS[action]
+		InputMap.action_add_event(action, ev)
 
 
 ## The player owns no spawn: main places it from LevelData. A bare instance
@@ -58,6 +80,7 @@ func _init() -> void:
 
 
 func _ready() -> void:
+	ensure_actions()
 	# on web the browser only grants capture on a user gesture; the click
 	# handler below recaptures, so skip the doomed attempt and console noise
 	if not OS.has_feature("web"):
