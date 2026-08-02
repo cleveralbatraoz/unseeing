@@ -38,9 +38,8 @@ var now := 0.0
 var _flicker: Flicker
 
 # Dev-only demo tap (see _demo_tap below).
-var _demo_next := 0.6
+var _demo: DemoTap
 var _demo_checked := false
-var _demo_wanted := false
 
 
 func _ready() -> void:
@@ -57,6 +56,7 @@ func _ready() -> void:
 	cane_mat.set_shader_parameter("u_base", 0.85)
 	pulses = Pulses.new()
 	level = MapBuilder.build_world(self, data_mat)
+	_demo = DemoTap.new(level.demo_tap, level.demo_tap_normal)
 	# a constant sound source in the NEXT room, behind the wall the spawn
 	# faces: its hum is felt through the wall before it is ever found
 	fan = SoundFan.new()
@@ -106,14 +106,12 @@ func _process(dt: float) -> void:
 func _demo_tap() -> void:
 	if not _demo_checked and now >= 0.5:
 		_demo_checked = true
-		_demo_wanted = not OS.get_environment("UNSEEING_DEMO").is_empty()
+		_demo.armed = not OS.get_environment("UNSEEING_DEMO").is_empty()
 		if OS.has_feature("web"):
 			var search := str(JavaScriptBridge.eval("window.location.search", true))
-			_demo_wanted = _demo_wanted or search.contains("demo")
-	if not _demo_wanted or now < _demo_next:
-		return
-	_demo_next = now + 4.0  # repeat, so any screenshot timing catches a wave
-	player.queue_wave(0, level.demo_tap, 6.0, 5.5, 1.0, 6, level.demo_tap_normal)
+			_demo.armed = _demo.armed or search.contains("demo")
+	if _demo.fire_due(now):
+		player.queue_wave(0, _demo.point, 6.0, 5.5, 1.0, 6, _demo.normal)
 
 
 ## The "hearing" pass: a fullscreen quad glued to the camera. It edge-detects
