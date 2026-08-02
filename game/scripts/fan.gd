@@ -38,6 +38,11 @@ static func spin_angle(t: float) -> float:
 
 
 func _ready() -> void:
+	# no silent nulls: without the pool and the data-pass material the fan can
+	# neither sound nor be seen — refuse to build instead of crashing later
+	if pulses == null or data_mat == null:
+		push_error("SoundFan: pulses/data_mat not injected — fan disabled")
+		return
 	# pedestal: base disc + pole, as static as the walls
 	var pedestal := StaticBody3D.new()
 	add_child(pedestal)
@@ -86,6 +91,8 @@ func _ready() -> void:
 ## Driven by main with the simulated clock, like every animated thing —
 ## movie-maker runs and time scaling stay correct.
 func update(t: float) -> void:
+	if _pivot == null:
+		return  # _ready refused to build: nothing to animate, nothing to emit
 	_pivot.rotation.y = pivot_angle(t)
 	_spinner.rotation.z = spin_angle(t)
 	if t < _next_whoosh:

@@ -33,6 +33,17 @@ func _add_box(center: Vector3, size: Vector3) -> void:
 ## Open ground: TICKS physics frames of forward input advance the hero along
 ## its facing at ~SPEED, and the flat-map law holds — velocity.y is zero on
 ## every single tick.
+## No silent nulls: a player without its injected pulse pool reports the miss
+## and disables its own physics — it never runs half-wired.
+func test_uninjected_player_reports_and_disables() -> void:
+	var bare: UnseeingPlayer = auto_free(UnseeingPlayer.new())
+	var enter := func() -> void: add_child(bare)
+	await assert_error(enter).is_push_error(
+		"UnseeingPlayer: pulses not injected — physics disabled"
+	)
+	assert_bool(bare.is_physics_processing()).is_false()
+
+
 ## The player registers its own senses: a bare instance defined the actions
 ## in before_test, and re-registering leaves exactly one key event per action
 ## — main's boot call plus any number of players never stack duplicates.

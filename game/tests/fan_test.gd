@@ -31,3 +31,13 @@ func test_fan_wash_stays_within_slot_headroom() -> void:
 func test_fan_wash_is_directed_cone() -> void:
 	assert_bool(SoundFan.BEAM_COS > 0.7).is_true()
 	assert_bool(SoundFan.BEAM_COS < 0.95).is_true()
+
+
+## No silent nulls: a fan without its injected pool and material reports the
+## miss, builds nothing, and update() becomes a harmless no-op.
+func test_uninjected_fan_reports_and_skips_update() -> void:
+	var fan: SoundFan = auto_free(SoundFan.new())
+	var enter := func() -> void: add_child(fan)
+	await assert_error(enter).is_push_error("SoundFan: pulses/data_mat not injected — fan disabled")
+	fan.update(99.0)  # would crash on the missing head if _ready had built
+	assert_int(fan.get_child_count()).is_equal(0)

@@ -81,6 +81,12 @@ func _init() -> void:
 
 func _ready() -> void:
 	ensure_actions()
+	# no silent nulls: without its pulse pool the player cannot voice a single
+	# tap or footstep — refuse to run instead of crashing frames later
+	if pulses == null:
+		push_error("UnseeingPlayer: pulses not injected — physics disabled")
+		set_physics_process(false)
+		return
 	# on web the browser only grants capture on a user gesture; the click
 	# handler below recaptures, so skip the doomed attempt and console noise
 	if not OS.has_feature("web"):
