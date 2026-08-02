@@ -9,6 +9,12 @@ while read old new ref; do
   echo "ci: building $new on $(hostname)"
   rm -rf "$WORK"; mkdir -p "$WORK"
   git --git-dir="$REPO" archive "$new" | tar -x -C "$WORK"
+  # The work tree is wiped every push, but a from-scratch Rust build takes
+  # tens of minutes on this one-core droplet: cargo's target lives outside
+  # and is symlinked in. The .gdextension res:// paths resolve through it.
+  mkdir -p "$HOME/ci/cargo-target"
+  rm -rf "$WORK/rust/target"
+  ln -s "$HOME/ci/cargo-target" "$WORK/rust/target"
   chmod +x "$WORK/ci/pipeline.sh" "$WORK/test/web_smoke.sh" "$WORK/test/web_probe.py" 2>/dev/null || true
   if (cd "$WORK" && sh ci/pipeline.sh); then
     echo "ci: SUCCESS — $new is live"
