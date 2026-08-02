@@ -37,7 +37,7 @@ func _add_box(center: Vector3, size: Vector3) -> void:
 ## player alone moves the eye around the fixed base height.
 func test_head_bob_moves_camera_around_base() -> void:
 	_player.set_head_bob(0.02)
-	var base := UnseeingPlayer.CAM_BASE_Y
+	var base := UnseeingPlayer.cam_base_y()
 	assert_float(_player.camera.position.y).is_equal_approx(base + 0.02, 0.0001)
 	_player.set_head_bob(0.0)
 	assert_float(_player.camera.position.y).is_equal_approx(base, 0.0001)
@@ -60,7 +60,7 @@ func test_uninjected_player_reports_and_disables() -> void:
 func test_move_actions_register_once() -> void:
 	UnseeingPlayer.ensure_actions()
 	UnseeingPlayer.ensure_actions()
-	for action: String in UnseeingPlayer.MOVE_KEYS:
+	for action: String in UnseeingPlayer.move_keys():
 		assert_bool(InputMap.has_action(action)).is_true()
 		assert_int(InputMap.action_get_events(action).size()).is_equal(1)
 
@@ -74,7 +74,7 @@ func test_open_floor_walk_at_speed() -> void:
 		assert_float(_player.velocity.y).is_equal(0.0)
 	Input.action_release("move_forward")
 	var walked := (_player.global_position - start).length()
-	var expected := UnseeingPlayer.SPEED * TICKS / float(Engine.physics_ticks_per_second)
+	var expected := UnseeingPlayer.speed() * TICKS / float(Engine.physics_ticks_per_second)
 	assert_float(walked).is_equal_approx(expected, expected * 0.08)
 	# the walk went where the body faces: straight down -Z, no sideways drift
 	assert_float(absf(_player.global_position.x - start.x)).is_less(0.01)
@@ -112,14 +112,14 @@ func test_mouse_look_capture_gate_and_pitch_clamp() -> void:
 		assert_float(_player.rotation.y).is_equal(yaw_before)
 		assert_float(_player.camera.rotation.x).is_equal(pitch_before)
 		return
-	var limit := UnseeingPlayer.PITCH_LIMIT
+	var limit := UnseeingPlayer.pitch_limit()
 	get_viewport().push_input(_motion(Vector2(0.0, 1.0e6)))  # yank far down
 	assert_float(_player.camera.rotation.x).is_equal_approx(-limit, 0.0001)
 	get_viewport().push_input(_motion(Vector2(0.0, -1.0e6)))  # yank far up
 	assert_float(_player.camera.rotation.x).is_equal_approx(limit, 0.0001)
 	var yaw_start := _player.rotation.y
 	get_viewport().push_input(_motion(Vector2(100.0, 0.0)))
-	var turned := yaw_start - 100.0 * UnseeingPlayer.MOUSE_SENS
+	var turned := yaw_start - 100.0 * UnseeingPlayer.mouse_sens()
 	assert_float(_player.rotation.y).is_equal_approx(turned, 0.0001)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 

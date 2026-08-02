@@ -160,7 +160,7 @@ func test_cane_rest_shortened_by_wall() -> void:
 	assert_bool(rest.supported).is_false()
 	assert_float(rest.tip.y).is_equal_approx(0.02, 0.0001)
 	# the wall scan runs from the player's axis: wall_d = 0.95 m to the face
-	var reach := minf(UnseeingPlayer.CANE_REACH, 0.95 - UnseeingPlayer.WALL_BACKOFF)
-	assert_bool(reach < UnseeingPlayer.CANE_REACH).is_true()  # truly shortened
+	var reach := minf(UnseeingPlayer.cane_reach(), 0.95 - UnseeingPlayer.wall_backoff())
+	assert_bool(reach < UnseeingPlayer.cane_reach()).is_true()  # truly shortened
 	var horizontal := Vector2(rest.tip.x, rest.tip.z).length()
 	assert_float(horizontal).is_equal_approx(reach, 0.01)

@@ -8,16 +8,17 @@ extends GdUnitTestSuite
 ## alone owns time and the scripted velocity.
 
 const DT := 1.0 / 60.0
-const WALK_VEL := Vector3(0, 0, -UnseeingPlayer.SPEED)
 
+var _walk_vel := Vector3(0, 0, -UnseeingPlayer.speed())
 var _player: UnseeingPlayer
 var _hero: HeroBody
 var _now := 0.0
 
 
 func before_test() -> void:
+	var pulses := Pulses.new()
 	_player = auto_free(UnseeingPlayer.new())
-	_player.pulses = Pulses.new()
+	_player.pulses = pulses
 	_player.position = Vector3(0, 0.9, 0)
 	_player.rotation.y = 0.0
 	add_child(_player)
@@ -25,7 +26,7 @@ func before_test() -> void:
 	_hero = auto_free(HeroBody.new())
 	_hero.player = _player
 	_hero.camera = _player.camera
-	_hero.pulses = _player.pulses
+	_hero.pulses = pulses
 	_hero.cane_mat = ShaderMaterial.new()
 	_hero.body_mat = ShaderMaterial.new()
 	add_child(_hero)
@@ -72,10 +73,10 @@ func test_walk_tap_stop_stays_bounded() -> void:
 	for frame: int in 120:
 		_player.rotation.y += 0.2 * sin(frame * 0.3)
 		_player.camera.rotation.x = 0.9 * sin(frame * 0.17)
-		_step(WALK_VEL)
+		_step(_walk_vel)
 	_player.last_tap = _now
 	_player.tap_target = Vector3(0.4, 1.1, -1.4)
 	for frame: int in 30:
-		_step(WALK_VEL)
+		_step(_walk_vel)
 	for frame: int in 60:
 		_step(Vector3.ZERO)
