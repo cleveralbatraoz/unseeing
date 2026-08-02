@@ -33,6 +33,42 @@ func test_fan_wash_is_directed_cone() -> void:
 	assert_bool(SoundFan.BEAM_COS < 0.95).is_true()
 
 
+## The whoosh rides the pivot: a cadence beat emits ONE directed hum aimed
+## exactly where the mounted, pivoting head points at that very moment — and
+## a stalled clock buys a single beat, never a backfilled burst of them.
+func test_whoosh_beam_rides_pivot_and_keeps_cadence() -> void:
+	const MOUNT_YAW := 0.9  # an arbitrary mounting, like main's level data
+	var pulses := Pulses.new()
+	var fan: SoundFan = auto_free(SoundFan.new())
+	fan.pulses = pulses
+	fan.data_mat = ShaderMaterial.new()
+	fan.rotation.y = MOUNT_YAW
+	add_child(fan)
+	fan.update(0.4)  # the first beat: _next_whoosh starts at 0.4
+	assert_int(pulses.live_count(0.4)).is_equal(1)
+	assert_float(pulses.dat[0].x).is_equal_approx(0.4, 0.0001)
+	assert_float(pulses.dat[0].y).is_equal(SoundFan.HUM_RANGE)
+	assert_float(pulses.dat[0].z).is_equal(SoundFan.HUM_SPEED)
+	assert_int(int(floorf(pulses.dat[0].w / 10.0))).is_equal(3)
+	assert_float(fmod(pulses.dat[0].w, 10.0) / 9.0).is_equal_approx(SoundFan.HUM_GAIN, 0.001)
+	# the beam: cone width from the constant, direction from the mounting yaw
+	# composed with the pivot's oscillation at this very moment
+	assert_float(pulses.dir[0].w).is_equal_approx(SoundFan.BEAM_COS, 0.0001)
+	var total_yaw := MOUNT_YAW + SoundFan.pivot_angle(0.4)
+	var beam := Vector3(-sin(total_yaw), 0.0, -cos(total_yaw))
+	var got := Vector3(pulses.dir[0].x, pulses.dir[0].y, pulses.dir[0].z)
+	assert_vector(got).is_equal_approx(beam, Vector3(0.001, 0.001, 0.001))
+	# born at the spinner hub, 0.1 m down the beam from the pivot point
+	var hub := Vector3(0, SoundFan.HEAD_H, 0) + beam * 0.1
+	assert_vector(pulses.pos[0]).is_equal_approx(hub, Vector3(0.001, 0.001, 0.001))
+	fan.update(0.41)  # inside the cadence: not a sound
+	assert_int(pulses.live_count(0.41)).is_equal(1)
+	assert_float(pulses.dat[0].x).is_equal_approx(0.4, 0.0001)
+	fan.update(5.0)  # the first hum expired at 4.4, freeing its slot...
+	assert_float(pulses.dat[0].x).is_equal(5.0)
+	assert_float(pulses.dat[1].x).is_equal(-1.0)  # ...and NO burst backfilled
+
+
 ## No silent nulls: a fan without its injected pool and material reports the
 ## miss, builds nothing, and update() becomes a harmless no-op.
 func test_uninjected_fan_reports_and_skips_update() -> void:
