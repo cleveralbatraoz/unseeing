@@ -29,6 +29,11 @@ pub const SELF_SURFACE: f64 = 0.3;
 /// echo they spawn is born in air, not inside a collider.
 pub const SURFACE_OFFSET: f32 = 0.02;
 
+/// Reflection rays are cast from this far off the birth surface along its
+/// normal — otherwise they start inside the struck collider and leak into
+/// the acoustic shadow, answering from places the wave never reached.
+pub const RAY_ORIGIN_LIFT: f32 = 0.08;
+
 /// A reflection ray never reaches past this many meters, whatever the
 /// primary wave's range — the fan samples nearby geometry, not the map.
 pub const RAY_REACH_CAP: f64 = 6.0;
@@ -91,6 +96,19 @@ pub fn is_self_surface(dist: f32) -> bool {
 #[must_use]
 pub fn ray_length(max_r: f64) -> f64 {
     (max_r * RAY_REACH_FRACTION).min(RAY_REACH_CAP)
+}
+
+/// The engine-facing echo budget as a slot count, total over every i64.
+/// GDScript's `mini(found.size(), max_echoes)` answered nothing for a
+/// negative budget; the clamp mirrors that, and a budget beyond any
+/// possible answer count (the boundary hands in i64) simply caps nothing.
+#[must_use]
+pub fn echo_budget(max_echoes: i64) -> usize {
+    if max_echoes <= 0 {
+        0
+    } else {
+        usize::try_from(max_echoes).unwrap_or(usize::MAX)
+    }
 }
 
 /// Cluster ray hits into at most `max_echoes` answering points.
@@ -261,6 +279,24 @@ mod tests {
         assert!((ray_length(6.0) - 4.8).abs() < 1e-9);
         assert_eq!(ray_length(10.0), 6.0);
         assert_eq!(ray_length(0.5), 0.4);
+    }
+
+    /// The boundary's budget clamp is total: negatives answer nothing (the
+    /// GDScript mini() law), practical budgets pass through unchanged, and
+    /// an absurd budget caps nothing instead of wrapping or panicking.
+    #[test]
+    fn echo_budget_is_total_over_i64() {
+        assert_eq!(echo_budget(-1), 0);
+        assert_eq!(echo_budget(i64::MIN), 0);
+        assert_eq!(echo_budget(0), 0);
+        assert_eq!(echo_budget(6), 6);
+        let n = Vector3::new(0.0, 1.0, 0.0);
+        let hits = [
+            hit(Vector3::new(1.0, 0.0, 0.0), n, 1.0),
+            hit(Vector3::new(2.0, 0.0, 0.0), n, 2.0),
+        ];
+        assert!(cluster_hits(hits, echo_budget(-5)).is_empty());
+        assert_eq!(cluster_hits(hits, echo_budget(i64::MAX)).len(), 2);
     }
 
     /// Equal distances across different cells rank by cell key — the total
