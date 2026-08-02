@@ -83,7 +83,7 @@ func _ready() -> void:
 
 func _process(dt: float) -> void:
 	now += dt
-	player.now = now
+	player.tick(now)
 	_flick += (1.0 - _flick) * 0.12 + (randf() - 0.5) * 0.09
 	_flick = clampf(_flick, 0.72, 1.2)
 	_next_drop -= dt

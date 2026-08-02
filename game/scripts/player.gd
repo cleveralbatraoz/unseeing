@@ -37,7 +37,6 @@ const MOVE_KEYS: Dictionary[String, Key] = {
 
 var pulses: Pulses  # injected by main.gd
 var camera: Camera3D
-var now := 0.0  # pushed by main every frame (the one clock)
 var last_tap := -10.0  # drives the cane strike animation
 var tap_target := Vector3.ZERO  # where the last tap landed (wall/floor/air)
 ## Cached cane rest, recomputed every physics tick at the sweep offset the
@@ -45,6 +44,7 @@ var tap_target := Vector3.ZERO  # where the last tap landed (wall/floor/air)
 var cane_rest: Dictionary = {tip = Vector3.ZERO, supported = false}
 var cane_rest_offset := 0.0  # written by hero_body each frame
 
+var _now := 0.0  # the game clock, advanced only through tick()
 var _tap_queued := false
 var _wave_queue: Array[Dictionary] = []
 
@@ -108,6 +108,12 @@ func _unhandled_input(event: InputEvent) -> void:
 			_tap_queued = true  # executed next physics tick, in physics context
 
 
+## The clock is handed, never poked: main advances the simulated time here
+## every frame — the player never reads a wall clock of its own.
+func tick(now_t: float) -> void:
+	_now = now_t
+
+
 ## Other systems (hero footsteps, main's demo tap) request waves here; they
 ## are emitted next physics tick so reflection raycasts run in-context.
 func queue_wave(
@@ -150,15 +156,15 @@ func _physics_process(_dt: float) -> void:
 	var space := get_world_3d().direct_space_state
 	for w: Dictionary in _wave_queue:
 		pulses.emit_reflecting(
-			w.type, w.at, w.max_r, w.speed, w.gain, now, space, w.echoes, w.normal
+			w.type, w.at, w.max_r, w.speed, w.gain, _now, space, w.echoes, w.normal
 		)
 	_wave_queue.clear()
 
 
 func _cane_tap() -> void:
-	if now - last_tap < TAP_COOLDOWN:
+	if _now - last_tap < TAP_COOLDOWN:
 		return
-	last_tap = now
+	last_tap = _now
 	var pitch := camera.rotation.x
 	var aim := -camera.global_transform.basis.z
 	var flat := Vector3(aim.x, 0, aim.z).normalized()
@@ -172,7 +178,7 @@ func _cane_tap() -> void:
 		var floorish: bool = hit.normal.y > 0.7 and hit.position.y < 0.2
 		var r := 5.0 if floorish else 6.0
 		var g := 0.85 if floorish else 1.0
-		pulses.emit_reflecting(0, tap_target, r, 5.5, g, now, space, 6, hit.normal)
+		pulses.emit_reflecting(0, tap_target, r, 5.5, g, _now, space, 6, hit.normal)
 		return
 	var rest := _compute_cane_rest(0.0)
 	var raised: bool = rest.supported and rest.tip.y > 0.15
@@ -182,7 +188,7 @@ func _cane_tap() -> void:
 		tap_target = rest.tip
 		var r2 := 6.0 if raised else 5.0
 		var g2 := 1.0 if raised else 0.85
-		pulses.emit_reflecting(0, tap_target, r2, 5.5, g2, now, space, 6, Vector3.UP)
+		pulses.emit_reflecting(0, tap_target, r2, 5.5, g2, _now, space, 6, Vector3.UP)
 	else:
 		# air swish: the cane sweeps up through nothing; air reflects nothing
 		var hy := clampf(EYE + tan(pitch) * 1.5, 0.3, 1.7)

@@ -19,7 +19,7 @@ func before_test() -> void:
 	_player.position = Vector3(0, 0.9, 0)
 	_player.rotation.y = 0.0  # face -Z: deterministic aim for every fixture
 	add_child(_player)
-	_player.now = NOW
+	_player.tick(NOW)
 
 
 ## One box: a static collider for the cane's rays, freed after the test.
@@ -115,11 +115,11 @@ func test_second_tap_within_cooldown_is_swallowed() -> void:
 	await get_tree().physics_frame
 	await _tap()
 	assert_int(_pulses.live_count(NOW + 0.1)).is_equal(1)
-	_player.now = NOW + 0.05
+	_player.tick(NOW + 0.05)
 	await _tap()
 	assert_float(_player.last_tap).is_equal(NOW)  # swallowed: no new tap
 	assert_int(_pulses.live_count(NOW + 0.1)).is_equal(1)
-	_player.now = NOW + 0.3
+	_player.tick(NOW + 0.3)
 	await _tap()
 	assert_float(_player.last_tap).is_equal(NOW + 0.3)
 	assert_int(_pulses.live_count(NOW + 0.35)).is_equal(2)
