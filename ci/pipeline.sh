@@ -121,8 +121,10 @@ for f in index.html index.js index.wasm index.pck; do
 done
 echo "ci: export OK ($(wc -c < "$DIR/game/build/web/index.wasm" | tr -d ' ') bytes of wasm)"
 
-# stamp the build sha into the shell (head_include carries __BUILD__)
-SHA="$(git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+# stamp the build sha into the shell (head_include carries __BUILD__);
+# BUILD_SHA comes from the post-receive hook — its work tree is a tar
+# extract of the pushed commit, not a git repo, so rev-parse can't know
+SHA="${BUILD_SHA:-$(git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 sed -i.bak "s/__BUILD__/$SHA/g" "$DIR/game/build/web/index.html" 2>/dev/null || \
   sed -i "s/__BUILD__/$SHA/g" "$DIR/game/build/web/index.html"
 rm -f "$DIR/game/build/web/index.html.bak"

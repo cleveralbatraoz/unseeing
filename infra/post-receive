@@ -18,6 +18,8 @@ while read old new ref; do
   # This box cannot compile godot-core (1.8 GB RAM); deploy.sh cross-builds
   # the cores and seeds them into cargo-target before every push.
   export PREBUILT_RUST=1
+  # The work tree is a tar extract, not a repo — hand the sha to the stamp.
+  export BUILD_SHA="$(printf %.9s "$new")"
   chmod +x "$WORK/ci/pipeline.sh" "$WORK/test/web_smoke.sh" "$WORK/test/web_probe.py" 2>/dev/null || true
   if (cd "$WORK" && sh ci/pipeline.sh); then
     echo "ci: SUCCESS — $new is live"
