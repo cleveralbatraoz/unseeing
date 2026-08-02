@@ -35,3 +35,4 @@ mod ffi;
 mod nodes;
 pub mod pulse_pool;
 pub mod ray_fan;
+pub mod viewmodel;
