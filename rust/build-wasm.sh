@@ -10,13 +10,19 @@
 #                        must match the main module's emscripten.
 set -eu
 NIGHTLY="nightly-2026-05-25"
-EMSDK="${EMSDK_DIR:-$HOME/emsdk}"
+# Exported: emsdk_env.sh locates the SDK via $EMSDK under plain sh (dash),
+# where BASH_SOURCE — its other self-location mechanism — does not exist.
+export EMSDK="${EMSDK_DIR:-$HOME/emsdk}"
 
 [ -f "$EMSDK/emsdk_env.sh" ] || {
   echo "build-wasm: emsdk not found at $EMSDK (git clone emscripten-core/emsdk; ./emsdk install 4.0.20 && ./emsdk activate 4.0.20)"
   exit 2
 }
 EMSDK_QUIET=1 . "$EMSDK/emsdk_env.sh"
+command -v emcc >/dev/null 2>&1 || {
+  echo "build-wasm: emcc still missing after sourcing emsdk_env.sh — is 4.0.20 installed AND activated?"
+  exit 2
+}
 
 # Compute AFTER sourcing emsdk_env.sh — it clobbers common variable names
 # (DIR among them) and set -u would trip on the wreckage.
