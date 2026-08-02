@@ -62,6 +62,30 @@ func test_null_space_schedules_no_echoes() -> void:
 	assert_int(p.pending_echo_count()).is_equal(0)
 
 
+## apply() is the only bridge from the CPU pool to the GPU: it must push the
+## live count and all three uniform arrays into every wave material. A real
+## ShaderMaterial with the real data-pass shader — parameter storage needs
+## no GPU, so this runs headless.
+func test_apply_pushes_pool_to_materials() -> void:
+	var mat := ShaderMaterial.new()
+	mat.shader = load("res://shaders/data_pass.gdshader")
+	var p := Pulses.new()
+	p.emit(0, Vector3(1, 2, 3), 6.0, 5.5, 1.0, 10.0)
+	p.emit(2, Vector3(4, 5, 6), 1.6, 4.0, 0.8, 10.0)
+	p.apply(10.5, [mat])
+	var count: int = mat.get_shader_parameter("u_count")
+	assert_int(count).is_equal(2)
+	var ppos: PackedVector3Array = mat.get_shader_parameter("u_ppos")
+	assert_vector(ppos[0]).is_equal(Vector3(1, 2, 3))
+	assert_vector(ppos[1]).is_equal(Vector3(4, 5, 6))
+	var pdat: PackedVector4Array = mat.get_shader_parameter("u_pdat")
+	assert_float(pdat[0].x).is_equal(10.0)
+	assert_float(pdat[0].y).is_equal(6.0)
+	assert_float(pdat[0].z).is_equal(5.5)
+	var pdir: PackedVector4Array = mat.get_shader_parameter("u_pdir")
+	assert_float(pdir[0].w).is_equal(-2.0)
+
+
 ## The fan's hum is type 3: omnidirectional, short-tailed (it recurs every
 ## second, so slots must free fast), and packed like every other pulse.
 func test_hum_pulses() -> void:
