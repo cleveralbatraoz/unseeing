@@ -16,4 +16,6 @@ godot = { version = "=0.5.4", features = ["api-4-7", "experimental-wasm", "lazy-
 nothreads = ["godot/experimental-wasm-nothreads"]
 
 [profile.release]
-lto = true
+# Thin, not fat: near-identical optimization for a library this size, at a
+# fraction of the link-time memory — the droplet builds in 1.8 GB of RAM.
+lto = "thin"
