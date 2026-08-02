@@ -9,8 +9,6 @@
 #                        built with (build-containers branch 4.7); a SIDE_MODULE
 #                        must match the main module's emscripten.
 set -eu
-DIR="$(cd "$(dirname "$0")" && pwd)"
-
 NIGHTLY="nightly-2026-05-25"
 EMSDK="${EMSDK_DIR:-$HOME/emsdk}"
 
@@ -20,13 +18,17 @@ EMSDK="${EMSDK_DIR:-$HOME/emsdk}"
 }
 EMSDK_QUIET=1 . "$EMSDK/emsdk_env.sh"
 
+# Compute AFTER sourcing emsdk_env.sh — it clobbers common variable names
+# (DIR among them) and set -u would trip on the wreckage.
+CRATE_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 rustup toolchain list | grep -q "$NIGHTLY" || {
   echo "build-wasm: $NIGHTLY missing (rustup toolchain install $NIGHTLY; rustup component add rust-src --toolchain $NIGHTLY; rustup target add wasm32-unknown-emscripten --toolchain $NIGHTLY)"
   exit 2
 }
 
 RUSTFLAGS="-C link-args=-sSIDE_MODULE=2 -C llvm-args=-enable-emscripten-cxx-exceptions=0 -Z default-visibility=hidden -Z link-native-libraries=no -Z emscripten-wasm-eh=false" \
-  cargo "+$NIGHTLY" build --manifest-path "$DIR/Cargo.toml" \
+  cargo "+$NIGHTLY" build --manifest-path "$CRATE_DIR/Cargo.toml" \
   --features nothreads -Zbuild-std \
   --target wasm32-unknown-emscripten --release
-echo "build-wasm: OK -> $DIR/target/wasm32-unknown-emscripten/release/unseeing_core.wasm"
+echo "build-wasm: OK -> $CRATE_DIR/target/wasm32-unknown-emscripten/release/unseeing_core.wasm"
