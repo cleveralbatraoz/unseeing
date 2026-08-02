@@ -111,7 +111,7 @@ func _build_cane(thrust: float) -> void:
 	# rest: the tip lies on whatever surface the cane reaches — floor, table,
 	# chair seat — pre-computed by the player's physics tick; a small hover
 	# animates the sweep so the tip touches down at the extremes
-	var rest_tip: Vector3 = player.cane_rest.tip
+	var rest_tip := player.cane_rest.tip
 	var moving := _walk_amp > 0.5
 	var lift := maxf(0.0, 1.0 - absf(_cane_swing) / 0.26) if moving else 0.3
 	rest_tip.y += 0.12 * lift * (1.0 - thrust)

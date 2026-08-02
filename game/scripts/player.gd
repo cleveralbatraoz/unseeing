@@ -41,12 +41,31 @@ var last_tap := -10.0  # drives the cane strike animation
 var tap_target := Vector3.ZERO  # where the last tap landed (wall/floor/air)
 ## Cached cane rest, recomputed every physics tick at the sweep offset the
 ## viewmodel requested — hero_body reads this instead of raycasting itself.
-var cane_rest: Dictionary = {tip = Vector3.ZERO, supported = false}
+var cane_rest := CaneRest.new()
 var cane_rest_offset := 0.0  # written by hero_body each frame
 
 var _now := 0.0  # the game clock, advanced only through tick()
 var _tap_queued := false
-var _wave_queue: Array[Dictionary] = []
+var _wave_queue: Array[WaveRequest] = []
+
+
+## Where the cane tip naturally rests, and whether any surface actually
+## holds it up (false over open air at floor level).
+class CaneRest:
+	var tip := Vector3.ZERO
+	var supported := false
+
+
+## What a tap or footstep asks of the wave pool — carried whole from the
+## input/frame context into the physics tick where raycasts may run.
+class WaveRequest:
+	var type: int
+	var at: Vector3
+	var max_r: float
+	var speed: float
+	var gain: float
+	var echoes: int
+	var normal: Vector3
 
 
 ## The player registers its own senses: idempotent, so a bare instance in a
@@ -125,20 +144,15 @@ func queue_wave(
 	max_echoes: int,
 	origin_normal := Vector3.ZERO
 ) -> void:
-	(
-		_wave_queue
-		. append(
-			{
-				type = type,
-				at = at,
-				max_r = max_r,
-				speed = speed,
-				gain = gain,
-				echoes = max_echoes,
-				normal = origin_normal,
-			}
-		)
-	)
+	var req := WaveRequest.new()
+	req.type = type
+	req.at = at
+	req.max_r = max_r
+	req.speed = speed
+	req.gain = gain
+	req.echoes = max_echoes
+	req.normal = origin_normal
+	_wave_queue.append(req)
 
 
 func _physics_process(_dt: float) -> void:
@@ -154,7 +168,7 @@ func _physics_process(_dt: float) -> void:
 		_tap_queued = false
 		_cane_tap()
 	var space := get_world_3d().direct_space_state
-	for w: Dictionary in _wave_queue:
+	for w: WaveRequest in _wave_queue:
 		pulses.emit_reflecting(
 			w.type, w.at, w.max_r, w.speed, w.gain, _now, space, w.echoes, w.normal
 		)
@@ -181,7 +195,7 @@ func _cane_tap() -> void:
 		pulses.emit_reflecting(0, tap_target, r, 5.5, g, _now, space, 6, hit.normal)
 		return
 	var rest := _compute_cane_rest(0.0)
-	var raised: bool = rest.supported and rest.tip.y > 0.15
+	var raised := rest.supported and rest.tip.y > 0.15
 	if raised or (rest.supported and pitch <= -0.12):
 		# no aim needed: tap whatever the cane is physically resting on —
 		# tabletop, chair seat, or (when looking down) the floor
@@ -201,7 +215,7 @@ func _cane_tap() -> void:
 ## supporting surface below — floor, tabletop, chair seat. This is the cane
 ## "touching" the world; the tap and the visuals both use it.
 ## Physics-context only: called from _physics_process.
-func _compute_cane_rest(yaw_offset: float) -> Dictionary:
+func _compute_cane_rest(yaw_offset: float) -> CaneRest:
 	var fw := -global_transform.basis.z
 	var dir := Vector3(fw.x, 0, fw.z).normalized().rotated(Vector3.UP, yaw_offset)
 	var space := get_world_3d().direct_space_state
@@ -218,6 +232,10 @@ func _compute_cane_rest(yaw_offset: float) -> Dictionary:
 	var down := space.intersect_ray(
 		PhysicsRayQueryParameters3D.create(Vector3(px, 1.05, pz), Vector3(px, -0.1, pz))
 	)
+	var rest := CaneRest.new()
 	if down:
-		return {tip = Vector3(px, down.position.y + 0.02, pz), supported = true}
-	return {tip = Vector3(px, 0.02, pz), supported = false}
+		rest.tip = Vector3(px, down.position.y + 0.02, pz)
+		rest.supported = true
+	else:
+		rest.tip = Vector3(px, 0.02, pz)
+	return rest
