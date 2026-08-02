@@ -56,8 +56,14 @@ for the Web export. One-time setup: `git config core.hooksPath .githooks`
 and `pipx install "gdtoolkit==4.*"` — every commit is gated by `gdformat`
 and `gdlint`.
 
-- `ci/pipeline.sh` — the full gauntlet: format + lint gate, headless boot
-  check, unit tests (`game/tests/`), clean Web export, build stamping,
+- `rust/` — the wave/physics core as a GDExtension (godot-rust). Pure math
+  lives in engine-free modules under plain `cargo test`; the `ffi` module is
+  the only place engine types appear. `rust/build-wasm.sh` builds the
+  single-threaded wasm for the web export (toolchain pins and their reasons
+  are documented in the script).
+- `ci/pipeline.sh` — the full gauntlet: cargo fmt/clippy/test + release
+  build, format + lint gate, headless boot check, unit tests
+  (`game/tests/`), the wasm core build, clean Web export, build stamping,
   precompression, and a browser smoke test that boots the exported wasm in
   headless Chrome and asserts it renders. The same POSIX script runs
   locally, on the droplet, and in cloud CI.

@@ -32,5 +32,5 @@ Renderer is `gl_compatibility` — mandatory for the Web (wasm) export.
 | Headless unit tests + browser smoke gate | done (`tests/`, `../test/`) |
 | Web (wasm) export + droplet CI/CD deploy | done |
 | Desktop exports (macOS universal, Windows x86_64 + arm64) | done |
-| Wave/physics core as GDExtension Rust module | TODO (see CLAUDE.md) |
-| gdUnit4 test framework migration | TODO (see CLAUDE.md) |
+| Wave/physics core as GDExtension Rust module | bootstrapped (`rust/`: gdext 0.5.4, wasm-verified; pool migration in progress) |
+| gdUnit4 test framework migration | done (`tests/`, headless CLI in `ci/pipeline.sh`) |
