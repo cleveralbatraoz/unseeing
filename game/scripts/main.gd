@@ -21,6 +21,9 @@ var data_mat := ShaderMaterial.new()
 var cane_mat := ShaderMaterial.new()  # standing reveal: the hero knows their grip
 var body_mat := ShaderMaterial.new()  # legs/torso: revealed only by waves
 var post_mat := ShaderMaterial.new()
+## Every material that renders waves — all four consume the same pool and the
+## same per-frame globals.
+var wave_mats: Array[ShaderMaterial] = [data_mat, cane_mat, body_mat, post_mat]
 var player: UnseeingPlayer
 var hero: HeroBody
 var fan: SoundFan
@@ -64,7 +67,7 @@ func _ready() -> void:
 	add_child(fan)
 	# the fan's room (east area, wall centerlines): its waves reveal nothing
 	# beyond these bounds — walls stop air, even though the shells are felt
-	for m: ShaderMaterial in [data_mat, cane_mat, body_mat, post_mat]:
+	for m: ShaderMaterial in wave_mats:
 		m.set_shader_parameter("u_hum_room", level.hum_room)
 	player = UnseeingPlayer.new()
 	player.pulses = pulses
@@ -92,13 +95,13 @@ func _process(dt: float) -> void:
 		_next_drop = 8.0 + randf() * 10.0
 	if now < _drop_until:
 		_flick *= 0.55
-	for m: ShaderMaterial in [data_mat, cane_mat, body_mat, post_mat]:
+	for m: ShaderMaterial in wave_mats:
 		m.set_shader_parameter("u_time", now)
 		m.set_shader_parameter("u_flick", _flick)
 	post_mat.set_shader_parameter("u_breath", 1.0 + sin(now * 0.5) * 0.045)
 	post_mat.set_shader_parameter("u_grain_t", fmod(now, 1.0) * 61.7)
 	fan.update(now)
-	pulses.apply(now, [data_mat, cane_mat, body_mat, post_mat])
+	pulses.apply(now, wave_mats)
 	hero.update(now, dt)
 	_demo_tap()
 

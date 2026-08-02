@@ -65,8 +65,8 @@ func test_no_echoes_in_acoustic_shadow() -> void:
 	var echoes := p.pending_echoes()
 	assert_int(echoes.size()).is_greater(0)
 	var struck_answering_wall := false
-	for e: Dictionary in echoes:
-		var at: Vector3 = e.pos
+	for e: Pulses.Echo in echoes:
+		var at := e.pos
 		assert_bool(at.x >= -0.05).is_true()  # never behind the birth plane
 		assert_bool(at.x <= 1.8).is_true()  # never past the answering wall
 		if at.x > 1.3:
@@ -81,8 +81,8 @@ func test_echo_drain_keeps_its_appointment() -> void:
 	var p := Pulses.new()
 	p.emit_reflecting(0, SOUND_AT, MAX_R, SPEED, GAIN, NOW, _space, 1, NORMAL)
 	assert_int(p.pending_echo_count()).is_equal(1)
-	var e: Dictionary = p.pending_echoes()[0]
-	var at_t: float = e.at_t
+	var e := p.pending_echoes()[0]
+	var at_t := e.at_t
 	p.apply(at_t - 0.01, [])
 	assert_int(p.pending_echo_count()).is_equal(1)  # too early: still pending
 	assert_int(p.live_count(at_t - 0.01)).is_equal(1)  # only the primary
@@ -106,11 +106,11 @@ func test_echo_timing_and_gain_follow_distance() -> void:
 	p.emit_reflecting(0, SOUND_AT, MAX_R, SPEED, GAIN, NOW, _space, 6, NORMAL)
 	var echoes := p.pending_echoes()
 	assert_int(echoes.size()).is_greater(0)
-	for e: Dictionary in echoes:
-		var at_t: float = e.at_t
+	for e: Pulses.Echo in echoes:
+		var at_t := e.at_t
 		var d := (at_t - NOW) * SPEED
 		assert_bool(d > 0.3).is_true()  # closer hits are the birth surface
 		assert_bool(d <= RAY_LEN + 0.01).is_true()
 		assert_float(e.gain).is_equal_approx(GAIN * 0.55 / (1.0 + 0.4 * d), 0.0001)
-		var pos: Vector3 = e.pos
+		var pos := e.pos
 		assert_float((pos - ORIGIN).length()).is_equal_approx(d, 0.06)

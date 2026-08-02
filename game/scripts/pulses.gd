@@ -34,7 +34,31 @@ var dir := PackedVector4Array()
 var _t0 := PackedFloat64Array()
 var _end := PackedFloat64Array()
 var _type := PackedInt32Array()
-var _echoes: Array[Dictionary] = []  # scheduled reflections: {at_t, pos, gain}
+var _echoes: Array[Echo] = []  # scheduled reflections, ordered by discovery
+
+
+## A scheduled reflection: a surface point that answers at the exact moment
+## the primary wavefront reaches it.
+class Echo:
+	var at_t: float
+	var pos: Vector3
+	var gain: float
+
+	func _init(t: float, p: Vector3, g: float) -> void:
+		at_t = t
+		pos = p
+		gain = g
+
+
+## One clustered ray hit while sampling reflections: distance from the sound's
+## origin, and the answering point nudged just off the struck surface.
+class SurfaceHit:
+	var d: float
+	var p: Vector3
+
+	func _init(dist: float, point: Vector3) -> void:
+		d = dist
+		p = point
 
 
 func _init() -> void:
@@ -123,7 +147,7 @@ func emit_reflecting(
 		return
 	var origin := at + origin_normal * 0.08
 	const RAYS := 26
-	var cells := {}
+	var cells: Dictionary[Vector3i, SurfaceHit] = {}
 	for i: int in RAYS:
 		var y := 1.0 - 2.0 * (float(i) + 0.5) / RAYS
 		var r := sqrt(maxf(0.0, 1.0 - y * y))
@@ -144,28 +168,20 @@ func emit_reflecting(
 			continue  # the surface the sound itself was born on
 		var key := Vector3i((hit.position / CLUSTER_CELL).floor())
 		if not cells.has(key) or cells[key].d > dist:
-			cells[key] = {d = dist, p = hit.position + hit.normal * 0.02}
-	var found: Array = cells.values()
-	found.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.d < b.d)
+			cells[key] = SurfaceHit.new(dist, hit.position + hit.normal * 0.02)
+	var found: Array[SurfaceHit] = []
+	found.assign(cells.values())
+	found.sort_custom(func(a: SurfaceHit, b: SurfaceHit) -> bool: return a.d < b.d)
 	for j: int in mini(found.size(), max_echoes):
-		var e: Dictionary = found[j]
-		(
-			_echoes
-			. append(
-				{
-					at_t = now + e.d / speed,
-					pos = e.p,
-					gain = gain * 0.55 / (1.0 + e.d * 0.4),
-				}
-			)
-		)
+		var e := found[j]
+		_echoes.append(Echo.new(now + e.d / speed, e.p, gain * 0.55 / (1.0 + e.d * 0.4)))
 
 
 ## Fire reflections whose moment has come (the wavefront reached them).
 func _drain_echoes(now: float) -> void:
 	for i: int in range(_echoes.size() - 1, -1, -1):
 		if _echoes[i].at_t <= now:
-			var e: Dictionary = _echoes[i]
+			var e := _echoes[i]
 			_echoes.remove_at(i)
 			emit(1, e.pos, 2.2, 5.5, e.gain, now)
 
@@ -176,11 +192,9 @@ func pending_echo_count() -> int:
 
 
 ## The scheduled reflections themselves, copied out — observable for tests
-## and debug. Each entry: {at_t: float, pos: Vector3, gain: float}.
-func pending_echoes() -> Array[Dictionary]:
-	var out: Array[Dictionary] = []
-	out.assign(_echoes)
-	return out
+## and debug.
+func pending_echoes() -> Array[Echo]:
+	return _echoes.duplicate()
 
 
 ## Highest live slot + 1 — lets the shaders break out of dead loop iterations.
@@ -193,7 +207,7 @@ func live_count(now: float) -> int:
 
 
 ## Push the pool into every material that renders waves.
-func apply(now: float, mats: Array) -> void:
+func apply(now: float, mats: Array[ShaderMaterial]) -> void:
 	_drain_echoes(now)
 	var count := live_count(now)
 	for m: ShaderMaterial in mats:
