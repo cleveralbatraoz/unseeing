@@ -6,4 +6,5 @@
 //! files carry values across the boundary and add no law of their own.
 
 mod fan;
+mod hero;
 mod player;

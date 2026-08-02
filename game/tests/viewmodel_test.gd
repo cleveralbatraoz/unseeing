@@ -43,12 +43,13 @@ func _step(vel: Vector3) -> void:
 
 func _assert_frame_envelope() -> void:
 	assert_float(absf(_hero.bob_offset)).is_less_equal(0.028)  # bob amplitude
-	assert_float(absf(_hero._sway_x)).is_less_equal(0.07)  # sway clamps
-	assert_float(absf(_hero._sway_y)).is_less_equal(0.06)
-	assert_float(_hero._shoe[0].y).is_greater_equal(0.0649)  # shoes on/above floor
-	assert_float(_hero._shoe[1].y).is_greater_equal(0.0649)
-	_assert_mesh_built_finite(_hero._cane_mesh)
-	_assert_mesh_built_finite(_hero._body_mesh)
+	assert_float(absf(_hero.sway_x())).is_less_equal(0.07)  # sway clamps
+	assert_float(absf(_hero.sway_y())).is_less_equal(0.06)
+	var shoes := _hero.shoes()
+	assert_float(shoes[0].y).is_greater_equal(0.0649)  # shoes on/above floor
+	assert_float(shoes[1].y).is_greater_equal(0.0649)
+	_assert_mesh_built_finite(_hero.cane_mesh())
+	_assert_mesh_built_finite(_hero.body_mesh())
 
 
 ## A rebuilt immediate mesh must be sane: at least one surface, vertices in

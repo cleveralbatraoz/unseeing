@@ -71,11 +71,11 @@ const MOVE_KEYS: [(&str, Key); 4] = [
 pub struct CaneRest {
     /// The resting tip position, settled 0.02 m above its support.
     #[var]
-    tip: Vector3,
+    pub(crate) tip: Vector3,
     /// True when a surface holds the tip up — bare floor included;
     /// "unsupported" is reserved for true open air.
     #[var]
-    supported: bool,
+    pub(crate) supported: bool,
     base: Base<RefCounted>,
 }
 
@@ -118,17 +118,17 @@ pub struct UnseeingPlayer {
     /// strike animation.
     #[var]
     #[init(val = -10.0)]
-    last_tap: f64,
+    pub(crate) last_tap: f64,
     /// Where the last tap landed (wall/floor/air) — the strike target
     /// the viewmodel reaches toward.
     #[var]
-    tap_target: Vector3,
+    pub(crate) tap_target: Vector3,
     /// Cached cane rest, recomputed every physics tick at the sweep
     /// offset the viewmodel requested — the hero body reads this instead
     /// of raycasting itself.
     #[var]
     #[init(val = Some(CaneRest::new_gd()))]
-    cane_rest: Option<Gd<CaneRest>>,
+    pub(crate) cane_rest: Option<Gd<CaneRest>>,
     cane_rest_offset: f64,
     now: f64,
     tap_queued: bool,
@@ -314,7 +314,7 @@ impl UnseeingPlayer {
     /// through `cane_rest` after that — raycasts stay in physics context,
     /// and the sweep is too slow to notice.
     #[func]
-    fn request_cane_sweep(&mut self, offset: f64) {
+    pub(crate) fn request_cane_sweep(&mut self, offset: f64) {
         self.cane_rest_offset = offset;
     }
 
@@ -324,7 +324,7 @@ impl UnseeingPlayer {
     /// read the camera transform, so the bob shapes the same frame's
     /// viewmodel — as it always has.
     #[func]
-    fn set_head_bob(&mut self, offset: f64) {
+    pub(crate) fn set_head_bob(&mut self, offset: f64) {
         if let Some(camera) = self.camera.as_mut() {
             let mut pos = camera.get_position();
             pos.y = (CAM_BASE_Y + offset) as f32;
@@ -341,7 +341,7 @@ impl UnseeingPlayer {
         reason = "mirrors the GDScript queue_wave() signature one to one, \
                   so every call site reads like the script it replaces"
     )]
-    fn queue_wave(
+    pub(crate) fn queue_wave(
         &mut self,
         wave_type: i64,
         at: Vector3,

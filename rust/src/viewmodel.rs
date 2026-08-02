@@ -228,6 +228,19 @@ impl Viewmodel {
         }
     }
 
+    /// The current horizontal look-sway — the bounded-envelope observable
+    /// the engine layer republishes for the suites.
+    #[must_use]
+    pub fn sway_x(&self) -> f64 {
+        self.sway_x
+    }
+
+    /// The current vertical look-sway — same observable, other axis.
+    #[must_use]
+    pub fn sway_y(&self) -> f64 {
+        self.sway_y
+    }
+
     /// The footstep clock — hero_body.gd's `_footsteps`, verbatim: idling
     /// re-arms the stop grace every frame; while walking the cadence
     /// counts down, and each expiry answers with the striking side (+1
