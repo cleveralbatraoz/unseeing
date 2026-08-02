@@ -21,9 +21,12 @@ var pulses: Pulses
 var cane_mat: ShaderMaterial
 var body_mat: ShaderMaterial
 
+## The current walk head-bob (world offset from the base eye height),
+## computed here, applied by the player — the camera's one owner.
+var bob_offset := 0.0
+
 var _cane_mesh := ImmediateMesh.new()
 var _body_mesh := ImmediateMesh.new()
-var _cam_base_y := 0.0
 
 # animation state — constants carried over verbatim from the validated design
 var _walk_amp := 0.0
@@ -47,7 +50,6 @@ func _ready() -> void:
 	)
 	_add_layer(_cane_mesh, cane_mat)
 	_add_layer(_body_mesh, body_mat)
-	_cam_base_y = camera.position.y
 	_last_yaw = player.rotation.y
 	_last_pitch = camera.rotation.x
 
@@ -93,11 +95,13 @@ func update(now: float, dt: float) -> void:
 	_last_yaw = yaw
 	_last_pitch = pitch
 
-	# classic head-bob while walking
-	camera.position.y = _cam_base_y + 0.028 * sin(_leg_phase * 2.0) * _walk_amp
+	# classic head-bob while walking: computed here, applied by the player
+	# before the arm anchors below read the camera transform
+	bob_offset = 0.028 * sin(_leg_phase * 2.0) * _walk_amp
+	player.set_head_bob(bob_offset)
 
 	# ask the player's next physics tick to compute the rest at our sweep angle
-	player.cane_rest_offset = _cane_swing * (1.0 - thrust)
+	player.request_cane_sweep(_cane_swing * (1.0 - thrust))
 
 	_build_cane(thrust)
 	_build_body()

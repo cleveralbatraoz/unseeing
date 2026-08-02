@@ -17,6 +17,7 @@ extends CharacterBody3D
 ## This keeps all space queries inside Godot's supported physics window.
 
 const EYE := 1.6  # eye height above the floor
+const CAM_BASE_Y := EYE - 0.9  # camera rest height in capsule-local space
 const SPEED := 2.1  # m/s — a careful walk, not a run
 const CANE_REACH := 1.7  # arm + white cane: what can truly be touched
 const TAP_COOLDOWN := 0.15
@@ -42,8 +43,8 @@ var tap_target := Vector3.ZERO  # where the last tap landed (wall/floor/air)
 ## Cached cane rest, recomputed every physics tick at the sweep offset the
 ## viewmodel requested — hero_body reads this instead of raycasting itself.
 var cane_rest := CaneRest.new()
-var cane_rest_offset := 0.0  # written by hero_body each frame
 
+var _cane_rest_offset := 0.0  # latest sweep request, honored next physics tick
 var _now := 0.0  # the game clock, advanced only through tick()
 var _tap_queued := false
 var _wave_queue: Array[WaveRequest] = []
@@ -91,7 +92,7 @@ func _init() -> void:
 	col.shape = capsule
 	add_child(col)
 	camera = Camera3D.new()
-	camera.position = Vector3(0, EYE - 0.9, 0)
+	camera.position = Vector3(0, CAM_BASE_Y, 0)
 	camera.near = 0.05
 	camera.far = 60.0
 	camera.fov = 66.0  # ~1.15 rad vertical, the validated design FOV
@@ -133,6 +134,22 @@ func tick(now_t: float) -> void:
 	_now = now_t
 
 
+## The viewmodel's sweep asks for the cane rest to be computed at this yaw
+## offset. One frame of latency BY DESIGN: requested during the render frame,
+## honored on the next physics tick, read back through cane_rest after that —
+## raycasts stay in physics context, and the sweep is too slow to notice.
+func request_cane_sweep(offset: float) -> void:
+	_cane_rest_offset = offset
+
+
+## The player owns its camera: the viewmodel reports the walk head-bob and
+## the player alone moves the eye around its fixed base height. Called by
+## hero_body mid-update, BEFORE the arm anchors read the camera transform,
+## so the bob shapes the same frame's viewmodel — as it always has.
+func set_head_bob(offset: float) -> void:
+	camera.position.y = CAM_BASE_Y + offset
+
+
 ## Other systems (hero footsteps, main's demo tap) request waves here; they
 ## are emitted next physics tick so reflection raycasts run in-context.
 func queue_wave(
@@ -163,7 +180,7 @@ func _physics_process(_dt: float) -> void:
 	velocity.y = 0.0  # flat map: no gravity, no jumping — walking is the verb
 	move_and_slide()
 
-	cane_rest = _compute_cane_rest(cane_rest_offset)
+	cane_rest = _compute_cane_rest(_cane_rest_offset)
 	if _tap_queued:
 		_tap_queued = false
 		_cane_tap()

@@ -33,6 +33,16 @@ func _add_box(center: Vector3, size: Vector3) -> void:
 ## Open ground: TICKS physics frames of forward input advance the hero along
 ## its facing at ~SPEED, and the flat-map law holds — velocity.y is zero on
 ## every single tick.
+## The player owns its camera: the viewmodel reports a bob offset, and the
+## player alone moves the eye around the fixed base height.
+func test_head_bob_moves_camera_around_base() -> void:
+	_player.set_head_bob(0.02)
+	var base := UnseeingPlayer.CAM_BASE_Y
+	assert_float(_player.camera.position.y).is_equal_approx(base + 0.02, 0.0001)
+	_player.set_head_bob(0.0)
+	assert_float(_player.camera.position.y).is_equal_approx(base, 0.0001)
+
+
 ## No silent nulls: a player without its injected pulse pool reports the miss
 ## and disables its own physics — it never runs half-wired.
 func test_uninjected_player_reports_and_disables() -> void:
