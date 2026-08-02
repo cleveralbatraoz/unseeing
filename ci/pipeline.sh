@@ -28,6 +28,21 @@ if [ -f "$DIR/.godot-version" ]; then
   esac
 fi
 
+echo "ci: rust gates (fmt + clippy + test + release build)"
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+command -v cargo >/dev/null 2>&1 || {
+  echo "ci: FAILED cargo not found (install rustup; rust-toolchain.toml pins the version)"
+  exit 2
+}
+(
+  cd "$DIR/rust"
+  cargo fmt --check || { echo "ci: rust format FAILED (run cargo fmt)"; exit 1; }
+  cargo clippy --all-targets -- -D warnings || { echo "ci: clippy FAILED"; exit 1; }
+  cargo test || { echo "ci: cargo test FAILED"; exit 1; }
+  cargo build --release || { echo "ci: rust build FAILED"; exit 1; }
+) || exit 1
+echo "ci: rust gates OK"
+
 echo "ci: gdscript format + lint"
 GDFORMAT="$(command -v gdformat || echo "$HOME/.local/bin/gdformat")"
 GDLINT="$(command -v gdlint || echo "$HOME/.local/bin/gdlint")"
@@ -66,6 +81,9 @@ if [ "${SKIP_EXPORT:-}" = "1" ]; then
   echo "ci: OK"
   exit 0
 fi
+
+echo "ci: rust wasm build (the web export loads it)"
+"$DIR/rust/build-wasm.sh" || { echo "ci: wasm build FAILED"; exit 1; }
 
 echo "ci: exporting Web build (clean)"
 rm -rf "$DIR/game/build/web"
