@@ -94,3 +94,37 @@ func test_wall_stops_the_hero() -> void:
 	Input.action_release("move_forward")
 	# pressed against the wall, not bounced away from it: within a step of it
 	assert_float(_player.global_position.z).is_between(-1.85 + CAPSULE_RADIUS - 0.15, 0.0)
+
+
+## The eye stays level-limited — as far as this run can prove it. Reality
+## first: a headless display server has no mouse, so requesting
+## MOUSE_MODE_CAPTURED is silently refused and the captured-look branch is
+## unreachable; what CI pins is the capture gate itself — an uncaptured
+## motion event, however violent, leaves yaw and pitch exactly untouched.
+## A windowed run (editor) does capture, and then the same test pins the
+## real law: pitch clamps at ±PITCH_LIMIT and yaw follows relative.x.
+func test_mouse_look_capture_gate_and_pitch_clamp() -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		var yaw_before := _player.rotation.y
+		var pitch_before := _player.camera.rotation.x
+		get_viewport().push_input(_motion(Vector2(4000.0, 100000.0)))
+		assert_float(_player.rotation.y).is_equal(yaw_before)
+		assert_float(_player.camera.rotation.x).is_equal(pitch_before)
+		return
+	var limit := UnseeingPlayer.PITCH_LIMIT
+	get_viewport().push_input(_motion(Vector2(0.0, 1.0e6)))  # yank far down
+	assert_float(_player.camera.rotation.x).is_equal_approx(-limit, 0.0001)
+	get_viewport().push_input(_motion(Vector2(0.0, -1.0e6)))  # yank far up
+	assert_float(_player.camera.rotation.x).is_equal_approx(limit, 0.0001)
+	var yaw_start := _player.rotation.y
+	get_viewport().push_input(_motion(Vector2(100.0, 0.0)))
+	var turned := yaw_start - 100.0 * UnseeingPlayer.MOUSE_SENS
+	assert_float(_player.rotation.y).is_equal_approx(turned, 0.0001)
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+func _motion(relative: Vector2) -> InputEventMouseMotion:
+	var motion := InputEventMouseMotion.new()
+	motion.relative = relative
+	return motion
