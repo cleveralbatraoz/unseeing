@@ -34,14 +34,29 @@ command -v cargo >/dev/null 2>&1 || {
   echo "ci: FAILED cargo not found (install rustup; rust-toolchain.toml pins the version)"
   exit 2
 }
-(
-  cd "$DIR/rust"
-  cargo fmt --check || { echo "ci: rust format FAILED (run cargo fmt)"; exit 1; }
-  cargo clippy --all-targets -- -D warnings || { echo "ci: clippy FAILED"; exit 1; }
-  cargo test || { echo "ci: cargo test FAILED"; exit 1; }
-  cargo build --release || { echo "ci: rust build FAILED"; exit 1; }
-) || exit 1
-echo "ci: rust gates OK"
+# Rust needs a C linker even for pure-Rust crates. A machine without one
+# (the droplet until build-essential is installed) cannot build or test —
+# it must run on prebuilt artifacts, loudly.
+if command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; then
+  (
+    cd "$DIR/rust"
+    cargo fmt --check || { echo "ci: rust format FAILED (run cargo fmt)"; exit 1; }
+    cargo clippy --all-targets -- -D warnings || { echo "ci: clippy FAILED"; exit 1; }
+    cargo test || { echo "ci: cargo test FAILED"; exit 1; }
+    cargo build --release || { echo "ci: rust build FAILED"; exit 1; }
+  ) || exit 1
+  echo "ci: rust gates OK"
+else
+  echo "ci: WARNING no C linker — running on PREBUILT rust artifacts"
+  echo "ci: (fix: sudo apt install -y build-essential — then this machine builds and tests itself)"
+  NATIVE_LIB="$DIR/rust/target/release/libunseeing_core.so"
+  [ "$(uname)" = "Darwin" ] && NATIVE_LIB="$DIR/rust/target/release/libunseeing_core.dylib"
+  [ -f "$NATIVE_LIB" ] || {
+    echo "ci: FAILED no prebuilt native core at $NATIVE_LIB"
+    exit 2
+  }
+  echo "ci: rust gates SKIPPED (prebuilt native core present)"
+fi
 
 echo "ci: gdscript format + lint"
 GDFORMAT="$(command -v gdformat || echo "$HOME/.local/bin/gdformat")"
@@ -83,7 +98,13 @@ if [ "${SKIP_EXPORT:-}" = "1" ]; then
 fi
 
 echo "ci: rust wasm build (the web export loads it)"
-"$DIR/rust/build-wasm.sh" || { echo "ci: wasm build FAILED"; exit 1; }
+if command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; then
+  "$DIR/rust/build-wasm.sh" || { echo "ci: wasm build FAILED"; exit 1; }
+else
+  WASM_LIB="$DIR/rust/target/wasm32-unknown-emscripten/release/unseeing_core.wasm"
+  [ -s "$WASM_LIB" ] || { echo "ci: FAILED no prebuilt wasm core at $WASM_LIB"; exit 2; }
+  echo "ci: wasm build SKIPPED (prebuilt core present; install build-essential to build here)"
+fi
 
 echo "ci: exporting Web build (clean)"
 rm -rf "$DIR/game/build/web"
