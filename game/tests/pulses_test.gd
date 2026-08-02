@@ -11,9 +11,9 @@ func test_packing_roundtrip() -> void:
 	p.emit(2, Vector3.ONE, 1.6, 4.0, 0.8, 10.0)
 	var w0 := p.dat[0].w
 	var w1 := p.dat[1].w
-	assert_int(int(floor(w0 / 10.0))).is_equal(0)
+	assert_int(int(floorf(w0 / 10.0))).is_equal(0)
 	assert_float(fmod(w0, 10.0) / 9.0).is_equal_approx(1.0, 0.001)
-	assert_int(int(floor(w1 / 10.0))).is_equal(2)
+	assert_int(int(floorf(w1 / 10.0))).is_equal(2)
 	assert_float(fmod(w1, 10.0) / 9.0).is_equal_approx(0.8, 0.001)
 	assert_float(p.dat[0].x).is_equal(10.0)
 	assert_float(p.dat[0].y).is_equal(6.0)
@@ -93,9 +93,9 @@ func test_gain_clamped_into_pack() -> void:
 	var p := Pulses.new()
 	p.emit(2, Vector3.ZERO, 6.0, 5.5, 1.5, 0.0)
 	p.emit(2, Vector3.ZERO, 6.0, 5.5, -1.0, 0.0)
-	assert_int(int(floor(p.dat[0].w / 10.0))).is_equal(2)
+	assert_int(int(floorf(p.dat[0].w / 10.0))).is_equal(2)
 	assert_float(fmod(p.dat[0].w, 10.0) / 9.0).is_equal_approx(1.0, 0.001)
-	assert_int(int(floor(p.dat[1].w / 10.0))).is_equal(2)
+	assert_int(int(floorf(p.dat[1].w / 10.0))).is_equal(2)
 	assert_float(fmod(p.dat[1].w, 10.0) / 9.0).is_equal_approx(0.0, 0.001)
 
 
@@ -164,7 +164,7 @@ func test_live_count_spans_holes() -> void:
 func test_hum_pulses() -> void:
 	var p := Pulses.new()
 	p.emit(3, Vector3(8.6, 1.15, 4.4), 9.0, 4.5, 0.75, 0.0)
-	assert_int(int(floor(p.dat[0].w / 10.0))).is_equal(3)
+	assert_int(int(floorf(p.dat[0].w / 10.0))).is_equal(3)
 	assert_bool(p.dir[0].w < -1.5).is_true()
 	# ring time 9/4.5 = 2s, tail 2s -> gone just after 4s
 	assert_int(p.live_count(3.9)).is_equal(1)

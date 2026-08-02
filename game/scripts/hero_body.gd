@@ -229,5 +229,7 @@ func _tube(mesh: ImmediateMesh, a: Vector3, b: Vector3, r1: float, r2: float) ->
 		var p10 := b + d0 * r2
 		var p11 := b + d1 * r2
 		for pv: Array in [[p00, d0], [p10, d0], [p11, d1], [p00, d0], [p11, d1], [p01, d1]]:
-			mesh.surface_set_normal(pv[1])
-			mesh.surface_add_vertex(pv[0])
+			var vertex: Vector3 = pv[0]
+			var normal: Vector3 = pv[1]
+			mesh.surface_set_normal(normal)
+			mesh.surface_add_vertex(vertex)

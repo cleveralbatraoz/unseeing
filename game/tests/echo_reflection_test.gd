@@ -89,7 +89,7 @@ func test_echo_drain_keeps_its_appointment() -> void:
 	p.apply(at_t + 0.01, [])
 	assert_int(p.pending_echo_count()).is_equal(0)
 	assert_int(p.live_count(at_t + 0.01)).is_equal(2)
-	assert_int(int(floor(p.dat[1].w / 10.0))).is_equal(1)  # type: ECHO
+	assert_int(int(floorf(p.dat[1].w / 10.0))).is_equal(1)  # type: ECHO
 	assert_float(p.dat[1].x).is_equal_approx(at_t + 0.01, 0.0001)
 	assert_float(p.dat[1].y).is_equal_approx(2.2, 0.000001)
 	assert_float(p.dat[1].z).is_equal(5.5)

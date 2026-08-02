@@ -53,7 +53,7 @@ func test_wall_strike_wave() -> void:
 	await get_tree().physics_frame
 	await _tap()
 	assert_int(_pulses.live_count(NOW + 0.1)).is_equal(1)
-	assert_int(int(floor(_pulses.dat[0].w / 10.0))).is_equal(0)
+	assert_int(int(floorf(_pulses.dat[0].w / 10.0))).is_equal(0)
 	assert_float(_pulses.dat[0].y).is_equal(6.0)
 	assert_float(_pulses.dat[0].z).is_equal(5.5)
 	assert_float(fmod(_pulses.dat[0].w, 10.0) / 9.0).is_equal_approx(1.0, 0.001)
@@ -70,7 +70,7 @@ func test_table_rest_tap_wave() -> void:
 	await get_tree().physics_frame
 	await _tap()
 	assert_int(_pulses.live_count(NOW + 0.1)).is_equal(1)
-	assert_int(int(floor(_pulses.dat[0].w / 10.0))).is_equal(0)
+	assert_int(int(floorf(_pulses.dat[0].w / 10.0))).is_equal(0)
 	assert_float(_pulses.dat[0].y).is_equal(6.0)
 	assert_float(fmod(_pulses.dat[0].w, 10.0) / 9.0).is_equal_approx(1.0, 0.001)
 	var expected := Vector3(0, 0.72, -1.7)  # cane reach ahead, on the top
@@ -86,7 +86,7 @@ func test_floor_tap_wave() -> void:
 	await get_tree().physics_frame
 	await _tap()
 	assert_int(_pulses.live_count(NOW + 0.1)).is_equal(1)
-	assert_int(int(floor(_pulses.dat[0].w / 10.0))).is_equal(0)
+	assert_int(int(floorf(_pulses.dat[0].w / 10.0))).is_equal(0)
 	assert_float(_pulses.dat[0].y).is_equal(5.0)
 	assert_float(_pulses.dat[0].z).is_equal(5.5)
 	assert_float(fmod(_pulses.dat[0].w, 10.0) / 9.0).is_equal_approx(0.85, 0.001)

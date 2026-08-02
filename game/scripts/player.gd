@@ -115,16 +115,20 @@ func _ready() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		rotate_y(-event.relative.x * MOUSE_SENS)
+		var motion := event as InputEventMouseMotion
+		rotate_y(-motion.relative.x * MOUSE_SENS)
 		camera.rotation.x = clampf(
-			camera.rotation.x - event.relative.y * MOUSE_SENS, -PITCH_LIMIT, PITCH_LIMIT
+			camera.rotation.x - motion.relative.y * MOUSE_SENS, -PITCH_LIMIT, PITCH_LIMIT
 		)
 	elif event.is_action_pressed("ui_cancel"):
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	elif event is InputEventMouseButton and event.pressed:
+	elif event is InputEventMouseButton:
+		var click := event as InputEventMouseButton
+		if not click.pressed:
+			return
 		if Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-		if event.button_index == MOUSE_BUTTON_LEFT:
+		if click.button_index == MOUSE_BUTTON_LEFT:
 			_tap_queued = true  # executed next physics tick, in physics context
 
 
@@ -205,11 +209,13 @@ func _cane_tap() -> void:
 	var hit := space.intersect_ray(query)
 	if hit:
 		# aimed strike: the wave is born exactly where you looked
-		tap_target = hit.position
-		var floorish: bool = hit.normal.y > 0.7 and hit.position.y < 0.2
+		var hit_pos: Vector3 = hit.position
+		var hit_normal: Vector3 = hit.normal
+		tap_target = hit_pos
+		var floorish := hit_normal.y > 0.7 and hit_pos.y < 0.2
 		var r := 5.0 if floorish else 6.0
 		var g := 0.85 if floorish else 1.0
-		pulses.emit_reflecting(0, tap_target, r, 5.5, g, _now, space, 6, hit.normal)
+		pulses.emit_reflecting(0, tap_target, r, 5.5, g, _now, space, 6, hit_normal)
 		return
 	var rest := _compute_cane_rest(0.0)
 	var raised := rest.supported and rest.tip.y > 0.15
@@ -242,7 +248,8 @@ func _compute_cane_rest(yaw_offset: float) -> CaneRest:
 	)
 	var wall_d := CANE_SCAN_LENGTH
 	if wall:
-		wall_d = (wall.position - from).length()
+		var wall_pos: Vector3 = wall.position
+		wall_d = (wall_pos - from).length()
 	var reach := minf(CANE_REACH, wall_d - WALL_BACKOFF)
 	var px := global_position.x + dir.x * reach
 	var pz := global_position.z + dir.z * reach
@@ -251,7 +258,8 @@ func _compute_cane_rest(yaw_offset: float) -> CaneRest:
 	)
 	var rest := CaneRest.new()
 	if down:
-		rest.tip = Vector3(px, down.position.y + 0.02, pz)
+		var down_pos: Vector3 = down.position
+		rest.tip = Vector3(px, down_pos.y + 0.02, pz)
 		rest.supported = true
 	else:
 		rest.tip = Vector3(px, 0.02, pz)

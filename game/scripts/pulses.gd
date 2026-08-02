@@ -170,12 +170,14 @@ func emit_reflecting(
 		var hit := space.intersect_ray(query)
 		if hit.is_empty():
 			continue
-		var dist: float = (hit.position - origin).length()
+		var hit_pos: Vector3 = hit.position
+		var hit_normal: Vector3 = hit.normal
+		var dist := (hit_pos - origin).length()
 		if dist < 0.3:
 			continue  # the surface the sound itself was born on
-		var key := Vector3i((hit.position / CLUSTER_CELL).floor())
+		var key := Vector3i((hit_pos / CLUSTER_CELL).floor())
 		if not cells.has(key) or cells[key].d > dist:
-			cells[key] = SurfaceHit.new(dist, hit.position + hit.normal * 0.02)
+			cells[key] = SurfaceHit.new(dist, hit_pos + hit_normal * 0.02)
 	var found: Array[SurfaceHit] = []
 	found.assign(cells.values())
 	found.sort_custom(func(a: SurfaceHit, b: SurfaceHit) -> bool: return a.d < b.d)
