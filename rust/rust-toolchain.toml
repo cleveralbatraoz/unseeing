@@ -4,6 +4,9 @@
 # gdext wasm needs -Zbuild-std and -Zemscripten-wasm-eh, nightly-only).
 [toolchain]
 channel = "1.97.1"
+# CI runners install pinned toolchains with the minimal profile — without
+# this line they arrive lacking the very tools the pipeline gates on.
+components = ["rustfmt", "clippy"]
 targets = [
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
