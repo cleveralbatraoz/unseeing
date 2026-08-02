@@ -1,9 +1,11 @@
 //! The wave/physics core of Unseeing, as a GDExtension.
 //!
-//! Layering law: everything below `ffi` is pure Rust with no engine types
-//! beyond godot's glam-backed math builtins — testable under plain
-//! `cargo test` with no Godot runtime. The `ffi` module is the only place
-//! engine classes may appear.
+//! Layering law: everything below the engine boundary is pure Rust with
+//! no engine types beyond godot's glam-backed math builtins — testable
+//! under plain `cargo test` with no Godot runtime. Engine classes may
+//! appear only in the boundary modules: `ffi` (the wave core the shim
+//! wraps) and `nodes` (the registered node classes the Godot layer
+//! places).
 //!
 //! The pure core, one law per module — each a bit-for-bit mirror of the
 //! GDScript wave system it will replace, pinned by ported tests:
@@ -30,5 +32,6 @@ pub mod clustering;
 pub mod echo_queue;
 pub mod fan_wave;
 mod ffi;
+mod nodes;
 pub mod pulse_pool;
 pub mod ray_fan;

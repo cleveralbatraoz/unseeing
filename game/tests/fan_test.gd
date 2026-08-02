@@ -1,6 +1,10 @@
 extends GdUnitTestSuite
-## The fan's motion and acoustics envelope. Ported 1:1 from the retired
-## custom runner.
+## The fan's motion and acoustics envelope, held against the Rust SoundFan
+## engine node. Ported 1:1 from the retired custom runner; the acoustic
+## voice now lives in designer knobs (exported properties defaulting to
+## the shipped constants), so the envelope pins read a fresh node's
+## defaults, and the build constants cross as static methods — ClassDB
+## registers only integer constants, so floats cannot cross as constants.
 
 
 ## The head's oscillation must actually sweep, and never exceed its range —
@@ -12,10 +16,10 @@ func test_fan_motion_envelope() -> void:
 		var a := SoundFan.pivot_angle(float(i) * 0.1)
 		lo = minf(lo, a)
 		hi = maxf(hi, a)
-	assert_bool(hi <= SoundFan.PIVOT_RANGE + 0.001).is_true()
-	assert_bool(lo >= -SoundFan.PIVOT_RANGE - 0.001).is_true()
-	assert_bool(hi > SoundFan.PIVOT_RANGE * 0.9).is_true()
-	assert_bool(lo < -SoundFan.PIVOT_RANGE * 0.9).is_true()
+	assert_bool(hi <= SoundFan.pivot_range() + 0.001).is_true()
+	assert_bool(lo >= -SoundFan.pivot_range() - 0.001).is_true()
+	assert_bool(hi > SoundFan.pivot_range() * 0.9).is_true()
+	assert_bool(lo < -SoundFan.pivot_range() * 0.9).is_true()
 
 
 func test_fan_blades_spin() -> void:
@@ -23,14 +27,17 @@ func test_fan_blades_spin() -> void:
 
 
 ## A hum slot lives ring + 2s; the constant wash must not flood the pool.
+## The envelope holds for the DEFAULT knobs a fresh fan ships with.
 func test_fan_wash_stays_within_slot_headroom() -> void:
-	var concurrent := (SoundFan.HUM_RANGE / SoundFan.HUM_SPEED + 2.0) / SoundFan.WHOOSH_EVERY
+	var fan: SoundFan = auto_free(SoundFan.new())
+	var concurrent := (fan.hum_range / fan.hum_speed + 2.0) / fan.whoosh_every
 	assert_bool(concurrent <= 12.0).is_true()
 
 
 func test_fan_wash_is_directed_cone() -> void:
-	assert_bool(SoundFan.BEAM_COS > 0.7).is_true()
-	assert_bool(SoundFan.BEAM_COS < 0.95).is_true()
+	var fan: SoundFan = auto_free(SoundFan.new())
+	assert_bool(fan.beam_cos > 0.7).is_true()
+	assert_bool(fan.beam_cos < 0.95).is_true()
 
 
 ## The whoosh rides the pivot: a cadence beat emits ONE directed hum aimed
@@ -44,22 +51,22 @@ func test_whoosh_beam_rides_pivot_and_keeps_cadence() -> void:
 	fan.data_mat = ShaderMaterial.new()
 	fan.rotation.y = MOUNT_YAW
 	add_child(fan)
-	fan.update(0.4)  # the first beat: _next_whoosh starts at 0.4
+	fan.update(0.4)  # the first beat: the cadence gate starts at 0.4
 	assert_int(pulses.live_count(0.4)).is_equal(1)
 	assert_float(pulses.dat[0].x).is_equal_approx(0.4, 0.0001)
-	assert_float(pulses.dat[0].y).is_equal(SoundFan.HUM_RANGE)
-	assert_float(pulses.dat[0].z).is_equal(SoundFan.HUM_SPEED)
+	assert_float(pulses.dat[0].y).is_equal(fan.hum_range)
+	assert_float(pulses.dat[0].z).is_equal(fan.hum_speed)
 	assert_int(int(floorf(pulses.dat[0].w / 10.0))).is_equal(3)
-	assert_float(fmod(pulses.dat[0].w, 10.0) / 9.0).is_equal_approx(SoundFan.HUM_GAIN, 0.001)
-	# the beam: cone width from the constant, direction from the mounting yaw
+	assert_float(fmod(pulses.dat[0].w, 10.0) / 9.0).is_equal_approx(fan.hum_gain, 0.001)
+	# the beam: cone width from the knob, direction from the mounting yaw
 	# composed with the pivot's oscillation at this very moment
-	assert_float(pulses.dir[0].w).is_equal_approx(SoundFan.BEAM_COS, 0.0001)
+	assert_float(pulses.dir[0].w).is_equal_approx(fan.beam_cos, 0.0001)
 	var total_yaw := MOUNT_YAW + SoundFan.pivot_angle(0.4)
 	var beam := Vector3(-sin(total_yaw), 0.0, -cos(total_yaw))
 	var got := Vector3(pulses.dir[0].x, pulses.dir[0].y, pulses.dir[0].z)
 	assert_vector(got).is_equal_approx(beam, Vector3(0.001, 0.001, 0.001))
 	# born at the spinner hub, 0.1 m down the beam from the pivot point
-	var hub := Vector3(0, SoundFan.HEAD_H, 0) + beam * 0.1
+	var hub := Vector3(0, SoundFan.head_h(), 0) + beam * 0.1
 	assert_vector(pulses.pos[0]).is_equal_approx(hub, Vector3(0.001, 0.001, 0.001))
 	fan.update(0.41)  # inside the cadence: not a sound
 	assert_int(pulses.live_count(0.41)).is_equal(1)
