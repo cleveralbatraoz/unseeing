@@ -105,14 +105,27 @@ must work perfectly.
   outputs, no hidden state.
 - **Dependency injection / independent components**: split code into pieces
   that don't rely on unclear implicit guarantees of each other.
-- **Languages**: statically-typed GDScript for gameplay; the wave/physics
-  core is a **GDExtension Rust module** (godot-rust / `gdext`) — native
-  speed on desktop, compiled to wasm for the web export, so the single
-  source of truth holds on every platform. Rust's safety and testing
-  culture is why it won: it directly serves the total-functions and
-  fearless-refactoring doctrine. (C# was considered and rejected — Godot
-  4.x .NET builds cannot export to web. C++ was chosen briefly, then
-  replaced by Rust.)
+- **The two layers (the engine/content split — 2026-08-02 decision).**
+  The game is built so non-technical collaborators can create and modify
+  content in the Godot editor without ever meeting the machinery:
+  - **Rust (`rust/`, godot-rust / `gdext`) = the engine, hidden**: wave
+    simulation, echo physics, player kinematics, viewmodel animation math,
+    perception/graphics internals. Exposed to Godot only as registered
+    node classes with designer-meaningful `#[export]` knobs, typed
+    signals, and in-editor docs (`register-docs`). All logic lives here,
+    pure modules cargo-tested; native on desktop, wasm on web — one
+    source of truth on every platform.
+  - **Godot = the game, visible**: editor-authored `.tscn` scenes (levels,
+    placements, sound sources) and thin statically-typed GDScript for
+    game-facing scripting only — triggers, sequences, tuning — written
+    against the Rust nodes' API. Levels are authored in the editor, never
+    in code; technical contracts (hum rooms, level data) are derived from
+    the scene by the engine layer.
+  - Rust won for safety and testing culture — it directly serves the
+    total-functions and fearless-refactoring doctrine. (C# was rejected:
+    Godot 4.x .NET cannot export to web. C++ was chosen briefly, then
+    replaced.) The wasm export allows exactly ONE Rust extension: every
+    native system joins the single crate.
 - **Rust web-export constraints** (as of 2026, gdext wasm rides the
   bleeding edge): pin the nightly toolchain in `rust-toolchain.toml`, pin
   the Emscripten version to match the Godot build, keep link flags in sync
