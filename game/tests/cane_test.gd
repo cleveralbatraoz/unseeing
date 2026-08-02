@@ -123,3 +123,44 @@ func test_second_tap_within_cooldown_is_swallowed() -> void:
 	await _tap()
 	assert_float(_player.last_tap).is_equal(NOW + 0.3)
 	assert_int(_pulses.live_count(NOW + 0.35)).is_equal(2)
+
+
+## Where the cane rests, pose by pose, read back through the public
+## cane_rest the physics tick recomputes. A tabletop within reach holds the
+## tip up: supported, settled 0.02 above the top at full cane reach.
+func test_cane_rest_settles_on_tabletop() -> void:
+	_add_box(Vector3(0, 0.35, -1.6), Vector3(1.0, 0.7, 1.0))  # top at y = 0.70
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var rest := _player.cane_rest
+	assert_bool(rest.supported).is_true()
+	assert_vector(rest.tip).is_equal_approx(Vector3(0, 0.72, -1.7), Vector3(0.02, 0.005, 0.02))
+
+
+## Bare floor counts as support too: the down probe strikes the ground at
+## full reach and the tip settles 0.02 above it — "unsupported" is reserved
+## for true open air, when nothing at all lies below the tip.
+func test_cane_rest_settles_on_open_floor() -> void:
+	_add_box(Vector3(0, -0.05, 0), Vector3(20, 0.1, 20))  # floor top at y = 0
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var rest := _player.cane_rest
+	assert_bool(rest.supported).is_true()
+	assert_vector(rest.tip).is_equal_approx(Vector3(0, 0.02, -1.7), Vector3(0.02, 0.005, 0.02))
+
+
+## A wall closer than the scan shortens the reach: the tip stops a backoff
+## short of the wall face — and with no floor collider below it hangs in
+## open air, unsupported, at the fallback height.
+func test_cane_rest_shortened_by_wall() -> void:
+	_add_box(Vector3(0, 1.5, -1.1), Vector3(3, 3, 0.3))  # near face at z = -0.95
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var rest := _player.cane_rest
+	assert_bool(rest.supported).is_false()
+	assert_float(rest.tip.y).is_equal_approx(0.02, 0.0001)
+	# the wall scan runs from the player's axis: wall_d = 0.95 m to the face
+	var reach := minf(UnseeingPlayer.CANE_REACH, 0.95 - UnseeingPlayer.WALL_BACKOFF)
+	assert_bool(reach < UnseeingPlayer.CANE_REACH).is_true()  # truly shortened
+	var horizontal := Vector2(rest.tip.x, rest.tip.z).length()
+	assert_float(horizontal).is_equal_approx(reach, 0.01)
