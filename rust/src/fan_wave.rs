@@ -62,29 +62,43 @@ pub struct Whoosh {
 }
 
 /// The cadence gate, mirroring fan.gd's `_next_whoosh` field: fires when
-/// `t` reaches the appointment, then books the next one `WHOOSH_EVERY`
-/// after the CURRENT time — so a stalled or jumped clock buys a single
-/// beat, never a backfilled burst of them.
+/// `t` reaches the appointment, then books the next one a cadence after
+/// the CURRENT time — so a stalled or jumped clock buys a single beat,
+/// never a backfilled burst of them. The cadence is a designer knob on the
+/// engine's fan node, so the gate carries its own interval; the default is
+/// the shipped [`WHOOSH_EVERY`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WhooshScheduler {
+    every: f64,
     next_whoosh: f64,
 }
 
 impl Default for WhooshScheduler {
-    /// The first beat waits one full cadence, like the GDScript initializer
-    /// `_next_whoosh := 0.4`: the fan does not whoosh at t = 0.
+    /// The shipped cadence: first beat due at `WHOOSH_EVERY`, like the
+    /// GDScript initializer `_next_whoosh := 0.4` — the fan does not
+    /// whoosh at t = 0.
     fn default() -> Self {
-        Self {
-            next_whoosh: WHOOSH_EVERY,
-        }
+        Self::with_cadence(WHOOSH_EVERY)
     }
 }
 
 impl WhooshScheduler {
-    /// A fresh gate, first beat due at `WHOOSH_EVERY`.
+    /// A fresh gate at the shipped cadence, first beat due at
+    /// `WHOOSH_EVERY`.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A fresh gate at a designer-chosen cadence: the first beat waits one
+    /// full interval, and every beat rebooks that same interval ahead —
+    /// the `_next_whoosh := 0.4` law, generalized to the knob's value.
+    #[must_use]
+    pub fn with_cadence(every: f64) -> Self {
+        Self {
+            every,
+            next_whoosh: every,
+        }
     }
 
     /// Advance the clock. Returns the beat when its time has come —
@@ -95,7 +109,7 @@ impl WhooshScheduler {
         if t < self.next_whoosh {
             return None;
         }
-        self.next_whoosh = t + WHOOSH_EVERY;
+        self.next_whoosh = t + self.every;
         Some(Whoosh { at: t })
     }
 }
@@ -169,6 +183,18 @@ mod tests {
         assert_eq!(gate.update(0.41), None); // inside the cadence: not a sound
         assert_eq!(gate.update(0.79), None);
         assert_eq!(gate.update(0.8), Some(Whoosh { at: 0.8 }));
+    }
+
+    /// The cadence is a designer knob: a gate built at 0.6 s waits 0.6 for
+    /// its first beat and rebooks 0.6 ahead — the same first-beat and
+    /// no-backfill laws, at the knob's interval.
+    #[test]
+    fn designer_cadence_books_by_its_own_interval() {
+        let mut gate = WhooshScheduler::with_cadence(0.6);
+        assert_eq!(gate.update(0.4), None); // the shipped cadence is not this gate's
+        assert_eq!(gate.update(0.6), Some(Whoosh { at: 0.6 }));
+        assert_eq!(gate.update(1.19), None);
+        assert_eq!(gate.update(1.2), Some(Whoosh { at: 1.2 }));
     }
 
     /// A stalled clock buys a single beat, never a backfilled burst: after
