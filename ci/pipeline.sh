@@ -34,10 +34,11 @@ command -v cargo >/dev/null 2>&1 || {
   echo "ci: FAILED cargo not found (install rustup; rust-toolchain.toml pins the version)"
   exit 2
 }
-# Rust needs a C linker even for pure-Rust crates. A machine without one
-# (the droplet until build-essential is installed) cannot build or test —
-# it must run on prebuilt artifacts, loudly.
-if command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; then
+# Rust needs a C linker even for pure-Rust crates, and compiling godot-core
+# needs more RAM than the droplet has. PREBUILT_RUST=1 (or a missing linker)
+# switches to prebuilt artifacts, seeded by deploy.sh — loudly.
+if [ "${PREBUILT_RUST:-}" != "1" ] \
+  && { command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; }; then
   (
     cd "$DIR/rust"
     cargo fmt --check || { echo "ci: rust format FAILED (run cargo fmt)"; exit 1; }
@@ -47,8 +48,7 @@ if command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; then
   ) || exit 1
   echo "ci: rust gates OK"
 else
-  echo "ci: WARNING no C linker — running on PREBUILT rust artifacts"
-  echo "ci: (fix: sudo apt install -y build-essential — then this machine builds and tests itself)"
+  echo "ci: running on PREBUILT rust artifacts (PREBUILT_RUST=1 or no C linker)"
   NATIVE_LIB="$DIR/rust/target/release/libunseeing_core.so"
   [ "$(uname)" = "Darwin" ] && NATIVE_LIB="$DIR/rust/target/release/libunseeing_core.dylib"
   [ -f "$NATIVE_LIB" ] || {
@@ -98,12 +98,13 @@ if [ "${SKIP_EXPORT:-}" = "1" ]; then
 fi
 
 echo "ci: rust wasm build (the web export loads it)"
-if command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; then
+if [ "${PREBUILT_RUST:-}" != "1" ] \
+  && { command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; }; then
   "$DIR/rust/build-wasm.sh" || { echo "ci: wasm build FAILED"; exit 1; }
 else
   WASM_LIB="$DIR/rust/target/wasm32-unknown-emscripten/release/unseeing_core.wasm"
   [ -s "$WASM_LIB" ] || { echo "ci: FAILED no prebuilt wasm core at $WASM_LIB"; exit 2; }
-  echo "ci: wasm build SKIPPED (prebuilt core present; install build-essential to build here)"
+  echo "ci: wasm build SKIPPED (prebuilt core present)"
 fi
 
 echo "ci: exporting Web build (clean)"
