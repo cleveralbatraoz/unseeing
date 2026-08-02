@@ -34,10 +34,8 @@ var level: LevelData
 var now := 0.0
 
 # Nervous light: the reveal intensity wavers, with rare brief dropouts.
-# Part of the mood, not noise; envelope carried over from the validated design.
-var _flick := 1.0
-var _drop_until := -1.0
-var _next_drop := 9.0
+# Part of the mood, not noise; owned by Flicker with its own seeded stream.
+var _flicker: Flicker
 
 # Dev-only demo tap (see _demo_tap below).
 var _demo_next := 0.6
@@ -48,8 +46,10 @@ var _demo_wanted := false
 func _ready() -> void:
 	UnseeingPlayer.ensure_actions()
 	# deterministic flicker for offline frame-comparison runs
+	var rng := RandomNumberGenerator.new()
 	if not OS.get_environment("UNSEEING_DEMO").is_empty():
-		seed(0x5EED)
+		rng.seed = 0x5EED
+	_flicker = Flicker.new(rng)
 	data_mat.shader = DATA_SHADER
 	post_mat.shader = POST_SHADER
 	for m: ShaderMaterial in [cane_mat, body_mat]:
@@ -87,17 +87,10 @@ func _ready() -> void:
 func _process(dt: float) -> void:
 	now += dt
 	player.tick(now)
-	_flick += (1.0 - _flick) * 0.12 + (randf() - 0.5) * 0.09
-	_flick = clampf(_flick, 0.72, 1.2)
-	_next_drop -= dt
-	if _next_drop <= 0.0:
-		_drop_until = now + 0.08 + randf() * 0.1
-		_next_drop = 8.0 + randf() * 10.0
-	if now < _drop_until:
-		_flick *= 0.55
+	var flick := _flicker.next(dt)
 	for m: ShaderMaterial in wave_mats:
 		m.set_shader_parameter("u_time", now)
-		m.set_shader_parameter("u_flick", _flick)
+		m.set_shader_parameter("u_flick", flick)
 	post_mat.set_shader_parameter("u_breath", 1.0 + sin(now * 0.5) * 0.045)
 	post_mat.set_shader_parameter("u_grain_t", fmod(now, 1.0) * 61.7)
 	fan.update(now)
