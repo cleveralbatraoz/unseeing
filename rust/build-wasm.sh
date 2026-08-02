@@ -10,15 +10,19 @@
 #                        must match the main module's emscripten.
 set -eu
 NIGHTLY="nightly-2026-05-25"
-# Exported: emsdk_env.sh locates the SDK via $EMSDK under plain sh (dash),
-# where BASH_SOURCE — its other self-location mechanism — does not exist.
-export EMSDK="${EMSDK_DIR:-$HOME/emsdk}"
+EMSDK="${EMSDK_DIR:-$HOME/emsdk}"
 
 [ -f "$EMSDK/emsdk_env.sh" ] || {
   echo "build-wasm: emsdk not found at $EMSDK (git clone emscripten-core/emsdk; ./emsdk install 4.0.20 && ./emsdk activate 4.0.20)"
   exit 2
 }
-EMSDK_QUIET=1 . "$EMSDK/emsdk_env.sh"
+# Under plain sh (dash) emsdk_env.sh has no BASH_SOURCE to locate itself and
+# ignores $EMSDK; its one portable path is being sourced from its own
+# directory (it looks for ./emsdk.py). So stand there while sourcing.
+_here="$PWD"
+cd "$EMSDK"
+EMSDK_QUIET=1 . ./emsdk_env.sh
+cd "$_here"
 command -v emcc >/dev/null 2>&1 || {
   echo "build-wasm: emcc still missing after sourcing emsdk_env.sh — is 4.0.20 installed AND activated?"
   exit 2
