@@ -1,9 +1,14 @@
 class_name Pulses
 extends RefCounted
-## The wave system: a fixed pool of 64 pulse slots shared with BOTH shaders
-## as uniform arrays. A pulse is an expanding spherical wavefront; shaders
-## derive everything (ring position, outline reveal, fade) from its birth
-## time — the CPU never animates waves, it only records that a sound happened.
+## The wave system's GDScript face — a thin shim over the Rust WaveCore.
+## A pulse is an expanding spherical wavefront in a fixed pool of 64 slots
+## shared with BOTH shaders as uniform arrays; shaders derive everything
+## (ring position, outline reveal, fade) from its birth time — the CPU never
+## animates waves, it only records that a sound happened. Every law of the
+## pool — packing, lifetimes, eviction, the golden-angle reflection fan,
+## clustering, echo appointments — lives in the Rust core (rust/src/), where
+## it is pinned by cargo tests; this class only carries values across the
+## boundary and preserves the public surface the game and suites grew on.
 ##
 ## Slot data layout (the shader-side contract lives in pulse_pool.gdshaderinc):
 ##   pos[i]         — world origin of the sound
@@ -28,13 +33,20 @@ const GOLDEN_ANGLE := 2.399963
 ## points instead of one point per ray.
 const CLUSTER_CELL := 0.9
 
-var pos := PackedVector3Array()
-var dat := PackedVector4Array()
-var dir := PackedVector4Array()
-var _t0 := PackedFloat64Array()
-var _end := PackedFloat64Array()
-var _type := PackedInt32Array()
-var _echoes: Array[Echo] = []  # scheduled reflections, ordered by discovery
+## The shader-bound lanes, read straight from the core — copies of the
+## uniform arrays, exactly what apply() pushes to the materials.
+var pos: PackedVector3Array:
+	get:
+		return _core.positions()
+var dat: PackedVector4Array:
+	get:
+		return _core.pulse_data()
+var dir: PackedVector4Array:
+	get:
+		return _core.pulse_dirs()
+
+## The one heart: pool, fan, clustering and echo book all live inside.
+var _core := WaveCore.new()
 
 
 ## A scheduled reflection: a surface point that answers at the exact moment
@@ -48,29 +60,6 @@ class Echo:
 		at_t = t
 		pos = p
 		gain = g
-
-
-## One clustered ray hit while sampling reflections: distance from the sound's
-## origin, and the answering point nudged just off the struck surface.
-class SurfaceHit:
-	var d: float
-	var p: Vector3
-
-	func _init(dist: float, point: Vector3) -> void:
-		d = dist
-		p = point
-
-
-func _init() -> void:
-	pos.resize(MAXP)
-	dat.resize(MAXP)
-	dir.resize(MAXP)
-	_t0.resize(MAXP)
-	_end.resize(MAXP)
-	_type.resize(MAXP)
-	for i: int in MAXP:
-		dat[i] = Vector4(-1, 0, 0, 0)
-		_end[i] = -1.0
 
 
 ## Record a sound. Total at the door: gain is clamped to [0, 1] (a raw value
@@ -88,48 +77,7 @@ func emit(
 	beam_dir := Vector3.ZERO,
 	cos_half := -2.0
 ) -> void:
-	if speed <= 0.0 or max_r <= 0.0:
-		push_error("Pulses.emit: speed and max_r must be positive — wave refused")
-		return
-	gain = clampf(gain, 0.0, 1.0)
-	var slot := -1
-	var old_step := -1
-	var oldest := -1
-	var t_old_step := INF
-	var t_old := INF
-	for i: int in MAXP:
-		if _end[i] < now:
-			slot = i
-			break
-		if _type[i] >= 2 and _t0[i] < t_old_step:
-			t_old_step = _t0[i]
-			old_step = i
-		if _t0[i] < t_old:
-			t_old = _t0[i]
-			oldest = i
-	if slot < 0:
-		slot = old_step if old_step >= 0 else oldest
-	pos[slot] = at
-	dat[slot] = Vector4(now, max_r, speed, type * 10.0 + gain * 9.0)
-	var omni := beam_dir == Vector3.ZERO
-	dir[slot] = Vector4(beam_dir.x, beam_dir.y, beam_dir.z, -2.0 if omni else cos_half)
-	_t0[slot] = now
-	_end[slot] = now + max_r / speed + _fade_tail(type)
-	_type[slot] = type
-
-
-## Ring time + outline-fade tail; echoes and footsteps expire sooner so the
-## live-slot count (which both shaders loop over per pixel) stays small.
-func _fade_tail(type: int) -> float:
-	match type:
-		1:
-			return 3.5
-		2:
-			return 2.5
-		3:
-			return 2.0
-		_:
-			return 6.0
+	_core.emit(type, at, max_r, speed, gain, now, beam_dir, cos_half)
 
 
 ## Emit a primary sound AND schedule its reflections off the environment.
@@ -138,6 +86,7 @@ func _fade_tail(type: int) -> float:
 ## sample only the hemisphere in FRONT of it, cast from just off the surface —
 ## otherwise rays start inside the struck collider and leak through into the
 ## acoustic shadow, answering from places the wave never reached.
+## PHYSICS CONTEXT: with a space this must run inside the physics tick.
 func emit_reflecting(
 	type: int,
 	at: Vector3,
@@ -149,78 +98,41 @@ func emit_reflecting(
 	max_echoes: int,
 	origin_normal := Vector3.ZERO
 ) -> void:
-	emit(type, at, max_r, speed, gain, now)
-	if space == null:
-		return
-	var origin := at + origin_normal * 0.08
-	const RAYS := 26
-	var cells: Dictionary[Vector3i, SurfaceHit] = {}
-	for i: int in RAYS:
-		var y := 1.0 - 2.0 * (float(i) + 0.5) / RAYS
-		var r := sqrt(maxf(0.0, 1.0 - y * y))
-		var phi := float(i) * GOLDEN_ANGLE
-		var d3 := Vector3(r * cos(phi), y, r * sin(phi))
-		if origin_normal != Vector3.ZERO and d3.dot(origin_normal) < -0.05:
-			continue  # into the surface: that direction is the wave's shadow
-		# (along-surface rays are kept: the surroundings of the tapped point
-		# answer in every direction AROUND it, not only toward the listener)
-		var query := PhysicsRayQueryParameters3D.create(
-			origin, origin + d3 * minf(max_r * 0.8, 6.0)
-		)
-		var hit := space.intersect_ray(query)
-		if hit.is_empty():
-			continue
-		var hit_pos: Vector3 = hit.position
-		var hit_normal: Vector3 = hit.normal
-		var dist := (hit_pos - origin).length()
-		if dist < 0.3:
-			continue  # the surface the sound itself was born on
-		var key := Vector3i((hit_pos / CLUSTER_CELL).floor())
-		if not cells.has(key) or cells[key].d > dist:
-			cells[key] = SurfaceHit.new(dist, hit_pos + hit_normal * 0.02)
-	var found: Array[SurfaceHit] = []
-	found.assign(cells.values())
-	found.sort_custom(func(a: SurfaceHit, b: SurfaceHit) -> bool: return a.d < b.d)
-	for j: int in mini(found.size(), max_echoes):
-		var e := found[j]
-		_echoes.append(Echo.new(now + e.d / speed, e.p, gain * 0.55 / (1.0 + e.d * 0.4)))
-
-
-## Fire reflections whose moment has come (the wavefront reached them).
-func _drain_echoes(now: float) -> void:
-	for i: int in range(_echoes.size() - 1, -1, -1):
-		if _echoes[i].at_t <= now:
-			var e := _echoes[i]
-			_echoes.remove_at(i)
-			emit(1, e.pos, 2.2, 5.5, e.gain, now)
+	_core.emit_reflecting(type, at, max_r, speed, gain, now, space, max_echoes, origin_normal)
 
 
 ## Reflections scheduled but not yet fired — observable for tests and debug.
 func pending_echo_count() -> int:
-	return _echoes.size()
+	return _core.pending_echo_count()
 
 
 ## The scheduled reflections themselves, copied out — observable for tests
 ## and debug.
 func pending_echoes() -> Array[Echo]:
-	return _echoes.duplicate()
+	var out: Array[Echo] = []
+	for entry: Dictionary in _core.pending_echoes():
+		var at_t: float = entry.at_t
+		var point: Vector3 = entry.pos
+		var loudness: float = entry.gain
+		out.append(Echo.new(at_t, point, loudness))
+	return out
 
 
 ## Highest live slot + 1 — lets the shaders break out of dead loop iterations.
 func live_count(now: float) -> int:
-	var n := 0
-	for i: int in MAXP:
-		if _end[i] >= now:
-			n = i + 1
-	return n
+	return _core.live_count(now)
 
 
-## Push the pool into every material that renders waves.
+## Push the pool into every material that renders waves, firing every echo
+## whose appointment has come first.
 func apply(now: float, mats: Array[ShaderMaterial]) -> void:
-	_drain_echoes(now)
-	var count := live_count(now)
+	_core.tick(now)
+	var count := _core.live_count(now)
+	var ppos := _core.positions()
+	var pdat := _core.pulse_data()
+	var pdir := _core.pulse_dirs()
 	for m: ShaderMaterial in mats:
 		m.set_shader_parameter("u_count", count)
-		m.set_shader_parameter("u_ppos", pos)
-		m.set_shader_parameter("u_pdat", dat)
-		m.set_shader_parameter("u_pdir", dir)
+		m.set_shader_parameter("u_ppos", ppos)
+		m.set_shader_parameter("u_pdat", pdat)
+		m.set_shader_parameter("u_pdir", pdir)
