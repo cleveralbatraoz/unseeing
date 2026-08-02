@@ -10,6 +10,7 @@
 
 pub mod clustering;
 pub mod echo_queue;
+pub mod fan_wave;
 pub mod pulse_pool;
 pub mod ray_fan;
 
