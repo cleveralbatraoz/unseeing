@@ -8,18 +8,18 @@ extends RefCounted
 const WALL_H := 3.0  # walls run floor to ceiling
 const WALL_T := 0.15  # half-thickness of a wall
 
-## Wall centerlines [x1, z1, x2, z2] in meters. First four are the border.
-const SEGS := [
-	[0.6, 0.6, 19.4, 0.6],
-	[19.4, 0.6, 19.4, 19.4],
-	[19.4, 19.4, 0.6, 19.4],
-	[0.6, 19.4, 0.6, 0.6],
-	[6.4, 0.6, 6.4, 8.0],
-	[6.4, 12.4, 6.4, 19.4],
-	[6.4, 8.0, 14.0, 8.0],
-	[14.0, 8.0, 14.0, 15.6],
-	[9.0, 15.6, 14.0, 15.6],
-	[0.6, 13.0, 4.0, 13.0],
+## Wall centerlines (x1, z1, x2, z2) in meters. First four are the border.
+const SEGS: Array[Vector4] = [
+	Vector4(0.6, 0.6, 19.4, 0.6),
+	Vector4(19.4, 0.6, 19.4, 19.4),
+	Vector4(19.4, 19.4, 0.6, 19.4),
+	Vector4(0.6, 19.4, 0.6, 0.6),
+	Vector4(6.4, 0.6, 6.4, 8.0),
+	Vector4(6.4, 12.4, 6.4, 19.4),
+	Vector4(6.4, 8.0, 14.0, 8.0),
+	Vector4(14.0, 8.0, 14.0, 15.6),
+	Vector4(9.0, 15.6, 14.0, 15.6),
+	Vector4(0.6, 13.0, 4.0, 13.0),
 ]
 
 
@@ -28,18 +28,18 @@ static func build_world(parent: Node3D, mat: Material) -> void:
 	_add_box(parent, mat, Vector3(10, -0.05, 10), Vector3(20, 0.1, 20))
 	_add_box(parent, mat, Vector3(10, WALL_H + 0.05, 10), Vector3(20, 0.1, 20))
 	_build_furniture(parent, mat)
-	for s: Array in SEGS:
-		var horizontal: bool = absf(s[3] - s[1]) < 0.001
+	for s: Vector4 in SEGS:
+		var horizontal := absf(s.w - s.y) < 0.001
 		# the box math trusts axis alignment; a diagonal segment would silently
 		# produce a wrong-sized wall instead of failing
-		assert(horizontal or absf(s[2] - s[0]) < 0.001, "map segment %s is not axis-aligned" % [s])
-		var cx: float = (s[0] + s[2]) * 0.5
-		var cz: float = (s[1] + s[3]) * 0.5
+		assert(horizontal or absf(s.z - s.x) < 0.001, "map segment %s is not axis-aligned" % [s])
+		var cx := (s.x + s.z) * 0.5
+		var cz := (s.y + s.w) * 0.5
 		var size: Vector3
 		if horizontal:
-			size = Vector3(absf(s[2] - s[0]) + WALL_T * 2.0, WALL_H, WALL_T * 2.0)
+			size = Vector3(absf(s.z - s.x) + WALL_T * 2.0, WALL_H, WALL_T * 2.0)
 		else:
-			size = Vector3(WALL_T * 2.0, WALL_H, absf(s[3] - s[1]) + WALL_T * 2.0)
+			size = Vector3(WALL_T * 2.0, WALL_H, absf(s.w - s.y) + WALL_T * 2.0)
 		_add_box(parent, mat, Vector3(cx, WALL_H * 0.5, cz), size)
 
 

@@ -4,8 +4,8 @@ extends GdUnitTestSuite
 
 
 func test_map_segments_axis_aligned() -> void:
-	for s: Array in MapBuilder.SEGS:
-		var axis_aligned := absf(s[3] - s[1]) < 0.001 or absf(s[2] - s[0]) < 0.001
+	for s: Vector4 in MapBuilder.SEGS:
+		var axis_aligned := absf(s.w - s.y) < 0.001 or absf(s.z - s.x) < 0.001
 		assert_bool(axis_aligned).is_true()
 
 
