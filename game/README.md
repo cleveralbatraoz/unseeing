@@ -8,17 +8,23 @@ an export of this one project.
 Two layers: the Rust crate (`../rust/`) is the hidden engine, Godot is
 the visible game.
 
-- `scenes/main.tscn` — one root node; everything else is built in code.
-- `scripts/main.gd` — composition root: it wires the engine nodes
+- `scenes/main.tscn` — one root node carrying `main.gd`.
+- `scenes/level_01.tscn` — the level, authored in the editor: `WaveWall`
+  and `WaveProp` boxes, the `SoundFan`, and a `SpawnPoint` marker under a
+  `WaveLevel` root that derives the technical contracts (wall
+  centerlines, hum room, spawn, demo tap) from what the designer placed.
+- `scripts/main.gd` — composition root: instances the level scene,
+  injects the material and wave pool into it, wires the engine nodes
   together, owns the fullscreen hearing quad and the per-frame globals
   (clock, flicker).
-- `scripts/map_builder.gd` — wall centerlines → box meshes + colliders.
 - `scripts/pulses.gd` — thin shim over the Rust `WaveCore`: the 64-slot
   wave pool shared with both shaders.
-- `../rust/src/` — the engine: pure wave/viewmodel modules (cargo-tested)
-  and the registered node classes the game places — `SoundFan` (designer
-  knobs for the hum voice), `UnseeingPlayer` (movement, mouse look, cane
-  tap modes), `HeroBody` (viewmodel meshes, head-bob, footsteps).
+- `../rust/src/` — the engine: pure wave/viewmodel/level-plan modules
+  (cargo-tested) and the registered node classes the game places —
+  `WaveLevel`/`WaveWall`/`WaveProp` (level authoring), `SoundFan`
+  (designer knobs for the hum voice), `UnseeingPlayer` (movement, mouse
+  look, cane tap modes), `HeroBody` (viewmodel meshes, head-bob,
+  footsteps).
 - `shaders/data_pass.gdshader` — world rendered as data (reveal/normals).
 - `shaders/hearing_post.gdshader` — outlines + wave shells; the only pass
   the player ever sees.

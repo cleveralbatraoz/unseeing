@@ -5,6 +5,7 @@ extends GdUnitTestSuite
 ## constants and decode expressions against the GDScript they must mirror.
 
 const INC_PATH := "res://shaders/pulse_pool.gdshaderinc"
+const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
 
 func _include_text() -> String:
@@ -39,12 +40,16 @@ func test_decode_expressions_are_literal() -> void:
 ## Camera distance is packed into one color channel divided by
 ## DIST_PACK_RANGE; any visible point packing above 1.0 would alias. The
 ## range must therefore exceed the longest sight line the map allows: the
-## full 3D diagonal of the wall-centerline extents, floor to ceiling.
+## full 3D diagonal of the wall-centerline extents, floor to ceiling —
+## derived from the shipped level scene, the one map that ever renders.
 func test_dist_pack_range_covers_the_map_diagonal() -> void:
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), Pulses.new())
+	add_child(level)
 	var lo := Vector2(INF, INF)
 	var hi := Vector2(-INF, -INF)
-	for s: Vector4 in MapBuilder.SEGS:
+	for s: Vector4 in level.wall_segments():
 		lo = Vector2(minf(lo.x, minf(s.x, s.z)), minf(lo.y, minf(s.y, s.w)))
 		hi = Vector2(maxf(hi.x, maxf(s.x, s.z)), maxf(hi.y, maxf(s.y, s.w)))
-	var diagonal := Vector3(hi.x - lo.x, MapBuilder.WALL_H, hi.y - lo.y).length()
+	var diagonal := Vector3(hi.x - lo.x, WaveLevel.wall_height(), hi.y - lo.y).length()
 	assert_float(_shader_const("DIST_PACK_RANGE")).is_greater(diagonal)

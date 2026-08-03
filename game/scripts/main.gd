@@ -15,6 +15,7 @@ extends Node3D
 
 const DATA_SHADER := preload("res://shaders/data_pass.gdshader")
 const POST_SHADER := preload("res://shaders/hearing_post.gdshader")
+const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
 var pulses: Pulses
 var data_mat := ShaderMaterial.new()
@@ -27,7 +28,7 @@ var wave_mats: Array[ShaderMaterial] = [data_mat, cane_mat, body_mat, post_mat]
 var player: UnseeingPlayer
 var hero: HeroBody
 var fan: SoundFan
-var level: LevelData
+var level: WaveLevel
 
 ## The game clock: simulated seconds accumulated from frame deltas — NOT wall
 ## time, so offline rendering (movie maker) and time scaling stay correct.
@@ -55,24 +56,27 @@ func _ready() -> void:
 		m.shader = DATA_SHADER
 	cane_mat.set_shader_parameter("u_base", 0.85)
 	pulses = Pulses.new()
-	level = MapBuilder.build_world(self, data_mat)
-	_demo = DemoTap.new(level.demo_tap, level.demo_tap_normal)
-	# a constant sound source in the NEXT room, behind the wall the spawn
-	# faces: its hum is felt through the wall before it is ever found
-	fan = SoundFan.new()
-	fan.pulses = pulses
-	fan.data_mat = data_mat
-	fan.position = level.fan_spawn
-	fan.rotation.y = level.fan_yaw
-	add_child(fan)
-	# the fan's room (east area, wall centerlines): its waves reveal nothing
-	# beyond these bounds — walls stop air, even though the shells are felt
+	# the world: an editor-authored scene — walls, furniture, the fan, the
+	# spawn marker under a WaveLevel root. Injected BEFORE entering the
+	# tree (children run _ready first, and the fan refuses to build
+	# uninjected); the root distributes the material and pool, then derives
+	# the technical contracts the systems below read back from it.
+	level = LEVEL_SCENE.instantiate() as WaveLevel
+	level.inject(data_mat, pulses)
+	add_child(level)
+	_demo = DemoTap.new(level.demo_tap(), level.demo_tap_normal())
+	# the level's constant sound source, in the NEXT room, behind the wall
+	# the spawn faces: its hum is felt through the wall before it is found
+	fan = level.fan()
+	# the fan's room (wall centerlines, derived from the walls around it):
+	# its waves reveal nothing beyond these bounds — walls stop air, even
+	# though the shells are felt
 	for m: ShaderMaterial in wave_mats:
-		m.set_shader_parameter("u_hum_room", level.hum_room)
+		m.set_shader_parameter("u_hum_room", level.hum_room())
 	player = UnseeingPlayer.new()
 	player.pulses = pulses
-	player.position = level.spawn_pos
-	player.rotation.y = level.spawn_yaw
+	player.position = level.spawn_pos()
+	player.rotation.y = level.spawn_yaw()
 	add_child(player)
 	hero = HeroBody.new()
 	hero.player = player
@@ -93,7 +97,8 @@ func _process(dt: float) -> void:
 		m.set_shader_parameter("u_flick", flick)
 	post_mat.set_shader_parameter("u_breath", 1.0 + sin(now * 0.5) * 0.045)
 	post_mat.set_shader_parameter("u_grain_t", fmod(now, 1.0) * 61.7)
-	fan.update(now)
+	if fan != null:  # a fanless level is legal silence
+		fan.update(now)
 	pulses.apply(now, wave_mats)
 	hero.update(now, dt)
 	_demo_tap()
