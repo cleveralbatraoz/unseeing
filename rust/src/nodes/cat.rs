@@ -25,7 +25,7 @@ use godot::classes::{
 };
 use godot::prelude::*;
 
-use super::limbs::{sphere, tube};
+use super::limbs::{sphere, sphere_lod, tube, tube_res};
 use crate::cat_body::{self, CatPose, Tail};
 use crate::cat_brain::{CatBrain, RoamRect};
 use crate::cat_gait::{self, CatGait};
@@ -73,7 +73,15 @@ pub struct WaveCat {
     sit: f64,
     now: f64,
     sim_t: f64,
+    /// The body position at the START of the last physics tick, before
+    /// move_and_slide — so this tick's `pos - last_pos` is the planar
+    /// distance the body ACTUALLY covered last tick, the brain's honest
+    /// progress feed (never zero-across-the-wrong-interval).
     last_pos: Vector3,
+    /// The pose changes only on a physics tick (60 Hz); this marks a
+    /// fresh pose so `process()` rebuilds the silhouette once per tick,
+    /// not once per rendered frame — no wasted rebuilds above 60 Hz.
+    mesh_dirty: bool,
     base: Base<CharacterBody3D>,
 }
 
@@ -106,8 +114,12 @@ impl ICharacterBody3D for WaveCat {
         mi.set_as_top_level(true);
         self.base_mut().add_child(&mi);
 
+        // the brain, gait and mesh all work in WORLD space (the roam rect
+        // and velocity are world), so read the world heading — a cat under
+        // a rotated room or grouping folder still faces where the designer
+        // aimed it
         let pos = self.base().get_global_position();
-        let yaw = f64::from(self.base().get_rotation().y);
+        let yaw = f64::from(self.base().get_global_rotation().y);
         let rect = RoamRect::around(
             pos,
             f64::from(self.roam_size.x),
@@ -122,6 +134,7 @@ impl ICharacterBody3D for WaveCat {
         self.gait = Some(gait);
         self.pose = Some(pose);
         self.last_pos = pos;
+        self.mesh_dirty = true;
     }
 
     fn physics_process(&mut self, dt: f64) {
@@ -131,13 +144,19 @@ impl ICharacterBody3D for WaveCat {
             return; // _ready refused: nothing to think with
         };
         let pos = self.base().get_global_position();
+        // progress = |pos_now - pos_at_last_tick_start| = the planar
+        // distance actually covered last tick (last_pos is stored PRE-move
+        // below), so a wall-blocked cat honestly reads as making none
         let progress =
             f64::from(Vector2::new(pos.x - self.last_pos.x, pos.z - self.last_pos.z).length());
+        self.last_pos = pos;
         let drive = brain.advance(dt, pos, progress);
 
-        let mut rot = self.base().get_rotation();
-        rot.y = drive.yaw as f32;
-        self.base_mut().set_rotation(rot);
+        // command a WORLD heading: velocity and the world-space silhouette
+        // both read drive.yaw as world, so the body's yaw must be world too
+        let mut grot = self.base().get_global_rotation();
+        grot.y = drive.yaw as f32;
+        self.base_mut().set_global_rotation(grot);
         let fw = forward(drive.yaw);
         self.base_mut().set_velocity(fw * (drive.speed as f32));
         self.base_mut().move_and_slide();
@@ -175,18 +194,22 @@ impl ICharacterBody3D for WaveCat {
             self.emit_paw(Vector3::new(c.at.x, 0.02, c.at.z), now);
         }
 
-        self.last_pos = new_pos;
         self.pose = Some(pose);
         self.brain = Some(brain);
         self.gait = Some(gait);
         self.tail = Some(tail);
+        self.mesh_dirty = true;
     }
 
     fn process(&mut self, _dt: f64) {
+        if !self.mesh_dirty {
+            return; // pose unchanged since the last rebuild — no wasted work
+        }
         let (Some(pose), Some(tail)) = (self.pose, self.tail) else {
             return; // no physics tick yet: nothing to draw
         };
         self.build_mesh(&pose, &tail);
+        self.mesh_dirty = false;
     }
 }
 
@@ -269,37 +292,42 @@ impl WaveCat {
     /// The whole silhouette, rebuilt for this frame's skeleton: torso
     /// line, neck and head, ears, whiskers, four bent legs, the tail
     /// chain — smooth tubes and spheres, one clean outline per shape.
+    /// Small joints use the radius-tiered [`sphere_lod`] and whiskers the
+    /// low-segment [`tube_res`]: the pea-sized parts read identically at a
+    /// fraction of the per-vertex FFI cost the wasm build feels.
     fn build_mesh(&mut self, pose: &CatPose, tail: &Tail) {
         let sk = cat_body::skeleton(pose);
         let mut mesh = self.mesh.clone();
         mesh.clear_surfaces();
         mesh.surface_begin(PrimitiveType::TRIANGLES);
-        // the torso line, chest proud of hip
+        // the torso line, chest proud of hip — the big shapes stay full-res
         tube(&mut mesh, sk.chest, sk.hip, 0.068, 0.062);
         sphere(&mut mesh, sk.chest, 0.072);
         sphere(&mut mesh, sk.hip, 0.068);
         // neck and head
         tube(&mut mesh, sk.chest, sk.head, 0.045, 0.034);
         sphere(&mut mesh, sk.head, 0.052);
-        sphere(&mut mesh, sk.muzzle, 0.028);
+        sphere_lod(&mut mesh, sk.muzzle, 0.028);
         for (base, tip) in sk.ears {
             tube(&mut mesh, base, tip, 0.016, 0.002);
         }
         for (root, tip) in sk.whiskers {
-            tube(&mut mesh, root, tip, 0.0015, 0.0008);
+            tube_res(&mut mesh, root, tip, 0.0012, 0.0006, 4);
         }
         for leg in sk.legs {
             tube(&mut mesh, leg.root, leg.mid, 0.030, 0.024);
-            sphere(&mut mesh, leg.mid, 0.026);
-            tube(&mut mesh, leg.mid, leg.paw, 0.022, 0.016);
-            sphere(&mut mesh, leg.paw + Vector3::new(0.0, 0.018, 0.0), 0.022);
+            sphere_lod(&mut mesh, leg.mid, 0.026);
+            tube(&mut mesh, leg.mid, leg.paw, 0.024, 0.020);
+            // the paw pad, seated ON the shin's end — no lift offset, so an
+            // occluded far paw can't survive as a free-floating ball
+            sphere_lod(&mut mesh, leg.paw, 0.021);
         }
         let mut prev = sk.tail_root;
         for (i, node) in tail.nodes().iter().enumerate() {
             let r1 = 0.014 - 0.0018 * i as f32;
             let r2 = 0.014 - 0.0018 * (i + 1) as f32;
             tube(&mut mesh, prev, *node, r1, r2);
-            sphere(&mut mesh, *node, r2 * 0.9);
+            sphere_lod(&mut mesh, *node, r2 * 0.9);
             prev = *node;
         }
         mesh.surface_end();
