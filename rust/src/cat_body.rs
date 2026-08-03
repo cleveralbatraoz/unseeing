@@ -51,8 +51,17 @@ pub const TAIL_N: usize = 5;
 /// One tail segment's length, meters.
 pub const TAIL_SEG: f64 = 0.062;
 
-/// Whisker length — six thin outlines on the muzzle.
-pub const WHISKER_LEN: f64 = 0.075;
+/// The most a tail segment may bend from the one before it, radians — a
+/// structural ceiling that forbids the follow-chain from coiling into the
+/// closed loops that read as glitches. ~55°.
+pub const TAIL_MAX_BEND: f64 = 0.96;
+
+/// Whiskers on the muzzle — two per side, four thin outlines. Six turned
+/// the distant head into a starburst; four keep the muzzle legible.
+pub const WHISKER_N: usize = 4;
+
+/// Whisker length — short thin outlines that don't dominate the head.
+pub const WHISKER_LEN: f64 = 0.055;
 
 /// One leg's joints, root to paw.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -80,8 +89,8 @@ pub struct Skeleton {
     pub muzzle: Vector3,
     /// Ear base and tip, left then right.
     pub ears: [(Vector3, Vector3); 2],
-    /// Whisker root and tip, three per side.
-    pub whiskers: [(Vector3, Vector3); 6],
+    /// Whisker root and tip, two per side.
+    pub whiskers: [(Vector3, Vector3); WHISKER_N],
     /// LF, RF, LH, RH.
     pub legs: [Leg; LEGS],
     /// Where the tail chain hangs from.
@@ -159,12 +168,14 @@ pub fn skeleton(pose: &CatPose) -> Skeleton {
         ears[e] = (base, tip);
     }
 
-    let mut whiskers = [(Vector3::ZERO, Vector3::ZERO); 6];
+    let mut whiskers = [(Vector3::ZERO, Vector3::ZERO); WHISKER_N];
     for (w, spot) in whiskers.iter_mut().enumerate() {
-        let side = if w < 3 { -1.0_f32 } else { 1.0 };
-        let row = (w % 3) as f64;
-        let root = muzzle + rv * (0.012 * side) + up((0.004 - 0.007 * row) as f32);
-        let dir = (rv * side + fw * 0.55 + up((0.12 - 0.12 * row) as f32)).normalized();
+        let side = if w < WHISKER_N / 2 { -1.0_f32 } else { 1.0 };
+        let row = (w % (WHISKER_N / 2)) as f64;
+        let root = muzzle + rv * (0.011 * side) + up((0.003 - 0.006 * row) as f32);
+        // splayed sideways and forward, a gentle downward fan — never the
+        // near-vertical spikes that starburst at distance
+        let dir = (rv * (side * 1.1) + fw * 0.5 + up((0.04 - 0.09 * row) as f32)).normalized();
         *spot = (root, root + dir * (WHISKER_LEN as f32));
     }
 
@@ -298,36 +309,59 @@ impl Tail {
     ) {
         let sit = sit.clamp(0.0, 1.0);
         let mut prev = root;
+        let mut prev_dir = back.normalized();
         for (i, node) in self.nodes.iter_mut().enumerate() {
             let u = i as f64 / (TAIL_N - 1) as f64;
-            // standing: carried high — back at the base, curling up and
-            // slightly hooked toward the tip. sitting: wrapped low
-            // around the haunches instead.
-            let stand = back * ((1.0 - u * 0.85) as f32)
-                + Vector3::UP * ((0.25 + u * 0.9) as f32)
+            // standing: a graceful trailing arc — mostly back at the base,
+            // rising to ~45° up-and-back at the tip (never hooked straight
+            // over the spine). sitting: laid gently to one side beside the
+            // haunches, not wrapped into a loop.
+            let stand = back * ((1.0 - u * 0.35) as f32)
+                + Vector3::UP * ((0.12 + u * 0.55) as f32)
                 + rv * ((sway * (0.3 + u * 0.7)) as f32);
-            let curl = back * ((1.0 - u * 0.9) as f32) + rv * ((u * 1.4) as f32)
-                - Vector3::UP * (0.15 - (u * 0.1) as f32);
+            let curl = back * ((0.6 - u * 0.25) as f32) + rv * ((u * 0.85) as f32)
+                - Vector3::UP * ((0.05 + u * 0.05) as f32);
             let rest = stand.lerp(curl, sit as f32);
             let rest = if f64::from(rest.length()) > 1e-6 {
                 rest.normalized()
             } else {
-                back
+                prev_dir
             };
             let target = prev + rest * (TAIL_SEG as f32);
             let rate = 14.0 - 2.2 * i as f64;
             *node += (target - *node) * ((dt * rate).min(1.0) as f32);
-            // the chain never stretches: re-seat on the segment length
+            // the chain never stretches, and never coils: re-seat on the
+            // segment length, then clamp the bend against the previous
+            // segment so the follow-chain can't fold into a closed loop
             let span = *node - prev;
             let dir = if f64::from(span.length()) > 1e-6 {
                 span.normalized()
             } else {
-                rest
+                prev_dir
             };
+            let dir = bend_clamp(dir, prev_dir);
             *node = prev + dir * (TAIL_SEG as f32);
             prev = *node;
+            prev_dir = dir;
         }
     }
+}
+
+/// Clamp `dir` so it bends at most [`TAIL_MAX_BEND`] radians from `prev`.
+/// Beyond the cone, `dir` is pulled back to the cone's edge in the plane
+/// the two share — the structural guard against tail loops.
+fn bend_clamp(dir: Vector3, prev: Vector3) -> Vector3 {
+    let max_cos = TAIL_MAX_BEND.cos() as f32;
+    let max_sin = TAIL_MAX_BEND.sin() as f32;
+    let cos = dir.dot(prev).clamp(-1.0, 1.0);
+    if cos >= max_cos {
+        return dir;
+    }
+    let perp = dir - prev * cos;
+    if f64::from(perp.length()) <= 1e-6 {
+        return dir; // antiparallel: no defined plane, leave it
+    }
+    (prev * max_cos + perp.normalized() * max_sin).normalized()
 }
 
 /// The heading's forward vector — Godot yaw convention: yaw 0 faces -Z.
@@ -453,7 +487,7 @@ mod tests {
     }
 
     /// The face stays assembled: ears on the head, muzzle ahead of it,
-    /// six whiskers of exactly whisker length fanning from the muzzle.
+    /// four whiskers of exactly whisker length fanning from the muzzle.
     #[test]
     fn ears_muzzle_whiskers_stay_on_the_face() {
         for pose in walk_poses(0.0).iter().step_by(60) {
@@ -530,6 +564,38 @@ mod tests {
             f64::from((tip - root).dot(rv)).abs() > 0.1,
             "a seated tail must curl sideways"
         );
+    }
+
+    /// The follow-chain never coils into a loop: at every joint, in a
+    /// standing rest, a hard walk, and a full sit, the segment bends no
+    /// more than TAIL_MAX_BEND from the one before it — the structural
+    /// guard that killed the teacup-handle and squirrel-arc glitches.
+    #[test]
+    fn tail_never_coils_into_a_loop() {
+        let root = Vector3::new(0.0, 0.24, 0.0);
+        let back = Vector3::new(0.0, 0.0, 1.0);
+        let rv = Vector3::new(1.0, 0.0, 0.0);
+        let max_cos = TAIL_MAX_BEND.cos();
+        for sit in [0.0, 0.5, 1.0] {
+            for sway in [-0.25, 0.0, 0.25] {
+                let mut tail = Tail::new(root, back, rv);
+                for _ in 0..600 {
+                    tail.advance(DT, root, back, rv, sit, sway);
+                }
+                let mut prev_dir = back;
+                let mut prev = root;
+                for node in tail.nodes() {
+                    let dir = (*node - prev).normalized();
+                    let cos = f64::from(dir.dot(prev_dir));
+                    assert!(
+                        cos >= max_cos - 1e-4,
+                        "tail coiled: bend cos {cos} at sit {sit} sway {sway}"
+                    );
+                    prev_dir = dir;
+                    prev = *node;
+                }
+            }
+        }
     }
 
     /// The whole skeleton is finite over a hostile sweep — sit blends,
