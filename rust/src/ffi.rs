@@ -13,10 +13,17 @@ use crate::echo_queue::{ECHO_KIND, ECHO_MAX_R, ECHO_SPEED, EchoQueue};
 use crate::pulse_pool::{PulsePool, REFUSAL_MESSAGE};
 use crate::ray_fan;
 
-struct UnseeingCore;
+// gdext's entry-point API requires the `unsafe` keyword on this impl; the
+// module scope carries the one permitted exception to deny(unsafe_code).
+#[allow(unsafe_code)]
+mod entry {
+    use godot::prelude::*;
 
-#[gdextension]
-unsafe impl ExtensionLibrary for UnseeingCore {}
+    struct UnseeingCore;
+
+    #[gdextension]
+    unsafe impl ExtensionLibrary for UnseeingCore {}
+}
 
 /// The wave core behind the GDScript `Pulses` shim: the 64 pulse slots and
 /// the echo appointment book, one instance per game world. Method for

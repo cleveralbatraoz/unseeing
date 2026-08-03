@@ -30,6 +30,10 @@
 //!
 //! Web builds are single-threaded (the export pins thread_support=false):
 //! no threads, no rayon, no parking primitives anywhere in this crate.
+//!
+//! No unsafe Rust: the sole exception is the `unsafe impl ExtensionLibrary`
+//! entry point in [`ffi`], whose `unsafe` keyword gdext's API mandates.
+#![deny(unsafe_code)]
 
 pub mod clustering;
 pub mod echo_queue;

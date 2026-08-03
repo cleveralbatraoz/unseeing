@@ -126,6 +126,11 @@ must work perfectly.
     Godot 4.x .NET cannot export to web. C++ was chosen briefly, then
     replaced.) The wasm export allows exactly ONE Rust extension: every
     native system joins the single crate.
+- **No unsafe Rust.** The crate is `#![deny(unsafe_code)]`; the single
+  permitted exception is the `unsafe impl ExtensionLibrary` entry point
+  that gdext's API mandates (a targeted `#[allow]` in `ffi.rs`). Never
+  add another exception — if a problem seems to need `unsafe`, redesign
+  or ask the user.
 - **Rust web-export constraints** (as of 2026, gdext wasm rides the
   bleeding edge): pin the nightly toolchain in `rust-toolchain.toml`, pin
   the Emscripten version to match the Godot build, keep link flags in sync
