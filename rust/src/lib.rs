@@ -9,6 +9,8 @@
 //!
 //! The pure core, one law per module — each a bit-for-bit mirror of the
 //! GDScript wave system it will replace, pinned by ported tests:
+//! - [`cat_body`] — the companion cat's silhouette skeleton: two-bone
+//!   legs, sit blend, ears and whiskers, the lagging follow-chain tail.
 //! - [`cat_brain`] — the companion cat's deterministic whimsy: a seeded
 //!   PCG32 wanderer that roams, pauses, sits, and abandons blocked paths.
 //! - [`cat_gait`] — the companion cat's four-beat lateral-sequence walk:
@@ -39,6 +41,7 @@
 //! entry point in [`ffi`], whose `unsafe` keyword gdext's API mandates.
 #![deny(unsafe_code)]
 
+pub mod cat_body;
 pub mod cat_brain;
 pub mod cat_gait;
 pub mod clustering;
