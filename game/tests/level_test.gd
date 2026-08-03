@@ -336,3 +336,17 @@ func test_shipped_level_matches_validated_design() -> void:
 	assert_vector(level.demo_tap_normal()).is_equal(Vector3(-1, 0, 0))
 	var fan: SoundFan = level.fan()
 	assert_vector(fan.position).is_equal_approx(Vector3(8.6, 0, 4.4), Vector3.ONE * 0.001)
+
+
+## The shipped level carries the companion cat, exposes it for the root to
+## tick, and has injected it the same way it injects the fan — so it can
+## both sound (pulse pool) and be seen (data-pass material).
+func test_shipped_level_exposes_and_injects_the_cat() -> void:
+	var level := _shipped_level()
+	var cats := level.cats()
+	assert_int(cats.size()).is_equal(1)
+	var cat: WaveCat = cats[0]
+	assert_object(cat.pulses).is_not_null()
+	assert_object(cat.data_mat).is_not_null()
+	# it wakes in the west room beside the hero, on the floor
+	assert_vector(cat.position).is_equal_approx(Vector3(2.7, 0, 8.5), Vector3.ONE * 0.001)

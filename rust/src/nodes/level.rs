@@ -22,6 +22,7 @@
 use godot::classes::{Engine, INode3D, Marker3D, Material, MeshInstance3D, Node3D, StaticBody3D};
 use godot::prelude::*;
 
+use super::cat::WaveCat;
 use super::fan::SoundFan;
 use super::wall::{WaveProp, WaveWall, build_box};
 use crate::level_plan;
@@ -44,6 +45,7 @@ struct Census {
     walls: Vec<Gd<WaveWall>>,
     props: Vec<Gd<WaveProp>>,
     fan: Option<Gd<SoundFan>>,
+    cats: Vec<Gd<WaveCat>>,
     spawn: Option<Gd<Marker3D>>,
 }
 
@@ -70,6 +72,7 @@ pub struct WaveLevel {
     #[init(val = Vector3::UP)]
     tap_normal: Vector3,
     fan_child: Option<Gd<SoundFan>>,
+    cat_children: Vec<Gd<WaveCat>>,
     base: Base<Node3D>,
 }
 
@@ -110,6 +113,12 @@ impl WaveLevel {
         if let Some(mut fan) = census.fan {
             fan.set("pulses", &pulses.to_variant());
             fan.set("data_mat", &data_mat.to_variant());
+        }
+        // creatures render and sound like the fan: the wave pool voices
+        // their footfalls, the data-pass material draws their outline
+        for mut cat in census.cats {
+            cat.set("pulses", &pulses.to_variant());
+            cat.set("data_mat", &data_mat.to_variant());
         }
         for slab in &mut self.slabs {
             slab.skin.set_material_override(&data_mat);
@@ -182,6 +191,13 @@ impl WaveLevel {
         self.fan_child.clone()
     }
 
+    /// The level's companion creatures — the composition root drives each
+    /// one's clock (`tick`) every frame, exactly as it drives the fan.
+    #[func]
+    fn cats(&self) -> Array<Gd<WaveCat>> {
+        self.cat_children.iter().cloned().collect()
+    }
+
     /// Wall height in meters — a build dimension, served as a static
     /// method: ClassDB constants are integers only.
     #[func]
@@ -197,6 +213,7 @@ impl WaveLevel {
         let census = self.census();
         self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
         self.fan_child = census.fan;
+        self.cat_children = census.cats;
         let lift = Vector3::new(0.0, level_plan::SPAWN_LIFT as f32, 0.0);
         if let Some(marker) = census.spawn {
             self.spawn_at = marker.get_global_position() + lift;
@@ -266,6 +283,8 @@ fn collect(node: &Gd<Node>, census: &mut Census) {
             census.props.push(prop);
         } else if let Ok(fan) = child.clone().try_cast::<SoundFan>() {
             census.fan.get_or_insert(fan);
+        } else if let Ok(cat) = child.clone().try_cast::<WaveCat>() {
+            census.cats.push(cat);
         } else if let Ok(marker) = child.clone().try_cast::<Marker3D>()
             && marker.get_name() == "SpawnPoint"
         {

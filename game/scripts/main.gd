@@ -28,6 +28,7 @@ var wave_mats: Array[ShaderMaterial] = [data_mat, cane_mat, body_mat, post_mat]
 var player: UnseeingPlayer
 var hero: HeroBody
 var fan: SoundFan
+var cats: Array[WaveCat] = []
 var level: WaveLevel
 
 ## The game clock: simulated seconds accumulated from frame deltas — NOT wall
@@ -68,6 +69,9 @@ func _ready() -> void:
 	# the level's constant sound source, in the NEXT room, behind the wall
 	# the spawn faces: its hum is felt through the wall before it is found
 	fan = level.fan()
+	# the level's companion creatures — the cat wanders the floor beside the
+	# hero, revealing itself with its own soft paw waves; we drive its clock
+	cats.assign(level.cats())
 	# the fan's room (wall centerlines, derived from the walls around it):
 	# its waves reveal nothing beyond these bounds — walls stop air, even
 	# though the shells are felt
@@ -99,6 +103,8 @@ func _process(dt: float) -> void:
 	post_mat.set_shader_parameter("u_grain_t", fmod(now, 1.0) * 61.7)
 	if fan != null:  # a fanless level is legal silence
 		fan.update(now)
+	for cat: WaveCat in cats:  # a catless level is legal too
+		cat.tick(now)
 	pulses.apply(now, wave_mats)
 	hero.update(now, dt)
 	_demo_tap()
