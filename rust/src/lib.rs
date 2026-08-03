@@ -19,6 +19,9 @@
 //!   instant the primary wavefront reaches their surface point.
 //! - [`fan_wave`] — the oscillating fan's motion curves and whoosh
 //!   cadence, the world's one constant sound source.
+//! - [`level_plan`] — the level's derived technical contracts: wall box
+//!   dimensions, axis snapping, centerlines, the hum room around a
+//!   source, the dev demo tap.
 //!
 //! Determinism is construction, not luck: no hashed iteration anywhere
 //! near an output (ordered containers only), no system time, no
@@ -32,6 +35,7 @@ pub mod clustering;
 pub mod echo_queue;
 pub mod fan_wave;
 mod ffi;
+pub mod level_plan;
 mod nodes;
 pub mod pulse_pool;
 pub mod ray_fan;
