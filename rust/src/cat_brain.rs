@@ -7,10 +7,13 @@
 //! world replay the same life — the crate's determinism law extended to
 //! a creature that must look spontaneous.
 //!
-//! Decision inputs are quantized before they matter: wander targets snap
-//! to a 0.1 m grid, so the brain's discrete choices never hinge on the
-//! last bits of a float. The continuous outputs (eased speed, rate-
-//! limited yaw) stay smooth — quantized decisions, fluid motion.
+//! Wander targets snap to a 0.1 m grid, so the point the cat chooses to
+//! walk toward never carries float dust. The other decisions — arrival,
+//! blocked-give-up, timer expiry — do branch on physics-measured floats
+//! (position, displacement), so they are deterministic PER PLATFORM, the
+//! v1 contract; a future cross-platform build would quantize those branch
+//! inputs too. The continuous outputs (eased speed, rate-limited yaw)
+//! stay smooth throughout — snapped choices, fluid motion.
 //!
 //! The brain knows nothing of scenes or physics. It is handed the body's
 //! position and the progress the body ACTUALLY made, and answers with a
