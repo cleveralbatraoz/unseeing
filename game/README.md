@@ -31,6 +31,28 @@ the visible game.
 
 Renderer is `gl_compatibility` — mandatory for the Web (wasm) export.
 
+## Authoring levels
+
+No programming needed — the level is an ordinary Godot scene:
+
+1. Build the Rust library once so the editor knows the engine nodes:
+   `cargo build --release` in `../rust/` (only needed after a fresh
+   clone or an engine change — and never open scenes before this build,
+   or the editor will strip the engine node types from them).
+2. Open `game/project.godot` in Godot and double-click
+   `scenes/level_01.tscn`.
+3. Walls: duplicate any `WaveWall`, drag it where you want, stretch it
+   with its **Length** property. Walls snap to right angles by
+   themselves — the perception physics needs axis-aligned walls, and the
+   engine enforces it quietly.
+4. Furniture: duplicate a `WaveProp` and set its **Size**.
+5. Sound sources: the `SoundFan` node has its voice in the Inspector —
+   whoosh cadence, hum range/speed/gain, beam cone.
+6. The hero wakes at the `SpawnPoint` marker — move it to move the start.
+7. Press play. The `WaveLevel` root derives everything technical (wall
+   centerlines, the hum room, the demo tap) from what you placed; the
+   test suite gates the rest on every commit.
+
 ## System status
 
 | System | Status |
@@ -48,3 +70,4 @@ Renderer is `gl_compatibility` — mandatory for the Web (wasm) export.
 | Wave/physics core as GDExtension Rust module | done (`rust/`: pure modules + WaveCore behind the Pulses shim) |
 | Fan / player / hero body as Rust engine nodes | done (`rust/src/nodes/`: SoundFan, UnseeingPlayer, HeroBody replace their .gd scripts; demo movie frames byte-identical across the port) |
 | gdUnit4 test framework migration | done (`tests/`, headless CLI in `ci/pipeline.sh`) |
+| Editor-authored levels (the engine/content split) | done (`scenes/level_01.tscn` + WaveLevel-derived contracts; see Authoring levels) |
