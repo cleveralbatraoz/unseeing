@@ -45,9 +45,6 @@ pub const BODY_H: f64 = 0.20;
 /// Walk bob amplitude, meters — two gentle rises per stride.
 pub const BOB_AMP: f64 = 0.006;
 
-/// Weight-shift roll amplitude, radians — one sway per stride.
-pub const ROLL_AMP: f64 = 0.025;
-
 /// Paw wave reach in meters — a whisper next to the hero's 1.6 m steps.
 pub const PAW_RANGE: f64 = 0.8;
 
@@ -57,8 +54,15 @@ pub const PAW_SPEED: f64 = 4.0;
 /// Paw wave loudness — soft pads, not shoes.
 pub const PAW_GAIN: f64 = 0.5;
 
-/// Planar speed below which the cat counts as standing.
-pub const MOVE_EPS: f64 = 0.05;
+/// Walk-gate hysteresis: the cat starts stepping only past [`MOVE_HI`]
+/// and only stops stepping below [`MOVE_LO`]. The measured speed the node
+/// feeds is the real move_and_slide displacement, which can jitter around
+/// a single threshold when the body grazes a wall or slides a corner; the
+/// band keeps a near-stalled cat from machine-gunning settle contacts.
+pub const MOVE_HI: f64 = 0.08;
+
+/// The low edge of the walk-gate hysteresis band — see [`MOVE_HI`].
+pub const MOVE_LO: f64 = 0.03;
 
 /// Stride phase at which each leg touches down — the lateral sequence:
 /// LH at 0, LF a quarter later, RH at half, RF at three quarters.
@@ -88,12 +92,17 @@ const AMP_RATE: f64 = 6.0;
 /// whole swing unseen and no tick fires more than one contact per leg.
 const MAX_PHASE_STEP: f64 = 0.25;
 
-/// Only the fore paws sound: the walking cat direct-registers, each hind
-/// paw landing in the fore print already pressed — announced once, then
-/// silent.
+/// Only the LEAD fore paw (LF) sounds — the cat's one soft pulse per
+/// stride. Two reasons braid here: a walking cat direct-registers (each
+/// hind paw lands in the ipsilateral fore print already pressed, so the
+/// hinds are silent), AND a cat's padded step is so nearly silent that
+/// one faint pulse a stride is the honest amount of sound it makes. One
+/// emitter also halves the cat's claim on the 64-slot pool it shares
+/// with the hero's own footsteps and the fan hum — a lantern that blinks
+/// gently, never a chatterbox that evicts the hero's perception.
 #[must_use]
 pub fn paw_sounds(leg: usize) -> bool {
-    leg < 2
+    leg == 0
 }
 
 /// One paw touching down: which leg, and the exact floor point (y = 0)
@@ -120,8 +129,6 @@ pub struct GaitFrame {
     pub amp: f64,
     /// Body lift above [`BODY_H`] this frame (the walk bob).
     pub bob: f64,
-    /// Weight-shift roll, radians, +right.
-    pub roll: f64,
     /// Whether the walk gate was open this tick.
     pub moving: bool,
 }
@@ -139,6 +146,8 @@ pub struct CatGait {
     /// leg comes back to stance.
     aim: [Vector3; LEGS],
     in_swing: [bool; LEGS],
+    /// The hysteretic walk gate's current state — see [`MOVE_HI`].
+    moving: bool,
 }
 
 impl CatGait {
@@ -156,15 +165,23 @@ impl CatGait {
             planted,
             aim: planted,
             in_swing: [false; LEGS],
+            moving: false,
         }
     }
 
     /// Advance one tick. `pos` is the body center on the floor (y is
     /// ignored), `yaw` the heading, `speed` the ACTUAL planar speed the
     /// body achieved — feed the measured displacement, not the wish, so
-    /// blocked bodies stop stepping.
+    /// blocked bodies stop stepping. The walk gate is hysteretic
+    /// ([`MOVE_HI`]/[`MOVE_LO`]) so a body grazing a wall near the
+    /// threshold doesn't flicker between stepping and settling.
     pub fn advance(&mut self, dt: f64, pos: Vector3, yaw: f64, speed: f64) -> GaitFrame {
-        let moving = speed > MOVE_EPS;
+        let moving = if self.moving {
+            speed > MOVE_LO
+        } else {
+            speed > MOVE_HI
+        };
+        self.moving = moving;
         self.amp += ((if moving { 1.0 } else { 0.0 }) - self.amp) * (dt * AMP_RATE).min(1.0);
         let mut contacts = Vec::new();
         if moving {
@@ -186,7 +203,6 @@ impl CatGait {
             phase: self.phase,
             amp: self.amp,
             bob: BOB_AMP * (self.phase * std::f64::consts::TAU * 2.0).sin() * self.amp,
-            roll: ROLL_AMP * (self.phase * std::f64::consts::TAU).sin() * self.amp,
             moving,
         }
     }
@@ -228,15 +244,29 @@ impl CatGait {
         paw
     }
 
-    /// Standing still: any paw caught mid-swing touches down right where
-    /// it hangs — the settle step a halting cat actually takes.
+    /// Standing still: any paw caught mid-swing touches straight down
+    /// where it hangs — not forward at its far aim. The phase is frozen
+    /// (advance did not step it this tick), so the leg's swing progress
+    /// is exactly the last moving frame's, and the hang point is that
+    /// frame's `planted.lerp(aim, eased)`; the paw drops to that xz, a
+    /// small honest step, never a teleport across the stride.
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "the body indexes four parallel per-leg arrays (in_swing, \
+                  OFFSET, planted, aim) by the same leg index; a range loop \
+                  reads far clearer than zipping four iterators"
+    )]
     fn settle(&mut self, contacts: &mut Vec<Contact>) {
         for leg in 0..LEGS {
             if !self.in_swing[leg] {
                 continue;
             }
             self.in_swing[leg] = false;
-            let spot = Vector3::new(self.aim[leg].x, 0.0, self.aim[leg].z);
+            let lp = (self.phase - OFFSET[leg]).rem_euclid(1.0);
+            let sw = ((lp - DUTY) / (1.0 - DUTY)).clamp(0.0, 1.0);
+            let eased = sw * sw * (3.0 - 2.0 * sw);
+            let hang = self.planted[leg].lerp(self.aim[leg], eased as f32);
+            let spot = Vector3::new(hang.x, 0.0, hang.z);
             self.planted[leg] = spot;
             contacts.push(Contact { leg, at: spot });
         }
@@ -381,30 +411,60 @@ mod tests {
         }
     }
 
-    /// Stopping mid-stride: paws caught in the air settle onto the floor
-    /// with a touchdown each — then the cat is fully planted and silent.
+    /// Stopping mid-stride: paws caught in the air drop STRAIGHT DOWN to
+    /// where they hang, never teleporting forward to their far aim. The
+    /// last airborne xz and the settled xz must coincide — the halt is a
+    /// small step down, not a lurch across the stride.
     #[test]
-    fn stopping_settles_airborne_paws() {
+    fn stopping_settles_paws_straight_down() {
         let mut gait = CatGait::new(Vector3::ZERO, 0.0);
         let mut pos = Vector3::ZERO;
-        // walk until at least one paw is mid-swing
-        let mut airborne = false;
+        // walk until at least one paw is mid-swing, remembering the last
+        // airborne paw positions
+        let mut airborne = None;
         for _ in 0..600 {
             pos += forward(0.0) * ((0.6 * DT) as f32);
             let frame = gait.advance(DT, pos, 0.0, 0.6);
             if frame.paws.iter().any(|p| p.y > 0.0) {
-                airborne = true;
+                airborne = Some(frame.paws);
                 break;
             }
         }
-        assert!(airborne);
-        // halt: the settle tick grounds every paw
+        let last_air = airborne.expect("never lifted a paw");
+        // halt: the settle tick grounds every airborne paw at its own xz
         let settle = gait.advance(DT, pos, 0.0, 0.0);
         assert!(!settle.contacts.is_empty());
         assert!(settle.paws.iter().all(|p| p.y == 0.0));
+        for (leg, (before, after)) in last_air.iter().zip(settle.paws.iter()).enumerate() {
+            if before.y > 0.0 {
+                let jump =
+                    f64::from(Vector3::new(after.x - before.x, 0.0, after.z - before.z).length());
+                assert!(jump < 0.02, "leg {leg} teleported {jump} m on settle");
+            }
+        }
         for _ in 0..60 {
             assert!(gait.advance(DT, pos, 0.0, 0.0).contacts.is_empty());
         }
+    }
+
+    /// The walk gate is hysteretic: a body whose measured speed jitters
+    /// across the old single threshold — grazing a wall, sliding a
+    /// corner — must NOT machine-gun settle contacts. Alternating 0.06 and
+    /// 0.04 m/s (astride the retired MOVE_EPS) for two seconds yields a
+    /// small handful of contacts, not dozens.
+    #[test]
+    fn hysteresis_silences_near_threshold_jitter() {
+        let mut gait = CatGait::new(Vector3::ZERO, 0.0);
+        let mut pos = Vector3::ZERO;
+        let mut contacts = 0;
+        for i in 0..120 {
+            let speed = if i % 2 == 0 { 0.06 } else { 0.04 };
+            pos += forward(0.0) * ((speed * DT) as f32);
+            contacts += gait.advance(DT, pos, 0.0, speed).contacts.len();
+        }
+        // both jitter speeds sit inside [MOVE_LO, MOVE_HI], so once the
+        // cat is standing it never re-enters the walk — near-total silence
+        assert!(contacts <= 4, "jitter machine-gunned {contacts} contacts");
     }
 
     /// Same inputs, same walk: two gaits fed the same script produce
@@ -467,34 +527,50 @@ mod tests {
         }
     }
 
-    /// Only fore paws speak; hind paws direct-register in silence.
+    /// Only the lead fore paw (LF) speaks; the other three are silent —
+    /// the cat's single soft pulse per stride.
     #[test]
-    fn fore_paws_sound_hind_paws_do_not() {
+    fn only_the_lead_fore_paw_sounds() {
         assert!(paw_sounds(0));
-        assert!(paw_sounds(1));
+        assert!(!paw_sounds(1));
         assert!(!paw_sounds(2));
         assert!(!paw_sounds(3));
     }
 
     /// The paw-wave budget, against the REAL pool: a cat walking flat out
-    /// at the design envelope for half a minute keeps its live footstep
-    /// slots within the same 12-slot headroom the fan pins — the pool has
-    /// 64, and the cat may claim no more of them than the fan does.
+    /// at the design envelope for half a minute, then halting (the settle
+    /// tick can add the fore contact), keeps its live footstep slots to a
+    /// gentle handful — roughly half the fan's 12-slot pin, real headroom
+    /// on the 64-slot pool it shares with the hero's footsteps and the
+    /// fan hum.
+    ///
+    /// One fore paw emits per 0.3 m stride and a kind-2 slot lives
+    /// 0.8/4.0 + 2.5 = 2.7 s, so the steady-state peak is ~6 (5.9 rounded
+    /// up). The ceiling is pinned at 8 to leave slack for the settle
+    /// transient; a retune that sounds more paws, lengthens the tail, or
+    /// quickens the cadence trips it by design — the cat's claim on the
+    /// shared pool is a contract, not a coincidence.
     #[test]
-    fn paw_waves_stay_within_slot_headroom() {
+    fn paw_waves_stay_within_slot_ceiling() {
         let mut gait = CatGait::new(Vector3::ZERO, 0.0);
         let mut pool = PulsePool::new();
         let mut pos = Vector3::ZERO;
         let mut now = 0.0;
-        for _ in 0..(30.0 / DT) as usize {
+        let mut peak = 0;
+        for _ in 0..(31.0 / DT) as usize {
             now += DT;
-            pos += forward(0.0) * ((TOP_SPEED * DT) as f32);
-            let frame = gait.advance(DT, pos, 0.0, TOP_SPEED);
+            // walk 30 s at the envelope, then stop dead for the last second
+            // so a mid-swing fore paw settles into the busiest window
+            let speed = if now < 30.0 { TOP_SPEED } else { 0.0 };
+            pos += forward(0.0) * ((speed * DT) as f32);
+            let frame = gait.advance(DT, pos, 0.0, speed);
             for c in frame.contacts.iter().filter(|c| paw_sounds(c.leg)) {
                 pool.emit_omni(2, c.at, PAW_RANGE, PAW_SPEED, PAW_GAIN, now)
                     .unwrap();
             }
-            assert!(pool.live_count(now) <= 12, "cat flooded the pool");
+            peak = peak.max(pool.live_count(now));
         }
+        assert!(peak <= 8, "cat flooded the pool: peak {peak}");
+        assert!(peak >= 4, "budget probe too weak: peak only {peak}");
     }
 }
