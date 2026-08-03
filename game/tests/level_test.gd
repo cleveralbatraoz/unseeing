@@ -7,6 +7,12 @@ extends GdUnitTestSuite
 ## distributes material and pool, then derives the hum room from the walls
 ## around the fan, the spawn from its marker, and the demo tap from the
 ## room's west wall.
+##
+## The second half holds the SHIPPED scene to the validated design's
+## invariants — the same laws map_builder_test held over the SEGS table,
+## now read back from scenes/level_01.tscn itself.
+
+const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
 
 ## One authored wall, the way the generator and a designer both place it:
@@ -225,3 +231,108 @@ func test_extents_knob_resizes_slabs() -> void:
 		assert_vector(_box_shape(slab).size).is_equal(Vector3(8, 0.1, 6))
 	assert_vector(slabs[0].position).is_equal(Vector3(4, -0.05, 3))
 	assert_vector(slabs[1].position).is_equal(Vector3(4, 3.05, 3))
+
+
+## The shipped level, instanced the way main does: injected first, then
+## entered — every contract below is read back from the scene itself.
+func _shipped_level() -> WaveLevel:
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	return level
+
+
+## True when the edge (x1, z1, x2, z2) lies on some wall centerline: same
+## axis, same coordinate, spans overlapping.
+func _edge_on_some_wall(segs: PackedVector4Array, edge: Vector4) -> bool:
+	var vertical := absf(edge.z - edge.x) < 0.001
+	for s: Vector4 in segs:
+		if vertical:
+			if absf(s.x - edge.x) < 0.001 and absf(s.z - edge.x) < 0.001:
+				if minf(s.y, s.w) <= edge.w and maxf(s.y, s.w) >= edge.y:
+					return true
+		elif absf(s.y - edge.y) < 0.001 and absf(s.w - edge.y) < 0.001:
+			if minf(s.x, s.z) <= edge.z and maxf(s.x, s.z) >= edge.x:
+				return true
+	return false
+
+
+func test_shipped_walls_axis_aligned_and_bordered() -> void:
+	var segs := _shipped_level().wall_segments()
+	assert_int(segs.size()).is_greater_equal(4)
+	for s: Vector4 in segs:
+		var axis_aligned := absf(s.w - s.y) < 0.001 or absf(s.z - s.x) < 0.001
+		assert_bool(axis_aligned).append_failure_message("segment %s" % s).is_true()
+
+
+## The hum-room rect clips what the fan's waves may reveal. Each of its
+## four edges must be collinear with (and overlapped by) a real wall
+## centerline — an edge with no wall on it would clip sound in open air.
+func test_shipped_hum_room_edges_lie_on_walls() -> void:
+	var level := _shipped_level()
+	var room := level.hum_room()
+	var segs := level.wall_segments()
+	var edges: Array[Vector4] = [
+		Vector4(room.x, room.y, room.x, room.w),  # west
+		Vector4(room.z, room.y, room.z, room.w),  # east
+		Vector4(room.x, room.y, room.z, room.y),  # north
+		Vector4(room.x, room.w, room.z, room.w),  # south
+	]
+	for edge: Vector4 in edges:
+		(
+			assert_bool(_edge_on_some_wall(segs, edge))
+			. append_failure_message("edge %s" % edge)
+			. is_true()
+		)
+
+
+func test_shipped_fan_inside_hum_room() -> void:
+	var level := _shipped_level()
+	var room := level.hum_room()
+	var fan: SoundFan = level.fan()
+	assert_object(fan).is_not_null()
+	var at := fan.global_position
+	assert_bool(at.x > room.x and at.x < room.z).is_true()
+	assert_bool(at.z > room.y and at.z < room.w).is_true()
+
+
+## The demo tap must land on the hum room's west wall, inside a real
+## segment's span, striking toward the spawn side (-X).
+func test_shipped_demo_tap_sits_on_west_hum_wall() -> void:
+	var level := _shipped_level()
+	var tap := level.demo_tap()
+	assert_float(tap.x).is_equal_approx(level.hum_room().x, 0.001)
+	var on_wall := false
+	for s: Vector4 in level.wall_segments():
+		if absf(s.x - tap.x) < 0.001 and absf(s.z - tap.x) < 0.001:
+			if tap.z >= minf(s.y, s.w) and tap.z <= maxf(s.y, s.w):
+				on_wall = true
+	assert_bool(on_wall).is_true()
+	assert_vector(level.demo_tap_normal()).is_equal(Vector3(-1, 0, 0))
+
+
+func test_shipped_spawn_inside_bounds() -> void:
+	var level := _shipped_level()
+	var lo := Vector2(INF, INF)
+	var hi := Vector2(-INF, -INF)
+	for s: Vector4 in level.wall_segments():
+		lo = Vector2(minf(lo.x, minf(s.x, s.z)), minf(lo.y, minf(s.y, s.w)))
+		hi = Vector2(maxf(hi.x, maxf(s.x, s.z)), maxf(hi.y, maxf(s.y, s.w)))
+	var spawn := level.spawn_pos()
+	assert_bool(spawn.x > lo.x and spawn.x < hi.x).is_true()
+	assert_bool(spawn.z > lo.y and spawn.z < hi.y).is_true()
+
+
+## The scene IS the validated design: the numbers the retired LevelData
+## carried by hand now derive from the authored nodes, unchanged.
+func test_shipped_level_matches_validated_design() -> void:
+	var level := _shipped_level()
+	assert_int(level.wall_segments().size()).is_equal(10)
+	var room := level.hum_room()
+	assert_vector(room).is_equal_approx(Vector4(6.4, 0.6, 19.4, 8.0), Vector4.ONE * 0.001)
+	assert_vector(level.spawn_pos()).is_equal_approx(Vector3(3, 0.9, 4), Vector3.ONE * 0.001)
+	assert_float(level.spawn_yaw()).is_equal_approx(-1.9, 0.0001)
+	assert_vector(level.demo_tap()).is_equal_approx(Vector3(6.4, 0.8, 4.0), Vector3.ONE * 0.001)
+	assert_vector(level.demo_tap_normal()).is_equal(Vector3(-1, 0, 0))
+	var fan: SoundFan = level.fan()
+	assert_vector(fan.position).is_equal_approx(Vector3(8.6, 0, 4.4), Vector3.ONE * 0.001)
