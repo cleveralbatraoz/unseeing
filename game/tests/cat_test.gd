@@ -41,27 +41,43 @@ func test_uninjected_cat_reports_and_disables() -> void:
 
 ## The cat lives its own life: within a few simulated seconds it leaves
 ## its spawn (the brain's first pause is 0.8 s, then it wanders), and its
-## fore paws sound as kind-2 pulses born at floor height with the paw
-## voice — reach, speed and gain exactly as the engine constants say.
+## A living cat sounds two kind-2 voices into the pool: the fore paw's
+## step (born at floor height, paw reach and loudness) and the idle
+## presence heartbeat (born at chest height, its own reach and loudness).
+## Both must be present among the live slots after a stretch of life.
 func test_cat_wanders_and_paw_waves_sound() -> void:
 	_add_floor()
 	_add_cat()
 	var start := _cat.position
 	var now := 0.0
-	for i: int in 240:
+	for i: int in 300:
 		now = float(i) * DT
 		_cat.tick(now)
 		await get_tree().physics_frame
 	var travelled := (_cat.position - start).length()
 	assert_float(travelled).is_greater(0.3)
 	assert_int(_pulses.live_count(now)).is_greater(0)
-	var kind := int(floorf(_pulses.dat[0].w / 10.0))
-	assert_int(kind).is_equal(2)
-	assert_float(fmod(_pulses.dat[0].w, 10.0) / 9.0).is_equal_approx(WaveCat.paw_gain(), 0.001)
-	# the pool's lanes are f32: 0.8 lands one ULP off the f64 constant
-	assert_float(_pulses.dat[0].y).is_equal_approx(WaveCat.paw_range(), 0.000001)
-	assert_float(_pulses.dat[0].z).is_equal(WaveCat.paw_speed())
-	assert_float(_pulses.pos[0].y).is_equal_approx(0.02, 0.001)
+	# scan every live slot for each voice — the pool packs whichever fired
+	# most recently into slot 0, so we must not assume a fixed slot
+	var found_paw := false
+	var found_presence := false
+	for i: int in _pulses.live_count(now):
+		var d := _pulses.dat[i]
+		if int(floorf(d.w / 10.0)) != 2:  # both voices are kind 2 (footstep)
+			continue
+		var gain := fmod(d.w, 10.0) / 9.0
+		if is_equal_approx(d.y, WaveCat.paw_range()) and absf(gain - WaveCat.paw_gain()) < 0.01:
+			assert_float(_pulses.pos[i].y).is_equal_approx(0.02, 0.001)  # floor
+			assert_float(d.z).is_equal(WaveCat.paw_speed())
+			found_paw = true
+		elif (
+			is_equal_approx(d.y, WaveCat.presence_range())
+			and absf(gain - WaveCat.presence_gain()) < 0.01
+		):
+			assert_float(_pulses.pos[i].y).is_equal_approx(0.18, 0.001)  # chest
+			found_presence = true
+	assert_bool(found_paw).override_failure_message("no paw-voiced pulse in the pool").is_true()
+	assert_bool(found_presence).override_failure_message("no presence heartbeat pulse").is_true()
 
 
 ## The silhouette exists: after a rendered frame the immediate mesh

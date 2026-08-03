@@ -29,6 +29,7 @@ use super::limbs::{sphere, sphere_lod, tube, tube_res};
 use crate::cat_body::{self, CatPose, Tail};
 use crate::cat_brain::{CatBrain, RoamRect};
 use crate::cat_gait::{self, CatGait};
+use crate::fan_wave::WhooshScheduler;
 
 /// Collider radius — small enough to slip between furniture legs.
 const COL_RADIUS: f32 = 0.11;
@@ -70,6 +71,9 @@ pub struct WaveCat {
     gait: Option<CatGait>,
     tail: Option<Tail>,
     pose: Option<CatPose>,
+    /// The idle-presence cadence gate — fires the cat's slow heartbeat
+    /// pulse so a standing cat never sinks into full black.
+    presence: WhooshScheduler,
     sit: f64,
     now: f64,
     sim_t: f64,
@@ -133,6 +137,7 @@ impl ICharacterBody3D for WaveCat {
         self.tail = Some(Tail::new(sk.tail_root, sk.tail_back, rightward(yaw)));
         self.gait = Some(gait);
         self.pose = Some(pose);
+        self.presence = WhooshScheduler::with_cadence(cat_gait::PRESENCE_EVERY);
         self.last_pos = pos;
         self.mesh_dirty = true;
     }
@@ -184,14 +189,30 @@ impl ICharacterBody3D for WaveCat {
             sway,
         );
 
-        // fore paws speak; hind paws direct-register in silence
+        // the lead fore paw speaks each stride; the others are silent
         let now = self.now;
         for c in frame
             .contacts
             .iter()
             .filter(|c| cat_gait::paw_sounds(c.leg))
         {
-            self.emit_paw(Vector3::new(c.at.x, 0.02, c.at.z), now);
+            self.emit_wave(
+                Vector3::new(c.at.x, 0.02, c.at.z),
+                cat_gait::PAW_RANGE,
+                cat_gait::PAW_GAIN,
+                now,
+            );
+        }
+        // the idle heartbeat: a faint bloom from the chest on a slow beat,
+        // walking or still, so the hero can always find the cat
+        if self.presence.update(now).is_some() {
+            let chest = Vector3::new(new_pos.x, cat_gait::PRESENCE_HEIGHT as f32, new_pos.z);
+            self.emit_wave(
+                chest,
+                cat_gait::PRESENCE_RANGE,
+                cat_gait::PRESENCE_GAIN,
+                now,
+            );
         }
 
         self.pose = Some(pose);
@@ -241,6 +262,24 @@ impl WaveCat {
         cat_gait::PAW_GAIN
     }
 
+    /// Idle-presence wave reach in meters — static-method constant.
+    #[func]
+    fn presence_range() -> f64 {
+        cat_gait::PRESENCE_RANGE
+    }
+
+    /// Idle-presence loudness — static-method constant.
+    #[func]
+    fn presence_gain() -> f64 {
+        cat_gait::PRESENCE_GAIN
+    }
+
+    /// Idle-presence cadence in seconds — static-method constant.
+    #[func]
+    fn presence_every() -> f64 {
+        cat_gait::PRESENCE_EVERY
+    }
+
     /// The four paw world positions, LF RF LH RH — the suites' observable.
     #[func]
     fn paw_positions(&self) -> PackedVector3Array {
@@ -267,10 +306,12 @@ impl WaveCat {
         self.mesh.clone()
     }
 
-    /// One paw wave into the pool: kind 2 (footstep — least precious),
-    /// omnidirectional, no reflections — a whisper that reveals the cat
-    /// itself and a small circle of floor, not the room.
-    fn emit_paw(&mut self, at: Vector3, now: f64) {
+    /// One of the cat's own waves into the pool: kind 2 (footstep — the
+    /// least precious slot class), omnidirectional, no reflections — a
+    /// whisper that reveals the cat and a small circle of floor, not the
+    /// room. Both the paw steps and the idle heartbeat speak through here,
+    /// differing only in reach and loudness.
+    fn emit_wave(&mut self, at: Vector3, range: f64, gain: f64, now: f64) {
         let Some(pulses) = self.pulses.as_mut() else {
             return; // unreachable past the _ready guard; total anyway
         };
@@ -279,9 +320,9 @@ impl WaveCat {
             &[
                 2_i64.to_variant(),
                 at.to_variant(),
-                cat_gait::PAW_RANGE.to_variant(),
+                range.to_variant(),
                 cat_gait::PAW_SPEED.to_variant(),
-                cat_gait::PAW_GAIN.to_variant(),
+                gain.to_variant(),
                 now.to_variant(),
                 Vector3::ZERO.to_variant(),
                 (-2.0_f64).to_variant(),

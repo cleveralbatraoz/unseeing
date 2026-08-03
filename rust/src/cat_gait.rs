@@ -57,6 +57,23 @@ pub const PAW_SPEED: f64 = 4.0;
 /// bright enough to read as a wave, not a rumour.
 pub const PAW_GAIN: f64 = 0.6;
 
+/// Idle "presence" cadence, seconds — even a standing cat breathes a
+/// faint wave on this slow beat, so it never sinks into full black. In a
+/// world lit only by sound, a companion the hero can lose entirely is a
+/// companion the hero cannot keep; the presence pulse is the cat's
+/// heartbeat, always findable.
+pub const PRESENCE_EVERY: f64 = 1.6;
+
+/// Presence wave reach, meters — a gentle bloom around the whole cat, its
+/// tail long enough that the blooms overlap into a continuous soft glow.
+pub const PRESENCE_RANGE: f64 = 1.1;
+
+/// Presence loudness — the faintest voice, a heartbeat, not a footfall.
+pub const PRESENCE_GAIN: f64 = 0.45;
+
+/// Presence wave birth height — the chest, not the floor.
+pub const PRESENCE_HEIGHT: f64 = 0.18;
+
 /// Walk-gate hysteresis: the cat starts stepping only past [`MOVE_HI`]
 /// and only stops stepping below [`MOVE_LO`]. The measured speed the node
 /// feeds is the real move_and_slide displacement, which can jitter around
@@ -575,5 +592,38 @@ mod tests {
         }
         assert!(peak <= 8, "cat flooded the pool: peak {peak}");
         assert!(peak >= 4, "budget probe too weak: peak only {peak}");
+    }
+
+    /// The FULL voice against the real pool: a cat walking flat out AND
+    /// breathing its idle presence pulse the whole time. Both are kind-2;
+    /// together they must still leave the shared 64-slot pool room to
+    /// breathe — pinned at 10, comfortably under the pool and under the
+    /// pressure a chatty companion would put on the hero's own footsteps.
+    #[test]
+    fn paw_and_presence_together_stay_within_budget() {
+        let mut gait = CatGait::new(Vector3::ZERO, 0.0);
+        let mut pool = PulsePool::new();
+        let mut pos = Vector3::ZERO;
+        let mut now = 0.0;
+        let mut next_presence = PRESENCE_EVERY;
+        let mut peak = 0;
+        for _ in 0..(30.0 / DT) as usize {
+            now += DT;
+            pos += forward(0.0) * ((TOP_SPEED * DT) as f32);
+            let frame = gait.advance(DT, pos, 0.0, TOP_SPEED);
+            for c in frame.contacts.iter().filter(|c| paw_sounds(c.leg)) {
+                pool.emit_omni(2, c.at, PAW_RANGE, PAW_SPEED, PAW_GAIN, now)
+                    .unwrap();
+            }
+            if now >= next_presence {
+                next_presence += PRESENCE_EVERY;
+                let chest = Vector3::new(pos.x, PRESENCE_HEIGHT as f32, pos.z);
+                pool.emit_omni(2, chest, PRESENCE_RANGE, PAW_SPEED, PRESENCE_GAIN, now)
+                    .unwrap();
+            }
+            peak = peak.max(pool.live_count(now));
+        }
+        assert!(peak <= 10, "cat voice flooded the pool: peak {peak}");
+        assert!(peak >= 6, "combined probe too weak: peak only {peak}");
     }
 }

@@ -91,8 +91,8 @@ transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 8.6,
 
 [node name="Cat" type="WaveCat" parent="." unique_id=1242609999]
 seed = 7
-roam_size = Vector2(3.4, 4.6)
-transform = Transform3D(-1, 0, 8.7422777e-08, 0, 1, 0, -8.7422777e-08, 0, -1, 2.7, 0, 8.5)
+roam_size = Vector2(3.6, 4.4)
+transform = Transform3D(-1, 0, 8.7422777e-08, 0, 1, 0, -8.7422777e-08, 0, -1, 2.8, 0, 7.6)
 
 [node name="SpawnPoint" type="Marker3D" parent="." unique_id=1242609234]
 transform = Transform3D(-0.32328954, 0, -0.9463001, 0, 1, 0, 0.9463001, 0, -0.32328954, 3, 0, 4)

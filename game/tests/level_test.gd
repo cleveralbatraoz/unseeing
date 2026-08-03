@@ -348,5 +348,5 @@ func test_shipped_level_exposes_and_injects_the_cat() -> void:
 	var cat: WaveCat = cats[0]
 	assert_object(cat.pulses).is_not_null()
 	assert_object(cat.data_mat).is_not_null()
-	# it wakes in the west room beside the hero, on the floor
-	assert_vector(cat.position).is_equal_approx(Vector3(2.7, 0, 8.5), Vector3.ONE * 0.001)
+	# it wakes in the west room a few steps south of the hero, on the floor
+	assert_vector(cat.position).is_equal_approx(Vector3(2.8, 0, 7.6), Vector3.ONE * 0.001)
