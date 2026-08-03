@@ -7,4 +7,6 @@
 
 mod fan;
 mod hero;
+mod level;
 mod player;
+mod wall;
