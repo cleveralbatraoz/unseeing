@@ -89,8 +89,9 @@ func test_paws_ride_the_floor() -> void:
 
 
 ## The voice constants cross the boundary intact — the suite's handle on
-## the Rust-side design envelope.
+## the Rust-side design envelope. Softer and shorter than the hero's own
+## footsteps (1.6 m, gain 0.8), but a real, visible ripple.
 func test_paw_voice_constants() -> void:
-	assert_float(WaveCat.paw_range()).is_equal(0.8)
+	assert_float(WaveCat.paw_range()).is_equal(1.3)
 	assert_float(WaveCat.paw_speed()).is_equal(4.0)
-	assert_float(WaveCat.paw_gain()).is_equal(0.5)
+	assert_float(WaveCat.paw_gain()).is_equal_approx(0.6, 0.0001)

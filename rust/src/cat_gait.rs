@@ -45,14 +45,17 @@ pub const BODY_H: f64 = 0.20;
 /// Walk bob amplitude, meters — two gentle rises per stride.
 pub const BOB_AMP: f64 = 0.006;
 
-/// Paw wave reach in meters — a whisper next to the hero's 1.6 m steps.
-pub const PAW_RANGE: f64 = 0.8;
+/// Paw wave reach in meters — a visible ripple that expands past the cat
+/// and washes the floor around it, yet still shorter than the hero's own
+/// 1.6 m steps: the cat is quieter than you, never silent.
+pub const PAW_RANGE: f64 = 1.3;
 
 /// Paw wavefront speed, m/s — same air as the hero's footsteps.
 pub const PAW_SPEED: f64 = 4.0;
 
-/// Paw wave loudness — soft pads, not shoes.
-pub const PAW_GAIN: f64 = 0.5;
+/// Paw wave loudness — soft pads, softer than the hero's 0.8 shoes, but
+/// bright enough to read as a wave, not a rumour.
+pub const PAW_GAIN: f64 = 0.6;
 
 /// Walk-gate hysteresis: the cat starts stepping only past [`MOVE_HI`]
 /// and only stops stepping below [`MOVE_LO`]. The measured speed the node
@@ -545,11 +548,11 @@ mod tests {
     /// fan hum.
     ///
     /// One fore paw emits per 0.3 m stride and a kind-2 slot lives
-    /// 0.8/4.0 + 2.5 = 2.7 s, so the steady-state peak is ~6 (5.9 rounded
-    /// up). The ceiling is pinned at 8 to leave slack for the settle
-    /// transient; a retune that sounds more paws, lengthens the tail, or
-    /// quickens the cadence trips it by design — the cat's claim on the
-    /// shared pool is a contract, not a coincidence.
+    /// 1.3/4.0 + 2.5 = 2.825 s, so the steady-state peak is ~7 (6.1
+    /// rounded up). The ceiling is pinned at 8 to leave slack for the
+    /// settle transient; a retune that sounds more paws, lengthens the
+    /// tail, or quickens the cadence trips it by design — the cat's claim
+    /// on the shared pool is a contract, not a coincidence.
     #[test]
     fn paw_waves_stay_within_slot_ceiling() {
         let mut gait = CatGait::new(Vector3::ZERO, 0.0);
