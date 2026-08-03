@@ -69,6 +69,15 @@ must work perfectly.
    work — record it in persistent memory (crucial facts only, not
    everything) and update CLAUDE.md itself when the rules or stack evolve.
 
+## Parallel sessions: one worktree each
+
+**Every session/task works in its own git worktree.** Multiple sessions and
+agents modify this repo in parallel; never work directly in the shared main
+checkout. At the start of each session/task, create or enter a dedicated
+worktree (`git worktree add` or the harness's worktree isolation), do all
+work there, and land it back as the usual small green commits. Remove the
+worktree when the task is done.
+
 ## Strict TDD
 
 - Every behavior change starts with a test: **write the test → observe
