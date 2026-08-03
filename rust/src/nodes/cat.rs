@@ -1,0 +1,317 @@
+//! The companion cat as an engine node — the second creature the world
+//! carries, and the first with a mind of its own. A designer drops a
+//! WaveCat into a scene, picks a seed and a roam size, and the cat
+//! lives: wandering its patch of floor, pausing, sitting, losing
+//! interest in blocked paths — all of it deterministic under the seed,
+//! replaying bit-for-bit.
+//!
+//! Like every creature here it is OUTLINE-ONLY, and revealed only while
+//! waves sweep it. Its fore paws speak as it walks — soft kind-2 pulses,
+//! the least precious slot class — so a walking cat paints its own faint
+//! footprints of light and blinks its own body into outline: a little
+//! walking lantern the blind hero can hear coming.
+//!
+//! All laws live in the pure modules — [`cat_brain`] decides,
+//! [`cat_gait`] steps, [`cat_body`] poses — cargo-tested without a
+//! Godot runtime. This file only carries values across the boundary:
+//! physics context for movement and emission, immediate-mesh rebuilds
+//! for the silhouette. The clock is handed, never poked: the composition
+//! root will advance `tick(now)` like it does the player's.
+
+use godot::classes::mesh::PrimitiveType;
+use godot::classes::{
+    CapsuleShape3D, CharacterBody3D, CollisionShape3D, ICharacterBody3D, ImmediateMesh, Material,
+    MeshInstance3D,
+};
+use godot::prelude::*;
+
+use super::limbs::{sphere, tube};
+use crate::cat_body::{self, CatPose, Tail};
+use crate::cat_brain::{CatBrain, RoamRect};
+use crate::cat_gait::{self, CatGait};
+
+/// Collider radius — small enough to slip between furniture legs.
+const COL_RADIUS: f32 = 0.11;
+
+/// Collider height; its bottom floats a hair above the floor, like the
+/// player's capsule — the flat map means nothing ever presses down.
+const COL_HEIGHT: f32 = 0.34;
+
+/// The sit blend's ease rate, 1/s — a cat settles, it does not snap.
+const SIT_EASE: f64 = 3.0;
+
+/// The companion cat. Inject `pulses` and `data_mat` before adding to
+/// the tree (children run `_ready` first, and the cat refuses to build
+/// uninjected); the seed and roam size are designer knobs.
+#[derive(GodotClass)]
+#[class(init, base=CharacterBody3D)]
+pub struct WaveCat {
+    /// The wave pool every sound enters — the GDScript `Pulses` shim
+    /// today, a direct `WaveCore` tomorrow; the cat only asks it to
+    /// `emit`, dynamically, so both answer.
+    #[var]
+    pulses: Option<Gd<RefCounted>>,
+    /// The data-pass material — the world is outline-only, and only
+    /// this pass makes anything visible.
+    #[var]
+    data_mat: Option<Gd<Material>>,
+    /// The whimsy seed: same seed, same life. Two cats want two seeds.
+    #[export]
+    #[init(val = 7)]
+    seed: i64,
+    /// Full extents of the floor rectangle the cat roams, centered on
+    /// where it stands when it enters the tree.
+    #[export]
+    #[init(val = Vector2::new(6.0, 6.0))]
+    roam_size: Vector2,
+    #[init(val = ImmediateMesh::new_gd())]
+    mesh: Gd<ImmediateMesh>,
+    brain: Option<CatBrain>,
+    gait: Option<CatGait>,
+    tail: Option<Tail>,
+    pose: Option<CatPose>,
+    sit: f64,
+    now: f64,
+    sim_t: f64,
+    last_pos: Vector3,
+    base: Base<CharacterBody3D>,
+}
+
+#[godot_api]
+impl ICharacterBody3D for WaveCat {
+    fn ready(&mut self) {
+        // no silent nulls: without the pool and the data-pass material
+        // the cat can neither sound nor be seen — refuse to build
+        // instead of crashing later
+        if self.pulses.is_none() || self.data_mat.is_none() {
+            godot_error!("WaveCat: pulses/data_mat not injected — cat disabled");
+            self.base_mut().set_physics_process(false);
+            self.base_mut().set_process(false);
+            return;
+        }
+        let mut col = CollisionShape3D::new_alloc();
+        let mut capsule = CapsuleShape3D::new_gd();
+        capsule.set_radius(COL_RADIUS);
+        capsule.set_height(COL_HEIGHT);
+        col.set_shape(&capsule);
+        col.set_position(Vector3::new(0.0, COL_HEIGHT * 0.5 + 0.02, 0.0));
+        self.base_mut().add_child(&col);
+
+        let mut mi = MeshInstance3D::new_alloc();
+        mi.set_mesh(&self.mesh.clone());
+        mi.set_material_override(self.data_mat.as_ref());
+        // the mesh mutates every frame in world space; never frustum-cull
+        // it by its stale local bounds
+        mi.set_extra_cull_margin(16384.0);
+        mi.set_as_top_level(true);
+        self.base_mut().add_child(&mi);
+
+        let pos = self.base().get_global_position();
+        let yaw = f64::from(self.base().get_rotation().y);
+        let rect = RoamRect::around(
+            pos,
+            f64::from(self.roam_size.x),
+            f64::from(self.roam_size.y),
+        );
+        self.brain = Some(CatBrain::new(self.seed as u64, rect, yaw));
+        let mut gait = CatGait::new(pos, yaw);
+        let frame = gait.advance(0.0, pos, yaw, 0.0);
+        let pose = CatPose::from_gait(pos, yaw, &frame, 0.0);
+        let sk = cat_body::skeleton(&pose);
+        self.tail = Some(Tail::new(sk.tail_root, sk.tail_back, rightward(yaw)));
+        self.gait = Some(gait);
+        self.pose = Some(pose);
+        self.last_pos = pos;
+    }
+
+    fn physics_process(&mut self, dt: f64) {
+        let (Some(mut brain), Some(mut gait), Some(mut tail)) =
+            (self.brain.take(), self.gait.take(), self.tail.take())
+        else {
+            return; // _ready refused: nothing to think with
+        };
+        let pos = self.base().get_global_position();
+        let progress =
+            f64::from(Vector2::new(pos.x - self.last_pos.x, pos.z - self.last_pos.z).length());
+        let drive = brain.advance(dt, pos, progress);
+
+        let mut rot = self.base().get_rotation();
+        rot.y = drive.yaw as f32;
+        self.base_mut().set_rotation(rot);
+        let fw = forward(drive.yaw);
+        self.base_mut().set_velocity(fw * (drive.speed as f32));
+        self.base_mut().move_and_slide();
+
+        let new_pos = self.base().get_global_position();
+        let moved = f64::from(Vector2::new(new_pos.x - pos.x, new_pos.z - pos.z).length());
+        let actual_speed = if dt > 0.0 { moved / dt } else { 0.0 };
+        let frame = gait.advance(dt, new_pos, drive.yaw, actual_speed);
+
+        self.sit += ((if drive.sitting { 1.0 } else { 0.0 }) - self.sit) * (dt * SIT_EASE).min(1.0);
+        self.sim_t += dt;
+        // tail sway: riding the stride while walking, a slow breath while
+        // still
+        let sway = 0.22 * (frame.phase * std::f64::consts::TAU).sin() * frame.amp
+            + 0.10 * (self.sim_t * 0.9).sin() * (1.0 - frame.amp);
+
+        let pose = CatPose::from_gait(new_pos, drive.yaw, &frame, self.sit);
+        let sk = cat_body::skeleton(&pose);
+        tail.advance(
+            dt,
+            sk.tail_root,
+            sk.tail_back,
+            rightward(drive.yaw),
+            self.sit,
+            sway,
+        );
+
+        // fore paws speak; hind paws direct-register in silence
+        let now = self.now;
+        for c in frame
+            .contacts
+            .iter()
+            .filter(|c| cat_gait::paw_sounds(c.leg))
+        {
+            self.emit_paw(Vector3::new(c.at.x, 0.02, c.at.z), now);
+        }
+
+        self.last_pos = new_pos;
+        self.pose = Some(pose);
+        self.brain = Some(brain);
+        self.gait = Some(gait);
+        self.tail = Some(tail);
+    }
+
+    fn process(&mut self, _dt: f64) {
+        let (Some(pose), Some(tail)) = (self.pose, self.tail) else {
+            return; // no physics tick yet: nothing to draw
+        };
+        self.build_mesh(&pose, &tail);
+    }
+}
+
+#[godot_api]
+impl WaveCat {
+    /// The clock is handed, never poked: the composition root advances
+    /// the simulated time here every frame, exactly like the player's.
+    #[func]
+    fn tick(&mut self, now_t: f64) {
+        self.now = now_t;
+    }
+
+    /// Paw wave reach in meters — the voice constant, served as a static
+    /// method: ClassDB registers integer constants only.
+    #[func]
+    fn paw_range() -> f64 {
+        cat_gait::PAW_RANGE
+    }
+
+    /// Paw wavefront speed, m/s — static-method constant, same reason.
+    #[func]
+    fn paw_speed() -> f64 {
+        cat_gait::PAW_SPEED
+    }
+
+    /// Paw wave loudness — static-method constant, same reason.
+    #[func]
+    fn paw_gain() -> f64 {
+        cat_gait::PAW_GAIN
+    }
+
+    /// The four paw world positions, LF RF LH RH — the suites' observable.
+    #[func]
+    fn paw_positions(&self) -> PackedVector3Array {
+        self.pose
+            .map(|p| PackedVector3Array::from(&p.paws[..]))
+            .unwrap_or_default()
+    }
+
+    /// The current mood as an integer: 0 roaming, 1 pausing, 2 sitting.
+    #[func]
+    fn mood(&self) -> i64 {
+        use crate::cat_brain::Mood;
+        match self.brain.as_ref().map(CatBrain::mood) {
+            Some(Mood::Roam) => 0,
+            Some(Mood::Pause) => 1,
+            Some(Mood::Sit) => 2,
+            None => -1,
+        }
+    }
+
+    /// The silhouette's immediate mesh — observable for mesh-sanity pins.
+    #[func]
+    fn cat_mesh(&self) -> Gd<ImmediateMesh> {
+        self.mesh.clone()
+    }
+
+    /// One paw wave into the pool: kind 2 (footstep — least precious),
+    /// omnidirectional, no reflections — a whisper that reveals the cat
+    /// itself and a small circle of floor, not the room.
+    fn emit_paw(&mut self, at: Vector3, now: f64) {
+        let Some(pulses) = self.pulses.as_mut() else {
+            return; // unreachable past the _ready guard; total anyway
+        };
+        pulses.call(
+            "emit",
+            &[
+                2_i64.to_variant(),
+                at.to_variant(),
+                cat_gait::PAW_RANGE.to_variant(),
+                cat_gait::PAW_SPEED.to_variant(),
+                cat_gait::PAW_GAIN.to_variant(),
+                now.to_variant(),
+                Vector3::ZERO.to_variant(),
+                (-2.0_f64).to_variant(),
+            ],
+        );
+    }
+
+    /// The whole silhouette, rebuilt for this frame's skeleton: torso
+    /// line, neck and head, ears, whiskers, four bent legs, the tail
+    /// chain — smooth tubes and spheres, one clean outline per shape.
+    fn build_mesh(&mut self, pose: &CatPose, tail: &Tail) {
+        let sk = cat_body::skeleton(pose);
+        let mut mesh = self.mesh.clone();
+        mesh.clear_surfaces();
+        mesh.surface_begin(PrimitiveType::TRIANGLES);
+        // the torso line, chest proud of hip
+        tube(&mut mesh, sk.chest, sk.hip, 0.068, 0.062);
+        sphere(&mut mesh, sk.chest, 0.072);
+        sphere(&mut mesh, sk.hip, 0.068);
+        // neck and head
+        tube(&mut mesh, sk.chest, sk.head, 0.045, 0.034);
+        sphere(&mut mesh, sk.head, 0.052);
+        sphere(&mut mesh, sk.muzzle, 0.028);
+        for (base, tip) in sk.ears {
+            tube(&mut mesh, base, tip, 0.016, 0.002);
+        }
+        for (root, tip) in sk.whiskers {
+            tube(&mut mesh, root, tip, 0.0015, 0.0008);
+        }
+        for leg in sk.legs {
+            tube(&mut mesh, leg.root, leg.mid, 0.030, 0.024);
+            sphere(&mut mesh, leg.mid, 0.026);
+            tube(&mut mesh, leg.mid, leg.paw, 0.022, 0.016);
+            sphere(&mut mesh, leg.paw + Vector3::new(0.0, 0.018, 0.0), 0.022);
+        }
+        let mut prev = sk.tail_root;
+        for (i, node) in tail.nodes().iter().enumerate() {
+            let r1 = 0.014 - 0.0018 * i as f32;
+            let r2 = 0.014 - 0.0018 * (i + 1) as f32;
+            tube(&mut mesh, prev, *node, r1, r2);
+            sphere(&mut mesh, *node, r2 * 0.9);
+            prev = *node;
+        }
+        mesh.surface_end();
+    }
+}
+
+/// The heading's forward vector — Godot yaw convention: yaw 0 faces -Z.
+fn forward(yaw: f64) -> Vector3 {
+    Vector3::new((-yaw.sin()) as f32, 0.0, (-yaw.cos()) as f32)
+}
+
+/// The heading's right vector.
+fn rightward(yaw: f64) -> Vector3 {
+    Vector3::new(yaw.cos() as f32, 0.0, (-yaw.sin()) as f32)
+}

@@ -5,6 +5,7 @@
 //! into the pure modules where the actual laws live. Like `ffi`, these
 //! files carry values across the boundary and add no law of their own.
 
+mod cat;
 mod fan;
 mod hero;
 mod level;
