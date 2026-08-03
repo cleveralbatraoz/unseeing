@@ -8,5 +8,6 @@
 mod fan;
 mod hero;
 mod level;
+mod limbs;
 mod player;
 mod wall;
