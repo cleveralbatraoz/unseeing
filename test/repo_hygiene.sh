@@ -12,6 +12,14 @@ set -eu
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 FAIL=0
 
+# Every git question below is about a specific directory — $DIR, or the scratch
+# repo the size guard is probed in — and is asked with `git -C`. An inherited
+# GIT_DIR silently overrides all of that, so a caller's environment could aim
+# these checks at a repository they were never about. A git hook is exactly
+# such a caller: it exports GIT_DIR=. to its children. Ask from a clean slate.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX \
+      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH
+
 ok() { echo "hygiene: OK   $1"; }
 bad() { echo "hygiene: FAIL $1"; FAIL=1; }
 skip() { echo "hygiene: SKIP $1"; }
