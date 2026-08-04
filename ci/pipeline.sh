@@ -28,6 +28,12 @@ if [ -f "$DIR/.godot-version" ]; then
   esac
 fi
 
+# The test bench is vendored third-party code, so nothing else in this
+# pipeline would notice if it drifted — the pre-commit hook deliberately
+# skips game/addons/. Check it against its lock before trusting a green run.
+echo "ci: vendored gdUnit4 integrity"
+"$DIR/ci/vendor-gdunit4.sh" verify || exit 1
+
 echo "ci: rust gates (fmt + clippy + test + release build)"
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 command -v cargo >/dev/null 2>&1 || {
