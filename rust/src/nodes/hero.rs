@@ -25,6 +25,15 @@ use super::limbs::{sphere, tube};
 use super::player::UnseeingPlayer;
 use crate::viewmodel::{self, Pose, Viewmodel};
 
+/// The arm-and-cane layer's flat object id (the data pass's `u_oid`): one
+/// silhouette for the whole viewmodel arm, in the creature band (0.7+) so
+/// it always separates from the world behind it.
+const CANE_OID: f64 = 0.96;
+
+/// The legs-and-torso layer's flat object id — distinct from the arm so
+/// the two read apart when the arm crosses the body.
+const BODY_OID: f64 = 0.82;
+
 /// The hero's body node. Injected with the player it dresses, the camera
 /// the arm anchors to, the wave pool (held for injection parity — waves
 /// go through the player), and the two data-pass materials; driven by the
@@ -79,10 +88,10 @@ impl INode3D for HeroBody {
         }
         let cane_mesh = self.cane_mesh.clone();
         let cane_mat = self.cane_mat.clone();
-        self.add_layer(&cane_mesh, cane_mat.as_ref());
+        self.add_layer(&cane_mesh, cane_mat.as_ref(), CANE_OID);
         let body_mesh = self.body_mesh.clone();
         let body_mat = self.body_mat.clone();
-        self.add_layer(&body_mesh, body_mat.as_ref());
+        self.add_layer(&body_mesh, body_mat.as_ref(), BODY_OID);
         self.vm = Some(Viewmodel::new(
             f64::from(player.get_rotation().y),
             f64::from(camera.get_rotation().x),
@@ -181,13 +190,15 @@ impl HeroBody {
 
     /// One render layer of the body: an immediate mesh drawn through the
     /// given data-pass material, never frustum-culled (the mesh mutates
-    /// every frame).
-    fn add_layer(&mut self, mesh: &Gd<ImmediateMesh>, mat: Option<&Gd<ShaderMaterial>>) {
+    /// every frame), tagged with a flat object id so the arm and the
+    /// legs/torso each read as one silhouette, not a heap of tubes.
+    fn add_layer(&mut self, mesh: &Gd<ImmediateMesh>, mat: Option<&Gd<ShaderMaterial>>, oid: f64) {
         let mut mi = MeshInstance3D::new_alloc();
         mi.set_mesh(mesh);
         if let Some(mat) = mat {
             mi.set_material_override(mat);
         }
+        mi.set_instance_shader_parameter("u_oid", &oid.to_variant());
         mi.set_extra_cull_margin(16384.0);
         self.base_mut().add_child(&mi);
     }

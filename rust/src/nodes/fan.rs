@@ -28,6 +28,14 @@ use crate::fan_wave::{self, WhooshScheduler};
 /// pivot and the collider both hang from — not a tuning knob.
 pub const HEAD_H: f32 = 1.15;
 
+/// The fan housing's flat object id (the data pass's `u_oid`): pedestal,
+/// head and guard ring read as one silhouette.
+const FAN_OID: f64 = 0.33;
+
+/// The spinning blades' flat object id — distinct from the housing so the
+/// blades stay legible instead of merging into it.
+const FAN_BLADE_OID: f64 = 0.63;
+
 /// The pedestal fan node. Scene limbs are built in `_ready` from the
 /// injected data-pass material; `update(t)` — driven by the composition
 /// root with the simulated clock, like every animated thing — rides the
@@ -168,11 +176,17 @@ impl SoundFan {
         let mut pedestal = StaticBody3D::new_alloc();
         self.base_mut().add_child(&pedestal);
         let mut body = pedestal.clone().upcast::<Node3D>();
-        self.add_mesh(&mut body, &cyl(0.22, 0.06), Vector3::new(0.0, 0.03, 0.0));
+        self.add_mesh(
+            &mut body,
+            &cyl(0.22, 0.06),
+            Vector3::new(0.0, 0.03, 0.0),
+            FAN_OID,
+        );
         self.add_mesh(
             &mut body,
             &cyl(0.03, HEAD_H),
             Vector3::new(0.0, HEAD_H * 0.5, 0.0),
+            FAN_OID,
         );
         let mut base_col = CollisionShape3D::new_alloc();
         let mut pole = CylinderShape3D::new_gd();
@@ -196,6 +210,7 @@ impl SoundFan {
             &mut head_node,
             &boxm(0.16, 0.16, 0.24),
             Vector3::new(0.0, 0.0, 0.10),
+            FAN_OID,
         );
         let mut torus = TorusMesh::new_gd();
         torus.set_inner_radius(0.40);
@@ -205,6 +220,7 @@ impl SoundFan {
             &torus.upcast::<Mesh>(),
             Vector3::new(0.0, 0.0, -0.10),
             PI * 0.5,
+            FAN_OID,
         );
         let mut head_col = CollisionShape3D::new_alloc();
         let mut disc = CylinderShape3D::new_gd();
@@ -229,7 +245,13 @@ impl SoundFan {
         let mut spinner = Node3D::new_alloc();
         spinner.set_position(Vector3::new(0.0, 0.0, -0.10));
         pivot.add_child(&spinner);
-        self.add_mesh_rx(&mut spinner, &cyl(0.045, 0.08), Vector3::ZERO, PI * 0.5);
+        self.add_mesh_rx(
+            &mut spinner,
+            &cyl(0.045, 0.08),
+            Vector3::ZERO,
+            PI * 0.5,
+            FAN_BLADE_OID,
+        );
         for k in 0..3_i32 {
             let mut arm = Node3D::new_alloc();
             let mut arm_rot = arm.get_rotation();
@@ -240,23 +262,33 @@ impl SoundFan {
                 &mut arm,
                 &boxm(0.32, 0.11, 0.016),
                 Vector3::new(0.24, 0.0, 0.0),
+                FAN_BLADE_OID,
             );
         }
         self.spinner = Some(spinner);
     }
 
     /// One limb: a mesh instance drawn through the injected data-pass
-    /// material.
-    fn add_mesh(&self, parent: &mut Gd<Node3D>, mesh: &Gd<Mesh>, at: Vector3) {
-        self.add_mesh_rx(parent, mesh, at, 0.0);
+    /// material, tagged with a flat object id (`oid`) so the housing reads
+    /// as one silhouette and the spinning blades as another.
+    fn add_mesh(&self, parent: &mut Gd<Node3D>, mesh: &Gd<Mesh>, at: Vector3, oid: f64) {
+        self.add_mesh_rx(parent, mesh, at, 0.0, oid);
     }
 
     /// [`Self::add_mesh`] with a rotation around X, for the guard ring
     /// and the blade hub.
-    fn add_mesh_rx(&self, parent: &mut Gd<Node3D>, mesh: &Gd<Mesh>, at: Vector3, rx: f32) {
+    fn add_mesh_rx(
+        &self,
+        parent: &mut Gd<Node3D>,
+        mesh: &Gd<Mesh>,
+        at: Vector3,
+        rx: f32,
+        oid: f64,
+    ) {
         let mut mi = MeshInstance3D::new_alloc();
         mi.set_mesh(mesh);
         mi.set_material_override(self.data_mat.as_ref());
+        mi.set_instance_shader_parameter("u_oid", &oid.to_variant());
         mi.set_position(at);
         let mut rot = mi.get_rotation();
         rot.x = rx;

@@ -95,6 +95,15 @@ impl WaveWall {
         }
     }
 
+    /// The level root assigns this wall its flat object id — one silhouette
+    /// per wall, no interior box-corner clutter; neighbours get different
+    /// ids so the seam between two walls still draws.
+    pub(crate) fn set_oid(&mut self, oid: f64) {
+        if let Some(skin) = self.skin.as_mut() {
+            skin.set_instance_shader_parameter("u_oid", &oid.to_variant());
+        }
+    }
+
     /// This wall's centerline as the classic (x1, z1, x2, z2) segment —
     /// the level root derives every room contract from these. Tree-only:
     /// the segment reads the global position `_ready` snapped.
@@ -180,6 +189,14 @@ impl WaveProp {
         self.data_mat = Some(mat.clone());
         if let Some(skin) = self.skin.as_mut() {
             skin.set_material_override(mat);
+        }
+    }
+
+    /// The level root assigns this prop its flat object id — same door as
+    /// the walls'.
+    pub(crate) fn set_oid(&mut self, oid: f64) {
+        if let Some(skin) = self.skin.as_mut() {
+            skin.set_instance_shader_parameter("u_oid", &oid.to_variant());
         }
     }
 }

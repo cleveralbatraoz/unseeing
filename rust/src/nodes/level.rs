@@ -27,6 +27,22 @@ use super::fan::SoundFan;
 use super::wall::{WaveProp, WaveWall, build_box};
 use crate::level_plan;
 
+/// The floor's flat object id — dedicated, clear of every wall's, because
+/// every wall meets the floor and that seam must always draw.
+const OID_FLOOR: f64 = 0.15;
+
+/// The ceiling's flat object id — dedicated for the same reason.
+const OID_CEIL: f64 = 0.9;
+
+/// Wall ids, cycled by index: well separated (gap 0.12), all clear of the
+/// floor/ceiling and of the creature band (0.7+), so neighbouring walls
+/// differ and their shared seam still draws.
+const WALL_OIDS: [f64; 3] = [0.30, 0.42, 0.54];
+
+/// Prop ids, cycled by index — offset from the wall palette so a prop
+/// standing against a wall still shows its own edge.
+const PROP_OIDS: [f64; 3] = [0.36, 0.48, 0.60];
+
 /// One floor or ceiling slab, its parts kept for live reshaping when the
 /// designer drags the extents knob.
 struct Slab {
@@ -212,6 +228,7 @@ impl WaveLevel {
     fn derive(&mut self) {
         let census = self.census();
         self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
+        self.assign_oids(&census);
         self.fan_child = census.fan;
         self.cat_children = census.cats;
         let lift = Vector3::new(0.0, level_plan::SPAWN_LIFT as f32, 0.0);
@@ -237,6 +254,32 @@ impl WaveLevel {
         if let Some(plan) = level_plan::demo_tap(&self.segments, room, self.spawn_at) {
             self.tap_point = plan.point;
             self.tap_normal = plan.normal;
+        }
+    }
+
+    /// Hand every box in the world its flat object id (the data pass's
+    /// `u_oid`) so the outline post-pass draws one clean silhouette per box
+    /// instead of its interior corners. The floor and ceiling carry
+    /// dedicated ids clear of every wall's, because every wall meets them —
+    /// that seam must always draw; walls and props cycle small palettes so
+    /// neighbours differ and the seam between two of them survives. The
+    /// world stays below the creature id band (0.7+), so the cat and the
+    /// hero's body always separate from the geometry behind them.
+    fn assign_oids(&mut self, census: &Census) {
+        for slab in &mut self.slabs {
+            let oid = if slab.lid { OID_CEIL } else { OID_FLOOR };
+            slab.skin
+                .set_instance_shader_parameter("u_oid", &oid.to_variant());
+        }
+        for (i, wall) in census.walls.iter().enumerate() {
+            wall.clone()
+                .bind_mut()
+                .set_oid(WALL_OIDS[i % WALL_OIDS.len()]);
+        }
+        for (i, prop) in census.props.iter().enumerate() {
+            prop.clone()
+                .bind_mut()
+                .set_oid(PROP_OIDS[i % PROP_OIDS.len()]);
         }
     }
 
