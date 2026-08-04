@@ -122,7 +122,9 @@ if ! "$GODOT" --headless --path "$DIR/game" --export-release "Web" build/web/ind
   echo "ci: export FAILED (non-zero exit)"
   exit 1
 fi
-for f in index.html index.js index.wasm index.pck; do
+# index.side.wasm is the Rust GDExtension: without it the game boots into a
+# world with no engine nodes at all, so it belongs in the same guard
+for f in index.html index.js index.wasm index.side.wasm index.pck; do
   [ -s "$DIR/game/build/web/$f" ] || { echo "ci: export FAILED (missing $f)"; exit 1; }
 done
 echo "ci: export OK ($(wc -c < "$DIR/game/build/web/index.wasm" | tr -d ' ') bytes of wasm)"
@@ -135,13 +137,23 @@ sed -i.bak "s/__BUILD__/$SHA/g" "$DIR/game/build/web/index.html" 2>/dev/null || 
   sed -i "s/__BUILD__/$SHA/g" "$DIR/game/build/web/index.html"
 rm -f "$DIR/game/build/web/index.html.bak"
 
-# precompress: nginx gzip_static serves these, cutting the download ~4x
+# precompress: nginx gzip_static serves these, cutting the download ~4x.
+# Found BY EXTENSION, never by a hand-written list: the old list named three
+# files and so quietly missed index.side.wasm, the largest artifact in the
+# export by a factor of thirty, which shipped raw on every cold load.
 echo "ci: precompressing"
-for f in "$DIR/game/build/web/index.wasm" "$DIR/game/build/web/index.pck" \
-         "$DIR/game/build/web/index.js"; do
+for f in "$DIR/game/build/web/"*.wasm "$DIR/game/build/web/"*.pck \
+         "$DIR/game/build/web/"*.js; do
+  [ -f "$f" ] || continue
   gzip -9 -k -f "$f"
   if command -v brotli >/dev/null 2>&1; then brotli -q 11 -f -k "$f"; fi
 done
+command -v brotli >/dev/null 2>&1 \
+  || echo "ci: NOTE brotli absent — gzip only (brotli would take ~15% more off the wasm)"
+RAW="$(du -ck "$DIR/game/build/web/"*.wasm "$DIR/game/build/web/"*.pck \
+                "$DIR/game/build/web/"*.js 2>/dev/null | tail -1 | cut -f1)"
+GZ="$(du -ck "$DIR/game/build/web/"*.gz 2>/dev/null | tail -1 | cut -f1)"
+echo "ci: precompressed ${RAW} KB -> ${GZ} KB"
 
 if [ "${SKIP_SMOKE:-}" != "1" ] && [ -x "$DIR/test/web_smoke.sh" ]; then
   echo "ci: browser smoke test"
