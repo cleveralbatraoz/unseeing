@@ -4,3 +4,6 @@ game/build/*
 !game/build/.gdignore
 target/
 game/reports/
+# Per-session agent worktrees. Unignored, `git add -A` stages these as
+# embedded-repo gitlinks with no .gitmodules — they clone as empty dirs.
+.claude/

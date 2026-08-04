@@ -28,6 +28,11 @@ if [ -f "$DIR/.godot-version" ]; then
   esac
 fi
 
+# Cheapest gate in the pipeline (no Godot, no network) — run it first so a
+# stray export binary or an unignored worktree fails in milliseconds.
+echo "ci: repository hygiene"
+"$DIR/test/repo_hygiene.sh" || exit 1
+
 # The test bench is vendored third-party code, so nothing else in this
 # pipeline would notice if it drifted — the pre-commit hook deliberately
 # skips game/addons/. Check it against its lock before trusting a green run.
