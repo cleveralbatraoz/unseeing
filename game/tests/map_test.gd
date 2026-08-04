@@ -154,10 +154,20 @@ func test_the_radio_is_one_wall_from_the_fan_room() -> void:
 	assert_bool(level.source_muffle(level.spawn_pos(), hub) < 0.3).is_true()
 
 
-## The ladder as the hero actually meets it: standing in the fan room, the
-## radio behind one wall still presents a STRONGER acoustic image than the
-## fan standing in the open beside them, because volume drives the image.
-func test_the_louder_source_reads_louder_even_through_a_wall() -> void:
+## A WALL COSTS MORE THAN THE LADDER IS WORTH, and the map is laid out so
+## the hero meets that fact head on. Standing in the fan room the quieter
+## fan reads 0.75 in open air while the LOUDER radio, one wall east, reads
+## 0.30 — because the ladder is a factor of 1.33 and a wall is a factor of
+## 3.33. That is not a bug to tune away: a quiet thing beside you genuinely
+## does sound louder than a loud thing in the next room, which is what
+## SOURCE_THROUGH exists to say. The standing image is a COMPOSITE of
+## loudness and geometry, and this pins both halves at one concrete eye
+## point.
+##
+## The ladder's own ordering is pinned like-for-like elsewhere — at equal
+## wall count, in radio_wave.rs — so the two facts do not have to be true
+## of the same number.
+func test_a_wall_costs_more_than_the_volume_ladder_is_worth() -> void:
 	var level := _shipped_level()
 	var fan := level.sources()[0] as SoundFan
 	var radio := level.sources()[1] as SoundRadio
@@ -168,7 +178,14 @@ func test_the_louder_source_reads_louder_even_through_a_wall() -> void:
 	var radio_image := radio.volume * level.source_muffle(eye, radio_hub)
 	assert_float(fan_image).is_equal_approx(0.75, 0.0001)  # unobstructed, quiet
 	assert_float(radio_image).is_equal_approx(0.3, 0.0001)  # walled, but loud
+	# the wall wins over the ladder — 3.33x against 1.33x
+	assert_bool(fan_image > radio_image).is_true()
+	# ...but the louder source is still FELT through it, which is the whole
+	# privilege of being a world source: a hero one room away knows it is there
 	assert_bool(radio_image > 0.0).is_true()
+	# and the ladder is still doing its work underneath: the same radio behind
+	# the same one wall reads stronger than the fan would behind that wall
+	assert_bool(radio_image > fan.volume * 0.3).is_true()
 
 
 ## The shipped level carries the companion cat, exposes it for the root to

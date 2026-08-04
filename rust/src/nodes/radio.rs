@@ -81,11 +81,11 @@ pub struct SoundRadio {
     /// fills every direction at once, so fewer births still read as one
     /// continuous presence — and an even wave that reaches twelve meters
     /// is the most expensive thing in the pool.
-    #[export]
+    #[export(range = (0.05, 10.0, 0.05, or_greater))]
     #[init(val = radio_wave::RADIO_CADENCE)]
     cadence: f64,
     /// Wavefront speed, m/s.
-    #[export]
+    #[export(range = (0.5, 20.0, 0.1, or_greater))]
     #[init(val = radio_wave::RADIO_SPEED)]
     wave_speed: f64,
     rig: SourceRig,

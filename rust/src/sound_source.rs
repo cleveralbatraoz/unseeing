@@ -269,7 +269,23 @@ impl Cadence {
     /// — `t >= next`, the boundary instant firing — and rebooks from `t`,
     /// not from the missed appointment: no backfill after a time jump.
     pub fn beat(&mut self, t: f64) -> Option<f64> {
-        if self.every <= 0.0 || !self.every.is_finite() || t < self.next {
+        if self.every <= 0.0 || !self.every.is_finite() {
+            return None;
+        }
+        // A gate built from a non-finite interval carries that value in its
+        // APPOINTMENT too, and no later retune touches it — so a source
+        // whose knob was once `inf` would stay silent for the rest of the
+        // session however the knob moved afterwards, and one built from
+        // `nan` would fire on the first tick regardless of its interval.
+        // Repair it here, where `t` is known: book one full interval out,
+        // exactly as a fresh gate does. The repair lives in `beat` rather
+        // than in `retune` because the cat's presence gate shares this
+        // clock and never retunes.
+        if !self.next.is_finite() {
+            self.next = t + self.every;
+            return None;
+        }
+        if t < self.next {
             return None;
         }
         self.next = t + self.every;
@@ -477,6 +493,23 @@ mod tests {
         gate.retune(0.0);
         assert_eq!(gate.beat(9.0), None);
         assert_eq!(gate.beat(1e6), None);
+    }
+
+    /// A knob can always bring a gate back. One built from a non-finite
+    /// interval carries that value in its appointment as well; retuning to a
+    /// usable interval must make the source sound again rather than leave it
+    /// silent — or, for NaN, firing on every tick — for the rest of the run.
+    #[test]
+    fn a_poisoned_appointment_is_repaired_by_a_usable_interval() {
+        for poison in [f64::INFINITY, f64::NAN, f64::NEG_INFINITY] {
+            let mut gate = Cadence::every(poison);
+            assert_eq!(gate.beat(1.0), None, "{poison} gate must start silent");
+            gate.retune(0.7);
+            assert_eq!(gate.beat(1.0), None); // repaired: books one interval out
+            assert_eq!(gate.beat(1.69), None);
+            assert_eq!(gate.beat(1.7), Some(1.7));
+            assert_eq!(gate.beat(2.4), Some(2.4)); // ...and keeps the rhythm
+        }
     }
 
     /// A gate with no interval never fires — an uninitialised or

@@ -75,11 +75,11 @@ pub struct SoundFan {
     volume: f64,
     /// Seconds between whooshes — so frequent the wash reads as one
     /// continuous stream.
-    #[export]
+    #[export(range = (0.05, 10.0, 0.05, or_greater))]
     #[init(val = fan_wave::FAN_CADENCE)]
     cadence: f64,
     /// Wavefront speed, m/s — slower than a cane tap: a big lazy source.
-    #[export]
+    #[export(range = (0.5, 20.0, 0.1, or_greater))]
     #[init(val = fan_wave::FAN_SPEED)]
     wave_speed: f64,
     /// cos of the wash cone's half-angle (~32° at the shipped default).
