@@ -27,4 +27,75 @@ for p in .claude/settings.json .claude/worktrees/some-task/README.md; do
   fi
 done
 
+# --- pre-commit size guard --------------------------------------------------
+# Exercised in a scratch repo, never here: the guard's whole job is to reject
+# a commit, and the only honest way to prove it does is to stage something it
+# must reject. The hook is read from this tree (not core.hooksPath) so the
+# file under review is the file under test.
+HOOK="$DIR/.githooks/pre-commit"
+if [ ! -x "$HOOK" ]; then
+  bad ".githooks/pre-commit missing or not executable"
+else
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "$TMP"' EXIT
+  git init -q "$TMP/repo"
+
+  # 6 MiB of zeroes: over the limit, and it compresses to nothing, proving
+  # the guard measures the blob as staged rather than its packed cost.
+  dd if=/dev/zero of="$TMP/repo/huge.bin" bs=1024 count=6144 2>/dev/null
+  # a space in the name — the guard must not word-split its file list
+  printf 'small\n' > "$TMP/repo/tiny file.txt"
+
+  probe() { # probe <expected-exit> <label> [ALLOW_BIG value]
+    want="$1"
+    label="$2"
+    allow="${3:-}"
+    # `|| got=$?` keeps errexit from killing the suite: a non-zero exit is
+    # the expected result of half these cases, not a failure of the harness.
+    got=0
+    (
+      cd "$TMP/repo" || exit 99
+      ALLOW_BIG="$allow" sh "$HOOK" >"$TMP/out" 2>&1
+    ) || got=$?
+    if [ "$got" -eq "$want" ]; then
+      ok "$label"
+    else
+      bad "$label (expected exit $want, got $got)"
+      sed 's/^/hygiene:      /' "$TMP/out"
+    fi
+  }
+
+  git -C "$TMP/repo" add "tiny file.txt"
+  probe 0 "size guard passes a small file"
+
+  git -C "$TMP/repo" add huge.bin
+  probe 1 "size guard rejects a 6 MiB staged file"
+  if grep -q 'huge.bin' "$TMP/out"; then
+    ok "size guard names the offending file"
+  else
+    bad "size guard does not name the offending file"
+  fi
+
+  probe 0 "size guard yields to ALLOW_BIG=1" 1
+fi
+
+# The guard only stops NEW oversize files; this is the standing invariant it
+# protects. Also the audit's revisit trigger — if this ever legitimately
+# fails, the binary-asset question is worth reopening.
+# One cat-file for the whole index rather than one per file: --batch-check
+# reads object names on stdin, so 600+ blobs cost a single process.
+big="$(git -C "$DIR" ls-files -s \
+  | awk '$1 != "160000" { print $2 }' \
+  | sort -u \
+  | git -C "$DIR" cat-file --batch-check='%(objectname) %(objectsize)' \
+  | awk '$2 > 5242880 { print $1 }')"
+if [ -z "$big" ]; then
+  ok "no tracked file exceeds 5 MiB"
+else
+  bad "tracked files exceed 5 MiB:"
+  for sha in $big; do
+    git -C "$DIR" ls-files -s | grep -F "$sha" | sed 's/^/hygiene:      /'
+  done
+fi
+
 exit "$FAIL"

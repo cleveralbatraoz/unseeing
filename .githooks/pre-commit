@@ -4,6 +4,36 @@
 set -eu
 PATH="$PATH:$HOME/.local/bin"
 
+# Size guard. Git keeps every byte of every revision forever, so an accidental
+# export artifact is not a mistake you can take back — only rewrite history
+# out of, which costs every SHA in the repo. The 2026-08-04 audit measured a
+# 109 MB unseeing.exe committing through this hook with exit 0.
+#
+# 5 MiB is ~9x the largest file in the tree (the 578 KiB README screenshot),
+# so it cannot fire on source, but it catches a .pck/.exe/.wasm/.dmg the
+# moment it is staged. Sizes come from the staged blob, not the working tree:
+# what is being committed is what gets measured. ALLOW_BIG=1 to override.
+if [ "${ALLOW_BIG:-}" != "1" ]; then
+  # --raw gives dst mode and dst blob directly, so no path is ever re-resolved
+  # and names with spaces survive; mode 160000 is a gitlink (a commit id, not
+  # content) and would otherwise be measured as though it were a file.
+  oversize="$(git diff --cached --raw --no-abbrev --diff-filter=ACMR \
+    | while IFS= read -r line; do
+        [ "$(printf %s "$line" | cut -d' ' -f2)" = "160000" ] && continue
+        sha="$(printf %s "$line" | cut -d' ' -f4)"
+        size="$(git cat-file -s "$sha" 2>/dev/null || echo 0)"
+        [ "$size" -gt 5242880 ] || continue
+        printf '  %s (%s MiB)\n' "${line#*	}" "$((size / 1048576))"
+      done)"
+  if [ -n "$oversize" ]; then
+    echo "pre-commit: file over 5 MiB staged — git would carry it forever:"
+    printf '%s\n' "$oversize"
+    echo "pre-commit: build output belongs in .gitignore; if this is genuinely"
+    echo "pre-commit: source, commit with: ALLOW_BIG=1 git commit ..."
+    exit 1
+  fi
+fi
+
 # Vendored third-party code (game/addons/) is kept byte-pristine — never
 # reformat it; only our own GDScript is gated.
 gd_files="$(git diff --cached --name-only --diff-filter=ACMR -- '*.gd' ':!game/addons/')"
