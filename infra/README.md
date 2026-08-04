@@ -1,6 +1,6 @@
 # Infra
 
-Versioned copies of everything that lives on the droplet (dggrus.hlab.kz),
+Versioned copies of everything that lives on the droplet (206.223.241.165),
 so the deploy path is reconstructable from the repo alone.
 
 - `post-receive` — the bare repo's git hook (`~/git/unseeing.git/hooks/`).

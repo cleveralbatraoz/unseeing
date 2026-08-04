@@ -154,9 +154,11 @@ if [ -d "$DEPLOY_DIR" ] && [ -w "$DEPLOY_DIR" ]; then
   cp "$DIR/game/build/web/index.html" "$DEPLOY_DIR/.index.html.new"
   mv -f "$DEPLOY_DIR/.index.html.new" "$DEPLOY_DIR/index.html"
   echo "ci: deployed Web build -> $DEPLOY_DIR"
-  URL="${CHECK_URL:-https://dggrus.hlab.kz/}"
+  # verify against the server's own IP; -k because the TLS cert is issued
+  # for the site's hostname, which a bare-IP request does not present
+  URL="${CHECK_URL:-https://206.223.241.165/}"
   TMP="$(mktemp)"
-  if curl -sL --max-time 15 "$URL" > "$TMP" && cmp -s "$TMP" "$DIR/game/build/web/index.html"; then
+  if curl -skL --max-time 15 "$URL" > "$TMP" && cmp -s "$TMP" "$DIR/game/build/web/index.html"; then
     echo "ci: served bytes verified at $URL"
     rm -f "$TMP"
   else

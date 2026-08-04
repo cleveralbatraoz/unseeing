@@ -23,7 +23,7 @@ are **Windows, macOS, and web** — all produced by *exporting* that one
 project. Never write a separate implementation per platform.
 
 - **Web** ships continuously — the wasm export, live at
-  https://dggrus.hlab.kz, deployed through the test-gated `deploy.sh`
+  https://206.223.241.165, deployed through the test-gated `deploy.sh`
   pipeline: headless test runner → strict web export → browser smoke gate
   (`test/`, headless-Chrome DevTools probes) → atomic deploy → HTTPS
   byte-verify.
