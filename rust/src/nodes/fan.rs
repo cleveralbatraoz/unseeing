@@ -315,12 +315,12 @@ impl SoundSource for SoundFan {
         let mut spin_rot = spinner.get_rotation();
         spin_rot.z = fan_wave::spin_angle(t) as f32;
         spinner.set_rotation(spin_rot);
-        let Some(at) = self.rig.beat(t) else {
+        let voice = self.voice();
+        let Some(at) = self.rig.beat(t, &voice) else {
             return;
         };
         let aim = -pivot.get_global_transform().basis.col_c();
         let hub = spinner.get_global_position();
-        let voice = self.voice();
         let Some(pulses) = self.pulses.as_mut() else {
             return; // unreachable past the _ready guard; total anyway
         };

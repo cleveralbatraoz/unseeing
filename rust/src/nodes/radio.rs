@@ -254,12 +254,12 @@ impl SoundSource for SoundRadio {
         if !self.rig.is_built() {
             return; // _ready refused to build: nothing to emit
         }
-        let Some(at) = self.rig.beat(t) else {
+        let voice = self.voice();
+        let Some(at) = self.rig.beat(t, &voice) else {
             return;
         };
         let hub = self.hub();
         let aim = -self.base().get_global_transform().basis.col_c();
-        let voice = self.voice();
         let Some(pulses) = self.pulses.as_mut() else {
             return; // unreachable past the _ready guard; total anyway
         };

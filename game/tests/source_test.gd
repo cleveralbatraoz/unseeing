@@ -233,3 +233,29 @@ func test_sources_paint_ids_the_world_colouring_must_avoid() -> void:
 			ids[oid] = true
 		# a source reads as a few coherent parts, never as a heap of limbs
 		assert_bool(ids.size() >= 1 and ids.size() <= 3).is_true()
+
+
+## Nothing about a running source is frozen at build time. Volume, speed and
+## cone width are re-read on every beat, and so is the CADENCE — a knob that
+## stopped taking effect once the level was built would be exactly the hidden
+## state the abstraction exists to remove, and would make slot_pressure()
+## describe a source that is not the one running.
+func test_the_cadence_knob_stays_live_after_the_level_is_built() -> void:
+	var pulses := Pulses.new()
+	var radio: SoundRadio = auto_free(SoundRadio.new())
+	radio.pulses = pulses
+	radio.data_mat = ShaderMaterial.new()
+	add_child(radio)
+	radio.update(0.7)  # the shipped cadence fires, booking 1.4
+	assert_int(pulses.live_count(0.7)).is_equal(1)
+	radio.cadence = 3.0  # a designer quiets it down mid-flight
+	assert_float(radio.slot_pressure()).is_equal_approx((12.0 / 5.0 + 2.0) / 3.0, 0.001)
+	radio.update(1.4)  # the appointment already booked STANDS — no jump
+	assert_int(pulses.live_count(1.4)).is_equal(2)
+	# ...and then the new rhythm governs: the old 0.7 gate would have fired
+	# at 2.1, 2.8, 3.5 and 4.2, and none of them do
+	for t: float in [2.1, 2.8, 3.5, 4.2, 4.3]:
+		radio.update(t)
+		assert_int(pulses.live_count(t)).is_equal(2)
+	radio.update(4.4)  # 1.4 + the new three seconds
+	assert_int(pulses.live_count(4.4)).is_equal(3)

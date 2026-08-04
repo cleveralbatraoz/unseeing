@@ -102,3 +102,19 @@ func test_core_defines_the_depth_hack_once_as_fragment_depth() -> void:
 	for path: String in [DATA_PASS_PATH, XRAY_PATH]:
 		assert_bool(_text(path).contains("0.999999")).is_false()
 		assert_bool(_text(path).contains("POSITION =")).is_false()
+
+
+## The reveal loop's EXACT early-out, and it is the loop's affordability.
+## The accumulator is a max and source_reveal_vis only ever returns a value
+## in [0, 1], so the bound computed with that factor at its maximum is an
+## upper bound on the pulse's contribution: a pulse that cannot beat what is
+## already accumulated is dropped BEFORE the per-fragment wall walk instead
+## of after it. No pixel differs; only the cost — which matters most for an
+## EVEN source, whose sphere passes the cone gate in every direction.
+func test_reveal_loop_bounds_a_pulse_before_walking_the_walls() -> void:
+	var src := _text(CORE_PATH)
+	assert_str(src).contains("float bound = min(flare, 1.0) * atten * cone * gain * peak;")
+	assert_str(src).contains("if (bound <= reveal) { continue; }")
+	assert_str(src).contains("bound * source_reveal_vis(typ, u_ppos[i], world)")
+	# the bound must be formed BEFORE the wall walk, or it buys nothing
+	assert_bool(src.find("float bound =") < src.find("bound * source_reveal_vis")).is_true()

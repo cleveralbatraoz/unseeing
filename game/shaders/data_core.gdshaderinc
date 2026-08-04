@@ -92,11 +92,25 @@ float reveal_at(vec3 world) {
 		// occlusion GLSL runs on WebGL2; profiling weak hardware is deferred.
 		float cone = pulse_cone(u_pdir[i], -to_src);
 		if (cone <= 0.0) { continue; }
-		cone *= source_reveal_vis(typ, u_ppos[i], world);
 		float atten = 1.0 / (1.0 + dist * dist * 0.06);
 		float ga = age - dist / d.z;
 		float flare = 1.3 * exp(-ga / 0.25) + 0.5 * exp(-ga / 3.0);
-		reveal = max(reveal, min(flare, 1.0) * atten * cone * gain * peak);
+		// EXACT early-out, and it is the loop's whole affordability. The
+		// accumulator is a max, and source_reveal_vis only ever returns a
+		// value in [0, 1] (1, 0, or HUM_THROUGH^walls) — so `bound` below,
+		// computed with that factor at its maximum, is an upper bound on
+		// what this pulse could contribute. A pulse that cannot beat what is
+		// already accumulated changes nothing, and is dropped BEFORE the
+		// wall loop rather than after it. No pixel differs; only the cost.
+		//
+		// This matters most for an EVEN source: a directed wash is thrown
+		// out by the cone gate above over most of the screen, but a radio's
+		// sphere passes the cone gate everywhere, so without this its
+		// permanently-live waves would each pay the full per-fragment wall
+		// walk in every direction, forever.
+		float bound = min(flare, 1.0) * atten * cone * gain * peak;
+		if (bound <= reveal) { continue; }
+		reveal = max(reveal, bound * source_reveal_vis(typ, u_ppos[i], world));
 	}
 	return reveal;
 }

@@ -95,15 +95,21 @@ pub(crate) struct SourceRig {
 }
 
 impl SourceRig {
-    /// Set the gate to a voice's cadence. Called when the source enters the
-    /// tree, once the designer's knobs are known.
+    /// Book the first wave one interval out, when the source enters the
+    /// tree and the designer's knobs are first known.
     pub(crate) fn tune(&mut self, voice: &Voice) {
         self.cadence = Cadence::every(voice.cadence);
     }
 
     /// Has a wave's moment come? One beat per cadence, never a backfilled
     /// burst after a stalled clock — the law lives in [`Cadence`].
-    pub(crate) fn beat(&mut self, t: f64) -> Option<f64> {
+    ///
+    /// The voice is re-read on every beat, so the cadence knob is as live as
+    /// volume, speed and cone width. Nothing about a running source is
+    /// frozen at build time, and `slot_pressure` therefore always describes
+    /// the source that is actually running.
+    pub(crate) fn beat(&mut self, t: f64, voice: &Voice) -> Option<f64> {
+        self.cadence.retune(voice.cadence);
         self.cadence.beat(t)
     }
 

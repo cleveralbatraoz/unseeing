@@ -250,6 +250,21 @@ impl Cadence {
         self.every
     }
 
+    /// Adopt a new interval mid-flight, so a cadence knob is as live as
+    /// every other knob on a source — `volume`, `speed` and the cone width
+    /// are all re-read on each beat, and a cadence frozen at build time
+    /// would be the one piece of hidden state the abstraction exists to
+    /// remove (and would make `slot_pressure` describe a source that is not
+    /// the one running).
+    ///
+    /// The appointment already booked STANDS; the new interval governs every
+    /// appointment after it. So a knob moved mid-flight never makes a source
+    /// jump, double-fire, or fall silent for longer than one old interval —
+    /// it simply keeps its next date and then settles into the new rhythm.
+    pub fn retune(&mut self, every: f64) {
+        self.every = every;
+    }
+
     /// Advance the clock. Returns the beat's time when its moment has come
     /// — `t >= next`, the boundary instant firing — and rebooks from `t`,
     /// not from the missed appointment: no backfill after a time jump.
@@ -437,6 +452,31 @@ mod tests {
         assert_eq!(gate.beat(5.0), Some(5.0));
         assert_eq!(gate.beat(5.39), None);
         assert_eq!(gate.beat(5.4), Some(5.4));
+    }
+
+    /// A cadence knob is live: retuning changes what the gate books next,
+    /// without disturbing the appointment it has already made.
+    #[test]
+    fn retuning_takes_effect_from_the_next_beat() {
+        let mut gate = Cadence::every(0.4);
+        assert_eq!(gate.beat(0.4), Some(0.4)); // booked: 0.8
+        gate.retune(1.5);
+        assert_eq!(gate.interval(), 1.5);
+        assert_eq!(gate.beat(0.79), None);
+        assert_eq!(gate.beat(0.8), Some(0.8)); // the booked appointment stands
+        assert_eq!(gate.beat(1.9), None); // ...and rebooks by the NEW interval
+        assert_eq!(gate.beat(2.3), Some(2.3));
+    }
+
+    /// Retuning to silence stops a source dead rather than leaving it on its
+    /// old gate — a designer turning the cadence to zero means "stop".
+    #[test]
+    fn retuning_to_no_cadence_silences_the_gate() {
+        let mut gate = Cadence::every(0.4);
+        assert!(gate.beat(0.4).is_some());
+        gate.retune(0.0);
+        assert_eq!(gate.beat(9.0), None);
+        assert_eq!(gate.beat(1e6), None);
     }
 
     /// A gate with no interval never fires — an uninitialised or
