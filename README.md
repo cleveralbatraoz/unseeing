@@ -67,6 +67,14 @@ and `gdlint`.
   precompression, and a browser smoke test that boots the exported wasm in
   headless Chrome and asserts it renders. The same POSIX script runs
   locally, on the droplet, and in cloud CI.
+- `game/addons/gdUnit4/` — the test framework. Godot resolves addons as
+  project resources, so it lives in the tree rather than as a submodule
+  (upstream ships no `.uid` sidecars; Godot mints 244 of them on import,
+  which inside a submodule would be permanently dirty and uncommittable).
+  The copy is pinned by `ci/gdunit4.lock` and reproduced byte-for-byte by
+  `ci/vendor-gdunit4.sh update <tag>` — the only sanctioned way to change
+  it. The pipeline verifies its fingerprint on every run, and its in-editor
+  self-updater is switched off so a version bump is always a reviewed commit.
 - `deploy.sh` — local checks, then `git push production` (the droplet's
   post-receive hook runs the pipeline server-side and deploys only on green),
   then `git push origin`.

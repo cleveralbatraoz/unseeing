@@ -86,11 +86,11 @@ worktree when the task is done.
   code whose behavior you don't clearly understand.
 - Test *everything* — features, physics, edge cases. Tests pin behavior down
   so anything can be changed fearlessly.
-- Godot: **gdUnit4** is the test framework — migrate the custom headless
-  runner (`game/tests/run_tests.gd`) into it. Browser-level behavior: the
-  headless-Chrome smoke suite in `test/`. Visual verification: movie-maker
-  frame rendering (`godot --write-movie`, run under `caffeinate -dis` on
-  macOS).
+- Godot: **gdUnit4** is the test framework — suites in `game/tests/`, run
+  headless from `ci/pipeline.sh` (the old custom runner is gone; that
+  migration is done). Browser-level behavior: the headless-Chrome smoke
+  suite in `test/`. Visual verification: movie-maker frame rendering
+  (`godot --write-movie`, run under `caffeinate -dis` on macOS).
 
 ## Commits
 
@@ -156,6 +156,28 @@ Formatters and analyzers are mandatory, run before every commit:
   wave-math when it earns its keep.
 - Adopt further instruments (fuzzers, static analysis, profilers) whenever
   they earn their keep — but they must not grow the shipped stack.
+
+### Vendored dependencies
+
+Godot resolves addons as project resources, so a third-party framework has to
+live in the tree (`game/addons/`) — **never a submodule**: upstream ships no
+`.uid` sidecars, Godot mints hundreds of them on import, and inside a
+submodule they are permanently dirty and uncommittable. The copy is pinned
+instead, and is never hand-edited:
+
+- `ci/gdunit4.lock` records the upstream repo, tag, commit, and two
+  fingerprints — upstream's shipped source and our resulting tree (content
+  plus executable bits).
+- `ci/vendor-gdunit4.sh update <tag>` is the only sanctioned way to change
+  the addon; `check-upstream` re-verifies the pin against GitHub; the bare
+  `verify` runs inside `ci/pipeline.sh` on every build, so drift cannot land
+  silently — the pre-commit hook deliberately skips `game/addons/`.
+- In-editor self-updaters stay **off** (`game/project.godot`). gdUnit4's
+  would poll GitHub on project open and, on one click, delete the addon and
+  unpack an unreviewed release over it. Version bumps are reviewed commits.
+
+Godot itself is not vendored: `.godot-version` pins it, CI downloads that
+exact release, and `ci/pipeline.sh` refuses a mismatched binary.
 
 ## Agents, reviews, tooling
 
