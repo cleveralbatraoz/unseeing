@@ -61,6 +61,24 @@ else
     echo "ci: FAILED no prebuilt native core at $NATIVE_LIB"
     exit 2
   }
+  # A core that merely EXISTS proves nothing: cargo-target outlives every
+  # push, so a failed scp would leave the previous deploy's binaries in
+  # place and this run would ship them under the new commit's name. When the
+  # hook tells us which commit is being deployed, demand the cores say the
+  # same. (No BUILD_SHA means a hand-run local build — nothing to compare.)
+  if [ -n "${BUILD_SHA:-}" ]; then
+    STAMP="$DIR/rust/target/core.commit"
+    [ -f "$STAMP" ] || {
+      echo "ci: FAILED prebuilt cores carry no commit stamp (deploy.sh seeds core.commit)"
+      exit 2
+    }
+    BUILT="$(printf %.9s "$(cat "$STAMP")")"
+    [ "$BUILT" = "$BUILD_SHA" ] || {
+      echo "ci: FAILED prebuilt cores were built from $BUILT but $BUILD_SHA is being deployed"
+      exit 2
+    }
+    echo "ci: prebuilt cores stamped $BUILT — matches the pushed commit"
+  fi
   echo "ci: rust gates SKIPPED (prebuilt native core present)"
 fi
 
