@@ -51,6 +51,18 @@ const PAD_EM: f32 = 1.4;
 /// wider and narrower as the bracket cursor moves between rows.
 const COLUMN_EM: f32 = 22.0;
 
+/// How long the overlay keeps watching a window plan, in frames — about
+/// four seconds. Long enough to outlast a macOS full-screen space
+/// animation and the delegate that fires at the end of it, short enough
+/// that a platform which simply refuses is left alone rather than fought
+/// forever.
+const ENFORCE_FRAMES: i32 = 240;
+
+/// Frames between re-assertions while the window disagrees. A toggle every
+/// frame is not more insistent, it is less: each one lands inside the
+/// transition the last one started.
+const RETRY_EVERY: i32 = 20;
+
 /// The thin rule around the overlay's rows. A Control exists here for one
 /// reason: `_draw` is the only way to put a one-pixel unfilled rectangle
 /// on screen without a StyleBox, and a StyleBox is a fill.
@@ -105,9 +117,11 @@ pub struct SettingsMenu {
     /// Whether the overlay is up (and therefore whether the world is
     /// frozen and the mouse is free).
     open: bool,
-    /// A windowed plan was just applied and must be re-fitted next frame,
-    /// once the decorations the server hid during full screen are back.
-    settle: bool,
+    /// Frames left to keep re-asserting the applied plan (see
+    /// `enforce_plan`); zero when the window is where it should be.
+    enforce: i32,
+    /// Frames until the next re-assertion while the window disagrees.
+    retry: i32,
     /// The mouse mode the game was using before the overlay took it, so
     /// closing restores what was there rather than assuming capture.
     #[init(val = input::MouseMode::VISIBLE)]
@@ -168,10 +182,7 @@ impl ICanvasLayer for SettingsMenu {
     }
 
     fn process(&mut self, _dt: f64) {
-        if self.settle {
-            self.settle = false;
-            self.apply_geometry();
-        }
+        self.enforce_plan();
         if self.open && self.viewport_height() != self.last_height {
             self.relayout();
         }
@@ -192,6 +203,15 @@ impl SettingsMenu {
     #[func]
     pub fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// Frames of re-assertion left before the overlay stops insisting the
+    /// window match the plan. Zero when settled. Observable so a rendered
+    /// probe can tell "the frame loop never ran" from "the platform
+    /// refused".
+    #[func]
+    pub fn enforce_left(&self) -> i32 {
+        self.enforce
     }
 
     /// Whether the player's chosen settings ask for full screen. What the
@@ -267,52 +287,116 @@ impl SettingsMenu {
         self.metrics = Self::capture();
         let plan = display_plan::plan(&self.menu.settings(), &self.metrics);
         Self::drive(&plan);
-        // a window that just left full screen reports no decorations yet,
-        // so the fit it got is provisional; fit() is idempotent, so
-        // running it again next frame either changes nothing or corrects
-        // the title bar it could not see
-        self.settle = plan.mode == PlanMode::Windowed;
+        // Asking once is not enough — see `enforce_plan`.
+        self.enforce = ENFORCE_FRAMES;
+        self.retry = RETRY_EVERY;
         self.relayout();
     }
 
-    /// Re-fit the window to freshly measured metrics without touching the
-    /// mode — the settle pass.
-    fn apply_geometry(&mut self) {
-        if self.menu.settings().fullscreen {
-            return; // changed course in the meantime: nothing to settle
+    /// Keep insisting, for a bounded while, that the window is what the
+    /// player asked for.
+    ///
+    /// A mode change CAN be silently dropped, which is measured, not
+    /// defensive: macOS ignores a full-screen toggle issued while another
+    /// full-screen transition is still animating — and worse, its own
+    /// `windowDidEnterFullScreen` delegate then writes the old mode back
+    /// over the one Godot recorded, so the request vanishes without an
+    /// error and the menu is left describing a window that does not exist.
+    /// Toggling within a second of launch, while the game is still sliding
+    /// into its full-screen space, does exactly that.
+    ///
+    /// The budget therefore runs to its END rather than stopping at the
+    /// first sign of agreement. Measured, again: a toggle sent during the
+    /// boot transition DOES land for a moment — the window really goes
+    /// windowed — and then, forty frames later, the delegate for the
+    /// transition that was still finishing flips it back. Anything that
+    /// stopped watching once reality agreed would have stopped exactly in
+    /// that window and left the game full screen with the row reading OFF.
+    ///
+    /// Re-asserting is rate-limited to one attempt per [`RETRY_EVERY`]
+    /// frames, because a toggle per frame is not more insistent, it is
+    /// less: each one lands in the transition the last one started, and
+    /// the window never comes to rest.
+    ///
+    /// This subsumes the decoration settle: a window that just left full
+    /// screen reports no title bar yet, so its first fit is provisional,
+    /// and [`display_plan::fit`] is idempotent precisely so that a later
+    /// pass either changes nothing or corrects the title bar it could not
+    /// see. Geometry is written only when it actually differs, so a
+    /// settled window is never touched again.
+    fn enforce_plan(&mut self) {
+        if self.enforce <= 0 {
+            return;
         }
+        self.enforce -= 1;
         self.metrics = Self::capture();
         let plan = display_plan::plan(&self.menu.settings(), &self.metrics);
-        Self::drive(&WindowPlan {
-            mode: plan.mode,
-            ..plan
-        });
-        self.relayout();
+        if Self::window_agrees(&plan) {
+            Self::place(&plan);
+            return;
+        }
+        if self.retry > 0 {
+            self.retry -= 1;
+            return;
+        }
+        self.retry = RETRY_EVERY;
+        Self::drive(&plan);
     }
 
-    /// Hand a plan to the display server. Silent on a server with no
-    /// screens: a headless run has no window to place.
+    /// Whether the window's full-screen-ness is what the plan asked for.
+    ///
+    /// Judged on full-screen-ness ALONE, never on the exact mode: macOS
+    /// answers MAXIMIZED for a window asked to fill the usable area, and
+    /// demanding the WINDOWED enum there would re-issue a zoom forever and
+    /// leave the window flapping.
+    fn window_agrees(plan: &WindowPlan) -> bool {
+        let server = DisplayServer::singleton();
+        if server.get_screen_count() <= 0 {
+            return true; // no window to disagree with
+        }
+        Self::window_is_fullscreen() == (plan.mode == PlanMode::Fullscreen)
+    }
+
+    /// Write the plan's geometry, and only what actually differs — so a
+    /// window already where it belongs is left alone and a player dragging
+    /// it is not fought.
+    fn place(plan: &WindowPlan) {
+        let mut server = DisplayServer::singleton();
+        if server.get_screen_count() <= 0 {
+            return;
+        }
+        if let Some(size) = plan.size
+            && server.window_get_size() != size
+        {
+            server.window_set_size(size);
+        }
+        // set and get disagree by design here: setting a position places
+        // the DECORATED frame, while window_get_position reports the client
+        // area below the title bar — so the comparison must be against the
+        // decorated origin or it would never match and never settle.
+        if let Some(position) = plan.position
+            && server.window_get_position_with_decorations() != position
+        {
+            server.window_set_position(position);
+        }
+    }
+
+    /// Hand a whole plan to the display server: the mode, then the
+    /// geometry. Silent on a server with no screens — a headless run has
+    /// no window to place.
     fn drive(plan: &WindowPlan) {
         let mut server = DisplayServer::singleton();
         if server.get_screen_count() <= 0 {
             return;
         }
-        let mode = match plan.mode {
+        server.window_set_mode(match plan.mode {
             // borderless full screen, not exclusive: it changes no video
             // mode, survives a second monitor, and does not fight screen
             // recorders — the modern default
             PlanMode::Fullscreen => display_server::WindowMode::FULLSCREEN,
             PlanMode::Windowed => display_server::WindowMode::WINDOWED,
-        };
-        if server.window_get_mode() != mode {
-            server.window_set_mode(mode);
-        }
-        if let Some(size) = plan.size {
-            server.window_set_size(size);
-        }
-        if let Some(position) = plan.position {
-            server.window_set_position(position);
-        }
+        });
+        Self::place(plan);
     }
 
     /// What the window is right now. Maximized is NOT full screen — macOS
