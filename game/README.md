@@ -24,8 +24,9 @@ the visible game.
   the hearing pass multiplies through.
 - `scripts/demo_tap.gd` — the dev cane tap the level derives, for
   walking the world without a player.
-- `../rust/src/` — the engine: pure wave/viewmodel/level-plan modules
-  (cargo-tested) and the registered node classes the game places —
+- `../rust/src/` — the engine: pure wave / viewmodel / level-plan /
+  object-id modules (cargo-tested) and the registered node classes the
+  game places —
   `WaveLevel`/`WaveWall`/`WaveProp` (level authoring), `SoundFan`
   (designer knobs for the hum voice), `WaveCat` (the companion's gait,
   brain and paw voice), `UnseeingPlayer` (movement, mouse look, cane tap
@@ -55,9 +56,17 @@ No programming needed — the level is an ordinary Godot scene:
 5. Sound sources: the `SoundFan` node has its voice in the Inspector —
    whoosh cadence, hum range/speed/gain, beam cone.
 6. The hero wakes at the `SpawnPoint` marker — move it to move the start.
-7. Press play. The `WaveLevel` root derives everything technical (wall
-   centerlines, the hum room, the demo tap) from what you placed; the
-   test suite gates the rest on every commit.
+7. Press play. The `WaveLevel` root derives everything technical from what
+   you placed — wall centerlines, the hum room, the demo tap, and the flat
+   object id each box carries so its outline stays separate from whatever
+   it touches; the test suite gates the rest on every commit.
+
+Nothing about those object ids needs setting by hand, and it is worth
+knowing why: the engine looks at which boxes actually MEET and gives
+neighbours different ids, so boxes at opposite ends of the map share freely
+and a level of any size needs only a handful. Push enough boxes into one
+another that no arrangement separates them all and the level says so loudly
+in the output — and still runs, with those few seams unlined.
 
 ## System status
 
@@ -76,6 +85,7 @@ No programming needed — the level is an ordinary Godot scene:
 | Wave/physics core as GDExtension Rust module | done (`rust/`: pure modules + WaveCore behind the Pulses shim) |
 | Fan / player / hero body as Rust engine nodes | done (`rust/src/nodes/`: SoundFan, UnseeingPlayer, HeroBody replace their .gd scripts; demo movie frames byte-identical across the port) |
 | Companion cat (gait, brain, paw voice) | done (`rust/src/cat_*.rs` + `WaveCat` in `scenes/level_01.tscn`) |
+| One outline per object, every seam drawn | done (`rust/src/oid_palette.rs` colours the touch graph; the shipped scene is pinned by `tests/level_test.gd`) |
 | gdUnit4 test framework migration | done (`tests/`, headless CLI in `ci/pipeline.sh`) |
 | Vendored framework pinned + reproducible | done (`ci/gdunit4.lock`, `ci/vendor-gdunit4.sh`; self-updater off) |
 | Editor-authored levels (the engine/content split) | done (`scenes/level_01.tscn` + WaveLevel-derived contracts; see Authoring levels) |
