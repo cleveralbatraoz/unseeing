@@ -9,6 +9,23 @@
 #
 # Pure POSIX sh, no network, no Godot — runs anywhere ci/pipeline.sh runs.
 set -eu
+
+# Git exports GIT_DIR into every hook it runs, and it is RELATIVE ("."), so it
+# outranks both `-C` and the cwd: inherited, every git call below addresses
+# whatever repo the caller was in rather than the one it names, and the scratch
+# `git init` and its `git add` land on a bare repo with no work tree. That is
+# how this gate broke the production deploy.
+#
+# infra/post-receive now scrubs the environment before running the pipeline,
+# which fixes the deploy path at its source. This stays anyway: a gate that
+# spawns its own repos must be correct wherever it is invoked from, not only
+# where someone remembered to clean up first. The self-checks below pin the
+# property here, so it cannot regress silently if that hook is ever rewritten.
+# (POSIX `unset` is silent for names that were never set.)
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH GIT_PREFIX \
+  GIT_COMMON_DIR GIT_NAMESPACE
+
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 FAIL=0
 
@@ -143,21 +160,45 @@ else
   mkdir -p "$X/test" "$X/.githooks"
   cp -p "$DIR/test/repo_hygiene.sh" "$X/test/repo_hygiene.sh"
   cp -p "$DIR/.githooks/pre-commit" "$X/.githooks/pre-commit"
-  xgot=0
-  HYGIENE_NESTED=1 sh "$X/test/repo_hygiene.sh" >"$X/.out" 2>&1 || xgot=$?
-  if [ "$xgot" -eq 0 ]; then
-    ok "survives a git-less tar extract (the droplet's work tree)"
-  else
-    bad "FAILS in a tar extract — this would break the production deploy:"
-    sed 's/^/hygiene:      /' "$X/.out"
-  fi
-  # A vacuous pass is the failure mode that hides here, so demand the skips.
-  if grep -q 'SKIP tracked-file size invariant' "$X/.out"; then
-    ok "index checks skip loudly there rather than pass on an empty list"
-  else
-    bad "index checks did not announce themselves as skipped in the extract"
-    sed 's/^/hygiene:      /' "$X/.out"
-  fi
+
+  # Two environments, because the first fix only covered the first one. A bare
+  # extract is what the work tree LOOKS like; GIT_DIR=. is what the hook that
+  # builds it actually exports. Only the second reproduces the deploy failure.
+  extract_probe() { # extract_probe <label> [GIT_DIR value]
+    lbl="$1"
+    egot=0
+    # GIT_DIR must be genuinely ABSENT for the clean case, not set to "" —
+    # an empty value is still an override, and git resolves it to the cwd,
+    # so passing "" would quietly make both probes test the same poisoned
+    # environment and the clean one would never be exercised at all.
+    if [ "$#" -ge 2 ]; then
+      (
+        cd "$X" || exit 99
+        GIT_DIR="$2" HYGIENE_NESTED=1 sh "$X/test/repo_hygiene.sh"
+      ) >"$X/.out" 2>&1 || egot=$?
+    else
+      (
+        cd "$X" || exit 99
+        HYGIENE_NESTED=1 sh "$X/test/repo_hygiene.sh"
+      ) >"$X/.out" 2>&1 || egot=$?
+    fi
+    if [ "$egot" -eq 0 ]; then
+      ok "$lbl"
+    else
+      bad "$lbl — this breaks the production deploy:"
+      sed 's/^/hygiene:      /' "$X/.out"
+    fi
+    # A vacuous pass is the failure mode that hides here, so demand the skips.
+    if grep -q 'SKIP tracked-file size invariant' "$X/.out"; then
+      ok "$lbl: index checks skip loudly rather than pass on an empty list"
+    else
+      bad "$lbl: index checks did not announce themselves as skipped"
+      sed 's/^/hygiene:      /' "$X/.out"
+    fi
+  }
+
+  extract_probe "survives a git-less tar extract (the droplet's work tree)"
+  extract_probe "survives GIT_DIR inherited from the post-receive hook" .
   rm -rf "$X"
 fi
 
