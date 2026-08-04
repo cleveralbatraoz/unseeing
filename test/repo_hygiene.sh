@@ -14,18 +14,32 @@ FAIL=0
 
 ok() { echo "hygiene: OK   $1"; }
 bad() { echo "hygiene: FAIL $1"; FAIL=1; }
+skip() { echo "hygiene: SKIP $1"; }
+
+# Half these checks interrogate the index, and the droplet's deploy work tree
+# is a `git archive | tar -x` extract with NO git metadata (infra/post-receive).
+# Run there unguarded they do not merely fail — `git ls-files` fatals to an
+# EMPTY list, and an empty list satisfies "no file is too large", so the
+# invariant reports OK while checking nothing. A vacuous pass is worse than a
+# failure, so ask once and skip loudly rather than let git answer from nothing.
+HAVE_INDEX=0
+if git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then HAVE_INDEX=1; fi
 
 # --- ignore rules -----------------------------------------------------------
 # .claude/ holds per-session agent worktrees. Untracked AND unignored, a
 # `git add -A` stages them as embedded-repo gitlinks with no .gitmodules:
 # they clone as empty directories and `git submodule status` exits 128.
-for p in .claude/settings.json .claude/worktrees/some-task/README.md; do
-  if git -C "$DIR" check-ignore -q "$p" 2>/dev/null; then
-    ok "$p is ignored"
-  else
-    bad "$p is NOT ignored (add .claude/ to .gitignore)"
-  fi
-done
+if [ "$HAVE_INDEX" = 0 ]; then
+  skip "ignore rules (no git metadata — deploy work tree is a tar extract)"
+else
+  for p in .claude/settings.json .claude/worktrees/some-task/README.md; do
+    if git -C "$DIR" check-ignore -q "$p" 2>/dev/null; then
+      ok "$p is ignored"
+    else
+      bad "$p is NOT ignored (add .claude/ to .gitignore)"
+    fi
+  done
+fi
 
 # --- pre-commit size guard --------------------------------------------------
 # Exercised in a scratch repo, never here: the guard's whole job is to reject
@@ -84,18 +98,59 @@ fi
 # fails, the binary-asset question is worth reopening.
 # One cat-file for the whole index rather than one per file: --batch-check
 # reads object names on stdin, so 600+ blobs cost a single process.
-big="$(git -C "$DIR" ls-files -s \
-  | awk '$1 != "160000" { print $2 }' \
-  | sort -u \
-  | git -C "$DIR" cat-file --batch-check='%(objectname) %(objectsize)' \
-  | awk '$2 > 5242880 { print $1 }')"
-if [ -z "$big" ]; then
-  ok "no tracked file exceeds 5 MiB"
+if [ "$HAVE_INDEX" = 0 ]; then
+  skip "tracked-file size invariant (no git metadata)"
 else
-  bad "tracked files exceed 5 MiB:"
-  for sha in $big; do
-    git -C "$DIR" ls-files -s | grep -F "$sha" | sed 's/^/hygiene:      /'
-  done
+  big="$(git -C "$DIR" ls-files -s \
+    | awk '$1 != "160000" { print $2 }' \
+    | sort -u \
+    | git -C "$DIR" cat-file --batch-check='%(objectname) %(objectsize)' \
+    | awk '$2 > 5242880 { print $1 }')"
+  if [ -z "$big" ]; then
+    ok "no tracked file exceeds 5 MiB"
+  else
+    bad "tracked files exceed 5 MiB:"
+    for sha in $big; do
+      git -C "$DIR" ls-files -s | grep -F "$sha" | sed 's/^/hygiene:      /'
+    done
+  fi
+fi
+
+# --- the tar-extract contract -----------------------------------------------
+# This gate runs FIRST in ci/pipeline.sh, so if it cannot survive a tree with
+# no git metadata it takes the whole production deploy down with it. Prove that
+# here rather than discover it on the droplet: re-run self against an extract
+# of HEAD, exactly as infra/post-receive builds its work tree.
+# HYGIENE_NESTED stops the recursion at one level.
+if [ "${HYGIENE_NESTED:-0}" = 1 ]; then
+  :
+elif [ "$HAVE_INDEX" = 0 ]; then
+  skip "tar-extract self-check (already running without an index)"
+else
+  # Copied from the WORKING TREE, not `git archive HEAD`: the contract must be
+  # provable for the code in hand, or a fix for this very bug could never go
+  # green before it was committed. -p keeps the hook's exec bit, which the
+  # nested run checks. What the droplet gets differs only by uncommitted work.
+  X="$(mktemp -d)"
+  mkdir -p "$X/test" "$X/.githooks"
+  cp -p "$DIR/test/repo_hygiene.sh" "$X/test/repo_hygiene.sh"
+  cp -p "$DIR/.githooks/pre-commit" "$X/.githooks/pre-commit"
+  xgot=0
+  HYGIENE_NESTED=1 sh "$X/test/repo_hygiene.sh" >"$X/.out" 2>&1 || xgot=$?
+  if [ "$xgot" -eq 0 ]; then
+    ok "survives a git-less tar extract (the droplet's work tree)"
+  else
+    bad "FAILS in a tar extract — this would break the production deploy:"
+    sed 's/^/hygiene:      /' "$X/.out"
+  fi
+  # A vacuous pass is the failure mode that hides here, so demand the skips.
+  if grep -q 'SKIP tracked-file size invariant' "$X/.out"; then
+    ok "index checks skip loudly there rather than pass on an empty list"
+  else
+    bad "index checks did not announce themselves as skipped in the extract"
+    sed 's/^/hygiene:      /' "$X/.out"
+  fi
+  rm -rf "$X"
 fi
 
 exit "$FAIL"
