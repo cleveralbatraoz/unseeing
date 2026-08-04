@@ -26,6 +26,15 @@ gdscript/warnings/inference_on_variant=2
 
 enabled=PackedStringArray("res://addons/gdUnit4/plugin.cfg")
 
+[gdunit4]
+
+; The vendored test bench is pinned by ci/gdunit4.lock; its in-editor updater
+; would poll GitHub on every project open and, on one click, delete
+; res://addons/gdUnit4/ and unpack an unreviewed release over it. Upstream
+; checks this flag before opening the connection, so off here means no call.
+; Version bumps go through ci/vendor-gdunit4.sh update <tag> instead.
+settings/common/update_notification_enabled=false
+
 [display]
 
 window/size/viewport_width=1280
