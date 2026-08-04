@@ -41,6 +41,10 @@ const COL_HEIGHT: f32 = 0.34;
 /// The sit blend's ease rate, 1/s — a cat settles, it does not snap.
 const SIT_EASE: f64 = 3.0;
 
+/// The cat's flat object id (the data pass's `u_oid`): one value across the
+/// whole silhouette so the outline post-pass draws it as a single contour.
+const CAT_OID: f64 = 0.7;
+
 /// The companion cat. Inject `pulses` and `data_mat` before adding to
 /// the tree (children run `_ready` first, and the cat refuses to build
 /// uninjected); the seed and roam size are designer knobs.
@@ -112,6 +116,9 @@ impl ICharacterBody3D for WaveCat {
         let mut mi = MeshInstance3D::new_alloc();
         mi.set_mesh(&self.mesh.clone());
         mi.set_material_override(self.data_mat.as_ref());
+        // one flat object id for the whole cat: the outline post-pass draws
+        // it as a single unified silhouette, never a pile of joint circles
+        mi.set_instance_shader_parameter("u_oid", &CAT_OID.to_variant());
         // the mesh mutates every frame in world space; never frustum-cull
         // it by its stale local bounds
         mi.set_extra_cull_margin(16384.0);

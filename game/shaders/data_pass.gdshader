@@ -12,6 +12,11 @@ render_mode unshaded, cull_disabled, shadows_disabled, ambient_light_disabled, f
 #include "res://shaders/pulse_pool.gdshaderinc"
 
 uniform float u_base = 0.0;   // standing reveal; >0 only for the hero's cane
+// One flat OBJECT ID per instance: the post pass diffs the G channel, so a
+// constant id across a whole object draws its unified silhouette with NO
+// interior component seams. < 0 (the default) falls back to the normal-id
+// crease encoding, so an object opts in the moment it sets this per-instance.
+instance uniform float u_oid = -1.0;
 
 varying vec3 v_world;
 varying vec3 v_nworld;
@@ -48,8 +53,11 @@ void fragment() {
 	reveal = max(reveal, u_base);
 	float vd = length(v_world - CAMERA_POSITION_WORLD);
 	reveal *= (0.9 + 0.1 * u_flick) * exp(-vd * 0.05);
-	// normal id: distinct levels for the six axis directions, continuous for
-	// curved surfaces — one channel is enough for crease detection
-	float nid = 0.5 + v_nworld.x * 0.30 + v_nworld.y * 0.17 + v_nworld.z * 0.09;
+	// object-id when assigned (one flat id per object -> one clean silhouette,
+	// no interior seams); otherwise the normal-id crease encoding: distinct
+	// levels for the six axis directions, continuous for curved surfaces
+	float nid = u_oid >= 0.0
+			? u_oid
+			: (0.5 + v_nworld.x * 0.30 + v_nworld.y * 0.17 + v_nworld.z * 0.09);
 	ALBEDO = vec3(clamp(reveal, 0.0, 1.0), nid, clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));
 }
