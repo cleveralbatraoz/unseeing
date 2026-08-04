@@ -116,6 +116,39 @@ worktree when the task is done.
   any assistant anywhere in the repository — commits, code, comments, docs,
   or PRs. Repo-local git identity: `Dmitrii Galchenko <dggrus@gmail.com>`.
 
+## Binary assets: keep them out, and know when that stops being free
+
+**The repo is source-only, and the perception laws are what make that
+possible.** Black and white, thin outlines only, no textures or materials,
+geometry built in Rust as `ImmediateMesh`, sound synthesised rather than
+sampled — the art direction *is* an asset budget of zero. As of the
+2026-08-04 audit the entire tracked binary payload is 10 PNGs / 700 KB
+(one README screenshot plus vendored gdUnit4 icons), every one at exactly
+one revision, and none of it reaches a shipped Windows, macOS, or web
+artifact.
+
+- **Never commit build output.** Exports, `.pck`, `.wasm`, `target/`,
+  `--write-movie` frames, reports. `.githooks/pre-commit` rejects any staged
+  file over 5 MiB (`ALLOW_BIG=1` to override deliberately);
+  `test/repo_hygiene.sh` holds the standing invariants and runs first in
+  `ci/pipeline.sh`.
+- **Do commit** `.import` and `.uid` sidecars — Godot's docs require it, and
+  the project tracks one per script with zero orphans.
+- **git-lfs is rejected, not deferred.** The cost of a binary in git is
+  size × revisions, and this repo's churn is 1. LFS would break the deploy
+  (`deploy.sh` pushes to a *bare* repo whose post-receive hook does
+  `git archive | tar -x`; with no filter configured it would ship 130-byte
+  pointer files, and the hook returns tar's status, so it would fail
+  silently), break the README image on GitHub raw, add a required dependency
+  to a droplet that cannot run `sudo` unattended, and cost a second history
+  rewrite to adopt or leave. Same verdict for git-annex, DVC, and external
+  object storage.
+- **Reopen the question only on a real trigger**: a single file over ~50 MiB,
+  `size-pack` over ~500 MB, or — the one that will actually happen first —
+  **any binary reaching its 5th revision**. The likely path there is
+  committing golden frames for visual regression; store perceptual hashes or
+  downsampled baselines instead of full frames.
+
 ## Code style
 
 - **Small, total functions**: every function handles any input it can
