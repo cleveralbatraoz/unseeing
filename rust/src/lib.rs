@@ -31,8 +31,7 @@
 //! - [`viewmodel`] — the hero's own body as the camera sees it: head-bob
 //!   and sway curves, the cane's carry and strike, the footstep cadence.
 //! - [`level_plan`] — the level's derived technical contracts: wall box
-//!   dimensions, axis snapping, centerlines, the hum room around a
-//!   source, the dev demo tap.
+//!   dimensions, axis snapping, centerlines, the dev demo tap.
 //! - [`oid_palette`] — which flat object id each box in the world carries,
 //!   colouring the touch graph so every seam between two objects draws.
 //!

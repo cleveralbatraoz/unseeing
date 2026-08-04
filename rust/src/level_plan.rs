@@ -1,10 +1,9 @@
 //! The level's technical plan, derived — how an editor-authored scene of
 //! dragged-around wall nodes becomes the exact contracts the engine runs
-//! on: box dimensions, axis-snapped orientations, wall centerlines, the
-//! hum room around a sound source, and the dev demo tap. A designer only
-//! places and rotates nodes; every number the systems need is computed
-//! here, so the geometry and the contracts derived from it can never
-//! drift apart in two files.
+//! on: box dimensions, axis-snapped orientations, wall centerlines, and
+//! the dev demo tap. A designer only places and rotates nodes; every
+//! number the systems need is computed here, so the geometry and the
+//! contracts derived from it can never drift apart in two files.
 //!
 //! Precision law, pinned from the retired GDScript map builder: GDScript
 //! floats are f64, so every scalar knob here is f64 and arithmetic
@@ -13,9 +12,9 @@
 //! walks) stays in the engine layer ([`crate::nodes`]); this module owns
 //! only the math the cargo tests pin.
 //!
-//! Axis law: walls are axis-aligned boxes — the hum-room rect the shader
-//! clips by and the centerline table the suites hold invariants against
-//! both depend on it. A designer's free-hand rotation is therefore
+//! Axis law: walls are axis-aligned boxes — the occluder rects the sight
+//! shaders count and the centerline table the suites hold invariants
+//! against both depend on it. A designer's free-hand rotation is therefore
 //! snapped to the nearest quarter turn, and the snapped basis is built
 //! from exact unit columns: no trig dust for the rasterizer to chew on.
 
@@ -25,6 +24,20 @@ use godot::builtin::{Basis, Vector3, Vector4};
 
 /// Wall height in meters — walls run floor to ceiling.
 pub const WALL_H: f64 = 3.0;
+
+/// How much a constant source's hum WAVES survive crossing one wall — the
+/// CPU half of the muffle vocabulary the shaders speak as `HUM_THROUGH` in
+/// pulse_pool.gdshaderinc (the shells in the air, the surfaces they wash).
+/// Kept in step by [`crate::sight`] tests and the shader contract.
+pub const HUM_THROUGH: f64 = 0.55;
+
+/// How much a source's own SILHOUETTE survives crossing one wall — dimmer
+/// than its waves, so a source felt through a wall is a faint ghost of
+/// itself, fainter still through two. This attenuates the source skin's
+/// standing floor per wall between the eye and the source (see
+/// [`crate::nodes`]' `source_muffle`); a wall dims the shape, never erases
+/// it — the source is always felt, just muted.
+pub const SOURCE_THROUGH: f64 = 0.3;
 
 /// Half-thickness of a wall in meters.
 pub const WALL_T: f64 = 0.15;
@@ -96,41 +109,6 @@ pub fn wall_segment(center: Vector3, length: f64, quadrant: u8) -> Vector4 {
     }
 }
 
-/// The rectangle of walls immediately around a point — the hum room of a
-/// sound source standing at (x, z): the nearest wall centerline in each
-/// cardinal direction whose span actually covers the point (give or take
-/// a wall half-thickness, so a source flush against a corner still reads
-/// the room). Returns (x_min, z_min, x_max, z_max), the `u_hum_room`
-/// layout; `None` when any side is open — an unenclosed source has no
-/// room for the shader to clip by.
-#[must_use]
-pub fn room_around(walls: &[Vector4], x: f32, z: f32) -> Option<Vector4> {
-    let reach = WALL_T as f32;
-    let covers = |a: f32, b: f32, c: f32| a.min(b) - reach <= c && c <= a.max(b) + reach;
-    let mut west = f32::NEG_INFINITY;
-    let mut east = f32::INFINITY;
-    let mut north = f32::NEG_INFINITY;
-    let mut south = f32::INFINITY;
-    for s in walls {
-        if (s.x - s.z).abs() < AXIS_EPS && covers(s.y, s.w, z) {
-            if s.x < x {
-                west = west.max(s.x);
-            } else if s.x > x {
-                east = east.min(s.x);
-            }
-        }
-        if (s.y - s.w).abs() < AXIS_EPS && covers(s.x, s.z, x) {
-            if s.y < z {
-                north = north.max(s.y);
-            } else if s.y > z {
-                south = south.min(s.y);
-            }
-        }
-    }
-    let closed = west.is_finite() && east.is_finite() && north.is_finite() && south.is_finite();
-    closed.then(|| Vector4::new(west, north, east, south))
-}
-
 /// The dev demo tap, planned: where the input-less demo strikes, and the
 /// struck face's outward normal.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -141,49 +119,98 @@ pub struct TapPlan {
     pub normal: Vector3,
 }
 
-/// Plan the demo tap on the room's west wall — the wall between the fan's
-/// room and the validated spawn, so movie-maker runs and the deployed
-/// `?demo` build always catch a wave from the hero's side of it. The tap
-/// lands at the spawn's z clamped into the wall's span (its middle when
-/// the wall is shorter than two margins), [`DEMO_TAP_H`] up, facing
-/// whichever side the spawn stands on. `None` when no wall centerline
-/// lies on the room's west edge — no room, no demo wall.
+/// Parameter `t` in [0, 1] at which the segment `a -> b` (read in the XZ
+/// plane) crosses the axis-aligned wall centerline `wall`, or `None` when
+/// it does not cross within both spans. Total on axis-parallel inputs: a
+/// segment running parallel to the wall never crosses it.
 #[must_use]
-pub fn demo_tap(walls: &[Vector4], room: Vector4, spawn: Vector3) -> Option<TapPlan> {
-    // the west wall nearest the spawn's z — collinear walls beyond the
-    // room's own edge (a corridor divider further down the same axis
-    // line) are not this room's wall and never take the tap; slice order
-    // breaks exact ties, so the same scene always plans the same tap
-    let mut best: Option<(f32, f32, f32)> = None;
-    for s in walls {
-        if (s.x - s.z).abs() >= AXIS_EPS || (s.x - room.x).abs() >= AXIS_EPS {
-            continue;
+fn crossing_param(a: Vector3, b: Vector3, wall: Vector4) -> Option<f32> {
+    if (wall.y - wall.w).abs() < AXIS_EPS {
+        // wall runs along X at z = wall.y
+        let dz = b.z - a.z;
+        if dz.abs() < AXIS_EPS {
+            return None;
         }
-        let (lo, hi) = (s.y.min(s.w), s.y.max(s.w));
-        if lo > room.w + AXIS_EPS || hi < room.y - AXIS_EPS {
-            continue; // no overlap with the room's west edge
+        let t = (wall.y - a.z) / dz;
+        if !(0.0..=1.0).contains(&t) {
+            return None;
         }
-        let miss = (lo - spawn.z).max(spawn.z - hi).max(0.0);
-        if best.is_none_or(|(d, _, _)| miss < d) {
-            best = Some((miss, lo, hi));
+        let x = a.x + t * (b.x - a.x);
+        (wall.x.min(wall.z)..=wall.x.max(wall.z))
+            .contains(&x)
+            .then_some(t)
+    } else {
+        // wall runs along Z at x = wall.x
+        let dx = b.x - a.x;
+        if dx.abs() < AXIS_EPS {
+            return None;
         }
+        let t = (wall.x - a.x) / dx;
+        if !(0.0..=1.0).contains(&t) {
+            return None;
+        }
+        let z = a.z + t * (b.z - a.z);
+        (wall.y.min(wall.w)..=wall.y.max(wall.w))
+            .contains(&z)
+            .then_some(t)
     }
-    let (_, lo, hi) = best?;
-    let margin = DEMO_TAP_MARGIN as f32;
-    let z = if lo + margin > hi - margin {
+}
+
+/// Clamp `v` into the span `[lo, hi]` shrunk by `margin` at each end, or
+/// the span's midpoint when it is shorter than two margins — a strike
+/// near a corner slides one margin clear of it.
+#[must_use]
+fn clamp_span(v: f32, lo: f32, hi: f32, margin: f32) -> f32 {
+    if lo + margin > hi - margin {
         (lo + hi) * 0.5
     } else {
-        spawn.z.clamp(lo + margin, hi - margin)
-    };
-    let normal = if spawn.x < room.x {
-        Vector3::new(-1.0, 0.0, 0.0)
+        v.clamp(lo + margin, hi - margin)
+    }
+}
+
+/// Plan the demo tap from the walls alone — no room rectangle: the wall
+/// between the hero and the fan is the nearest wall centerline the
+/// spawn→fan line crosses, and the tap lands on that wall's spawn-facing
+/// FACE, a half-thickness off the centerline. Born just outside the wall,
+/// the strike lights the near side while the wall does not occlude its own
+/// reveal — the source stands on the face, not inside the box. The point
+/// is [`DEMO_TAP_H`] up, clamped into the wall's span one
+/// [`DEMO_TAP_MARGIN`] short of each end (its midpoint on a stub wall).
+/// `None` when the spawn→fan line crosses no wall — hero and fan share a
+/// room, and there is nothing between them to demo-strike.
+#[must_use]
+pub fn demo_tap(walls: &[Vector4], spawn: Vector3, fan: Vector3) -> Option<TapPlan> {
+    // slice order breaks exact ties, so the same scene always plans the
+    // same tap
+    let mut best: Option<(f32, Vector4)> = None;
+    for &wall in walls {
+        if let Some(t) = crossing_param(spawn, fan, wall)
+            && best.is_none_or(|(bt, _)| t < bt)
+        {
+            best = Some((t, wall));
+        }
+    }
+    let (_, wall) = best?;
+    let margin = DEMO_TAP_MARGIN as f32;
+    let half = WALL_T as f32;
+    let h = DEMO_TAP_H as f32;
+    if (wall.y - wall.w).abs() < AXIS_EPS {
+        // X-run wall at z = wall.y: the tap slides along X and faces ±Z
+        let x = clamp_span(spawn.x, wall.x.min(wall.z), wall.x.max(wall.z), margin);
+        let toward = if spawn.z < wall.y { -1.0 } else { 1.0 };
+        Some(TapPlan {
+            point: Vector3::new(x, h, wall.y + toward * half),
+            normal: Vector3::new(0.0, 0.0, toward),
+        })
     } else {
-        Vector3::new(1.0, 0.0, 0.0)
-    };
-    Some(TapPlan {
-        point: Vector3::new(room.x, DEMO_TAP_H as f32, z),
-        normal,
-    })
+        // Z-run wall at x = wall.x: the tap slides along Z and faces ±X
+        let z = clamp_span(spawn.z, wall.y.min(wall.w), wall.y.max(wall.w), margin);
+        let toward = if spawn.x < wall.x { -1.0 } else { 1.0 };
+        Some(TapPlan {
+            point: Vector3::new(wall.x + toward * half, h, z),
+            normal: Vector3::new(toward, 0.0, 0.0),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -267,93 +294,104 @@ mod tests {
         assert!((along_z.w - 8.0).abs() < 1e-4);
     }
 
-    /// The shipped fan's room derives to the validated hum-room rect —
-    /// the exact numbers the retired LevelData carried by hand.
-    #[test]
-    fn shipped_fan_room_derives_to_the_validated_rect() {
-        let room = room_around(&shipped_walls(), 8.6, 4.4);
-        assert_eq!(room, Some(Vector4::new(6.4, 0.6, 19.4, 8.0)));
-    }
-
-    /// An unenclosed source has no room: with the east border gone the
-    /// fan's east side is open air and derivation refuses.
-    #[test]
-    fn open_side_yields_no_room() {
-        let mut walls = shipped_walls();
-        walls.remove(1);
-        assert_eq!(room_around(&walls, 8.6, 4.4), None);
-    }
-
-    /// A source flush against a wall's end is still enclosed: spans reach
-    /// a wall half-thickness past their centerline ends.
-    #[test]
-    fn span_ends_reach_a_half_thickness() {
-        let walls = vec![
-            Vector4::new(0.0, 0.0, 4.0, 0.0),
-            Vector4::new(4.0, 0.0, 4.0, 4.0),
-            Vector4::new(4.0, 4.0, 0.0, 4.0),
-            Vector4::new(0.0, 4.0, 0.0, 0.0),
-        ];
-        // 0.1 past the south wall's x-span end, within the 0.15 reach
-        assert!(room_around(&walls, 4.1, 2.0).is_none()); // outside the room
-        assert_eq!(
-            room_around(&walls, 3.9, 3.9),
-            Some(Vector4::new(0.0, 0.0, 4.0, 4.0))
-        );
-    }
-
-    /// The shipped tap plan: the west hum wall at the spawn's z, 0.8 up,
-    /// striking toward the spawn side — the validated numbers, bit for
-    /// bit.
+    /// The shipped tap plan, roomless: the spawn→fan line crosses
+    /// DividerNorth, so the tap lands on that wall's west FACE (a
+    /// half-thickness off the x = 6.4 centerline) at the spawn's z, 0.8
+    /// up, striking toward the spawn.
     #[test]
     fn shipped_demo_tap_derives_to_the_validated_point() {
-        let walls = shipped_walls();
-        let room = room_around(&walls, 8.6, 4.4).expect("shipped room derives");
-        let plan = demo_tap(&walls, room, Vector3::new(3.0, 0.9, 4.0)).expect("tap derives");
-        assert_eq!(plan.point, Vector3::new(6.4, 0.8, 4.0));
+        let plan = demo_tap(
+            &shipped_walls(),
+            Vector3::new(3.0, 0.9, 4.0),
+            Vector3::new(8.6, 0.0, 4.4),
+        )
+        .expect("tap derives");
+        assert_eq!(plan.point, Vector3::new(6.25, 0.8, 4.0));
         assert_eq!(plan.normal, Vector3::new(-1.0, 0.0, 0.0));
     }
 
-    /// A spawn beyond the wall's end clamps onto the wall, one margin
-    /// short of the corner.
+    /// The face nudge earns its keep: the tap stands OUTSIDE the divider's
+    /// occluder box, so the wall it strikes does not shadow its own
+    /// strike — sight crosses zero walls to a point on the tap's own
+    /// (west) side — while that same wall still blocks the far, fan-room
+    /// side. This is exactly what keeps a wall-struck tap lighting its
+    /// near face without leaking through.
+    #[test]
+    fn demo_tap_face_is_not_self_occluded() {
+        let plan = demo_tap(
+            &shipped_walls(),
+            Vector3::new(3.0, 0.9, 4.0),
+            Vector3::new(8.6, 0.0, 4.4),
+        )
+        .expect("tap derives");
+        let rects: Vec<Vector4> = shipped_walls()
+            .iter()
+            .map(|s| crate::sight::wall_rect(*s))
+            .collect();
+        let top = WALL_H as f32;
+        assert_eq!(
+            crate::sight::crossings_from(plan.point, Vector3::new(4.0, 0.8, 4.0), &rects, top),
+            0,
+        );
+        assert_eq!(
+            crate::sight::crossings_from(plan.point, Vector3::new(8.0, 0.8, 4.0), &rects, top),
+            1,
+        );
+    }
+
+    /// A spawn whose z runs past the wall span clamps onto the wall, one
+    /// margin short of the corner — the line still crossing it.
     #[test]
     fn demo_tap_clamps_into_the_wall_span() {
-        let walls = shipped_walls();
-        let room = room_around(&walls, 8.6, 4.4).expect("shipped room derives");
-        let plan = demo_tap(&walls, room, Vector3::new(3.0, 0.9, 20.0)).expect("tap derives");
-        assert_eq!(plan.point, Vector3::new(6.4, 0.8, 7.8));
+        let plan = demo_tap(
+            &shipped_walls(),
+            Vector3::new(3.0, 0.9, 9.0),
+            Vector3::new(8.6, 0.0, 4.4),
+        )
+        .expect("tap derives");
+        assert_eq!(plan.point, Vector3::new(6.25, 0.8, 7.8));
     }
 
-    /// A spawn inside the room taps the same wall from its own side: the
-    /// normal flips to face it.
+    /// Hero and fan in the same room: the line between them crosses no
+    /// wall, so there is nothing between them to demo-strike.
     #[test]
-    fn demo_tap_faces_a_spawn_inside_the_room() {
-        let walls = shipped_walls();
-        let room = room_around(&walls, 8.6, 4.4).expect("shipped room derives");
-        let plan = demo_tap(&walls, room, Vector3::new(8.0, 0.9, 4.0)).expect("tap derives");
-        assert_eq!(plan.normal, Vector3::new(1.0, 0.0, 0.0));
+    fn same_room_spawn_and_fan_have_no_tap() {
+        assert_eq!(
+            demo_tap(
+                &shipped_walls(),
+                Vector3::new(10.0, 0.9, 4.0),
+                Vector3::new(8.6, 0.0, 4.4),
+            ),
+            None,
+        );
     }
 
-    /// A wall shorter than two margins takes the tap in its middle
-    /// instead of refusing or panicking on a crossed clamp.
+    /// A wall shorter than two margins takes the tap at its midpoint
+    /// instead of panicking on a crossed clamp, still on its face.
     #[test]
-    fn a_stub_wall_takes_the_tap_in_its_middle() {
-        let walls = vec![
-            Vector4::new(2.0, 1.0, 2.0, 1.3),
-            Vector4::new(2.0, 1.0, 4.0, 1.0),
-            Vector4::new(4.0, 1.0, 4.0, 1.3),
-            Vector4::new(2.0, 1.3, 4.0, 1.3),
-        ];
-        let room = Vector4::new(2.0, 1.0, 4.0, 1.3);
-        let plan = demo_tap(&walls, room, Vector3::new(0.0, 0.9, 9.0)).expect("tap derives");
+    fn a_stub_wall_takes_the_tap_at_its_midpoint() {
+        let walls = vec![Vector4::new(2.0, 1.0, 2.0, 1.3)]; // z-run stub, span 0.3
+        let plan = demo_tap(
+            &walls,
+            Vector3::new(0.0, 0.9, 1.15),
+            Vector3::new(4.0, 0.0, 1.15),
+        )
+        .expect("tap derives");
         assert!((plan.point.z - 1.15).abs() < 1e-6);
+        assert_eq!(plan.point.x, 1.85); // 2.0 centerline − 0.15 to the west face
     }
 
-    /// No wall on the room's west edge: no tap plan at all.
+    /// A line parallel to the only wall crosses nothing: no tap.
     #[test]
-    fn no_west_wall_no_tap() {
-        let walls = vec![Vector4::new(0.0, 0.0, 4.0, 0.0)];
-        let room = Vector4::new(1.0, 0.0, 3.0, 4.0);
-        assert_eq!(demo_tap(&walls, room, Vector3::ZERO), None);
+    fn no_crossing_no_tap() {
+        let walls = vec![Vector4::new(0.0, 0.0, 4.0, 0.0)]; // x-run at z = 0
+        assert_eq!(
+            demo_tap(
+                &walls,
+                Vector3::new(1.0, 0.9, 3.0),
+                Vector3::new(3.0, 0.0, 3.0),
+            ),
+            None,
+        );
     }
 }

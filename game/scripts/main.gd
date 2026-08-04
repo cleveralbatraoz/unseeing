@@ -1,3 +1,4 @@
+class_name UnseeingMain
 extends Node3D
 ## Unseeing — composition root.
 ##
@@ -14,17 +15,29 @@ extends Node3D
 ## into each other — they meet here.
 
 const DATA_SHADER := preload("res://shaders/data_pass.gdshader")
+# the acoustic-image skin — a sound source wears it: always-on-top (felt
+# through walls), its standing floor muffled per wall between eye and source
+const XRAY_SHADER := preload("res://shaders/data_xray.gdshader")
 const POST_SHADER := preload("res://shaders/hearing_post.gdshader")
 const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
+## The perceptual ladder. Both data-writing skins stay in the OPAQUE pass
+## (only opaque surfaces reach the screen texture the hearing pass reads),
+## where the sort key is render_priority first — so once the source skin
+## fakes its depth to always-pass, draw order lays it OVER the world: the
+## world at real depth, the acoustic image of sources on top of it.
+const PRIORITY_WORLD := 0
+const PRIORITY_SOURCES := 20
+
 var pulses: Pulses
 var data_mat := ShaderMaterial.new()
+var source_mat := ShaderMaterial.new()  # the acoustic image of sound sources
 var cane_mat := ShaderMaterial.new()  # standing reveal: the hero knows their grip
 var body_mat := ShaderMaterial.new()  # legs/torso: revealed only by waves
 var post_mat := ShaderMaterial.new()
-## Every material that renders waves — all four consume the same pool and the
+## Every material that renders waves — all five consume the same pool and the
 ## same per-frame globals.
-var wave_mats: Array[ShaderMaterial] = [data_mat, cane_mat, body_mat, post_mat]
+var wave_mats: Array[ShaderMaterial] = [data_mat, source_mat, cane_mat, body_mat, post_mat]
 var player: UnseeingPlayer
 var hero: HeroBody
 var fan: SoundFan
@@ -52,31 +65,46 @@ func _ready() -> void:
 		rng.seed = 0x5EED
 	_flicker = Flicker.new(rng)
 	data_mat.shader = DATA_SHADER
+	data_mat.render_priority = PRIORITY_WORLD
 	post_mat.shader = POST_SHADER
+	# the source image is LIVE: the fan is always heard — a standing reveal
+	# floor (u_base) keeps it a coherent whole with no wave nearby, and each
+	# wall between the eye and the hub muffles that floor (by SOURCE_THROUGH,
+	# computed per frame in _process) instead of silencing it
+	source_mat.shader = XRAY_SHADER
+	source_mat.render_priority = PRIORITY_SOURCES
+	source_mat.set_shader_parameter("u_base", 0.9)
+	# the hero's cane and body render at real depth like the world — they
+	# ride with the hero, never across a wall from their own sounds
 	for m: ShaderMaterial in [cane_mat, body_mat]:
 		m.shader = DATA_SHADER
 	cane_mat.set_shader_parameter("u_base", 0.85)
 	pulses = Pulses.new()
 	# the world: an editor-authored scene — walls, furniture, the fan, the
-	# spawn marker under a WaveLevel root. Injected BEFORE entering the
-	# tree (children run _ready first, and the fan refuses to build
-	# uninjected); the root distributes the material and pool, then derives
+	# cat, the spawn marker under a WaveLevel root. Injected BEFORE entering
+	# the tree (children run _ready first, and the fan refuses to build
+	# uninjected); the root distributes the materials and pool, then derives
 	# the technical contracts the systems below read back from it.
 	level = LEVEL_SCENE.instantiate() as WaveLevel
-	level.inject(data_mat, pulses)
+	level.inject(data_mat, source_mat, pulses)
 	add_child(level)
 	_demo = DemoTap.new(level.demo_tap(), level.demo_tap_normal())
 	# the level's constant sound source, in the NEXT room, behind the wall
-	# the spawn faces: its hum is felt through the wall before it is found
+	# the spawn faces: its hum is felt through the wall before it is found.
+	# Its reveal is occluded by the walls themselves now (source→surface
+	# sight, in data_core) — no room rectangle to push.
 	fan = level.fan()
+	# the hearing pass cuts player-sound shells by the walls too: the
+	# always-on-top source skin corrupts the packed depth at its pixels, so a
+	# ring must not lean on depth alone to stop at a wall behind the fan.
+	# Hand it the same wall table the data skins occlude by.
+	var rects := level.wall_rects()
+	post_mat.set_shader_parameter("u_walls", rects)
+	post_mat.set_shader_parameter("u_wall_count", rects.size())
+	post_mat.set_shader_parameter("u_wall_top", WaveLevel.wall_height())
 	# the level's companion creatures — the cat wanders the floor beside the
 	# hero, revealing itself with its own soft paw waves; we drive its clock
 	cats.assign(level.cats())
-	# the fan's room (wall centerlines, derived from the walls around it):
-	# its waves reveal nothing beyond these bounds — walls stop air, even
-	# though the shells are felt
-	for m: ShaderMaterial in wave_mats:
-		m.set_shader_parameter("u_hum_room", level.hum_room())
 	player = UnseeingPlayer.new()
 	player.pulses = pulses
 	player.position = level.spawn_pos()
@@ -103,6 +131,11 @@ func _process(dt: float) -> void:
 	post_mat.set_shader_parameter("u_grain_t", fmod(now, 1.0) * 61.7)
 	if fan != null:  # a fanless level is legal silence
 		fan.update(now)
+		# the fan dims as one whole through walls: count the walls between
+		# the eye and the hub once, here, and hand the source skin the muffle
+		var hub := fan.global_position + Vector3(0, SoundFan.head_h(), 0)
+		var muffle := level.source_muffle(player.camera.global_position, hub)
+		source_mat.set_shader_parameter("u_source_muffle", muffle)
 	for cat: WaveCat in cats:  # a catless level is legal too
 		cat.tick(now)
 	pulses.apply(now, wave_mats)

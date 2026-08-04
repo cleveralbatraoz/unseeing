@@ -4,9 +4,9 @@ extends GdUnitTestSuite
 ## and length knob; free-hand rotation snaps to EXACT quarter turns (walls
 ## are axis-aligned by law, and the snapped basis carries no trig dust);
 ## props stay free; and the level root is the single injection point that
-## distributes material and pool, then derives the hum room from the walls
-## around the fan, the spawn from its marker, and the demo tap from the
-## room's west wall.
+## deals the world and source skins by node class, then derives the spawn
+## from its marker and the demo tap from the wall between the spawn and the
+## fan.
 ##
 ## The second half holds the SHIPPED scene to the validated design's
 ## invariants — the same laws map_builder_test held over the SEGS table,
@@ -72,6 +72,19 @@ func _slabs(level: WaveLevel) -> Array[StaticBody3D]:
 	return out
 
 
+## The Rust-side occluder inflation, mirrored: a centerline padded by a
+## wall half-thickness (0.15) MINUS the 0.02 contact shrink each way —
+## the exact rect sight.rs::wall_rect derives for the sight shaders.
+func _occluder(seg: Vector4) -> Vector4:
+	const PAD := 0.13
+	return Vector4(
+		minf(seg.x, seg.z) - PAD,
+		minf(seg.y, seg.w) - PAD,
+		maxf(seg.x, seg.z) + PAD,
+		maxf(seg.y, seg.w) + PAD
+	)
+
+
 ## A wall is its centerline padded by a half-thickness each way, floor to
 ## ceiling — mesh and collider the same box, risen from the floor node.
 func test_wall_builds_box_and_collider_from_length() -> void:
@@ -122,13 +135,15 @@ func test_prop_builds_its_free_box() -> void:
 	assert_vector(_box(prop).size).is_equal(Vector3(0.4, 0.05, 0.4))
 
 
-## The level root end to end: one inject call distributes the material to
-## every wall, prop and slab and both handles to the fan; entering the
-## tree derives the hum room from the walls around the fan, the spawn
-## from its marker (lifted to capsule height), and the demo tap on the
-## room's west wall facing the spawn's side.
+## The level root end to end: one inject call deals the materials by node
+## class — the world skin to every wall, prop, cat and slab, the source
+## image to the fan — and both handles to the fan; entering the tree
+## derives the spawn from its marker (lifted to capsule height). Here the
+## fan and the spawn share one room, so the spawn→fan line crosses no wall
+## and there is no demo tap to plan.
 func test_level_distributes_and_derives() -> void:
 	var mat := ShaderMaterial.new()
+	var source_mat := ShaderMaterial.new()
 	var pulses := Pulses.new()
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	var walls: Array[WaveWall] = [
@@ -147,17 +162,16 @@ func test_level_distributes_and_derives() -> void:
 	fan.position = Vector3(3, 0, 1)
 	level.add_child(fan)
 	level.add_child(_spawn_marker(Vector3(1, 0, 3), -0.6))
-	level.inject(mat, pulses)
+	level.inject(mat, source_mat, pulses)
 	add_child(level)
-	assert_vector(level.hum_room()).is_equal(Vector4(0, 0, 4, 4))
 	assert_vector(level.spawn_pos()).is_equal(Vector3(1, 0.9, 3))
 	assert_float(level.spawn_yaw()).is_equal_approx(-0.6, 0.0001)
-	assert_vector(level.demo_tap()).is_equal(Vector3(0, 0.8, 3))
-	assert_vector(level.demo_tap_normal()).is_equal(Vector3(1, 0, 0))  # spawn inside the room
+	assert_vector(level.demo_tap()).is_equal(Vector3.ZERO)  # no wall between spawn and fan
+	assert_vector(level.demo_tap_normal()).is_equal(Vector3.UP)  # default, no tap planned
 	assert_int(level.wall_segments().size()).is_equal(4)
 	assert_object(level.fan()).is_same(fan)
 	assert_object(fan.pulses).is_same(pulses)
-	assert_object(fan.data_mat).is_same(mat)
+	assert_object(fan.data_mat).is_same(source_mat)
 	for wall: WaveWall in walls:
 		assert_object(_skin(wall).material_override).is_same(mat)
 	assert_object(_skin(prop).material_override).is_same(mat)
@@ -170,19 +184,24 @@ func test_level_distributes_and_derives() -> void:
 	assert_vector(slabs[1].position).is_equal(Vector3(10, 3.05, 10))
 
 
-## The reveal-occlusion wall table reaches the world skin: after inject the
-## data material carries one occluder rect per wall, the count and the wall
-## top — the walls the source→surface sight test in the data core runs
-## against. Also exposed through wall_rects() for the hearing pass.
-func test_wall_table_reaches_the_world_skin() -> void:
+## The reveal-occlusion wall table reaches BOTH occluding skins — the
+## world (reveal occlusion) and the source (its silhouette's per-object
+## muffle): one occluder rect per wall, the count and the wall top riding
+## along, and exposed through wall_rects() for the hearing pass too.
+func test_wall_table_reaches_the_occluding_skins() -> void:
 	var data_mat := ShaderMaterial.new()
+	var source_mat := ShaderMaterial.new()
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	level.inject(data_mat, Pulses.new())
+	level.inject(data_mat, source_mat, Pulses.new())
 	add_child(level)
-	var rects: PackedVector4Array = data_mat.get_shader_parameter("u_walls")
-	assert_int(rects.size()).is_equal(10)
-	assert_int(data_mat.get_shader_parameter("u_wall_count")).is_equal(10)
-	assert_float(data_mat.get_shader_parameter("u_wall_top")).is_equal(3.0)
+	var segs := level.wall_segments()
+	for m: ShaderMaterial in [data_mat, source_mat]:
+		var rects: PackedVector4Array = m.get_shader_parameter("u_walls")
+		assert_int(rects.size()).is_equal(10)
+		for i: int in segs.size():
+			assert_vector(rects[i]).is_equal_approx(_occluder(segs[i]), Vector4.ONE * 0.001)
+		assert_int(m.get_shader_parameter("u_wall_count")).is_equal(10)
+		assert_float(m.get_shader_parameter("u_wall_top")).is_equal(3.0)
 	assert_int(level.wall_rects().size()).is_equal(10)
 
 
@@ -193,7 +212,7 @@ func test_uninjected_level_reports() -> void:
 	level.add_child(_spawn_marker(Vector3.ZERO, 0.0))
 	var enter := func() -> void: add_child(level)
 	await (assert_error(enter).is_push_error(
-		"WaveLevel: data_mat/pulses not injected — the level cannot be seen"
+		"WaveLevel: materials/pulses not injected — the level cannot be seen"
 	))
 
 
@@ -201,7 +220,7 @@ func test_uninjected_level_reports() -> void:
 ## loud, with the level origin as the fallback.
 func test_missing_spawn_reports() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
-	level.inject(ShaderMaterial.new(), Pulses.new())
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	var enter := func() -> void: add_child(level)
 	await (assert_error(enter).is_push_error(
 		"WaveLevel: no SpawnPoint marker — the hero has nowhere to wake"
@@ -209,32 +228,32 @@ func test_missing_spawn_reports() -> void:
 	assert_vector(level.spawn_pos()).is_equal(Vector3(0, 0.9, 0))
 
 
-## A fan with an open side has no room: derivation refuses loudly and
-## leaves the rect ZERO — hum waves would reveal everywhere, and the
-## designer is told so instead of shipping it silently.
-func test_unenclosed_fan_reports() -> void:
+## An open-sided fan room is legal now: the fan's waves are stopped by the
+## walls that ARE there (source→surface sight), not clipped to an enclosing
+## rectangle — so derivation no longer refuses. The level enters the tree
+## and reads back its walls, fan and spawn.
+func test_open_fan_room_is_legal() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_wall(4.0, Vector3(2, 0, 0), false))
 	var fan := SoundFan.new()
 	fan.position = Vector3(2, 0, 2)
 	level.add_child(fan)
 	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
-	level.inject(ShaderMaterial.new(), Pulses.new())
-	var enter := func() -> void: add_child(level)
-	await (assert_error(enter).is_push_error(
-		"WaveLevel: the fan is not enclosed by walls — its hum will reveal everywhere"
-	))
-	assert_vector(level.hum_room()).is_equal(Vector4(0, 0, 0, 0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_int(level.wall_segments().size()).is_equal(1)
+	assert_object(level.fan()).is_same(fan)
+	assert_vector(level.spawn_pos()).is_equal(Vector3(1, 0.9, 3))
 
 
-## A fanless level is legal silence: no hum room, no demo tap, no error.
-func test_fanless_level_has_no_hum_room() -> void:
+## A fanless level is legal silence: no source to strike toward, so no
+## demo tap, and no error.
+func test_fanless_level_has_no_demo_tap() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_wall(4.0, Vector3(2, 0, 0), false))
 	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
-	level.inject(ShaderMaterial.new(), Pulses.new())
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
-	assert_vector(level.hum_room()).is_equal(Vector4(0, 0, 0, 0))
 	assert_vector(level.demo_tap()).is_equal(Vector3.ZERO)
 
 
@@ -244,7 +263,7 @@ func test_fanless_level_has_no_hum_room() -> void:
 func test_extents_knob_resizes_slabs() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_spawn_marker(Vector3.ZERO, 0.0))
-	level.inject(ShaderMaterial.new(), Pulses.new())
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
 	level.extents = Vector2(8, 6)
 	var slabs := _slabs(level)
@@ -260,24 +279,9 @@ func test_extents_knob_resizes_slabs() -> void:
 ## entered — every contract below is read back from the scene itself.
 func _shipped_level() -> WaveLevel:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	level.inject(ShaderMaterial.new(), Pulses.new())
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
 	return level
-
-
-## True when the edge (x1, z1, x2, z2) lies on some wall centerline: same
-## axis, same coordinate, spans overlapping.
-func _edge_on_some_wall(segs: PackedVector4Array, edge: Vector4) -> bool:
-	var vertical := absf(edge.z - edge.x) < 0.001
-	for s: Vector4 in segs:
-		if vertical:
-			if absf(s.x - edge.x) < 0.001 and absf(s.z - edge.x) < 0.001:
-				if minf(s.y, s.w) <= edge.w and maxf(s.y, s.w) >= edge.y:
-					return true
-		elif absf(s.y - edge.y) < 0.001 and absf(s.w - edge.y) < 0.001:
-			if minf(s.x, s.z) <= edge.z and maxf(s.x, s.z) >= edge.x:
-				return true
-	return false
 
 
 func test_shipped_walls_axis_aligned_and_bordered() -> void:
@@ -288,46 +292,18 @@ func test_shipped_walls_axis_aligned_and_bordered() -> void:
 		assert_bool(axis_aligned).append_failure_message("segment %s" % s).is_true()
 
 
-## The hum-room rect clips what the fan's waves may reveal. Each of its
-## four edges must be collinear with (and overlapped by) a real wall
-## centerline — an edge with no wall on it would clip sound in open air.
-func test_shipped_hum_room_edges_lie_on_walls() -> void:
-	var level := _shipped_level()
-	var room := level.hum_room()
-	var segs := level.wall_segments()
-	var edges: Array[Vector4] = [
-		Vector4(room.x, room.y, room.x, room.w),  # west
-		Vector4(room.z, room.y, room.z, room.w),  # east
-		Vector4(room.x, room.y, room.z, room.y),  # north
-		Vector4(room.x, room.w, room.z, room.w),  # south
-	]
-	for edge: Vector4 in edges:
-		(
-			assert_bool(_edge_on_some_wall(segs, edge))
-			. append_failure_message("edge %s" % edge)
-			. is_true()
-		)
-
-
-func test_shipped_fan_inside_hum_room() -> void:
-	var level := _shipped_level()
-	var room := level.hum_room()
-	var fan: SoundFan = level.fan()
-	assert_object(fan).is_not_null()
-	var at := fan.global_position
-	assert_bool(at.x > room.x and at.x < room.z).is_true()
-	assert_bool(at.z > room.y and at.z < room.w).is_true()
-
-
-## The demo tap must land on the hum room's west wall, inside a real
-## segment's span, striking toward the spawn side (-X).
-func test_shipped_demo_tap_sits_on_west_hum_wall() -> void:
+## The demo tap lands on the FACE of the wall between the spawn and the
+## fan — DividerNorth, whose centerline is x = 6.4 — a wall half-thickness
+## (0.15) west toward the spawn, inside the wall's z-span, striking toward
+## the spawn side (−X). No room rect: the wall is found from the spawn→fan
+## line alone.
+func test_shipped_demo_tap_sits_on_the_dividing_wall_face() -> void:
 	var level := _shipped_level()
 	var tap := level.demo_tap()
-	assert_float(tap.x).is_equal_approx(level.hum_room().x, 0.001)
+	assert_float(tap.x).is_equal_approx(6.25, 0.001)
 	var on_wall := false
 	for s: Vector4 in level.wall_segments():
-		if absf(s.x - tap.x) < 0.001 and absf(s.z - tap.x) < 0.001:
+		if absf(s.x - 6.4) < 0.001 and absf(s.z - 6.4) < 0.001:  # a z-run wall at x = 6.4
 			if tap.z >= minf(s.y, s.w) and tap.z <= maxf(s.y, s.w):
 				on_wall = true
 	assert_bool(on_wall).is_true()
@@ -351,14 +327,24 @@ func test_shipped_spawn_inside_bounds() -> void:
 func test_shipped_level_matches_validated_design() -> void:
 	var level := _shipped_level()
 	assert_int(level.wall_segments().size()).is_equal(10)
-	var room := level.hum_room()
-	assert_vector(room).is_equal_approx(Vector4(6.4, 0.6, 19.4, 8.0), Vector4.ONE * 0.001)
 	assert_vector(level.spawn_pos()).is_equal_approx(Vector3(3, 0.9, 4), Vector3.ONE * 0.001)
 	assert_float(level.spawn_yaw()).is_equal_approx(-1.9, 0.0001)
-	assert_vector(level.demo_tap()).is_equal_approx(Vector3(6.4, 0.8, 4.0), Vector3.ONE * 0.001)
+	assert_vector(level.demo_tap()).is_equal_approx(Vector3(6.25, 0.8, 4.0), Vector3.ONE * 0.001)
 	assert_vector(level.demo_tap_normal()).is_equal(Vector3(-1, 0, 0))
 	var fan: SoundFan = level.fan()
 	assert_vector(fan.position).is_equal_approx(Vector3(8.6, 0, 4.4), Vector3.ONE * 0.001)
+
+
+## The per-object source muffle: from the spawn — behind the one divider
+## between it and the fan — the silhouette's standing floor survives at
+## SOURCE_THROUGH (0.3, a faint ghost) and the whole shape dims together;
+## from inside the fan room, no wall, it is untouched (1.0).
+func test_shipped_source_muffle_dims_through_the_divider() -> void:
+	var level := _shipped_level()
+	var fan: SoundFan = level.fan()
+	var hub := fan.global_position + Vector3(0, SoundFan.head_h(), 0)
+	assert_float(level.source_muffle(level.spawn_pos(), hub)).is_equal_approx(0.3, 0.0001)
+	assert_float(level.source_muffle(Vector3(12, 1.6, 5), hub)).is_equal_approx(1.0, 0.0001)
 
 
 ## The shipped level carries the companion cat, exposes it for the root to

@@ -85,7 +85,7 @@ func test_decode_expressions_are_literal() -> void:
 ## derived from the shipped level scene, the one map that ever renders.
 func test_dist_pack_range_covers_the_map_diagonal() -> void:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	level.inject(ShaderMaterial.new(), Pulses.new())
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
 	var lo := Vector2(INF, INF)
 	var hi := Vector2(-INF, -INF)

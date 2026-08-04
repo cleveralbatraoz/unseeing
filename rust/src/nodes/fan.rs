@@ -2,9 +2,10 @@
 //! a designer places instead of a script. A constant sound source: a
 //! blind person FEELS a steady source even from another room, so the
 //! fan's hum is pulse kind 3 ("source hum"): its wave shells pass through
-//! walls muffled instead of being cut like every player-made sound — but
-//! its waves REVEAL only the fan's own room (the shader clips them to
-//! u_hum_room). The fan blows a steady DIRECTED wash: a cone of waves out
+//! walls muffled instead of being cut like every player-made sound, and
+//! its waves REVEAL what they can reach — a wall stops the wash, an open
+//! doorway lets it light the next room (source→surface sight in the data
+//! core). The fan blows a steady DIRECTED wash: a cone of waves out
 //! of the pivoting head, born so often they read as one continuous stream
 //! sweeping the room like a lighthouse. The head carries a real collider
 //! that pivots with it, so the cane and echo rays strike the fan like

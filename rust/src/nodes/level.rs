@@ -1,19 +1,20 @@
-//! The level root — the one node a scene of walls, props, a fan and a
-//! spawn marker hangs under, and the engine's single door into it. The
-//! composition root injects the data-pass material and the wave pool
-//! HERE, once; the level distributes them to every child that renders or
-//! sounds. When it enters the tree it builds the floor and ceiling slabs
-//! from its `extents` knob and DERIVES the technical contracts the
-//! systems run on — wall centerlines, the fan's hum room, the spawn, the
-//! dev demo tap — via the pure [`level_plan`] math, so a designer who
-//! moves a wall has moved the contracts with it.
+//! The level root — the one node a scene of walls, props, a fan, a cat and
+//! a spawn marker hangs under, and the engine's single door into it. The
+//! composition root injects the two data-writing materials (the world skin
+//! and the source image) and the wave pool HERE, once; the level deals
+//! them by node class to every child that renders or sounds, and hands the
+//! occluding skins the wall table their analytic sight test runs against.
+//! When it enters the tree it builds the floor and ceiling slabs from its
+//! `extents` knob and DERIVES the technical contracts the systems run on —
+//! wall centerlines, the spawn, the dev demo tap — via the pure
+//! [`level_plan`] math, so a designer who moves a wall has moved the
+//! contracts with it.
 //!
-//! Hum-room decision: the room is DERIVED from the walls standing around
-//! the fan, not hand-authored as a rect knob — a designer who can drag
-//! walls should never have to retype their coordinates, and a rect that
-//! cannot drift from the walls needs no test to keep it honest. The cost
-//! is a law: the fan must be enclosed on all four sides, and the level
-//! says so loudly when it is not.
+//! Occlusion decision: the fan's waves are stopped by the WALLS themselves
+//! now — source→surface sight in the data core — not clipped to a derived
+//! room rectangle. So a designer may open the fan's room to a corridor
+//! without retyping anything or tripping an enclosure law: the hum simply
+//! lights what it can reach and stops at what it cannot.
 //!
 //! Spawn decision: a `Marker3D` child named `SpawnPoint`, standing ON
 //! the floor, facing where the hero should look — the designer drags and
@@ -86,10 +87,10 @@ pub struct WaveLevel {
     #[init(val = Vector2::new(20.0, 20.0))]
     extents: Vector2,
     data_mat: Option<Gd<Material>>,
+    source_mat: Option<Gd<Material>>,
     pulses: Option<Gd<RefCounted>>,
     slabs: Vec<Slab>,
     segments: Vec<Vector4>,
-    hum_rect: Vector4,
     occluders: Vec<Vector4>,
     spawn_at: Vector3,
     spawn_heading: f64,
@@ -111,8 +112,8 @@ impl INode3D for WaveLevel {
         // no silent nulls: an uninjected level would render nothing and
         // sound nothing — say so once, loudly, and still derive honest
         // geometry so the contracts stay readable
-        if self.data_mat.is_none() || self.pulses.is_none() {
-            godot_error!("WaveLevel: data_mat/pulses not injected — the level cannot be seen");
+        if self.data_mat.is_none() || self.source_mat.is_none() || self.pulses.is_none() {
+            godot_error!("WaveLevel: materials/pulses not injected — the level cannot be seen");
         }
         self.derive();
     }
@@ -121,12 +122,17 @@ impl INode3D for WaveLevel {
 #[godot_api]
 impl WaveLevel {
     /// The single injection point: the composition root hands the level
-    /// the data-pass material and the wave pool ONCE, before adding it
-    /// to the tree, and the level distributes them — the material to
-    /// every wall, prop and slab, both to the fan.
+    /// its two data-writing materials and the wave pool ONCE, before
+    /// adding it to the tree, and the level deals them by node class — the
+    /// WORLD skin (real depth) to walls, props, the cat and the slabs; the
+    /// source IMAGE skin to the fan (`source_mat`, through its `data_mat`
+    /// property: it IS the fan's data-writing material); the pool to the
+    /// fan and the cat. A designer never assigns any of this: dropping a
+    /// node under the level is enough.
     #[func]
-    fn inject(&mut self, data_mat: Gd<Material>, pulses: Gd<RefCounted>) {
+    fn inject(&mut self, data_mat: Gd<Material>, source_mat: Gd<Material>, pulses: Gd<RefCounted>) {
         self.data_mat = Some(data_mat.clone());
+        self.source_mat = Some(source_mat.clone());
         self.pulses = Some(pulses.clone());
         let census = self.census();
         for mut wall in census.walls {
@@ -137,10 +143,10 @@ impl WaveLevel {
         }
         if let Some(mut fan) = census.fan {
             fan.set("pulses", &pulses.to_variant());
-            fan.set("data_mat", &data_mat.to_variant());
+            fan.set("data_mat", &source_mat.to_variant());
         }
-        // creatures render and sound like the fan: the wave pool voices
-        // their footfalls, the data-pass material draws their outline
+        // creatures render and sound like the world: the wave pool voices
+        // their footfalls, the world skin draws their outline at real depth
         for mut cat in census.cats {
             cat.set("pulses", &pulses.to_variant());
             cat.set("data_mat", &data_mat.to_variant());
@@ -168,14 +174,6 @@ impl WaveLevel {
         self.extents
     }
 
-    /// The fan's room as wall-centerline bounds (x_min, z_min, x_max,
-    /// z_max): hum waves reveal nothing beyond it — walls stop air.
-    /// ZERO when the level has no fan or the fan stands unenclosed.
-    #[func]
-    fn hum_room(&self) -> Vector4 {
-        self.hum_rect
-    }
-
     /// Where the hero wakes: the SpawnPoint marker lifted to capsule
     /// height.
     #[func]
@@ -189,8 +187,8 @@ impl WaveLevel {
         self.spawn_heading
     }
 
-    /// Dev-demo tap: a fixed point on the hum room's west wall. ZERO
-    /// when no hum room derived.
+    /// Dev-demo tap: a fixed point on the wall between the spawn and the
+    /// fan. ZERO when hero and fan share a room (no wall to strike).
     #[func]
     fn demo_tap(&self) -> Vector3 {
         self.tap_point
@@ -239,10 +237,24 @@ impl WaveLevel {
         level_plan::WALL_H
     }
 
+    /// How muffled a source's SILHOUETTE at `to` reads from the eye at
+    /// `from`: `SOURCE_THROUGH` per wall the sight line crosses — a faint
+    /// ghost through one wall, fainter through two. The composition root
+    /// computes this once per frame per active source and hands it to that
+    /// source's skin as one uniform, so a source dims as a COHERENT WHOLE
+    /// through a wall instead of splitting bright/dim along the wall's
+    /// screen edge — a per-object muffle where a per-fragment sight test
+    /// would tear. General to any source, not the fan alone.
+    #[func]
+    fn source_muffle(&self, from: Vector3, to: Vector3) -> f64 {
+        let crossings = sight::crossings(from, to, &self.occluders, level_plan::WALL_H as f32);
+        level_plan::SOURCE_THROUGH.powi(crossings as i32)
+    }
+
     /// Derive every technical contract from the children as they stand:
-    /// centerlines from the walls, the hum room from the walls around
-    /// the fan, the spawn from the marker, the demo tap from the room's
-    /// west wall. Loud about whatever a designer left unplaceable.
+    /// centerlines from the walls, the spawn from the marker, the demo tap
+    /// from the wall between the spawn and the fan. Loud about whatever a
+    /// designer left unplaceable.
     fn derive(&mut self) {
         let census = self.census();
         self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
@@ -260,17 +272,10 @@ impl WaveLevel {
             self.spawn_heading = 0.0;
         }
         let Some(fan) = self.fan_child.as_ref() else {
-            return; // a fanless level is legal: silence, no room to clip
+            return; // a fanless level is legal: silence, no source to strike toward
         };
-        let at = fan.get_global_position();
-        let Some(room) = level_plan::room_around(&self.segments, at.x, at.z) else {
-            godot_error!(
-                "WaveLevel: the fan is not enclosed by walls — its hum will reveal everywhere"
-            );
-            return;
-        };
-        self.hum_rect = room;
-        if let Some(plan) = level_plan::demo_tap(&self.segments, room, self.spawn_at) {
+        let fan_at = fan.get_global_position();
+        if let Some(plan) = level_plan::demo_tap(&self.segments, self.spawn_at, fan_at) {
             self.tap_point = plan.point;
             self.tap_normal = plan.normal;
         }
@@ -349,11 +354,12 @@ impl WaveLevel {
 
     /// Tell the occluding skins where the walls stand: the derived
     /// centerlines inflated into shrunk occluder rects ([`sight::wall_rect`]),
-    /// pushed as `u_walls`/`u_wall_count`/`u_wall_top`. The world skin
-    /// occludes a source's reveal by them (source→surface sight in the data
-    /// core — a wall stops a wave from lighting a surface). Loud when a
-    /// level outgrows the shader's slots (truncated: the overflow walls
-    /// stop occluding).
+    /// pushed as `u_walls`/`u_wall_count`/`u_wall_top` onto the world and
+    /// source skins — the wall table their analytic sight test runs
+    /// against (the world occludes a source's reveal by them, a wall
+    /// behind a wall not lit through; the source silhouette is muffled by
+    /// them per-object on the CPU). Loud when a level outgrows the
+    /// shader's slots (truncated: the overflow walls stop occluding).
     fn push_wall_table(&mut self) {
         let mut rects: Vec<Vector4> = self.segments.iter().map(|s| sight::wall_rect(*s)).collect();
         if rects.len() > sight::MAXW {
@@ -370,6 +376,7 @@ impl WaveLevel {
         let table = PackedVector4Array::from(&rects[..]);
         let count = rects.len() as i64;
         self.push_table_to(self.data_mat.clone(), &table, count);
+        self.push_table_to(self.source_mat.clone(), &table, count);
     }
 
     /// Push the wall table onto one data-writing material — loud when it is

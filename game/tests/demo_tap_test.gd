@@ -9,7 +9,7 @@ const DT := 1.0 / 60.0
 
 func test_fires_at_expected_times_with_pinned_point() -> void:
 	var lvl: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	lvl.inject(ShaderMaterial.new(), Pulses.new())
+	lvl.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(lvl)
 	var tap := DemoTap.new(lvl.demo_tap(), lvl.demo_tap_normal())
 	tap.armed = true
