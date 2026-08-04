@@ -12,6 +12,15 @@ Perception laws (non-negotiable):
   no bloat, no modern-game visual noise. Contours and vibe.
 - The world is revealed by **waves** (sound, touch, wind). If nothing emits,
   nothing is visible.
+- **One outline per object, and every seam between two objects draws.** The
+  hearing pass draws two kinds of line: silhouettes, from a Laplacian of
+  packed distance, and creases, from differences in a flat object id. Where
+  two things interpenetrate there is no depth step, so the id difference is
+  the *only* thing that can draw their seam — two touching objects sharing
+  an id have no line between them and melt into one shape. So anything new
+  that can touch something else needs an id at least 0.08 clear of it. The
+  id budget and the graph colouring that hands them out live in
+  `rust/src/oid_palette.rs`; never assign ids by cycling a list.
 - UI/UX is simple and minimalistic.
 - Inspiration: modern codebases and games in the blind-protagonist /
   echolocation genre — *Perception*, *Dark Echo*, *Stifled*.

@@ -50,8 +50,11 @@ void fragment() {
 	vec4 c_d = texture(screen_tex, uv - vec2(0.0, px.y));
 
 	// thin white outlines: silhouettes (Laplacian of the packed distance in B)
-	// + creases (normal-id differences in G), visible only where a wave has
-	// swept (max of the five reveal taps in R)
+	// + creases (object-id differences in G — a flat per-instance id, or a
+	// normal-derived one where the level tagged nothing), visible only where
+	// a wave has swept (max of the five reveal taps in R). Two touching
+	// objects with the SAME id draw no seam at all: see rust/src/oid_palette.rs
+	// for the 0.08 separation the smoothstep below demands.
 	float lap = abs(c_l.b + c_r.b + c_u.b + c_d.b - 4.0 * c_c.b);
 	float nrm = abs(c_l.g - c_r.g) + abs(c_u.g - c_d.g);
 	float edge = max(smoothstep(0.012, 0.03, lap), smoothstep(0.04, 0.08, nrm));
