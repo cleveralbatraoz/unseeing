@@ -72,15 +72,22 @@ fetch_upstream() {
   echo "$found"
 }
 
+# The commits endpoint resolves a ref all the way to its commit, so this stays
+# correct for annotated tags — the refs endpoint would hand back the tag
+# object's own sha and we would record it under the name "commit".
 upstream_commit() {
-  curl -sfL "https://api.github.com/repos/$REPO/git/ref/tags/$1" 2>/dev/null \
-    | tr ',{}' '\n' | sed -n 's/.*"sha" *: *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1
+  curl -sfL "https://api.github.com/repos/$REPO/commits/$1" 2>/dev/null \
+    | tr ',{' '\n' | sed -n 's/.*"sha" *: *"\([0-9a-f]\{40\}\)".*/\1/p' | head -1
 }
 
 case "${1:-verify}" in
   verify)
     require_lock
     [ -d "$ADDON" ] || { echo "vendor: FAILED no vendored addon at $ADDON"; exit 1; }
+    # An empty tree still hashes, so it would surface as an opaque mismatch
+    # rather than the obvious thing that it is. Name it instead.
+    [ -n "$(find "$ADDON" -type f -print | head -1)" ] \
+      || { echo "vendor: FAILED $ADDON is empty (bad checkout? run: ci/vendor-gdunit4.sh update $(lock_get tag))"; exit 1; }
     have="$(fingerprint "$ADDON")"
     want="$(lock_get tree_sha256)"
     if [ "$have" != "$want" ]; then
