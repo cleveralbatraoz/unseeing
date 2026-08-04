@@ -22,6 +22,9 @@
 //! - [`sight`] — which walls a straight line pierces: the analytic
 //!   occluder the acoustic-image shaders count reveal and shells against,
 //!   cargo-pinned reference for the GLSL transliteration.
+//! - [`display_plan`] — where the window goes: the monitor's own
+//!   resolution as the default, and the centered, decoration-aware box a
+//!   windowed game falls back to when full screen is switched off.
 //! - [`clustering`] — how ray hits merge per 0.9 m cell so flat walls
 //!   answer as a few points, ranked in a deterministic total order.
 //! - [`echo_queue`] — scheduled reflections that fire at the exact
@@ -30,6 +33,8 @@
 //!   cadence, the world's one constant sound source.
 //! - [`viewmodel`] — the hero's own body as the camera sees it: head-bob
 //!   and sway curves, the cane's carry and strike, the footstep cadence.
+//! - [`settings_menu`] — the settings overlay's model: its rows, its
+//!   cursor, what a key press means, and the exact text each row shows.
 //! - [`level_plan`] — the level's derived technical contracts: wall box
 //!   dimensions, axis snapping, centerlines, the dev demo tap.
 //! - [`oid_palette`] — which flat object id each box in the world carries,
@@ -51,6 +56,7 @@ pub mod cat_body;
 pub mod cat_brain;
 pub mod cat_gait;
 pub mod clustering;
+pub mod display_plan;
 pub mod echo_queue;
 pub mod fan_wave;
 mod ffi;
@@ -59,5 +65,6 @@ mod nodes;
 pub mod oid_palette;
 pub mod pulse_pool;
 pub mod ray_fan;
+pub mod settings_menu;
 pub mod sight;
 pub mod viewmodel;
