@@ -8,6 +8,9 @@ so the deploy path is reconstructable from the repo alone.
   User-owned; update by copying over ssh, no sudo needed.
 - `nginx-unseeing.conf` — the nginx site (`/etc/nginx/sites-available/unseeing`).
   Root-owned; apply with the commands in the file's header (needs sudo).
+  Requires the `libnginx-mod-http-brotli-static` package for its
+  `brotli_static` directive — install it BEFORE applying the file, or nginx
+  refuses to start on an unknown directive.
 
 ## Droplet layout
 
@@ -22,6 +25,10 @@ so the deploy path is reconstructable from the repo alone.
   upload cannot leave the previous deploy's binaries in play
 - `/var/www/unseeing` — the served build (user-writable, deployed by the pipeline)
 - chromium — used by the pipeline's browser smoke test
+- `brotli` + `libnginx-mod-http-brotli-static` — the pipeline precompresses
+  every shipped artifact with both gzip and brotli; nginx serves whichever
+  the client accepts. On the 44 MB wasm that is 10.5 MB gzip vs 7.1 MB
+  brotli, for 85 s of single-core deploy time
 
 ## Crash beacon
 

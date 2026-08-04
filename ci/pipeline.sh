@@ -176,7 +176,12 @@ command -v brotli >/dev/null 2>&1 \
 RAW="$(du -ck "$DIR/game/build/web/"*.wasm "$DIR/game/build/web/"*.pck \
                 "$DIR/game/build/web/"*.js 2>/dev/null | tail -1 | cut -f1)"
 GZ="$(du -ck "$DIR/game/build/web/"*.gz 2>/dev/null | tail -1 | cut -f1)"
-echo "ci: precompressed ${RAW} KB -> ${GZ} KB"
+BR="$(du -ck "$DIR/game/build/web/"*.br 2>/dev/null | tail -1 | cut -f1)"
+if [ -n "$BR" ]; then
+  echo "ci: precompressed ${RAW} KB -> ${GZ} KB gzip, ${BR} KB brotli"
+else
+  echo "ci: precompressed ${RAW} KB -> ${GZ} KB gzip"
+fi
 
 if [ "${SKIP_SMOKE:-}" != "1" ] && [ -x "$DIR/test/web_smoke.sh" ]; then
   echo "ci: browser smoke test"
