@@ -6,31 +6,34 @@ extends GdUnitTestSuite
 
 const INC_PATH := "res://shaders/pulse_pool.gdshaderinc"
 const DATA_PASS_PATH := "res://shaders/data_pass.gdshader"
+const CORE_PATH := "res://shaders/data_core.gdshaderinc"
 const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
 
+func _read(path: String) -> String:
+	var f := FileAccess.open(path, FileAccess.READ)
+	assert_object(f).is_not_null()
+	return f.get_as_text() if f != null else ""
+
+
 func _include_text() -> String:
-	var f := FileAccess.open(INC_PATH, FileAccess.READ)
-	assert_object(f).is_not_null()
-	return f.get_as_text() if f != null else ""
+	return _read(INC_PATH)
 
 
-func _data_pass_text() -> String:
-	var f := FileAccess.open(DATA_PASS_PATH, FileAccess.READ)
-	assert_object(f).is_not_null()
-	return f.get_as_text() if f != null else ""
-
-
-## The G channel carries a per-object id: the data pass declares a
-## per-instance u_oid and writes it into G when set (falling back to the
-## normal-id crease encoding when unset, u_oid < 0). The outline post-pass
-## diffs G, so one flat id per object draws one unified silhouette with no
-## interior component seams. Pinned as source text so a "harmless" rewrite
-## of the data pass cannot silently revert the whole game's outline style.
-func test_data_pass_writes_object_id_into_g() -> void:
-	var src := _data_pass_text()
-	assert_str(src).contains("instance uniform float u_oid")
-	assert_str(src).contains("u_oid >= 0.0")
+## The G channel carries a per-object id, packed in the shared data CORE
+## now (every data-writing skin — the world and the always-on-top acoustic
+## image — reads the same machinery): pack_data declares a per-instance
+## u_oid and writes it into G when set, falling back to the normal-id
+## crease encoding when unset (u_oid < 0). The outline post-pass diffs G,
+## so one flat id per object draws one unified silhouette with no interior
+## component seams. Pinned as source text so a "harmless" rewrite cannot
+## silently revert the whole game's outline style, and the data pass must
+## include the core rather than carry its own copy.
+func test_data_core_writes_object_id_into_g() -> void:
+	var core := _read(CORE_PATH)
+	assert_str(core).contains("instance uniform float u_oid")
+	assert_str(core).contains("u_oid >= 0.0")
+	assert_str(_read(DATA_PASS_PATH)).contains("data_core.gdshaderinc")
 
 
 ## The numeric value of `const <type> NAME = <number>;` in the include, or
