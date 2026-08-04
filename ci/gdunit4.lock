@@ -1,0 +1,11 @@
+# Provenance for the vendored copy at game/addons/gdUnit4.
+# Never hand-edit this file or the addon — run: ci/vendor-gdunit4.sh update <tag>
+repo=https://github.com/godot-gdunit-labs/gdUnit4
+tag=v6.2.0
+commit=d18770221c2df4a3c991a42fdce7907df40eea75
+# fingerprint of upstream's addons/gdUnit4 as shipped in the source tarball
+source_sha256=5454f685b83ab83e2a363c218ef12d278913edbe13ce5d1a49fb0264418268d6
+source_files=272
+# fingerprint of our tree: the above plus the .uid/.import sidecars Godot mints
+tree_sha256=267e8e11a2545cfc98387cbe3f646ae7e7764d63bf8a93cca57d4ece5c688e04
+tree_files=516
