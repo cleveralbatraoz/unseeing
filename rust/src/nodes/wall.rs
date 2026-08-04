@@ -25,6 +25,7 @@ use godot::classes::{
 use godot::prelude::*;
 
 use crate::level_plan;
+use crate::oid_palette;
 
 /// One wall segment: an axis-snapped box, `length` meters of centerline
 /// padded by a wall half-thickness each way, floor to ceiling. The node
@@ -102,6 +103,15 @@ impl WaveWall {
         if let Some(skin) = self.skin.as_mut() {
             skin.set_instance_shader_parameter("u_oid", &oid.to_variant());
         }
+    }
+
+    /// The id this wall currently carries, read back off the skin rather
+    /// than mirrored in a field, so there is one source of truth: exactly
+    /// what the data pass will write to G. [`oid_palette::NO_OID`] before a
+    /// level has painted it.
+    #[func]
+    fn oid(&self) -> f64 {
+        read_oid(self.skin.as_ref())
     }
 
     /// This wall's centerline as the classic (x1, z1, x2, z2) segment —
@@ -199,6 +209,20 @@ impl WaveProp {
             skin.set_instance_shader_parameter("u_oid", &oid.to_variant());
         }
     }
+
+    /// The id this prop currently carries — same door as the walls'.
+    #[func]
+    fn oid(&self) -> f64 {
+        read_oid(self.skin.as_ref())
+    }
+}
+
+/// Read a skin's flat object id back, answering [`oid_palette::NO_OID`] for
+/// a limb that was never painted or never built.
+fn read_oid(skin: Option<&Gd<MeshInstance3D>>) -> f64 {
+    skin.map(|skin| skin.get_instance_shader_parameter("u_oid"))
+        .and_then(|value| value.try_to::<f64>().ok())
+        .unwrap_or(oid_palette::NO_OID)
 }
 
 /// One built box: the mesh limb for the data pass and the collider for

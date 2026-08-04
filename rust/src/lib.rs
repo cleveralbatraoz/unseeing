@@ -28,6 +28,8 @@
 //! - [`level_plan`] — the level's derived technical contracts: wall box
 //!   dimensions, axis snapping, centerlines, the hum room around a
 //!   source, the dev demo tap.
+//! - [`oid_palette`] — which flat object id each box in the world carries,
+//!   colouring the touch graph so every seam between two objects draws.
 //!
 //! Determinism is construction, not luck: no hashed iteration anywhere
 //! near an output (ordered containers only), no system time, no
@@ -50,6 +52,7 @@ pub mod fan_wave;
 mod ffi;
 pub mod level_plan;
 mod nodes;
+pub mod oid_palette;
 pub mod pulse_pool;
 pub mod ray_fan;
 pub mod viewmodel;

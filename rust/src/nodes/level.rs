@@ -26,6 +26,7 @@ use super::cat::WaveCat;
 use super::fan::SoundFan;
 use super::wall::{WaveProp, WaveWall, build_box};
 use crate::level_plan;
+use crate::oid_palette;
 
 /// The floor's flat object id — dedicated, clear of every wall's, because
 /// every wall meets the floor and that seam must always draw.
@@ -34,14 +35,18 @@ const OID_FLOOR: f64 = 0.15;
 /// The ceiling's flat object id — dedicated for the same reason.
 const OID_CEIL: f64 = 0.9;
 
-/// Wall ids, cycled by index: well separated (gap 0.12), all clear of the
-/// floor/ceiling and of the creature band (0.7+), so neighbouring walls
-/// differ and their shared seam still draws.
-const WALL_OIDS: [f64; 3] = [0.30, 0.42, 0.54];
-
-/// Prop ids, cycled by index — offset from the wall palette so a prop
-/// standing against a wall still shows its own edge.
-const PROP_OIDS: [f64; 3] = [0.36, 0.48, 0.60];
+/// The palette every wall and prop is coloured from. Walls and props share
+/// ONE palette because a prop leaning on a wall needs the same separation
+/// two walls do — the old split palettes left them only 0.06 apart, half
+/// strength. Entries are 0.09 apart, above the shader's 0.08 knee rather
+/// than exactly on it, and the whole band is clear of the floor below
+/// (0.15) and of the creature band above (the cat at 0.7), because every
+/// box stands on the floor and anything may walk in front of one.
+///
+/// Five entries is not a limit on how many boxes a level may hold: ids are
+/// assigned by colouring the touch graph, so a hundred walls reuse these
+/// five freely and only differ where they actually meet.
+const WORLD_OIDS: [f64; 5] = [0.25, 0.34, 0.43, 0.52, 0.61];
 
 /// One floor or ceiling slab, its parts kept for live reshaping when the
 /// designer drags the extents knob.
@@ -266,20 +271,65 @@ impl WaveLevel {
     /// world stays below the creature id band (0.7+), so the cat and the
     /// hero's body always separate from the geometry behind them.
     fn assign_oids(&mut self, census: &Census) {
+        // the boxes whose ids are already spoken for: the slabs every wall
+        // stands on, and the fan, which paints its own limbs
+        let mut anchors: Vec<oid_palette::Fixed> = Vec::new();
         for slab in &mut self.slabs {
             let oid = if slab.lid { OID_CEIL } else { OID_FLOOR };
             slab.skin
                 .set_instance_shader_parameter("u_oid", &oid.to_variant());
+            if let Some(area) = mesh_world_box(&slab.skin.clone().upcast()) {
+                anchors.push(oid_palette::Fixed { area, oid });
+            }
         }
+        if let Some(fan) = census.fan.as_ref()
+            && let Some(area) = mesh_world_box(&fan.clone().upcast())
+        {
+            // one box for both fan ids: the union over-constrains a
+            // neighbour slightly, which is the safe direction to err
+            for oid in super::fan::OIDS {
+                anchors.push(oid_palette::Fixed { area, oid });
+            }
+        }
+
+        // walls first, then props, so a box's place in this list is the
+        // deterministic scene order every other derivation leans on
+        let mut areas: Vec<oid_palette::Box3> = Vec::new();
+        let mut walls: Vec<usize> = Vec::new();
+        let mut props: Vec<usize> = Vec::new();
         for (i, wall) in census.walls.iter().enumerate() {
-            wall.clone()
-                .bind_mut()
-                .set_oid(WALL_OIDS[i % WALL_OIDS.len()]);
+            if let Some(area) = mesh_world_box(&wall.clone().upcast()) {
+                walls.push(i);
+                areas.push(area);
+            }
         }
         for (i, prop) in census.props.iter().enumerate() {
-            prop.clone()
+            if let Some(area) = mesh_world_box(&prop.clone().upcast()) {
+                props.push(i);
+                areas.push(area);
+            }
+        }
+
+        let painted = oid_palette::assign(&areas, &anchors, &WORLD_OIDS);
+        if painted.starved > 0 {
+            godot_error!(
+                "WaveLevel: {} box(es) could not take an id distinct from everything they touch — \
+                 those seams will not draw. Spread the geometry or widen WORLD_OIDS.",
+                painted.starved
+            );
+        }
+        for (slot, &i) in walls.iter().enumerate() {
+            census.walls[i]
+                .clone()
                 .bind_mut()
-                .set_oid(PROP_OIDS[i % PROP_OIDS.len()]);
+                .set_oid(painted.oids[slot]);
+        }
+        for (offset, &i) in props.iter().enumerate() {
+            let slot = walls.len() + offset;
+            census.props[i]
+                .clone()
+                .bind_mut()
+                .set_oid(painted.oids[slot]);
         }
     }
 
@@ -335,6 +385,47 @@ fn collect(node: &Gd<Node>, census: &mut Census) {
         }
         collect(&child, census);
     }
+}
+
+/// The world box a node's drawn geometry occupies — the union over every
+/// `MeshInstance3D` beneath it, the node itself included. `None` for a node
+/// that draws nothing, which can never show a seam with anything.
+fn mesh_world_box(node: &Gd<Node>) -> Option<oid_palette::Box3> {
+    let mut found: Option<oid_palette::Box3> = None;
+    if let Ok(mesh) = node.clone().try_cast::<MeshInstance3D>() {
+        found = Some(world_box(mesh.get_aabb(), mesh.get_global_transform()));
+    }
+    for child in node.get_children().iter_shared() {
+        if let Some(area) = mesh_world_box(&child) {
+            found = Some(match found {
+                Some(acc) => acc.union(&area),
+                None => area,
+            });
+        }
+    }
+    found
+}
+
+/// One local AABB carried into world space and re-squared to the axes. The
+/// half-extent is summed through the ABSOLUTE of the basis — the standard
+/// trick that bounds a freely rotated prop without trigonometry.
+fn world_box(local: Aabb, xf: Transform3D) -> oid_palette::Box3 {
+    let center = xf * (local.position + local.size * 0.5);
+    let half = local.size * 0.5;
+    let (bx, by, bz) = (xf.basis.col_a(), xf.basis.col_b(), xf.basis.col_c());
+    let reach = Vector3::new(
+        bx.x.abs() * half.x + by.x.abs() * half.y + bz.x.abs() * half.z,
+        bx.y.abs() * half.x + by.y.abs() * half.y + bz.y.abs() * half.z,
+        bx.z.abs() * half.x + by.z.abs() * half.y + bz.z.abs() * half.z,
+    );
+    oid_palette::Box3::from_center_size(
+        [center.x as f64, center.y as f64, center.z as f64],
+        [
+            (reach.x * 2.0) as f64,
+            (reach.y * 2.0) as f64,
+            (reach.z * 2.0) as f64,
+        ],
+    )
 }
 
 /// Where a slab's body stands: centered on the extents, the floor's top

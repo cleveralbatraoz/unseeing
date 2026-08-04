@@ -36,6 +36,10 @@ const FAN_OID: f64 = 0.33;
 /// blades stay legible instead of merging into it.
 const FAN_BLADE_OID: f64 = 0.63;
 
+/// Both ids the fan paints itself with, so the level can keep the walls and
+/// props it colours clear of whichever one they stand against.
+pub(crate) const OIDS: [f64; 2] = [FAN_OID, FAN_BLADE_OID];
+
 /// The pedestal fan node. Scene limbs are built in `_ready` from the
 /// injected data-pass material; `update(t)` — driven by the composition
 /// root with the simulated clock, like every animated thing — rides the

@@ -14,6 +14,13 @@ extends GdUnitTestSuite
 
 const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
+## Full-strength crease separation, read off hearing_post.gdshader's
+## smoothstep(0.04, 0.08, nrm) upper knee on the G channel.
+const MIN_OID_SEP := 0.08
+
+## Boxes that share a face register as touching at exactly zero overlap.
+const TOUCH_EPS := 0.01
+
 
 ## One authored wall, the way the generator and a designer both place it:
 ## floor position at the centerline midpoint, yaw for the axis.
@@ -350,3 +357,75 @@ func test_shipped_level_exposes_and_injects_the_cat() -> void:
 	assert_object(cat.data_mat).is_not_null()
 	# it wakes in the west room a few steps south of the hero, on the floor
 	assert_vector(cat.position).is_equal_approx(Vector3(2.8, 0, 7.6), Vector3.ONE * 0.001)
+
+
+## Every authored box in the level that carries a flat object id, paired
+## with the world box it fills. The fan and the cat are deliberately absent:
+## each is a MULTI-box object whose limbs SHARE one id on purpose, so that
+## it reads as a single silhouette — a pairwise "must differ" law is exactly
+## wrong for them.
+func _painted_boxes(node: Node, out: Array[Dictionary]) -> void:
+	for child: Node in node.get_children():
+		var skin := _skin(child)
+		if skin != null:
+			var oid := -1.0
+			if child is WaveWall:
+				oid = (child as WaveWall).oid()
+			elif child is WaveProp:
+				oid = (child as WaveProp).oid()
+			if oid >= 0.0:
+				(
+					out
+					. append(
+						{
+							"name": str(child.name),
+							"box": skin.global_transform * skin.get_aabb(),
+							"oid": oid,
+						}
+					)
+				)
+		_painted_boxes(child, out)
+
+
+## Where two boxes interpenetrate there is no depth step, so the silhouette
+## Laplacian on B has nothing to bite on — only the G-channel crease can
+## draw their seam, and the shader fades it over smoothstep(0.04, 0.08).
+## Two touching boxes closer than 0.08 in id therefore draw a weak seam, and
+## IDENTICAL ids draw none at all: the pair melts into one silhouette. The
+## shipped level must clear the knee on every touching pair.
+func test_shipped_touching_boxes_draw_their_seam() -> void:
+	var boxes: Array[Dictionary] = []
+	_painted_boxes(_shipped_level(), boxes)
+	assert_int(boxes.size()).is_equal(21)
+	var melted: Array[String] = []
+	for i: int in boxes.size():
+		for j: int in range(i + 1, boxes.size()):
+			var near: Dictionary = boxes[i]
+			var far: Dictionary = boxes[j]
+			var near_box: AABB = near["box"]
+			var far_box: AABB = far["box"]
+			if not near_box.grow(TOUCH_EPS).intersects(far_box):
+				continue
+			var near_oid: float = near["oid"]
+			var far_oid: float = far["oid"]
+			if absf(near_oid - far_oid) < MIN_OID_SEP:
+				melted.append(
+					"%s(%.2f) touches %s(%.2f)" % [near["name"], near_oid, far["name"], far_oid]
+				)
+	(
+		assert_array(melted)
+		. append_failure_message("touching boxes with no seam between them: %s" % str(melted))
+		. is_empty()
+	)
+
+
+## Ids are reused wherever no pixel shows two boxes meeting — that reuse is
+## what lets a five-entry palette dress a level of any size. A run that gave
+## every box its own id would pass the seam law above while proving nothing.
+func test_shipped_level_reuses_ids_between_distant_boxes() -> void:
+	var boxes: Array[Dictionary] = []
+	_painted_boxes(_shipped_level(), boxes)
+	var distinct := {}
+	for box: Dictionary in boxes:
+		distinct[box["oid"]] = true
+	assert_int(distinct.size()).is_less(boxes.size())
