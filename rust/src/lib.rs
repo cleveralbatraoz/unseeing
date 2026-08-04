@@ -19,6 +19,9 @@
 //!   packing, lifetimes, eviction, the live count.
 //! - [`ray_fan`] — the golden-angle spherical fan that samples the world
 //!   for reflections, culled to the birth surface's hemisphere.
+//! - [`sight`] — which walls a straight line pierces: the analytic
+//!   occluder the acoustic-image shaders count reveal and shells against,
+//!   cargo-pinned reference for the GLSL transliteration.
 //! - [`clustering`] — how ray hits merge per 0.9 m cell so flat walls
 //!   answer as a few points, ranked in a deterministic total order.
 //! - [`echo_queue`] — scheduled reflections that fire at the exact
@@ -57,4 +60,5 @@ mod nodes;
 pub mod oid_palette;
 pub mod pulse_pool;
 pub mod ray_fan;
+pub mod sight;
 pub mod viewmodel;
