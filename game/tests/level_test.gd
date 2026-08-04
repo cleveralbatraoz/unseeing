@@ -170,6 +170,22 @@ func test_level_distributes_and_derives() -> void:
 	assert_vector(slabs[1].position).is_equal(Vector3(10, 3.05, 10))
 
 
+## The reveal-occlusion wall table reaches the world skin: after inject the
+## data material carries one occluder rect per wall, the count and the wall
+## top — the walls the source→surface sight test in the data core runs
+## against. Also exposed through wall_rects() for the hearing pass.
+func test_wall_table_reaches_the_world_skin() -> void:
+	var data_mat := ShaderMaterial.new()
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(data_mat, Pulses.new())
+	add_child(level)
+	var rects: PackedVector4Array = data_mat.get_shader_parameter("u_walls")
+	assert_int(rects.size()).is_equal(10)
+	assert_int(data_mat.get_shader_parameter("u_wall_count")).is_equal(10)
+	assert_float(data_mat.get_shader_parameter("u_wall_top")).is_equal(3.0)
+	assert_int(level.wall_rects().size()).is_equal(10)
+
+
 ## No silent nulls: a level never injected reports the miss on entering
 ## the tree — the world it carries could never be seen.
 func test_uninjected_level_reports() -> void:

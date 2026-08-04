@@ -19,7 +19,9 @@
 //! the floor, facing where the hero should look — the designer drags and
 //! rotates a gizmo; the engine lifts it to capsule height.
 
-use godot::classes::{Engine, INode3D, Marker3D, Material, MeshInstance3D, Node3D, StaticBody3D};
+use godot::classes::{
+    Engine, INode3D, Marker3D, Material, MeshInstance3D, Node3D, ShaderMaterial, StaticBody3D,
+};
 use godot::prelude::*;
 
 use super::cat::WaveCat;
@@ -27,6 +29,7 @@ use super::fan::SoundFan;
 use super::wall::{WaveProp, WaveWall, build_box};
 use crate::level_plan;
 use crate::oid_palette;
+use crate::sight;
 
 /// The floor's flat object id — dedicated, clear of every wall's, because
 /// every wall meets the floor and that seam must always draw.
@@ -87,6 +90,7 @@ pub struct WaveLevel {
     slabs: Vec<Slab>,
     segments: Vec<Vector4>,
     hum_rect: Vector4,
+    occluders: Vec<Vector4>,
     spawn_at: Vector3,
     spawn_heading: f64,
     tap_point: Vector3,
@@ -205,6 +209,15 @@ impl WaveLevel {
         PackedVector4Array::from(&self.segments[..])
     }
 
+    /// The inflated wall OCCLUDER rects (`sight::wall_rect`), truncated to
+    /// the shader's slots — the very table the level pushes to the
+    /// data-writing skins, exposed so the composition root can hand it to
+    /// the hearing pass too, which cuts player-sound shells by these walls.
+    #[func]
+    fn wall_rects(&self) -> PackedVector4Array {
+        PackedVector4Array::from(&self.occluders[..])
+    }
+
     /// The level's sound source, when it has one — the composition root
     /// drives its animation clock.
     #[func]
@@ -233,6 +246,7 @@ impl WaveLevel {
     fn derive(&mut self) {
         let census = self.census();
         self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
+        self.push_wall_table();
         self.assign_oids(&census);
         self.fan_child = census.fan;
         self.cat_children = census.cats;
@@ -330,6 +344,52 @@ impl WaveLevel {
                 .clone()
                 .bind_mut()
                 .set_oid(painted.oids[slot]);
+        }
+    }
+
+    /// Tell the occluding skins where the walls stand: the derived
+    /// centerlines inflated into shrunk occluder rects ([`sight::wall_rect`]),
+    /// pushed as `u_walls`/`u_wall_count`/`u_wall_top`. The world skin
+    /// occludes a source's reveal by them (source→surface sight in the data
+    /// core — a wall stops a wave from lighting a surface). Loud when a
+    /// level outgrows the shader's slots (truncated: the overflow walls
+    /// stop occluding).
+    fn push_wall_table(&mut self) {
+        let mut rects: Vec<Vector4> = self.segments.iter().map(|s| sight::wall_rect(*s)).collect();
+        if rects.len() > sight::MAXW {
+            godot_error!(
+                "WaveLevel: {} walls exceed the sight shaders' {} slots — the rest stop occluding",
+                rects.len(),
+                sight::MAXW
+            );
+            rects.truncate(sight::MAXW);
+        }
+        // kept for the per-object source muffle: the walls a camera→source
+        // sight line is counted against, once per frame on the CPU
+        self.occluders = rects.clone();
+        let table = PackedVector4Array::from(&rects[..]);
+        let count = rects.len() as i64;
+        self.push_table_to(self.data_mat.clone(), &table, count);
+    }
+
+    /// Push the wall table onto one data-writing material — loud when it is
+    /// no ShaderMaterial (legal in tests, blind in the game).
+    fn push_table_to(&self, mat: Option<Gd<Material>>, table: &PackedVector4Array, count: i64) {
+        let Some(mat) = mat else {
+            return; // uninjected: ready() already said so loudly
+        };
+        match mat.try_cast::<ShaderMaterial>() {
+            Ok(mut shader_mat) => {
+                shader_mat.set_shader_parameter("u_walls", &table.to_variant());
+                shader_mat.set_shader_parameter("u_wall_count", &count.to_variant());
+                shader_mat.set_shader_parameter("u_wall_top", &level_plan::WALL_H.to_variant());
+            }
+            Err(other) => {
+                godot_warn!(
+                    "WaveLevel: '{}' is not a ShaderMaterial — no wall table, no occlusion",
+                    other.get_class(),
+                );
+            }
         }
     }
 

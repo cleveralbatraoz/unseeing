@@ -35,10 +35,32 @@ varying vec3 v_nworld;
 // garbage data over the whole buffer.
 const float ALWAYS_ON_TOP = 0.999999;
 
+// How much a wave of this kind still reveals `world`, given the WALLS
+// between it and its source (props are transparent to waves — only walls
+// obstruct). The wave flows through openings and lights the next room
+// through a doorway, but a wall stops it. EVERY wave obeys this, echoes
+// included: an echo is a reflected wave, and a reflection is stopped by a
+// wall like any sound — the reflection ray only decides where the echo is
+// BORN, never that its reveal may pass through a wall.
+//   - a cane tap, its echoes, and footsteps (0, 1, 2) are cut CRISP at a
+//     wall — a player sound does not pass, and their shells die at the
+//     world too;
+//   - the fan's hum (3) is MUFFLED, not silenced — HUM_THROUGH per wall,
+//     the same factor its shell passes by, so a far surface dims instead
+//     of turning black against a ring still travelling through the wall.
+// crossings_from skips the wall the source is born inside, so a tap or an
+// echo struck ON a wall still lights that wall's own near face.
+float source_reveal_vis(float typ, vec3 src, vec3 world) {
+	int blocked = wall_crossings_from(src, world);
+	if (blocked == 0) { return 1.0; }
+	if (typ > 2.5) { return pow(HUM_THROUGH, float(blocked)); }
+	return 0.0;  // tap, echo, footstep: cut crisp at a wall
+}
+
 // How strongly the waves in flight reveal this world point: the struck
-// spot lights and falls off fast from the source. A source's hum reveals
-// only its own room today (hum_room_mask); the analytic wall occlusion
-// that replaces the rectangle rides the shared wall table in the pool.
+// spot lights and falls off fast from the source, occluded by the walls
+// between the source and the lit surface (source_reveal_vis) — a source
+// lights the next room through a doorway, never through a wall.
 float reveal_at(vec3 world) {
 	float reveal = 0.0;
 	for (int i = 0; i < MAXP; i++) {
@@ -56,7 +78,12 @@ float reveal_at(vec3 world) {
 		float radius = d.z * age;
 		if (dist > min(radius, d.y)) { continue; }
 		vec3 to_src = (u_ppos[i] - world) / max(dist, 0.001);
-		float cone = pulse_cone(u_pdir[i], -to_src) * hum_room_mask(typ, world);
+		// the beam gate comes first: a fragment outside a directed wash's
+		// cone reveals nothing, so skip the wall-occlusion loop there — the
+		// fan's narrow cone leaves most of the screen paying nothing
+		float cone = pulse_cone(u_pdir[i], -to_src);
+		if (cone <= 0.0) { continue; }
+		cone *= source_reveal_vis(typ, u_ppos[i], world);
 		float atten = 1.0 / (1.0 + dist * dist * 0.06);
 		float ga = age - dist / d.z;
 		float flare = 1.3 * exp(-ga / 0.25) + 0.5 * exp(-ga / 3.0);
