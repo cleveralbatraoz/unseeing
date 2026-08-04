@@ -141,11 +141,21 @@ worktree when the task is done.
   add another exception — if a problem seems to need `unsafe`, redesign
   or ask the user.
 - **Rust web-export constraints** (as of 2026, gdext wasm rides the
-  bleeding edge): pin the nightly toolchain in `rust-toolchain.toml`, pin
-  the Emscripten version to match the Godot build, keep link flags in sync
-  with Godot's web export settings, and remember only ONE Rust GDExtension
-  can live in a wasm export. Verify the web build in CI on every core
-  change — toolchain churn is the known risk we accepted.
+  bleeding edge). Two toolchains, pinned in two places, and the split is
+  deliberate:
+  - `rust/rust-toolchain.toml` pins the **stable** channel every native
+    build, test and clippy run uses, so laptop, droplet and CI compile
+    with the identical compiler.
+  - `rust/build-wasm.sh` pins the **nightly** used for wasm *only* —
+    gdext's web build needs `-Zbuild-std` and `-Zemscripten-wasm-eh`,
+    both nightly-only. Never promote that nightly into
+    `rust-toolchain.toml`: it would put desktop and CI on a moving
+    compiler and forfeit the reproducibility the stable pin exists for.
+
+  Also pin the Emscripten version to match the Godot build, keep link
+  flags in sync with Godot's web export settings, and remember only ONE
+  Rust GDExtension can live in a wasm export. Verify the web build in CI
+  on every core change — toolchain churn is the known risk we accepted.
 
 ## Tooling
 
