@@ -11,6 +11,7 @@ const DATA_PASS_PATH := "res://shaders/data_pass.gdshader"
 const XRAY_PATH := "res://shaders/data_xray.gdshader"
 const CORE_PATH := "res://shaders/data_core.gdshaderinc"
 const POOL_PATH := "res://shaders/pulse_pool.gdshaderinc"
+const POST_PATH := "res://shaders/hearing_post.gdshader"
 
 
 func _text(path: String) -> String:
@@ -59,11 +60,27 @@ func test_pool_slab_test_mirrors_the_rust_reference() -> void:
 
 
 ## One muffle vocabulary: HUM_THROUGH lives once in the pulse-pool include,
-## and every wave-borne dim reads it — the surface reveal (data_core) most
-## of all. No literal 0.55 drifts out of step across the renderer.
+## and every wave-borne dim reads it — the surface reveal (data_core) and
+## the hum shell (hearing_post). No literal 0.55 drifts out of step.
 func test_hum_through_is_one_shared_constant() -> void:
 	assert_str(_text(POOL_PATH)).contains("const float HUM_THROUGH = 0.55;")
 	assert_str(_text(CORE_PATH)).contains("pow(HUM_THROUGH, float(blocked))")
+	assert_str(_text(POST_PATH)).contains("mute = HUM_THROUGH;")
+
+
+## The hearing pass never washes a player-made ring over an x-ray surface
+## seen through a wall: it tests once per pixel whether the visible surface
+## lies behind a wall (the always-on-top fan) and drops player shells
+## there — depth alone can't, since the fan corrupts it at its own pixels.
+## And the fan's OUTLINE is gated by its OWN dim reveal on BOTH sides of its
+## silhouette (its pixels AND the wall pixels touching it), never by the lit
+## wall behind it — so tapping that wall can't flare its edge.
+func test_hearing_pass_never_washes_player_rings_on_the_xray_fan() -> void:
+	var src := _text(POST_PATH)
+	assert_str(src).contains("bool seen_walled = wall_crossings(cam, seen_pt) > 0;")
+	assert_str(src).contains("if (t >= scene_d || seen_walled) { continue; }")
+	assert_str(src).contains("if (seen_walled) { fan_r = c_c.r; }")
+	assert_str(src).contains("if (fan_r >= 0.0) { reveal = min(reveal, fan_r); }")
 
 
 ## The depth hack lives once, in the core, and is a FRAGMENT depth write
