@@ -4,18 +4,29 @@ extends Node
 ## no screens at all, so CI can pin the overlay's state and its text but
 ## never that the window actually moved.
 ##
-## It reproduces the bug that made this probe necessary: toggling full
-## screen WHILE THE GAME IS STILL SLIDING INTO IT. macOS drops a full-screen
-## toggle issued during another full-screen transition, and its own
-## delegate then writes the old mode back over the one Godot recorded — so
-## the request vanished with no error and the overlay was left describing a
-## window that did not exist. The toggle here is therefore deliberately
-## early, ~20 frames after boot, and the probe waits for the overlay's
-## re-assertion to win.
+## It reproduces the bug that made this probe necessary: a full-screen
+## toggle sent WHILE ANOTHER FULL-SCREEN TRANSITION IS STILL ANIMATING.
+## macOS drops it, and its own delegate then writes the old mode back over
+## the one Godot recorded — so the request vanishes with no error and the
+## overlay is left describing a window that does not exist. Step 4 provokes
+## exactly that, three toggles five frames apart, and then waits for the
+## overlay's re-assertion to win. Every other step waits for the window to
+## come to REST first: racing the animation measures the animation, and a
+## probe whose verdict depends on how busy the window server was is a probe
+## that fails for reasons nobody can act on.
 ##
 ## Run by tools/probe_display.sh, NOT in headless CI, and NOT under
 ## probe_visibility.sh — that one forces a windowed override.cfg, which is
 ## exactly what this probe must not have.
+##
+## ENVIRONMENT TRAP, measured the hard way: launching a dozen full-screen
+## apps back to back wedges the macOS window server. It keeps ACCEPTING the
+## request — window_get_mode() answers FULLSCREEN — while the frame never
+## grows, so the size checks below fail on a machine that was fine an hour
+## earlier, and fail identically on code that passed then. If steps 1 and 4
+## report full screen at the OLD window size, suspect the machine before
+## the game: close the leftover full-screen spaces (or log out) and run
+## again. The probe says so out loud when it sees that shape.
 const MAIN := preload("res://scenes/main.tscn")
 
 ## Frames to wait for a window transition to settle. The overlay insists
@@ -29,17 +40,39 @@ var _failed := 0
 func _ready() -> void:
 	var main: UnseeingMain = MAIN.instantiate() as UnseeingMain
 	add_child(main)
-	await _frames(20)
 	var menu: SettingsMenu = main.settings
 	var screen := DisplayServer.screen_get_size(0)
 	var usable := DisplayServer.screen_get_usable_rect(0)
+	# The macOS full-screen space animates, and how long it takes depends on
+	# the machine and on what the window server is already doing. Wait for
+	# the boot transition to COME TO REST before judging the defaults —
+	# racing it would only measure the animation. The mid-transition case
+	# this probe exists for is provoked deliberately in step 4 instead.
+	await _settled(screen)
 	print("# display: screen=%s usable=%s" % [str(screen), str(usable)])
 
 	# 1 — the defaults: full screen, at the monitor's own resolution
 	_check("boots full screen", _is_fullscreen())
-	_check("boots at the monitor's own resolution", DisplayServer.window_get_size() == screen)
+	if _is_fullscreen() and DisplayServer.window_get_size() != screen:
+		print(
+			(
+				(
+					"# display: NOTE the window server accepted full screen but never "
+					+ "resized the frame (%s, wanted %s). That is the wedged-window-server "
+					+ "state, not the game — close leftover full-screen spaces and re-run."
+				)
+				% [str(DisplayServer.window_get_size()), str(screen)]
+			)
+		)
 	_check(
-		"the viewport IS the window, so native needs no scaling",
+		"boots at the monitor's own resolution (%s)" % str(DisplayServer.window_get_size()),
+		DisplayServer.window_get_size() == screen
+	)
+	_check(
+		(
+			"the viewport IS the window, so native needs no scaling (%s)"
+			% str(get_viewport().get_visible_rect().size)
+		),
 		get_viewport().get_visible_rect().size == Vector2(screen)
 	)
 
@@ -74,27 +107,72 @@ func _ready() -> void:
 		frame.x >= usable.position.x and frame.y >= usable.position.y
 	)
 
-	# 4 — and back again
+	# 4 — THE REGRESSION: toggle again while the last transition is still
+	# animating. macOS drops a full-screen toggle sent during another
+	# full-screen transition and then writes the old mode back behind us, so
+	# a menu that asked once would be left describing a window that does not
+	# exist. Ask three times, five frames apart, and the window must still
+	# end where the model says it does.
 	_key(KEY_RIGHT)
-	await _frames(SETTLE)
-	_check("toggling back returns to full screen", _is_fullscreen())
-	_check("and to the monitor's own resolution", DisplayServer.window_get_size() == screen)
+	await _frames(5)
+	_key(KEY_RIGHT)
+	await _frames(5)
+	_key(KEY_RIGHT)
+	await _quiet(menu)
+	await _settled(screen)
+	print(
+		(
+			"# display: after churn -> mode=%d size=%s wants_fs=%s"
+			% [
+				DisplayServer.window_get_mode(),
+				str(DisplayServer.window_get_size()),
+				str(menu.wants_fullscreen())
+			]
+		)
+	)
+	_check("rapid toggling leaves the window where the model says", _is_fullscreen())
+	_check(
+		"and at the monitor's own resolution (%s)" % str(DisplayServer.window_get_size()),
+		DisplayServer.window_get_size() == screen
+	)
 
-	# 5 — Escape closes and thaws
+	# 5 — Escape closes and thaws. The overlay has already let go by now:
+	# _quiet above waited for it, which is the BOUNDED-insistence pin — a
+	# platform that refuses is never fought forever, and a settled window is
+	# left alone for the player to drag.
+	_check("the overlay stops insisting once the window has settled", menu.enforce_left() == 0)
 	_key(KEY_ESCAPE)
 	await _frames(3)
 	_check("Escape closes the overlay", not menu.is_open())
 	_check("the world thaws", not get_tree().paused)
-
-	# 6 — and the overlay lets go: its insistence is BOUNDED, so a platform
-	# that refuses is never fought forever and a settled window is left alone
-	for _i: int in 400:
-		if menu.enforce_left() == 0:
-			break
-		await get_tree().process_frame
-	_check("the overlay stops insisting once the window has settled", menu.enforce_left() == 0)
-	_check("and it left the window full screen", _is_fullscreen())
 	_report()
+
+
+## Wait for the window to stop moving: full screen at the monitor's size.
+## The macOS transition is animated and window_get_mode() flips to
+## full screen the instant it is ASKED, while window_get_size() only catches
+## up when the animation ends — so the size is what says "at rest".
+func _settled(screen: Vector2i) -> void:
+	for i: int in 600:
+		if _is_fullscreen() and DisplayServer.window_get_size() == screen:
+			return
+		if i % 120 == 119:
+			print(
+				(
+					"# display: still settling after %d frames — mode=%d size=%s"
+					% [i + 1, DisplayServer.window_get_mode(), str(DisplayServer.window_get_size())]
+				)
+			)
+		await get_tree().process_frame
+
+
+## Wait for the overlay to stop re-asserting its plan — bounded, so a stuck
+## platform ends the wait rather than hanging the probe.
+func _quiet(menu: SettingsMenu) -> void:
+	for _i: int in 900:
+		if menu.enforce_left() == 0:
+			return
+		await get_tree().process_frame
 
 
 func _is_fullscreen() -> bool:

@@ -29,7 +29,8 @@
 
 use godot::classes::{
     CanvasLayer, CenterContainer, Control, DisplayServer, HBoxContainer, ICanvasLayer, IControl,
-    Input, InputEvent, Label, ProjectSettings, VBoxContainer, control, display_server, input, node,
+    Input, InputEvent, Label, Os, ProjectSettings, VBoxContainer, control, display_server, input,
+    node,
 };
 use godot::global::HorizontalAlignment;
 use godot::prelude::*;
@@ -126,6 +127,10 @@ pub struct SettingsMenu {
     /// closing restores what was there rather than assuming capture.
     #[init(val = input::MouseMode::VISIBLE)]
     mouse_before: input::MouseMode,
+    /// Whether the game was holding the mouse last time the overlay looked.
+    /// On the web, losing this is the only signal that the player pressed
+    /// Escape — the browser eats the key and hands us the unlock instead.
+    had_capture: bool,
     /// Whether the world was already frozen when the overlay opened. The
     /// overlay borrows the pause; it does not own it. Closing puts back
     /// what it found, so a future system that freezes the world for its
@@ -188,8 +193,13 @@ impl ICanvasLayer for SettingsMenu {
 
     fn process(&mut self, _dt: f64) {
         self.enforce_plan();
-        if self.open && self.viewport_height() != self.last_height {
-            self.relayout();
+        if self.open {
+            self.adopt_reality();
+            if self.viewport_height() != self.last_height {
+                self.relayout();
+            }
+        } else {
+            self.watch_capture();
         }
     }
 
@@ -266,13 +276,54 @@ impl SettingsMenu {
         usize::try_from(row).ok().and_then(|i| ROWS.get(i).copied())
     }
 
+    /// The web's second door. A browser reserves Escape for itself while
+    /// the pointer is locked — the key never reaches the page — so the
+    /// unlock it performs instead is read as the request it swallowed.
+    /// Desktop is untouched; see [`settings_menu::capture_loss_opens`].
+    fn watch_capture(&mut self) {
+        let captured = Input::singleton().get_mouse_mode() == input::MouseMode::CAPTURED;
+        if settings_menu::capture_loss_opens(self.had_capture, captured, Self::on_web()) {
+            self.raise(); // had_capture stays true: the game DID hold the
+            // mouse, so closing gives it back rather than
+            // leaving the player without mouse-look
+            return;
+        }
+        self.had_capture = captured;
+    }
+
+    /// Let the window correct the rows while the overlay is up. The mode
+    /// can change behind its back — a browser's own Escape leaves full
+    /// screen — and a row still claiming otherwise would take two presses
+    /// to do one thing. Only once our own change has settled: while the
+    /// overlay is still insisting, the intent is the truth.
+    fn adopt_reality(&mut self) {
+        if self.enforce > 0 {
+            return;
+        }
+        if self.menu.adopt_fullscreen(Self::window_is_fullscreen()) {
+            self.metrics = Self::capture();
+            self.refresh();
+        }
+    }
+
+    /// Whether this is a browser.
+    fn on_web() -> bool {
+        Os::singleton().has_feature("web")
+    }
+
     /// Open: freeze the world, free the mouse, and re-read the window so
     /// the rows describe what IS rather than what was last asked for.
     fn raise(&mut self) {
         self.metrics = Self::capture();
         self.menu = Menu::new(Settings::boot(Self::window_is_fullscreen()));
         self.open = true;
-        self.mouse_before = Input::singleton().get_mouse_mode();
+        // if a browser took the capture out from under us, the mouse the
+        // game had is CAPTURED, not the free cursor we can see now
+        self.mouse_before = if self.had_capture {
+            input::MouseMode::CAPTURED
+        } else {
+            Input::singleton().get_mouse_mode()
+        };
         self.paused_before = self.is_paused();
         Input::singleton().set_mouse_mode(input::MouseMode::VISIBLE);
         self.base_mut().set_visible(true);

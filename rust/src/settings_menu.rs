@@ -40,6 +40,24 @@ pub fn font_size(viewport_height: i32) -> i32 {
     scaled.clamp(12, 96) as i32
 }
 
+/// Whether losing the mouse should raise the overlay by itself.
+///
+/// A browser reserves Escape as its OWN gesture: while the pointer is
+/// locked, the first Escape exits pointer lock in the browser process and
+/// is never delivered to the page, so the key the overlay listens for
+/// simply does not arrive. The player presses Escape, the cursor comes
+/// back, and nothing opens. What the browser DOES give us is the unlock
+/// itself — so on the web, losing a capture the game was holding is read
+/// as the request Escape would have been.
+///
+/// Web only, deliberately. On a desktop the window manager can drop a
+/// capture for its own reasons (a focus change, a task switch), and a
+/// settings panel appearing because the player alt-tabbed would be a
+/// surprise, not a service.
+pub fn capture_loss_opens(had_capture: bool, captured_now: bool, on_web: bool) -> bool {
+    on_web && had_capture && !captured_now
+}
+
 /// The overlay's rows, in display order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
@@ -150,6 +168,19 @@ impl Menu {
         } else {
             Outcome::Changed
         }
+    }
+
+    /// Adopt the window's actual full-screen-ness WITHOUT disturbing the
+    /// cursor. The mode can change behind the overlay's back while it is
+    /// open — a browser's own Escape leaves full screen, a window manager
+    /// has its own shortcut — and a row that kept claiming otherwise would
+    /// need two presses to do one thing. Reports whether anything moved.
+    pub fn adopt_fullscreen(&mut self, fullscreen: bool) -> bool {
+        if self.settings.fullscreen == fullscreen {
+            return false;
+        }
+        self.settings.fullscreen = fullscreen;
+        true
     }
 
     /// The row's name, as shown.
@@ -359,6 +390,39 @@ mod tests {
         assert_eq!(font_size(-5000), 12);
         assert_eq!(font_size(100), 12);
         assert_eq!(font_size(i32::MAX), 96);
+    }
+
+    /// On the web, a lost capture IS the Escape the browser ate: while the
+    /// pointer is locked the first Escape never reaches the page, so the
+    /// unlock is the only signal the overlay will ever get.
+    #[test]
+    fn losing_a_web_capture_stands_in_for_the_escape_the_browser_ate() {
+        assert!(capture_loss_opens(true, false, true));
+    }
+
+    /// And nothing else does: not a capture that is still held, not one the
+    /// game never had, and never on a desktop — where a window manager
+    /// dropping a capture on a task switch would pop the settings open for
+    /// no reason the player could name.
+    #[test]
+    fn nothing_else_raises_the_overlay_by_itself() {
+        assert!(!capture_loss_opens(true, true, true), "still captured");
+        assert!(!capture_loss_opens(false, false, true), "never had it");
+        assert!(!capture_loss_opens(true, false, false), "desktop");
+        assert!(!capture_loss_opens(false, true, false));
+    }
+
+    /// The mode can change behind the overlay's back; adopting it moves the
+    /// row without moving the cursor, and says whether it moved at all.
+    #[test]
+    fn adopting_reality_leaves_the_cursor_where_it_was() {
+        let mut menu = menu(true);
+        menu.press(MenuKey::Down, &mac());
+        assert_eq!(menu.selected(), Row::Resolution);
+        assert!(menu.adopt_fullscreen(false), "should report the change");
+        assert!(!menu.settings().fullscreen);
+        assert_eq!(menu.selected(), Row::Resolution, "cursor must not jump");
+        assert!(!menu.adopt_fullscreen(false), "already agreed");
     }
 
     /// Headless has no monitor, and the row still says something true.

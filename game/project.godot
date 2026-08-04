@@ -42,9 +42,11 @@ window/size/resizable=true
 ; The game opens full screen, at the monitor's own resolution: the project
 ; sets no content scale, so the viewport IS the window and a full-screen
 ; window is the screen. Set HERE rather than at runtime so the engine
-; applies it when the window is created — no windowed frame flashes first,
-; and --windowed / --resolution on the command line still override it (the
-; rendered probes and movie runs rely on that).
+; applies it when the window is created, with no windowed frame flashing
+; first. NOTE this setting is absolute: --windowed and --resolution CANNOT
+; override it (main.cpp reads this key after parsing them, and consumes the
+; flags so no script can compensate). A windowed run — rendered probes,
+; --write-movie — needs game/override.cfg; see CLAUDE.md.
 window/size/mode=3
 ; ...but never in a browser, where the Fullscreen API is granted only
 ; inside a user gesture. A request at boot is silently denied — Godot's web
