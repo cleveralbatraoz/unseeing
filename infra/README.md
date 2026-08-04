@@ -15,6 +15,11 @@ so the deploy path is reconstructable from the repo alone.
 - `~/.local/share/godot/export_templates/<ver>/` — web export templates only
 - `~/git/unseeing.git` — bare repo (`git push production main` deploys)
 - `~/ci/work` — pipeline checkout of the last pushed commit
+- `~/ci/cargo-target` — cargo's target dir, symlinked in as `work/rust/target`
+  because the work tree is wiped every push. Holds the cross-built cores
+  `deploy.sh` seeds (this box cannot compile godot-core in 1.8 GB) plus the
+  `core.commit` stamp the pipeline checks against the pushed sha, so a failed
+  upload cannot leave the previous deploy's binaries in play
 - `/var/www/unseeing` — the served build (user-writable, deployed by the pipeline)
 - chromium — used by the pipeline's browser smoke test
 

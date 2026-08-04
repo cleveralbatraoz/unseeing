@@ -29,10 +29,13 @@ belongs to, and camera distance — packed into color channels (the object id
 is a flat per-instance value, falling back to a normal-derived one for
 anything the level has not tagged; deliberately: the depth texture
 is unreliable on WebGL2, and the web build is a first-class target). A
-fullscreen **hearing pass** turns that data into everything you see: edge
-detection draws thin white outlines only where waves have swept; expanding
-wave shells are ray-traced in air and occluded by the world, so obstacles
-carve visible bites out of the rings. **Echo reflections** sample the world
+fullscreen **hearing pass** turns that data into everything you see: thin
+white outlines, and only where waves have swept. Two kinds of line make them
+— silhouettes, where the world steps away from itself, and creases, where
+the object id changes — so a wall or a table reads as **one** shape with its
+own edge rather than a heap of box corners, and the seam where two things
+meet still draws. Expanding wave shells are ray-traced in air and occluded
+by the world, so obstacles carve visible bites out of the rings. **Echo reflections** sample the world
 with physics ray fans from every sound — each struck surface point becomes a
 secondary emitter firing exactly when the wavefront arrives, and anything in
 acoustic shadow stays silent. No texture assets exist — the world is nothing
@@ -63,12 +66,14 @@ and `gdlint`.
   the only place engine types appear. `rust/build-wasm.sh` builds the
   single-threaded wasm for the web export (toolchain pins and their reasons
   are documented in the script).
-- `ci/pipeline.sh` — the full gauntlet: cargo fmt/clippy/test + release
-  build, format + lint gate, headless boot check, unit tests
-  (`game/tests/`), the wasm core build, clean Web export, build stamping,
-  precompression, and a browser smoke test that boots the exported wasm in
-  headless Chrome and asserts it renders. The same POSIX script runs
-  locally, on the droplet, and in cloud CI.
+- `ci/pipeline.sh` — the full gauntlet: vendored-framework integrity check,
+  cargo fmt/clippy/test + release build, format + lint gate, headless boot
+  check, unit tests (`game/tests/`), the wasm core build, clean Web export,
+  build stamping, precompression of every shipped artifact, and a browser
+  smoke test that boots the exported wasm in headless Chrome and asserts it
+  renders. The same POSIX script runs locally, on the droplet, and in cloud
+  CI — and when it runs on prebuilt cores it refuses any whose recorded
+  commit is not the one being deployed.
 - `game/addons/gdUnit4/` — the test framework. Godot resolves addons as
   project resources, so it lives in the tree rather than as a submodule
   (upstream ships no `.uid` sidecars; Godot mints 244 of them on import,
@@ -77,9 +82,13 @@ and `gdlint`.
   `ci/vendor-gdunit4.sh update <tag>` — the only sanctioned way to change
   it. The pipeline verifies its fingerprint on every run, and its in-editor
   self-updater is switched off so a version bump is always a reviewed commit.
-- `deploy.sh` — local checks, then `git push production` (the droplet's
-  post-receive hook runs the pipeline server-side and deploys only on green),
-  then `git push origin`.
+- `deploy.sh` — refuses anything but a clean `main` first (the cores below
+  are compiled from the working tree while the push ships the branch, so
+  those have to be the same code), then local checks, then cross-builds the
+  linux and wasm cores the 1.8 GB droplet cannot compile itself and seeds
+  them — with the commit they were built from — over ssh. Then
+  `git push production` (the droplet's post-receive hook runs the pipeline
+  server-side and deploys only on green), then `git push origin`.
 - `infra/` — versioned copies of the droplet's hook and nginx config.
 
 ## License
