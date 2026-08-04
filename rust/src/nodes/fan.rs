@@ -40,6 +40,10 @@ const FAN_OID: f64 = 0.33;
 /// into it.
 const FAN_BLADE_OID: f64 = 0.63;
 
+/// The guard ring's outer radius — the widest part of the swinging head,
+/// and so what decides how far the housing reaches as it sweeps.
+const GUARD_R: f32 = 0.44;
+
 /// Both ids the fan paints itself with, so the level can keep the walls and
 /// props it colours clear of whichever one they stand against.
 const OIDS: [f64; 2] = [FAN_OID, FAN_BLADE_OID];
@@ -213,7 +217,7 @@ impl SoundFan {
         );
         let mut torus = TorusMesh::new_gd();
         torus.set_inner_radius(0.40);
-        torus.set_outer_radius(0.44);
+        torus.set_outer_radius(GUARD_R);
         self.rig.limb(
             &mut head_node,
             &torus.upcast::<Mesh>(),
@@ -294,6 +298,13 @@ impl SoundSource for SoundFan {
 
     fn oids(&self) -> &'static [f64] {
         &OIDS
+    }
+
+    /// The head swings `PIVOT_RANGE` each way, carrying a 0.44 m guard ring
+    /// mounted 0.10 m off the pivot — so the housing reaches this much
+    /// further out than whatever single pose the level samples.
+    fn sweep_margin(&self) -> f64 {
+        f64::from(GUARD_R) * fan_wave::PIVOT_RANGE.sin().abs()
     }
 
     fn inject(&mut self, pulses: Gd<RefCounted>, skin: Gd<Material>) {

@@ -69,6 +69,12 @@ impl Skin {
         }
     }
 
+    /// The limb this solid draws itself with, for a class that must move it
+    /// (a column and a wedge ride half their height above their node).
+    pub(crate) fn limb(&mut self) -> Option<&mut Gd<MeshInstance3D>> {
+        self.limb.as_mut()
+    }
+
     /// The material this solid was handed, if any — what a class passes
     /// into its builder so a limb is born already dressed.
     pub(crate) fn material(&self) -> Option<&Gd<Material>> {

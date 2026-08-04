@@ -391,3 +391,67 @@ func test_every_solid_stands_inside_the_room() -> void:
 		. append_failure_message("solids out of the room: %s" % str(strays))
 		. is_empty()
 	)
+
+
+## The seam law's tightest pair, and the one the box census cannot see: a
+## SOURCE against the world it stands on. The id budget deliberately leaves
+## a source's shell (0.33) only 0.01 from a world palette entry (0.34), and
+## the only thing keeping them apart is the Fixed anchor the level feeds the
+## colouring. Where a source and a solid touch there is no depth step, so an
+## id difference under the shader's knee is the difference between a seam
+## and two objects melted into one.
+func test_no_solid_melts_into_a_sound_source_it_touches() -> void:
+	var level := _shipped_level()
+	var boxes: Array[Dictionary] = []
+	_painted_boxes(level, boxes)
+	var melted: Array[String] = []
+	for source: Node3D in level.sources():
+		var reach: AABB = _limb_box(source)
+		for solid: Dictionary in boxes:
+			var box: AABB = solid["box"]
+			if not box.grow(TOUCH_EPS).intersects(reach):
+				continue
+			var oid: float = solid["oid"]
+			for source_oid: float in _source_oids(source):
+				if absf(oid - source_oid) < MIN_OID_SEP:
+					melted.append(
+						"%s(%.2f) touches %s(%.2f)" % [solid["name"], oid, source.name, source_oid]
+					)
+	(
+		assert_array(melted)
+		. append_failure_message("solids melted into a source: %s" % str(melted))
+		. is_empty()
+	)
+
+
+## The world box a source's limbs fill, grown by whatever its moving parts
+## sweep past this one pose — the same envelope the level bans neighbours
+## from, so the test asks the question the colouring answered.
+func _limb_box(source: Node) -> AABB:
+	var box := AABB()
+	var first := true
+	for limb: MeshInstance3D in _limbs(source, [] as Array[MeshInstance3D]):
+		var world: AABB = limb.global_transform * limb.get_aabb()
+		box = world if first else box.merge(world)
+		first = false
+	var margin := 0.45 if source is SoundFan else 0.0
+	return box.grow(margin)
+
+
+func _limbs(node: Node, out: Array[MeshInstance3D]) -> Array[MeshInstance3D]:
+	if node is MeshInstance3D:
+		out.append(node as MeshInstance3D)
+	for child: Node in node.get_children():
+		_limbs(child, out)
+	return out
+
+
+## Every distinct flat id a source paints its limbs with, read back off the
+## limbs themselves so the test cannot drift from what the data pass writes.
+func _source_oids(source: Node) -> Array[float]:
+	var ids: Array[float] = []
+	for limb: MeshInstance3D in _limbs(source, [] as Array[MeshInstance3D]):
+		var oid: float = limb.get_instance_shader_parameter("u_oid")
+		if oid >= 0.0 and not ids.has(oid):
+			ids.append(oid)
+	return ids

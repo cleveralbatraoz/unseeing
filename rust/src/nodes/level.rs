@@ -142,6 +142,19 @@ impl WaveLevel {
     /// dropping a node under the level is enough.
     #[func]
     fn inject(&mut self, data_mat: Gd<Material>, source_mat: Gd<Material>, pulses: Gd<RefCounted>) {
+        // Order is not a preference here, it is the whole contract. By the
+        // time the level is in the tree, `derive` has already run: it pushed
+        // an EMPTY wall table to skins that did not exist, and it coloured
+        // every wall and prop without the sources' ids as anchors — so a
+        // source injected now would render with seams that silently do not
+        // draw, in a world whose walls no longer occlude. Nothing later can
+        // repair either. Say so rather than limp.
+        if self.base().is_inside_tree() {
+            godot_error!(
+                "WaveLevel: inject() after the level entered the tree — the wall table and the \
+                 object-id colouring were already derived without it. Inject BEFORE add_child()."
+            );
+        }
         self.data_mat = Some(data_mat.clone());
         self.source_mat = Some(source_mat.clone());
         self.pulses = Some(pulses.clone());
@@ -346,9 +359,14 @@ impl WaveLevel {
             let Some(area) = mesh_world_box(&source.clone().into_gd()) else {
                 continue; // a source that draws nothing can show no seam
             };
+            // grown by whatever the source's moving parts sweep beyond this
+            // one pose, so a prop the fan's head only reaches on half its
+            // cycle is still banned from the ids it could melt into
+            let bound = source.dyn_bind();
+            let area = area.grown_flat(bound.sweep_margin());
             // one box for all of a source's ids: the union over-constrains a
             // neighbour slightly, which is the safe direction to err
-            for &oid in source.dyn_bind().oids() {
+            for &oid in bound.oids() {
                 anchors.push(oid_palette::Fixed { area, oid });
             }
         }

@@ -75,6 +75,19 @@ pub trait SoundSource {
     /// animated thing, so movie-maker runs and time scaling stay correct.
     fn advance(&mut self, t: f64);
 
+    /// How far this source's MOVING parts swing beyond the pose the level
+    /// samples when it colours the world, in metres on the horizontal axes.
+    ///
+    /// The level takes a source's object-id anchor from the box its meshes
+    /// fill at derivation time. For a source that swings, that box is one
+    /// frame of a sweep: a prop just outside it would take an id the source
+    /// is allowed to melt into for part of every cycle, and the map's seam
+    /// test — which reads the same single pose — would report green.
+    /// Zero for a source that does not move.
+    fn sweep_margin(&self) -> f64 {
+        0.0
+    }
+
     /// Set how strongly this source's standing image is felt: its volume
     /// attenuated by the walls between it and the eye, computed once per
     /// frame by the level. Pushed to every limb as [`IMAGE_PARAM`].

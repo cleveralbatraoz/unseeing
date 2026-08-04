@@ -30,7 +30,7 @@ func test_xray_skin_carries_the_acoustic_image_contract() -> void:
 	var src := _text(XRAY_PATH)
 	assert_str(src).contains("render_mode unshaded, cull_back")
 	assert_str(src).contains('#include "res://shaders/data_core.gdshaderinc"')
-	assert_str(src).contains("DEPTH = ALWAYS_ON_TOP;")
+	assert_str(src).contains("DEPTH = source_depth(length(v_world - CAMERA_POSITION_WORLD));")
 	assert_str(src).contains("instance uniform float u_source_floor = 0.0;")
 	assert_str(src).contains("max(reveal_at(v_world), u_source_floor)")
 
@@ -118,3 +118,24 @@ func test_reveal_loop_bounds_a_pulse_before_walking_the_walls() -> void:
 	assert_str(src).contains("bound * source_reveal_vis(typ, u_ppos[i], world)")
 	# the bound must be formed BEFORE the wall walk, or it buys nothing
 	assert_bool(src.find("float bound =") < src.find("bound * source_reveal_vis")).is_true()
+
+
+## A CONSTANT always-on-top depth only works while the world holds one
+## source. Two acoustic images writing the same value resolve against each
+## other by opaque draw order alone, and Godot sorts opaque surfaces
+## near-to-far — so the nearer source draws first and the farther one,
+## passing GEQUAL on an equal value, paints over it. The layer gets a BAND
+## instead: still above every world fragment, but ordered inside itself by
+## true distance.
+func test_the_acoustic_image_layer_is_a_band_ordered_by_distance() -> void:
+	var core := _text(CORE_PATH)
+	assert_str(core).contains("const float SOURCE_BAND = 1.0e-5;")
+	assert_str(core).contains(
+		"return ALWAYS_ON_TOP - SOURCE_BAND * clamp(dist / DIST_PACK_RANGE, 0.0, 1.0);"
+	)
+	# the band must be far narrower than any depth step the world can make,
+	# or a source would start losing to the geometry it is felt through
+	assert_bool(1.0e-5 < 1.0 - 0.999999 + 1.0e-5).is_true()
+	# and the source skin must USE it rather than writing the constant
+	var xray := _text(XRAY_PATH)
+	assert_bool(xray.contains("DEPTH = ALWAYS_ON_TOP;")).is_false()

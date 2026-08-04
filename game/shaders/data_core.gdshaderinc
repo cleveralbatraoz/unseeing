@@ -35,6 +35,27 @@ varying vec3 v_nworld;
 // garbage data over the whole buffer.
 const float ALWAYS_ON_TOP = 0.999999;
 
+// ...but a CONSTANT depth only works while the world holds one source. Two
+// acoustic images writing the same value resolve against each other by
+// opaque draw order alone, and Godot sorts opaque surfaces near-to-far —
+// so the NEARER source draws first and the FARTHER one, passing GEQUAL on
+// an equal value, overwrites it. A dim, distant ghost would punch a hole
+// through a near, loud one.
+//
+// So the layer gets a BAND instead of a point: a source's depth is the
+// always-on-top value minus a hair proportional to its true distance. Every
+// source still beats every world fragment (a world surface would have to be
+// inside the near plane to reach this band), while sources — and a single
+// source's own overlapping limbs — resolve by distance like everything
+// else. The band is far narrower than any depth step the world can produce.
+const float SOURCE_BAND = 1.0e-5;
+
+// Where in the acoustic-image band a source fragment `dist` metres from the
+// eye writes its depth.
+float source_depth(float dist) {
+	return ALWAYS_ON_TOP - SOURCE_BAND * clamp(dist / DIST_PACK_RANGE, 0.0, 1.0);
+}
+
 // How much a wave of this kind still reveals `world`, given the WALLS
 // between it and its source (props are transparent to waves — only walls
 // obstruct). The wave flows through openings and lights the next room

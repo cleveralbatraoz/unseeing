@@ -229,3 +229,23 @@ func test_extents_knob_resizes_slabs() -> void:
 		assert_vector(_box_shape(slab).size).is_equal(Vector3(8, 0.1, 6))
 	assert_vector(slabs[0].position).is_equal(Vector3(4, -0.05, 3))
 	assert_vector(slabs[1].position).is_equal(Vector3(4, 3.05, 3))
+
+
+## Injection is ordered, and the order is the contract: by the time the
+## level is in the tree it has already pushed an empty wall table and
+## coloured every id without the sources' anchors. A late inject cannot
+## repair either, so it is refused loudly rather than half-honoured — the
+## alternative is a world that renders with seams that silently do not draw.
+func test_late_injection_reports_rather_than_limping() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3.ZERO, 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var late := func() -> void:
+		level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	await (assert_error(late).is_push_error(
+		(
+			"WaveLevel: inject() after the level entered the tree — the wall table and the "
+			+ "object-id colouring were already derived without it. Inject BEFORE add_child()."
+		)
+	))

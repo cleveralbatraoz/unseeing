@@ -40,7 +40,9 @@ void vertex() {
 }
 
 void fragment() {
-	DEPTH = ALWAYS_ON_TOP;
+	// inside the acoustic-image band, ordered by TRUE distance: over every
+	// world fragment, but never over a nearer source than itself
+	DEPTH = source_depth(length(v_world - CAMERA_POSITION_WORLD));
 	float reveal = max(reveal_at(v_world), u_source_floor);
 	ALBEDO = pack_data(reveal, v_world, v_nworld, CAMERA_POSITION_WORLD);
 }

@@ -156,3 +156,36 @@ func test_every_shape_answers_the_same_solid_door() -> void:
 		assert_object(_skin(solid).material_override).is_same(world)
 		var oid: float = solid.call("oid")
 		assert_bool(oid >= 0.0).append_failure_message("%s took no id" % solid.name).is_true()
+
+
+## A column and a wedge ride their own limbs up onto their lift — and ONLY
+## their own. Walking the node's children instead would teleport whatever a
+## designer nested under it, which is the natural way to group props in the
+## editor: a lid on a barrel would be silently buried inside it, invisible
+## from every side, with no engine system able to notice.
+func test_a_shape_lifts_its_own_limbs_and_nothing_a_designer_nested() -> void:
+	for shape: Node3D in [WaveColumn.new(), WaveWedge.new()]:
+		var solid: Node3D = auto_free(shape)
+		var guest := Marker3D.new()
+		guest.name = "Guest"
+		guest.position = Vector3(0, 0.95, 0)
+		solid.add_child(guest)
+		add_child(solid)
+		(
+			assert_vector(guest.position)
+			. append_failure_message("%s moved a nested child on _ready" % solid.get_class())
+			. is_equal(Vector3(0, 0.95, 0))
+		)
+		if solid is WaveColumn:
+			(solid as WaveColumn).height = 2.4
+		else:
+			(solid as WaveWedge).size = Vector3(1.0, 2.4, 1.0)
+		(
+			assert_vector(guest.position)
+			. append_failure_message("%s moved a nested child on a knob drag" % solid.get_class())
+			. is_equal(Vector3(0, 0.95, 0))
+		)
+		# ...while its OWN limb did ride up
+		assert_vector(_skin(solid).position).is_equal_approx(
+			Vector3(0, 1.2, 0), Vector3.ONE * LIFT_EPS
+		)

@@ -22,10 +22,12 @@
 
 use godot::classes::mesh::{ArrayType, PrimitiveType};
 use godot::classes::{
-    ArrayMesh, BoxMesh, BoxShape3D, ConvexPolygonShape3D, CylinderMesh, CylinderShape3D,
-    IStaticBody3D, Material, Mesh, Shape3D, StaticBody3D,
+    ArrayMesh, BoxMesh, BoxShape3D, CollisionShape3D, ConvexPolygonShape3D, CylinderMesh,
+    CylinderShape3D, IStaticBody3D, Material, Mesh, Shape3D, StaticBody3D,
 };
 use godot::prelude::*;
+
+use godot::classes::MeshInstance3D;
 
 use super::solid::{Skin, WaveSolid, build_body, build_box};
 use crate::prop_shape;
@@ -125,6 +127,7 @@ pub struct WaveColumn {
     skin: Skin,
     mesh: Option<Gd<CylinderMesh>>,
     shape: Option<Gd<CylinderShape3D>>,
+    collider: Option<Gd<CollisionShape3D>>,
     base: Base<StaticBody3D>,
 }
 
@@ -149,6 +152,7 @@ impl IStaticBody3D for WaveColumn {
         base.add_child(&built.collider);
         drop(base);
         self.skin.adopt(built.skin);
+        self.collider = Some(built.collider);
         self.mesh = Some(mesh);
         self.shape = Some(shape);
         self.reshape();
@@ -203,11 +207,7 @@ impl WaveColumn {
             shape.set_radius(radius);
             shape.set_height(height);
         }
-        for child in self.base().get_children().iter_shared() {
-            if let Ok(mut node) = child.try_cast::<Node3D>() {
-                node.set_position(lift);
-            }
-        }
+        lift_limbs(self.skin.limb(), self.collider.as_mut(), lift);
     }
 }
 
@@ -247,6 +247,7 @@ pub struct WaveWedge {
     skin: Skin,
     mesh: Option<Gd<ArrayMesh>>,
     shape: Option<Gd<ConvexPolygonShape3D>>,
+    collider: Option<Gd<CollisionShape3D>>,
     base: Base<StaticBody3D>,
 }
 
@@ -270,6 +271,7 @@ impl IStaticBody3D for WaveWedge {
         base.add_child(&built.collider);
         drop(base);
         self.skin.adopt(built.skin);
+        self.collider = Some(built.collider);
         self.mesh = Some(mesh);
         self.shape = Some(shape);
     }
@@ -306,11 +308,7 @@ impl WaveWedge {
         };
         cut_wedge(mesh, shape, size);
         let lift = lift_of(size);
-        for child in self.base().get_children().iter_shared() {
-            if let Ok(mut node) = child.try_cast::<Node3D>() {
-                node.set_position(lift);
-            }
-        }
+        lift_limbs(self.skin.limb(), self.collider.as_mut(), lift);
     }
 }
 
@@ -352,4 +350,21 @@ fn cut_wedge(mesh: &mut Gd<ArrayMesh>, shape: &mut Gd<ConvexPolygonShape3D>, siz
     mesh.clear_surfaces();
     mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &arrays);
     shape.set_points(&PackedVector3Array::from(&prop_shape::wedge_hull(size)));
+}
+
+/// Ride the two limbs a shape built for itself up onto its lift — and ONLY
+/// those two. Walking the node's children instead would teleport whatever a
+/// designer nested under it, silently burying a prop grouped inside a
+/// barrel; nothing in the engine would notice and no seam would draw.
+fn lift_limbs(
+    skin: Option<&mut Gd<MeshInstance3D>>,
+    collider: Option<&mut Gd<CollisionShape3D>>,
+    lift: Vector3,
+) {
+    if let Some(skin) = skin {
+        skin.set_position(lift);
+    }
+    if let Some(collider) = collider {
+        collider.set_position(lift);
+    }
 }

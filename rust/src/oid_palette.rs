@@ -136,6 +136,23 @@ impl Box3 {
         Self { min, max }
     }
 
+    /// This box grown by `margin` on the HORIZONTAL axes only — how a
+    /// source whose head sweeps reports the volume it can actually reach,
+    /// where the level samples a single pose. A negative margin is ignored:
+    /// growing an anchor is always the safe direction, shrinking it is not.
+    #[must_use]
+    pub fn grown_flat(&self, margin: f64) -> Self {
+        if margin.is_nan() || margin <= 0.0 {
+            return *self;
+        }
+        let mut out = *self;
+        for axis in [0, 2] {
+            out.min[axis] -= margin;
+            out.max[axis] += margin;
+        }
+        out
+    }
+
     /// Do these two meet — overlapping, or sharing a face within
     /// [`TOUCH_EPS`]? Separation on any ONE axis is enough to miss.
     pub fn touches(&self, other: &Self) -> bool {
@@ -292,6 +309,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A swept anchor covers ground the sampled pose does not: a box just
+    /// outside a fan's still silhouette is inside the volume its head
+    /// reaches, and must be banned from the ids it could melt into.
+    #[test]
+    fn a_grown_anchor_reaches_what_the_sampled_pose_misses() {
+        let still = Box3::from_center_size([0.0, 1.0, 0.0], [0.5, 2.0, 0.5]);
+        let crate_beside = Box3::from_center_size([0.6, 0.3, 0.0], [0.5, 0.6, 0.5]);
+        assert!(!still.touches(&crate_beside));
+        assert!(still.grown_flat(0.35).touches(&crate_beside));
+        // ...and only sideways: the sweep is a yaw, so the ceiling above is
+        // no closer than it was
+        let swept = still.grown_flat(0.35);
+        assert_eq!(swept.min[1], still.min[1]);
+        assert_eq!(swept.max[1], still.max[1]);
+        // a still source asks for nothing and is unchanged
+        assert_eq!(still.grown_flat(0.0), still);
+        assert_eq!(still.grown_flat(-1.0), still);
+        assert_eq!(still.grown_flat(f64::NAN), still);
     }
 
     /// Boxes sharing a face exactly — a wall standing on a floor — count as
