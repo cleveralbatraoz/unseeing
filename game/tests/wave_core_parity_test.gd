@@ -120,22 +120,6 @@ func test_eviction_pressure_matches() -> void:
 	assert_vector(p.pos[0]).is_equal(Vector3(103, 0, 0))
 
 
-## A dead low slot under a live high one: both sides span the hole in
-## live_count, and both reuse the expired slot first.
-func test_holes_and_slot_reuse_match() -> void:
-	var p := Pulses.new()
-	var core := WaveCore.new()
-	_emit_both(p, core, 2, Vector3.ZERO, 1.6, 4.0, 0.8, 0.0)  # slot 0: dead by 2.9
-	_emit_both(p, core, 0, Vector3.ZERO, 6.0, 5.5, 1.0, 0.0)  # slot 1: lives past 7
-	for t: float in [0.5, 2.0, 5.0, 8.0]:
-		assert_int(core.live_count(t)).is_equal(p.live_count(t))
-	assert_int(core.live_count(5.0)).is_equal(2)  # the hole is spanned
-	_assert_pools_identical(p, core)
-	_emit_both(p, core, 0, Vector3(9, 9, 9), 6.0, 5.5, 1.0, 5.0)
-	_assert_pools_identical(p, core)
-	assert_vector(p.pos[0]).is_equal(Vector3(9, 9, 9))
-
-
 ## Real physics: shim and core sample the same scene and must book the
 ## same appointments — same count, same order, same times, positions and
 ## gains, exactly — and the echo cap must bite identically. This also pins

@@ -42,14 +42,6 @@ pub const REFUSAL_MESSAGE: &str = "Pulses.emit: speed and max_r must be positive
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmitRefused;
 
-impl std::fmt::Display for EmitRefused {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(REFUSAL_MESSAGE)
-    }
-}
-
-impl std::error::Error for EmitRefused {}
-
 /// Ring time + outline-fade tail; echoes and footsteps expire sooner so the
 /// live-slot count (which both shaders loop over per pixel) stays small.
 /// Total over every i32: unknown kinds get the tap's long tail, exactly as

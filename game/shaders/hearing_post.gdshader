@@ -18,12 +18,9 @@ uniform float u_breath = 1.0;
 uniform float u_grain_amp = 0.034;
 uniform float u_grain_t = 0.0;
 
-varying vec2 v_ndc;
-
 void vertex() {
 	// pin the unit quad to the whole screen, ignoring its 3D placement
 	POSITION = vec4(VERTEX.xy * 2.0, 1.0, 1.0);
-	v_ndc = VERTEX.xy * 2.0;
 }
 
 float shash(vec2 p) {
