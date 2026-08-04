@@ -37,15 +37,26 @@ uniform vec4 u_pdir[MAXP];
 // — and because the always-on-top skins corrupt the packed depth at their
 // pixels, the shell must test the walls analytically, not lean on depth).
 // rust/src/sight.rs is the cargo-pinned reference this GLSL transliterates.
-const int MAXW = 16;
+const int MAXW = 32;
 uniform int u_wall_count = 0;
 uniform vec4 u_walls[MAXW];  // world XZ occluder rects (min_x, min_z, max_x, max_z)
 uniform float u_wall_top = 3.0;
+
+// sight.rs::near — the EXACT cheap refusal in front of the slab test: a
+// segment that crosses the rect has a point inside it, so its own XZ
+// bounding box must overlap the rect. Four comparisons throw out a wall
+// across the map before the slab test spends three divisions on it, which
+// is what keeps the per-fragment sight loop affordable as the map grows.
+bool wall_near(vec3 from, vec3 to, vec4 rect) {
+	return min(from.x, to.x) <= rect.z && max(from.x, to.x) >= rect.x
+			&& min(from.z, to.z) <= rect.w && max(from.z, to.z) >= rect.y;
+}
 
 // sight.rs::crosses — the three-slab segment-vs-AABB test over
 // y in [0, top], total on axis-parallel directions, both parametric
 // endpoints ignored inside the graze window.
 bool wall_crosses(vec3 from, vec3 to, vec4 rect, float top) {
+	if (!wall_near(from, to, rect)) { return false; }
 	vec3 d = to - from;
 	vec3 lo = vec3(rect.x, 0.0, rect.y);
 	vec3 hi = vec3(rect.z, top, rect.w);

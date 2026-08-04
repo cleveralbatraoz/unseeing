@@ -35,10 +35,13 @@ func test_xray_skin_carries_the_acoustic_image_contract() -> void:
 
 
 ## The shared pulse-pool include carries the wall table every occluding
-## skin reads: the slots sized MAXW=16 and the uniforms the level fills.
+## skin reads: the slots sized MAXW and the uniforms the level fills. The
+## count must equal the Rust reference's, because the level truncates its
+## wall table to sight::MAXW before pushing it — a GLSL array smaller than
+## that would read past its own end.
 func test_pool_carries_the_shared_wall_table() -> void:
 	var src := _text(POOL_PATH)
-	assert_str(src).contains("const int MAXW = 16;")
+	assert_str(src).contains("const int MAXW = 32;")
 	assert_str(src).contains("uniform int u_wall_count = 0;")
 	assert_str(src).contains("uniform vec4 u_walls[MAXW];")
 	assert_str(src).contains("uniform float u_wall_top = 3.0;")
@@ -57,6 +60,11 @@ func test_pool_slab_test_mirrors_the_rust_reference() -> void:
 	assert_str(src).contains("t0 = max(t0, min(ta, tb));")
 	assert_str(src).contains("t1 = min(t1, max(ta, tb));")
 	assert_str(src).contains("wall_contains(u_walls[i], from, u_wall_top)")
+	# ...including the exact cheap refusal in front of it (sight.rs::near),
+	# which is what keeps the per-fragment sight loop affordable as a level
+	# grows more walls
+	assert_str(src).contains("if (!wall_near(from, to, rect)) { return false; }")
+	assert_str(src).contains("min(from.x, to.x) <= rect.z && max(from.x, to.x) >= rect.x")
 
 
 ## One muffle vocabulary: HUM_THROUGH lives once in the pulse-pool include,

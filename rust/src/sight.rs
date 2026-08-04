@@ -21,7 +21,15 @@ use crate::level_plan;
 
 /// Wall slots the sight shaders allocate (`u_walls[MAXW]`) — a level
 /// with more walls than this cannot be occluded honestly and says so.
-pub const MAXW: usize = 16;
+///
+/// Raising it is nearly free and the map has outgrown the old 16: the GLSL
+/// loops `break` at `u_wall_count`, so the only cost of an unused slot is
+/// its 16 bytes in the material's uniform buffer (32 slots = 512 B, against
+/// the 3.4 KB the pulse lanes already occupy and a 16 KB floor on the
+/// smallest WebGL2 block). What is NOT free is a wall a level actually
+/// holds: every one of them is another rect in the per-fragment sight loop,
+/// which is why [`near`] exists.
+pub const MAXW: usize = 32;
 
 /// Meters the occluder rect stops short of the wall's real face, so a
 /// prop flush against the wall keeps an unblocked sight line.
@@ -50,12 +58,34 @@ pub fn wall_rect(segment: Vector4) -> Vector4 {
     )
 }
 
+/// Could the segment `from -> to` possibly reach `rect` at all? An EXACT
+/// pre-rejection, not a heuristic: a segment that crosses the rect has a
+/// point inside it, so the segment's own XZ bounding box must overlap the
+/// rect. `false` therefore implies [`crosses`] is false, with no false
+/// negatives to hunt for later.
+///
+/// It earns its keep in the fragment shader, where the sight loop runs per
+/// pixel per pulse over every wall in the level: four comparisons refuse a
+/// wall across the map, where the slab test would first spend three
+/// divisions on it. The bigger the map, the more of the table this rejects.
+#[must_use]
+pub fn near(from: Vector3, to: Vector3, rect: Vector4) -> bool {
+    from.x.min(to.x) <= rect.z
+        && from.x.max(to.x) >= rect.x
+        && from.z.min(to.z) <= rect.w
+        && from.z.max(to.z) >= rect.y
+}
+
 /// Whether the segment `from -> to` crosses the wall box `rect` swept
 /// y ∈ [0, `wall_top`] — the classic three-slab test, clamped to the
-/// graze-free parametric window. Total on any input: a zero direction
-/// component degenerates to a point-in-slab check.
+/// graze-free parametric window, behind [`near`]'s exact cheap refusal.
+/// Total on any input: a zero direction component degenerates to a
+/// point-in-slab check.
 #[must_use]
 pub fn crosses(from: Vector3, to: Vector3, rect: Vector4, wall_top: f32) -> bool {
+    if !near(from, to, rect) {
+        return false;
+    }
     let a = [from.x, from.y, from.z];
     let d = [to.x - from.x, to.y - from.y, to.z - from.z];
     let lo = [rect.x, 0.0, rect.y];
@@ -128,6 +158,83 @@ mod tests {
     use super::*;
 
     const WALL_TOP: f32 = level_plan::WALL_H as f32;
+
+    /// The three-slab test with NO [`near`] gate in front of it — the
+    /// reference the fast path is held against, kept deliberately as a
+    /// duplicate so a change to one is caught by the other.
+    fn crosses_slabs_only(from: Vector3, to: Vector3, rect: Vector4, wall_top: f32) -> bool {
+        let a = [from.x, from.y, from.z];
+        let d = [to.x - from.x, to.y - from.y, to.z - from.z];
+        let lo = [rect.x, 0.0, rect.y];
+        let hi = [rect.z, wall_top, rect.w];
+        let mut t0 = GRAZE_EPS as f32;
+        let mut t1 = (1.0 - GRAZE_EPS) as f32;
+        for k in 0..3 {
+            if d[k].abs() < AXIS_TINY {
+                if a[k] < lo[k] || a[k] > hi[k] {
+                    return false;
+                }
+            } else {
+                let ta = (lo[k] - a[k]) / d[k];
+                let tb = (hi[k] - a[k]) / d[k];
+                t0 = t0.max(ta.min(tb));
+                t1 = t1.min(ta.max(tb));
+                if t0 > t1 {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// The cheap refusal must be EXACT, not a heuristic. Over a dense sweep
+    /// of sight lines against the shipped walls — including vertical ones,
+    /// degenerate points, and lines that graze a corner — gating on [`near`]
+    /// answers identically to the bare slab test. A false negative here
+    /// would silently un-occlude a wall inside a fragment shader, where
+    /// nothing can be stepped through with a debugger.
+    #[test]
+    fn the_cheap_refusal_never_changes_an_answer() {
+        let rects = shipped_rects();
+        let mut agreed = 0_u64;
+        let mut ever_crossed = false;
+        let step = 1.7_f32;
+        for i in 0..12 {
+            for j in 0..12 {
+                let from = Vector3::new(i as f32 * step, 0.9, j as f32 * step);
+                for k in 0..12 {
+                    for l in 0..12 {
+                        let to = Vector3::new(k as f32 * step, 2.4, l as f32 * step);
+                        for rect in &rects {
+                            let fast = crosses(from, to, *rect, WALL_TOP);
+                            let slow = crosses_slabs_only(from, to, *rect, WALL_TOP);
+                            assert_eq!(fast, slow, "{from} -> {to} against {rect}");
+                            ever_crossed |= slow;
+                            agreed += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // a sweep that never crossed anything would agree vacuously
+        assert!(ever_crossed);
+        assert!(agreed > 100_000);
+    }
+
+    /// `near` is the necessary condition it claims to be: a wall whose rect
+    /// the segment's own bounding box misses can never be crossed, and the
+    /// shipped map has plenty of such pairs — that is where the saving is.
+    #[test]
+    fn a_far_wall_is_refused_without_the_slab_test() {
+        let rects = shipped_rects();
+        let from = Vector3::new(1.0, 0.9, 1.0);
+        let to = Vector3::new(2.0, 0.9, 2.0);
+        let refused = rects.iter().filter(|r| !near(from, to, **r)).count();
+        assert!(refused > 0, "no wall was cheaply refused");
+        for rect in rects.iter().filter(|r| !near(from, to, **r)) {
+            assert!(!crosses(from, to, *rect, WALL_TOP));
+        }
+    }
 
     /// The shipped map's wall centerlines — the same fixture level_plan's
     /// suites derive from, inflated here into sight occluders.
