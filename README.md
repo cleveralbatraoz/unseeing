@@ -24,8 +24,10 @@ touches.
 ## How it works
 
 Everything visible is sound. A **data pass** renders the world not as an
-image but as data — how recently a wave swept each point, a normal id, and
-camera distance — packed into color channels (deliberately: the depth texture
+image but as data — how recently a wave swept each point, which object it
+belongs to, and camera distance — packed into color channels (the object id
+is a flat per-instance value, falling back to a normal-derived one for
+anything the level has not tagged; deliberately: the depth texture
 is unreliable on WebGL2, and the web build is a first-class target). A
 fullscreen **hearing pass** turns that data into everything you see: edge
 detection draws thin white outlines only where waves have swept; expanding

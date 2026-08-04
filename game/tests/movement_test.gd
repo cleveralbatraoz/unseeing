@@ -30,9 +30,6 @@ func _add_box(center: Vector3, size: Vector3) -> void:
 	add_child(body)
 
 
-## Open ground: TICKS physics frames of forward input advance the hero along
-## its facing at ~SPEED, and the flat-map law holds — velocity.y is zero on
-## every single tick.
 ## The player owns its camera: the viewmodel reports a bob offset, and the
 ## player alone moves the eye around the fixed base height.
 func test_head_bob_moves_camera_around_base() -> void:
@@ -65,6 +62,9 @@ func test_move_actions_register_once() -> void:
 		assert_int(InputMap.action_get_events(action).size()).is_equal(1)
 
 
+## Open ground: TICKS physics frames of forward input advance the hero along
+## its facing at ~SPEED, and the flat-map law holds — velocity.y is zero on
+## every single tick.
 func test_open_floor_walk_at_speed() -> void:
 	await get_tree().physics_frame
 	var start := _player.global_position

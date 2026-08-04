@@ -41,8 +41,11 @@ func _shader_const(const_name: String) -> float:
 	return m.get_string(1).to_float() if m != null else NAN
 
 
-## Both shaders size their uniform arrays from the include's MAXP; the CPU
-## pool sizes its packed arrays from Pulses.MAXP. One number, two homes.
+## One number, THREE homes: the Rust core owns it (rust/src/pulse_pool.rs,
+## MAXP), the GDScript shim mirrors it as Pulses.MAXP, and the include pins
+## it for both shaders' uniform arrays. This assertion holds the include
+## against the shim; a drift in the core itself is caught by pulses_test's
+## eviction suite, which counts real slots.
 func test_maxp_matches_the_pool() -> void:
 	assert_float(_shader_const("MAXP")).is_equal(float(Pulses.MAXP))
 

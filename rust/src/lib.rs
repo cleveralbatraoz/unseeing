@@ -25,6 +25,8 @@
 //!   instant the primary wavefront reaches their surface point.
 //! - [`fan_wave`] — the oscillating fan's motion curves and whoosh
 //!   cadence, the world's one constant sound source.
+//! - [`viewmodel`] — the hero's own body as the camera sees it: head-bob
+//!   and sway curves, the cane's carry and strike, the footstep cadence.
 //! - [`level_plan`] — the level's derived technical contracts: wall box
 //!   dimensions, axis snapping, centerlines, the hum room around a
 //!   source, the dev demo tap.

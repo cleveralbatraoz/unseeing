@@ -39,12 +39,12 @@ func test_uninjected_cat_reports_and_disables() -> void:
 	assert_int(bare.get_child_count()).is_equal(0)
 
 
-## The cat lives its own life: within a few simulated seconds it leaves
-## its spawn (the brain's first pause is 0.8 s, then it wanders), and its
-## A living cat sounds two kind-2 voices into the pool: the fore paw's
-## step (born at floor height, paw reach and loudness) and the idle
-## presence heartbeat (born at chest height, its own reach and loudness).
-## Both must be present among the live slots after a stretch of life.
+## The cat lives its own life: within a few simulated seconds it leaves its
+## spawn (the brain's first pause is 0.8 s, then it wanders), and it sounds
+## two kind-2 voices into the pool as it goes — the fore paw's step (born at
+## floor height, paw reach and loudness) and the idle presence heartbeat
+## (born at chest height, its own reach and loudness). Both must be present
+## among the live slots after a stretch of life.
 func test_cat_wanders_and_paw_waves_sound() -> void:
 	_add_floor()
 	_add_cat()

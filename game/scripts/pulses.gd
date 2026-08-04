@@ -29,7 +29,8 @@ extends RefCounted
 ## Pool capacity, mirroring the Rust core's source of truth
 ## (rust/src/pulse_pool.rs, MAXP): the size of the uniform arrays both
 ## shaders loop over per pixel. The shader include pins the same number —
-## shader_contract_test holds all three homes together.
+## shader_contract_test holds this mirror against the include, and
+## pulses_test's eviction suite catches a drift in the core itself.
 const MAXP := 64
 
 ## The shader-bound lanes, read straight from the core — copies of the
