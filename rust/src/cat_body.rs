@@ -201,7 +201,18 @@ pub fn skeleton(pose: &CatPose) -> Skeleton {
             Vector3::new(hip.x, 0.0, hip.z) + rv * (0.07 * side) + fw * 0.06
         };
         let paw = pose.paws[leg].lerp(sit_paw, sit as f32);
-        let (mid, end) = two_bone(root, paw, upper, lower, -fw);
+        // the seated hind pair folds its hock UP, not down through the
+        // floor: a deep sit drops the hip low, and on the plain backward
+        // hint the long hind leg — folded nearly double — bulged its knee
+        // under the ground. Lift the bend hint toward vertical as the sit
+        // rises. Fore legs straighten under the raised chest and never
+        // bulge, so they keep the backward hint.
+        let hint = if fore {
+            -fw
+        } else {
+            (-fw).lerp(Vector3::UP, sit as f32)
+        };
+        let (mid, end) = two_bone(root, paw, upper, lower, hint);
         *out = Leg {
             root,
             mid,
@@ -483,6 +494,30 @@ mod tests {
             let paw = seated.legs[leg].paw;
             let hip_dist = Vector3::new(paw.x - seated.hip.x, 0.0, paw.z - seated.hip.z).length();
             assert!(f64::from(hip_dist) < 0.12, "hind paw not tucked");
+        }
+    }
+
+    /// A seated cat never drives a leg through the floor. The walking
+    /// `paws_ride_the_floor` law checks only PAWS mid-stride; a deep sit
+    /// drops the hip low and the long hind pair, folded double, bulged its
+    /// HOCK below y = 0 on the old backward bend hint — visible as the hind
+    /// legs sinking under the floor. Every joint of every leg must stay on
+    /// or above the ground through the whole sit.
+    #[test]
+    fn seated_legs_never_pierce_the_floor() {
+        let mut gait = CatGait::new(Vector3::ZERO, 0.0);
+        let frame = gait.advance(DT, Vector3::ZERO, 0.0, 0.0);
+        for sit in [0.5, 0.75, 1.0] {
+            let sk = skeleton(&CatPose::from_gait(Vector3::ZERO, 0.0, &frame, sit));
+            for (leg, l) in sk.legs.iter().enumerate() {
+                for (joint, p) in [("root", l.root), ("mid", l.mid), ("paw", l.paw)] {
+                    assert!(
+                        f64::from(p.y) >= -0.001,
+                        "sit {sit}: leg {leg} {joint} pierces the floor at y = {}",
+                        p.y
+                    );
+                }
+            }
         }
     }
 
