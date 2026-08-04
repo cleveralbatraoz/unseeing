@@ -48,6 +48,35 @@ Keep the technology stack deliberately small. Approved: Godot, typed
 GDScript, GDExtension Rust (the wave/physics core), wasm, and the tooling
 listed below. Before introducing any other technology, ask the user.
 
+## Documentation: the wiki is the reference — read it before researching
+
+Deep reference documentation lives in the project's **GitHub wiki**
+(`https://github.com/cleveralbatraoz/unseeing/wiki`, cloneable as
+`unseeing.wiki.git`). It exists for exactly one reason: a session opening a
+technical task should not have to re-derive this system from the source
+every time. Six pages, each naming the file that owns every constant it
+quotes:
+
+- **Mechanics Overview** — the one idea, the two layers, the file map, the
+  frame end to end, and the five laws that break everything if violated.
+  *Start here; it links onward.*
+- **Mechanics — Rendering** — the two passes, the R/G/B channel protocol,
+  the outline maths, the acoustic-image depth band, the mood layer.
+- **Mechanics — Waves** — the 64-slot pulse pool, pulse kinds and their
+  privileges, reflections, and the wall occlusion Rust and GLSL share.
+- **Mechanics — Sound Sources** — the source abstraction, the volume law,
+  the fan against the radio, and how to add a third.
+- **Mechanics — Level and Objects** — the four solid shapes, what the level
+  derives from an authored scene, the object-id budget, the shipped map.
+- **Engineering — Build, Test, Deploy** — the two toolchains and why, the
+  gate, how to read a failure, vendoring, the binary policy, deploy traps.
+
+Plus the platform research reports (gdext reliability, Linux CI, Steam).
+
+**The wiki is a description of the code, never a second source of truth.**
+Where the two disagree the code wins — and updating the wiki in the same
+session is part of the change, exactly like updating this file.
+
 ## Your role
 
 Act as a **principal game developer engineer**. Follow modern industry
@@ -61,8 +90,8 @@ must work perfectly.
 
 ## Workflow: research → questions → full autonomy
 
-1. **Research first.** Before planning or asking anything, investigate the
-   actual code. Never suppose — acknowledge by running code, tests, and
+1. **Research first.** Start from the **wiki** (above) — it is written to
+   replace most of this step — then investigate the actual code. Never suppose — acknowledge by running code, tests, and
    tracing. Most problems are already solved by other projects: search GitHub/
    GitLab/the internet for existing solutions, and research the physics/math/
    mechanics itself when needed. Copy whatever works — license risk is
