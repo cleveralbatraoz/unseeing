@@ -78,9 +78,16 @@ float reveal_at(vec3 world) {
 		float radius = d.z * age;
 		if (dist > min(radius, d.y)) { continue; }
 		vec3 to_src = (u_ppos[i] - world) / max(dist, 0.001);
-		// the beam gate comes first: a fragment outside a directed wash's
-		// cone reveals nothing, so skip the wall-occlusion loop there — the
-		// fan's narrow cone leaves most of the screen paying nothing
+		// the beam gate comes first: a fragment outside a DIRECTED wash's
+		// cone reveals nothing, so skip the wall-occlusion loop there. This
+		// spares the fan's narrow sweep only — the hero's own taps, echoes
+		// and footsteps are omni (cone == 1), so they pay the per-fragment
+		// wall loop wherever their radius still reaches, which is correct:
+		// those sounds ARE cut at walls. The cost is O(live pulses × walls)
+		// per fragment, bounded per pulse by the radius gate above; an
+		// angular/polar shadow map is the documented next step IF a weak-GPU
+		// measurement ever demands it. The browser-smoke gate proves the
+		// occlusion GLSL runs on WebGL2; profiling weak hardware is deferred.
 		float cone = pulse_cone(u_pdir[i], -to_src);
 		if (cone <= 0.0) { continue; }
 		cone *= source_reveal_vis(typ, u_ppos[i], world);
