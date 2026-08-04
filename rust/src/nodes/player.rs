@@ -185,10 +185,10 @@ impl ICharacterBody3D for UnseeingPlayer {
             }
             return;
         }
-        if event.is_action_pressed("ui_cancel") {
-            Input::singleton().set_mouse_mode(input::MouseMode::VISIBLE);
-            return;
-        }
+        // Escape belongs to the settings overlay, which raises itself,
+        // frees the mouse and freezes the world — all three at once. The
+        // player used to release the mouse here and leave the world
+        // running; two owners of the cursor is one too many.
         if let Ok(click) = event.try_cast::<InputEventMouseButton>() {
             if !click.is_pressed() {
                 return;

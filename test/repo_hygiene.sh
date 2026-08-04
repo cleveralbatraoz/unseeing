@@ -54,10 +54,17 @@ if git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then HAVE_INDEX=1; fi
 # .claude/ holds per-session agent worktrees. Untracked AND unignored, a
 # `git add -A` stages them as embedded-repo gitlinks with no .gitmodules:
 # they clone as empty directories and `git submodule status` exits 128.
+#
+# game/override.cfg is the per-run project-setting override the rendered
+# probe writes to boot windowed (the project defaults to full screen and the
+# engine's --windowed flag cannot beat a project setting). It is deleted on
+# the way out, but a killed run leaves it — and committed, it would silently
+# un-fullscreen the shipped game.
 if [ "$HAVE_INDEX" = 0 ]; then
   skip "ignore rules (no git metadata — deploy work tree is a tar extract)"
 else
-  for p in .claude/settings.json .claude/worktrees/some-task/README.md; do
+  for p in .claude/settings.json .claude/worktrees/some-task/README.md \
+           game/override.cfg; do
     if git -C "$DIR" check-ignore -q "$p" 2>/dev/null; then
       ok "$p is ignored"
     else

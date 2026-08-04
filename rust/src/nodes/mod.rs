@@ -11,4 +11,5 @@ mod hero;
 mod level;
 mod limbs;
 mod player;
+mod settings;
 mod wall;

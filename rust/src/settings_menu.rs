@@ -21,6 +21,25 @@
 
 use crate::display_plan::{ScreenMetrics, Settings, resolutions};
 
+/// The viewport height the overlay's type was drawn for.
+pub const BASE_HEIGHT: i32 = 720;
+
+/// The overlay's type size at [`BASE_HEIGHT`].
+pub const BASE_FONT: i32 = 18;
+
+/// The overlay's type size for a viewport of this height.
+///
+/// The game sets no content scale — the viewport IS the window, so a
+/// full-screen 4K monitor renders four times the pixels a windowed 720p
+/// one does, and type pinned to a pixel size would shrink to a thread.
+/// The overlay therefore scales with the viewport, clamped at both ends so
+/// a degenerate height (headless reports a 100-pixel root) still produces
+/// something legible rather than nothing.
+pub fn font_size(viewport_height: i32) -> i32 {
+    let scaled = i64::from(BASE_FONT) * i64::from(viewport_height.max(0)) / i64::from(BASE_HEIGHT);
+    scaled.clamp(12, 96) as i32
+}
+
 /// The overlay's rows, in display order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
@@ -320,6 +339,26 @@ mod tests {
         assert_eq!(menu.press(MenuKey::Right, &mac()), Outcome::Changed);
         assert_eq!(menu.settings().resolution, 0);
         assert_eq!(menu.press(MenuKey::Right, &mac()), Outcome::Unchanged);
+    }
+
+    /// Type scales with the viewport, because the viewport IS the window:
+    /// the same overlay must read on a 720p window and a full-screen 4K
+    /// monitor.
+    #[test]
+    fn type_scales_with_the_viewport() {
+        assert_eq!(font_size(BASE_HEIGHT), BASE_FONT);
+        assert_eq!(font_size(1440), BASE_FONT * 2);
+        assert_eq!(font_size(1762), 44);
+    }
+
+    /// Degenerate heights still produce legible type instead of a thread
+    /// or a wall — headless roots report 100 pixels, and monitors get big.
+    #[test]
+    fn type_is_clamped_at_both_ends() {
+        assert_eq!(font_size(0), 12);
+        assert_eq!(font_size(-5000), 12);
+        assert_eq!(font_size(100), 12);
+        assert_eq!(font_size(i32::MAX), 96);
     }
 
     /// Headless has no monitor, and the row still says something true.

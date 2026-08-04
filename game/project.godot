@@ -39,6 +39,20 @@ settings/common/update_notification_enabled=false
 window/size/viewport_width=1280
 window/size/viewport_height=720
 window/size/resizable=true
+; The game opens full screen, at the monitor's own resolution: the project
+; sets no content scale, so the viewport IS the window and a full-screen
+; window is the screen. Set HERE rather than at runtime so the engine
+; applies it when the window is created — no windowed frame flashes first,
+; and --windowed / --resolution on the command line still override it (the
+; rendered probes and movie runs rely on that).
+window/size/mode=3
+; ...but never in a browser, where the Fullscreen API is granted only
+; inside a user gesture. A request at boot is silently denied — Godot's web
+; display server swallows the rejected promise — so the toggle would read
+; ON while the page was not. The canvas already fills the browser window at
+; native pixels, so web boots windowed and honest, and the settings
+; overlay's own click is the gesture that can go full screen.
+window/size/mode.web=0
 
 [physics]
 

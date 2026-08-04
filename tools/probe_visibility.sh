@@ -26,6 +26,33 @@ fi
 KEEP_AWAKE=""
 command -v caffeinate >/dev/null 2>&1 && KEEP_AWAKE="caffeinate -dis"
 
+# The project boots FULL SCREEN at the monitor's own resolution, and this
+# probe must inherit neither: it samples pixels at coordinates derived from
+# the viewport size, so the frame has to be the same box on every machine —
+# and a probe that seizes the whole screen is a probe nobody runs twice.
+#
+# The engine's --windowed / --resolution flags CANNOT do this, which is
+# measured, not assumed: main/main.cpp parses them into window_mode and then
+# overwrites it wholesale from display/window/size/mode a thousand lines
+# later, so the project setting always wins for the initial window. The
+# flags are consumed on the way through, too — OS.get_cmdline_args() never
+# sees them — so no script can notice and compensate either.
+#
+# override.cfg is the engine's documented escape hatch: merged over
+# project.godot at startup, before the window is created. Written here and
+# removed on the way out, however this script ends; git ignores it, and
+# test/repo_hygiene.sh pins that so a crashed run cannot leave a committable
+# stray behind.
+OVERRIDE="$DIR/game/override.cfg"
+trap 'rm -f "$OVERRIDE"' EXIT INT TERM
+cat > "$OVERRIDE" <<'CFG'
+[display]
+
+window/size/mode=0
+window/size/viewport_width=1280
+window/size/viewport_height=720
+CFG
+
 # shellcheck disable=SC2086
 run_scene() {
   UNSEEING_DEMO=1 $KEEP_AWAKE "$GODOT" --path "$DIR/game" "$@"

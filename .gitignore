@@ -4,6 +4,11 @@ game/build/*
 !game/build/.gdignore
 target/
 game/reports/
+# Per-run project-setting override — the ONLY way to boot this project
+# windowed now that it defaults to full screen (the engine's --windowed flag
+# loses to the project setting). tools/probe_visibility.sh writes it and
+# removes it; a crashed run must not leave a committable stray.
+game/override.cfg
 # Per-session agent worktrees. Unignored, `git add -A` stages these as
 # embedded-repo gitlinks with no .gitmodules — they clone as empty dirs.
 .claude/
