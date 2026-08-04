@@ -85,6 +85,15 @@ func _ready() -> void:
 	await _frames(3)
 	_check("Escape closes the overlay", not menu.is_open())
 	_check("the world thaws", not get_tree().paused)
+
+	# 6 — and the overlay lets go: its insistence is BOUNDED, so a platform
+	# that refuses is never fought forever and a settled window is left alone
+	for _i: int in 400:
+		if menu.enforce_left() == 0:
+			break
+		await get_tree().process_frame
+	_check("the overlay stops insisting once the window has settled", menu.enforce_left() == 0)
+	_check("and it left the window full screen", _is_fullscreen())
 	_report()
 
 

@@ -133,6 +133,18 @@ func test_a_click_while_the_overlay_is_up_never_taps_the_cane() -> void:
 	assert_float(_main.player.last_tap).is_equal(-10.0)
 
 
+## The overlay BORROWS the pause, it does not own it. A world that was
+## already frozen when the player opened the settings is still frozen when
+## they close them — whatever froze it still means to.
+func test_the_overlay_puts_back_the_pause_it_found() -> void:
+	get_tree().paused = true
+	_escape()
+	assert_bool(_main.settings.is_open()).is_true()
+	_escape()
+	assert_bool(_main.settings.is_open()).is_false()
+	assert_bool(get_tree().paused).is_true()
+
+
 ## An overlay freed while open must not strand the tree frozen — a suite
 ## tearing down its scene mid-menu would otherwise pause everything that
 ## runs after it.

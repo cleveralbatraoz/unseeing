@@ -126,6 +126,11 @@ pub struct SettingsMenu {
     /// closing restores what was there rather than assuming capture.
     #[init(val = input::MouseMode::VISIBLE)]
     mouse_before: input::MouseMode,
+    /// Whether the world was already frozen when the overlay opened. The
+    /// overlay borrows the pause; it does not own it. Closing puts back
+    /// what it found, so a future system that freezes the world for its
+    /// own reasons is not quietly thawed by a visit to the settings.
+    paused_before: bool,
     /// The viewport height the type was last scaled for.
     last_height: i32,
     frame: Option<Gd<SettingsFrame>>,
@@ -189,10 +194,11 @@ impl ICanvasLayer for SettingsMenu {
     }
 
     fn exit_tree(&mut self) {
-        // a menu freed while open must not strand the tree frozen
+        // a menu freed while open must not strand the tree frozen — put
+        // the pause back the way it was found, exactly as closing would
         if self.open {
             self.open = false;
-            self.set_paused(false);
+            self.set_paused(self.paused_before);
         }
     }
 }
@@ -267,17 +273,18 @@ impl SettingsMenu {
         self.menu = Menu::new(Settings::boot(Self::window_is_fullscreen()));
         self.open = true;
         self.mouse_before = Input::singleton().get_mouse_mode();
+        self.paused_before = self.is_paused();
         Input::singleton().set_mouse_mode(input::MouseMode::VISIBLE);
         self.base_mut().set_visible(true);
         self.set_paused(true);
         self.relayout();
     }
 
-    /// Close: thaw the world and give the mouse back to whatever had it.
+    /// Close: put back the world and the mouse exactly as they were found.
     fn shut(&mut self) {
         self.open = false;
         self.base_mut().set_visible(false);
-        self.set_paused(false);
+        self.set_paused(self.paused_before);
         Input::singleton().set_mouse_mode(self.mouse_before);
     }
 
@@ -468,6 +475,13 @@ impl SettingsMenu {
         if let Some(mut viewport) = self.base().get_viewport() {
             viewport.set_input_as_handled();
         }
+    }
+
+    /// Whether the world is frozen right now.
+    fn is_paused(&self) -> bool {
+        self.base()
+            .get_tree_or_null()
+            .is_some_and(|tree| tree.is_paused())
     }
 
     /// Freeze or thaw the world.
