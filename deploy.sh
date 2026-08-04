@@ -55,5 +55,25 @@ rm -f "$STAMP"
 echo "== pushing to production (server-side CI takes over) =="
 git -C "$DIR" push production main
 
+echo "== verifying the droplet really deployed =="
+# `git push` succeeds even when post-receive FAILS: the ref is updated before
+# the hook runs and the hook's exit status never reaches the client, so a
+# refused build scrolls past as one `remote: ci: FAILED` line and the script
+# exits 0. A deploy that cannot tell you whether it deployed is not a deploy.
+# So do not take the hook's word for it — ask the site what it is serving.
+SHORT="$(printf %.9s "$HEAD_SHA")"
+LIVE="$(curl -skL --max-time 30 "${CHECK_URL:-https://206.223.241.165/}" \
+  | grep -o "UNSEEING_BUILD='[^']*'" | head -1 | sed "s/.*='//;s/'//")"
+[ "$LIVE" = "$SHORT" ] || {
+  echo "deploy: FAILED the site serves build '${LIVE:-none}', not '$SHORT'."
+  echo "deploy:        The droplet's pipeline refused this push — its 'ci: FAILED'"
+  echo "deploy:        line is above, among the remote: output."
+  echo "deploy:        NOTE production/main already points at this commit, so"
+  echo "deploy:        re-running deploy.sh unchanged will not retry the build."
+  echo "deploy:        Fix the cause and push a new commit."
+  exit 1
+}
+echo "deploy: the site serves $LIVE"
+
 echo "== pushing to origin =="
 git -C "$DIR" push origin main --tags
