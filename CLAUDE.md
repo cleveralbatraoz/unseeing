@@ -101,6 +101,42 @@ worktree when the task is done.
   suite in `test/`. Visual verification: movie-maker frame rendering
   (`godot --write-movie`, run under `caffeinate -dis` on macOS).
 
+### Display defaults, and how to run windowed anyway
+
+The game **boots full screen at the monitor's own resolution**
+(`display/window/size/mode=3`), with the web exempted by feature tag
+(`mode.web=0` — a browser grants the Fullscreen API only inside a user
+gesture, and Godot's web display server swallows the rejected promise, so
+a boot request fails *silently*). No content scale is set, so the viewport
+IS the window and "native resolution" needs no machinery. Escape opens the
+settings overlay (`SettingsMenu`), which freezes the world, frees the
+mouse, and can toggle full screen or pick a resolution. Nothing is
+persisted — every launch starts from these defaults, by design.
+
+**`--windowed`, `-w` and `--resolution` cannot override this.** Measured,
+and confirmed in `main/main.cpp`: the flags are parsed into `window_mode`,
+then that variable is overwritten wholesale from
+`display/window/size/mode` a thousand lines later — and the flags are
+consumed on the way through, so `OS.get_cmdline_args()` never sees them
+and no script can compensate.
+
+To run windowed — rendered probes, `--write-movie`, any run whose frame
+size must be identical on every machine — write a **`game/override.cfg`**,
+the engine's documented escape hatch (merged over `project.godot` before
+the window is created):
+
+```
+[display]
+
+window/size/mode=0
+window/size/viewport_width=1280
+window/size/viewport_height=720
+```
+
+`tools/probe_visibility.sh` does exactly this and removes the file however
+it exits. `game/override.cfg` is gitignored and `test/repo_hygiene.sh`
+pins that: committed, it would silently un-fullscreen the shipped game.
+
 ## Commits
 
 - Split every job into small, self-contained commits — one behavior per

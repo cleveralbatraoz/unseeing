@@ -74,7 +74,14 @@ impl IControl for SettingsFrame {
         let Some(content) = self.content.clone() else {
             return; // nothing to frame: draw nothing rather than a stray box
         };
-        let box_rect = content.get_rect().grow(self.padding);
+        let rect = content.get_rect();
+        if rect.size.x <= 0.0 || rect.size.y <= 0.0 {
+            // the container has not been laid out yet; drawing now would
+            // put a box at the origin around nothing. `item_rect_changed`
+            // brings us back the moment it has a real rect.
+            return;
+        }
+        let box_rect = rect.grow(self.padding);
         self.base_mut()
             .draw_rect_ex(box_rect, Color::WHITE)
             .filled(false)
@@ -473,9 +480,14 @@ impl SettingsMenu {
 
         center.add_child(&column);
         frame.add_child(&center);
-        // the rule is drawn around the rows' own box, so it fits whatever
-        // the labels turn out to measure at this resolution
-        frame.bind_mut().content = Some(column.upcast());
+        // The rule is drawn around the rows' own box, so it fits whatever
+        // the labels turn out to measure at this resolution. Containers lay
+        // their children out AFTER the first draw, though, so the frame
+        // must be told to draw again once the column has a real rect —
+        // otherwise the rule is a box at the origin around nothing.
+        let redraw = Callable::from_object_method(&frame, "queue_redraw");
+        column.connect("item_rect_changed", &redraw);
+        frame.bind_mut().content = Some(column.clone().upcast());
         self.base_mut().add_child(&frame);
         self.frame = Some(frame);
     }
