@@ -48,14 +48,26 @@ Keep the technology stack deliberately small. Approved: Godot, typed
 GDScript, GDExtension Rust (the wave/physics core), wasm, and the tooling
 listed below. Before introducing any other technology, ask the user.
 
-## Documentation: the wiki is the reference — read it before researching
+## Documentation: the wiki is the reference — read it first, write it back
 
 Deep reference documentation lives in the project's **GitHub wiki**
 (`https://github.com/cleveralbatraoz/unseeing/wiki`, cloneable as
 `unseeing.wiki.git`). It exists for exactly one reason: a session opening a
 technical task should not have to re-derive this system from the source
-every time. Six pages, each naming the file that owns every constant it
-quotes:
+every time. That stays true only if every task reads it and pays it back:
+
+1. **Read the wiki before implementing or researching anything.** It is the
+   tutorial on how the mechanics work *today* — open it first, and let it
+   collapse most of the research phase before you go near the code. This is
+   not optional politeness to the docs; it is the cheapest step in the task.
+2. **Update the wiki when the task is done, before you call it done.** Every
+   mechanic you changed or added, and every research result you produced,
+   lands on a page — rewritten to describe the new behaviour, not appended
+   as a changelog. **If no page covers it, create the page and fill it.**
+   Research with no wiki page is research the next session will have to
+   redo, so it does not count as finished work.
+
+Six pages, each naming the file that owns every constant it quotes:
 
 - **Mechanics Overview** — the one idea, the two layers, the file map, the
   frame end to end, and the five laws that break everything if violated.
@@ -102,10 +114,12 @@ must work perfectly.
    further confirmation: install anything, run anything, use the server,
    spawn agents, consume whatever resources the task needs — including
    deploys.
-4. **Keep memory and this file current.** When something new and *crucial*
-   is figured out — a decision, constraint, or gotcha that changes future
-   work — record it in persistent memory (crucial facts only, not
-   everything) and update CLAUDE.md itself when the rules or stack evolve.
+4. **Write it back.** The task ends in documentation, not in a green test:
+   update the **wiki** pages for every mechanic you touched and every
+   research result you produced (creating the page if there isn't one),
+   record the *crucial* facts — a decision, constraint, or gotcha that
+   changes future work — in persistent memory, and update CLAUDE.md itself
+   when the rules or stack evolve.
 
 ## Parallel sessions: one worktree each
 
