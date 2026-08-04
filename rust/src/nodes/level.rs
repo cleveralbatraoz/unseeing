@@ -1,20 +1,28 @@
-//! The level root — the one node a scene of walls, props, a fan, a cat and
-//! a spawn marker hangs under, and the engine's single door into it. The
-//! composition root injects the two data-writing materials (the world skin
-//! and the source image) and the wave pool HERE, once; the level deals
-//! them by node class to every child that renders or sounds, and hands the
-//! occluding skins the wall table their analytic sight test runs against.
-//! When it enters the tree it builds the floor and ceiling slabs from its
-//! `extents` knob and DERIVES the technical contracts the systems run on —
-//! wall centerlines, the spawn, the dev demo tap — via the pure
-//! [`level_plan`] math, so a designer who moves a wall has moved the
-//! contracts with it.
+//! The level root — the one node a scene of walls, props, sound sources, a
+//! cat and a spawn marker hangs under, and the engine's single door into
+//! it. The composition root injects the two data-writing materials (the
+//! world skin and the source image) and the wave pool HERE, once; the level
+//! deals them out and hands the occluding skins the wall table their
+//! analytic sight test runs against. When it enters the tree it builds the
+//! floor and ceiling slabs from its `extents` knob and DERIVES the technical
+//! contracts the systems run on — wall centerlines, the spawn, the dev demo
+//! tap — via the pure [`level_plan`] math, so a designer who moves a wall
+//! has moved the contracts with it.
 //!
-//! Occlusion decision: the fan's waves are stopped by the WALLS themselves
-//! now — source→surface sight in the data core — not clipped to a derived
-//! room rectangle. So a designer may open the fan's room to a corridor
-//! without retyping anything or tripping an enclosure law: the hum simply
-//! lights what it can reach and stops at what it cannot.
+//! THE LEVEL NAMES NO SHAPES AND NO SOURCES. It walks its subtree once and
+//! sorts every child into two abstractions: [`WaveSolid`] — anything the
+//! waves can strike, box or column or wedge or wall — and [`SoundSource`] —
+//! anything that makes the world's own sound, fan or radio. Both are Rust
+//! traits published to the engine with `#[godot_dyn]`, so
+//! [`godot::obj::Gd::try_dynify`] recognises a child by what it CAN DO
+//! rather than by what class it is. A new prop shape or a new kind of
+//! source is a new file; nothing in this one changes.
+//!
+//! Occlusion decision: a source's waves are stopped by the WALLS themselves
+//! — source→surface sight in the data core — not clipped to a derived room
+//! rectangle. So a designer may open a source's room to a corridor without
+//! retyping anything or tripping an enclosure law: the waves simply light
+//! what they can reach and stop at what they cannot.
 //!
 //! Spawn decision: a `Marker3D` child named `SpawnPoint`, standing ON
 //! the floor, facing where the hero should look — the designer drags and
@@ -23,11 +31,13 @@
 use godot::classes::{
     Engine, INode3D, Marker3D, Material, MeshInstance3D, Node3D, ShaderMaterial, StaticBody3D,
 };
+use godot::obj::DynGd;
 use godot::prelude::*;
 
 use super::cat::WaveCat;
-use super::fan::SoundFan;
-use super::wall::{WaveProp, WaveWall, build_box};
+use super::solid::{WaveSolid, build_box};
+use super::source::SoundSource;
+use super::wall::WaveWall;
 use crate::level_plan;
 use crate::oid_palette;
 use crate::sight;
@@ -47,7 +57,7 @@ const OID_CEIL: f64 = 0.9;
 /// (0.15) and of the creature band above (the cat at 0.7), because every
 /// box stands on the floor and anything may walk in front of one.
 ///
-/// Five entries is not a limit on how many boxes a level may hold: ids are
+/// Five entries is not a limit on how many solids a level may hold: ids are
 /// assigned by colouring the touch graph, so a hundred walls reuse these
 /// five freely and only differ where they actually meet.
 const WORLD_OIDS: [f64; 5] = [0.25, 0.34, 0.43, 0.52, 0.61];
@@ -64,18 +74,20 @@ struct Slab {
 }
 
 /// Everything the level walk can find under the root, collected in one
-/// pass and consumed by injection and derivation alike.
+/// pass and consumed by injection and derivation alike. `solids` holds
+/// every strikeable shape in scene order — the walls among them — while
+/// `walls` keeps the typed handles the centerline table needs.
 #[derive(Default)]
 struct Census {
+    solids: Vec<DynGd<Node, dyn WaveSolid>>,
     walls: Vec<Gd<WaveWall>>,
-    props: Vec<Gd<WaveProp>>,
-    fan: Option<Gd<SoundFan>>,
+    sources: Vec<DynGd<Node, dyn SoundSource>>,
     cats: Vec<Gd<WaveCat>>,
     spawn: Option<Gd<Marker3D>>,
 }
 
 /// The level root node. `inject` BEFORE adding it to the tree — children
-/// run `_ready` first, and the fan refuses to build uninjected; then read
+/// run `_ready` first, and a source refuses to build uninjected; then read
 /// the derived contracts through the typed getters.
 #[derive(GodotClass)]
 #[class(tool, init, base=Node3D)]
@@ -97,7 +109,7 @@ pub struct WaveLevel {
     tap_point: Vector3,
     #[init(val = Vector3::UP)]
     tap_normal: Vector3,
-    fan_child: Option<Gd<SoundFan>>,
+    source_children: Vec<DynGd<Node, dyn SoundSource>>,
     cat_children: Vec<Gd<WaveCat>>,
     base: Base<Node3D>,
 }
@@ -123,27 +135,24 @@ impl INode3D for WaveLevel {
 impl WaveLevel {
     /// The single injection point: the composition root hands the level
     /// its two data-writing materials and the wave pool ONCE, before
-    /// adding it to the tree, and the level deals them by node class — the
-    /// WORLD skin (real depth) to walls, props, the cat and the slabs; the
-    /// source IMAGE skin to the fan (`source_mat`, through its `data_mat`
-    /// property: it IS the fan's data-writing material); the pool to the
-    /// fan and the cat. A designer never assigns any of this: dropping a
-    /// node under the level is enough.
+    /// adding it to the tree, and the level deals them out — the WORLD skin
+    /// (real depth) to every solid, the cat and the slabs; the source IMAGE
+    /// skin plus the pool to every sound source, through the one
+    /// [`SoundSource::inject`] door. A designer never assigns any of this:
+    /// dropping a node under the level is enough.
     #[func]
     fn inject(&mut self, data_mat: Gd<Material>, source_mat: Gd<Material>, pulses: Gd<RefCounted>) {
         self.data_mat = Some(data_mat.clone());
         self.source_mat = Some(source_mat.clone());
         self.pulses = Some(pulses.clone());
         let census = self.census();
-        for mut wall in census.walls {
-            wall.bind_mut().set_material(&data_mat);
+        for mut solid in census.solids {
+            solid.dyn_bind_mut().set_material(&data_mat);
         }
-        for mut prop in census.props {
-            prop.bind_mut().set_material(&data_mat);
-        }
-        if let Some(mut fan) = census.fan {
-            fan.set("pulses", &pulses.to_variant());
-            fan.set("data_mat", &source_mat.to_variant());
+        for mut source in census.sources {
+            source
+                .dyn_bind_mut()
+                .inject(pulses.clone(), source_mat.clone());
         }
         // creatures render and sound like the world: the wave pool voices
         // their footfalls, the world skin draws their outline at real depth
@@ -188,7 +197,8 @@ impl WaveLevel {
     }
 
     /// Dev-demo tap: a fixed point on the wall between the spawn and the
-    /// fan. ZERO when hero and fan share a room (no wall to strike).
+    /// level's first sound source. ZERO when they share a room (no wall to
+    /// strike) or the level is silent.
     #[func]
     fn demo_tap(&self) -> Vector3 {
         self.tap_point
@@ -216,15 +226,19 @@ impl WaveLevel {
         PackedVector4Array::from(&self.occluders[..])
     }
 
-    /// The level's sound source, when it has one — the composition root
-    /// drives its animation clock.
+    /// The level's sound sources, in scene order — exposed as plain nodes
+    /// so a suite can read their knobs, while the level itself drives them
+    /// through the trait.
     #[func]
-    fn fan(&self) -> Option<Gd<SoundFan>> {
-        self.fan_child.clone()
+    fn sources(&self) -> Array<Gd<Node3D>> {
+        self.source_children
+            .iter()
+            .filter_map(|s| s.clone().into_gd().try_cast::<Node3D>().ok())
+            .collect()
     }
 
     /// The level's companion creatures — the composition root drives each
-    /// one's clock (`tick`) every frame, exactly as it drives the fan.
+    /// one's clock (`tick`) every frame.
     #[func]
     fn cats(&self) -> Array<Gd<WaveCat>> {
         self.cat_children.iter().cloned().collect()
@@ -237,14 +251,41 @@ impl WaveLevel {
         level_plan::WALL_H
     }
 
+    /// Drive every sound source for one frame: advance its clockwork with
+    /// the SIMULATED clock (so movie-maker runs and time scaling stay
+    /// correct), then tell it how strongly its standing acoustic image is
+    /// felt from `eye` — its own volume, dimmed once per wall between the
+    /// eye and its hub.
+    ///
+    /// The muffle is computed HERE, per source, per frame, on the CPU, and
+    /// pushed to that source's limbs as a per-INSTANCE uniform. Two
+    /// reasons, and both are load-bearing: a per-fragment sight test would
+    /// tear a source's silhouette bright/dim along a wall's screen edge
+    /// instead of dimming it as a coherent whole, and a per-MATERIAL
+    /// uniform would make the quiet fan and the loud radio — which share
+    /// one acoustic-image skin — dim and brighten together.
+    #[func]
+    fn tick_sources(&mut self, t: f64, eye: Vector3) {
+        // cloned handles: the muffle reads the level's wall table while the
+        // sources are being driven, and the two must not borrow it at once
+        for mut source in self.source_children.clone() {
+            let hub;
+            let volume;
+            {
+                let mut voice = source.dyn_bind_mut();
+                voice.advance(t);
+                hub = voice.hub();
+                volume = voice.voice().volume.image();
+            }
+            let image = volume * self.source_muffle(eye, hub);
+            source.dyn_bind_mut().set_image(image);
+        }
+    }
+
     /// How muffled a source's SILHOUETTE at `to` reads from the eye at
     /// `from`: `SOURCE_THROUGH` per wall the sight line crosses — a faint
-    /// ghost through one wall, fainter through two. The composition root
-    /// computes this once per frame per active source and hands it to that
-    /// source's skin as one uniform, so a source dims as a COHERENT WHOLE
-    /// through a wall instead of splitting bright/dim along the wall's
-    /// screen edge — a per-object muffle where a per-fragment sight test
-    /// would tear. General to any source, not the fan alone.
+    /// ghost through one wall, fainter through two. General to any source,
+    /// not the fan alone; exposed so the suites can hold the law directly.
     #[func]
     fn source_muffle(&self, from: Vector3, to: Vector3) -> f64 {
         let crossings = sight::crossings(from, to, &self.occluders, level_plan::WALL_H as f32);
@@ -253,14 +294,14 @@ impl WaveLevel {
 
     /// Derive every technical contract from the children as they stand:
     /// centerlines from the walls, the spawn from the marker, the demo tap
-    /// from the wall between the spawn and the fan. Loud about whatever a
-    /// designer left unplaceable.
+    /// from the wall between the spawn and the first source. Loud about
+    /// whatever a designer left unplaceable.
     fn derive(&mut self) {
         let census = self.census();
         self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
         self.push_wall_table();
         self.assign_oids(&census);
-        self.fan_child = census.fan;
+        self.source_children = census.sources;
         self.cat_children = census.cats;
         let lift = Vector3::new(0.0, level_plan::SPAWN_LIFT as f32, 0.0);
         if let Some(marker) = census.spawn {
@@ -271,27 +312,27 @@ impl WaveLevel {
             self.spawn_at = self.base().get_global_position() + lift;
             self.spawn_heading = 0.0;
         }
-        let Some(fan) = self.fan_child.as_ref() else {
-            return; // a fanless level is legal: silence, no source to strike toward
+        let Some(source) = self.source_children.first() else {
+            return; // a silent level is legal: no source to strike toward
         };
-        let fan_at = fan.get_global_position();
-        if let Some(plan) = level_plan::demo_tap(&self.segments, self.spawn_at, fan_at) {
+        let hub = source.dyn_bind().hub();
+        if let Some(plan) = level_plan::demo_tap(&self.segments, self.spawn_at, hub) {
             self.tap_point = plan.point;
             self.tap_normal = plan.normal;
         }
     }
 
-    /// Hand every box in the world its flat object id (the data pass's
-    /// `u_oid`) so the outline post-pass draws one clean silhouette per box
-    /// instead of its interior corners. The floor and ceiling carry
+    /// Hand every solid in the world its flat object id (the data pass's
+    /// `u_oid`) so the outline post-pass draws one clean silhouette per
+    /// object instead of its interior corners. The floor and ceiling carry
     /// dedicated ids clear of every wall's, because every wall meets them —
-    /// that seam must always draw; walls and props cycle small palettes so
-    /// neighbours differ and the seam between two of them survives. The
+    /// that seam must always draw; the rest are coloured by the touch graph
+    /// so neighbours differ and the seam between two of them survives. The
     /// world stays below the creature id band (0.7+), so the cat and the
     /// hero's body always separate from the geometry behind them.
     fn assign_oids(&mut self, census: &Census) {
-        // the boxes whose ids are already spoken for: the slabs every wall
-        // stands on, and the fan, which paints its own limbs
+        // the solids whose ids are already spoken for: the slabs everything
+        // stands on, and the sound sources, which paint their own limbs
         let mut anchors: Vec<oid_palette::Fixed> = Vec::new();
         for slab in &mut self.slabs {
             let oid = if slab.lid { OID_CEIL } else { OID_FLOOR };
@@ -301,54 +342,41 @@ impl WaveLevel {
                 anchors.push(oid_palette::Fixed { area, oid });
             }
         }
-        if let Some(fan) = census.fan.as_ref()
-            && let Some(area) = mesh_world_box(&fan.clone().upcast())
-        {
-            // one box for both fan ids: the union over-constrains a
+        for source in &census.sources {
+            let Some(area) = mesh_world_box(&source.clone().into_gd()) else {
+                continue; // a source that draws nothing can show no seam
+            };
+            // one box for all of a source's ids: the union over-constrains a
             // neighbour slightly, which is the safe direction to err
-            for oid in super::fan::OIDS {
+            for &oid in source.dyn_bind().oids() {
                 anchors.push(oid_palette::Fixed { area, oid });
             }
         }
 
-        // walls first, then props, so a box's place in this list is the
-        // deterministic scene order every other derivation leans on
+        // scene order is the deterministic order every other derivation
+        // leans on, and the tiebreak the colouring itself is stable under
         let mut areas: Vec<oid_palette::Box3> = Vec::new();
-        let mut walls: Vec<usize> = Vec::new();
-        let mut props: Vec<usize> = Vec::new();
-        for (i, wall) in census.walls.iter().enumerate() {
-            if let Some(area) = mesh_world_box(&wall.clone().upcast()) {
-                walls.push(i);
-                areas.push(area);
-            }
-        }
-        for (i, prop) in census.props.iter().enumerate() {
-            if let Some(area) = mesh_world_box(&prop.clone().upcast()) {
-                props.push(i);
+        let mut painted: Vec<usize> = Vec::new();
+        for (i, solid) in census.solids.iter().enumerate() {
+            if let Some(area) = mesh_world_box(&solid.clone().into_gd()) {
+                painted.push(i);
                 areas.push(area);
             }
         }
 
-        let painted = oid_palette::assign(&areas, &anchors, &WORLD_OIDS);
-        if painted.starved > 0 {
+        let chosen = oid_palette::assign(&areas, &anchors, &WORLD_OIDS);
+        if chosen.starved > 0 {
             godot_error!(
-                "WaveLevel: {} box(es) could not take an id distinct from everything they touch — \
-                 those seams will not draw. Spread the geometry or widen WORLD_OIDS.",
-                painted.starved
+                "WaveLevel: {} solid(s) could not take an id distinct from everything they touch \
+                 — those seams will not draw. Spread the geometry or widen WORLD_OIDS.",
+                chosen.starved
             );
         }
-        for (slot, &i) in walls.iter().enumerate() {
-            census.walls[i]
+        for (slot, &i) in painted.iter().enumerate() {
+            census.solids[i]
                 .clone()
-                .bind_mut()
-                .set_oid(painted.oids[slot]);
-        }
-        for (offset, &i) in props.iter().enumerate() {
-            let slot = walls.len() + offset;
-            census.props[i]
-                .clone()
-                .bind_mut()
-                .set_oid(painted.oids[slot]);
+                .dyn_bind_mut()
+                .set_oid(chosen.oids[slot]);
         }
     }
 
@@ -356,10 +384,8 @@ impl WaveLevel {
     /// centerlines inflated into shrunk occluder rects ([`sight::wall_rect`]),
     /// pushed as `u_walls`/`u_wall_count`/`u_wall_top` onto the world and
     /// source skins — the wall table their analytic sight test runs
-    /// against (the world occludes a source's reveal by them, a wall
-    /// behind a wall not lit through; the source silhouette is muffled by
-    /// them per-object on the CPU). Loud when a level outgrows the
-    /// shader's slots (truncated: the overflow walls stop occluding).
+    /// against. Loud when a level outgrows the shader's slots (truncated:
+    /// the overflow walls stop occluding).
     fn push_wall_table(&mut self) {
         let mut rects: Vec<Vector4> = self.segments.iter().map(|s| sight::wall_rect(*s)).collect();
         if rects.len() > sight::MAXW {
@@ -435,14 +461,20 @@ impl WaveLevel {
 
 /// The recursive half of [`WaveLevel::census`]: depth-first, scene
 /// order — the deterministic order every derivation tiebreak leans on.
+///
+/// A child is recognised by what it CAN DO, not by what it is: `try_dynify`
+/// asks the `#[godot_dyn]` registry whether this node's dynamic class
+/// implements the trait. The two typed arms that remain are the two that
+/// need more than the trait offers — a wall's centerline, a cat's clock.
 fn collect(node: &Gd<Node>, census: &mut Census) {
     for child in node.get_children().iter_shared() {
-        if let Ok(wall) = child.clone().try_cast::<WaveWall>() {
-            census.walls.push(wall);
-        } else if let Ok(prop) = child.clone().try_cast::<WaveProp>() {
-            census.props.push(prop);
-        } else if let Ok(fan) = child.clone().try_cast::<SoundFan>() {
-            census.fan.get_or_insert(fan);
+        if let Ok(solid) = child.clone().try_dynify::<dyn WaveSolid>() {
+            census.solids.push(solid);
+            if let Ok(wall) = child.clone().try_cast::<WaveWall>() {
+                census.walls.push(wall);
+            }
+        } else if let Ok(source) = child.clone().try_dynify::<dyn SoundSource>() {
+            census.sources.push(source);
         } else if let Ok(cat) = child.clone().try_cast::<WaveCat>() {
             census.cats.push(cat);
         } else if let Ok(marker) = child.clone().try_cast::<Marker3D>()

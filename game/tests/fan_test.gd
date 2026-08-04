@@ -1,10 +1,16 @@
 extends GdUnitTestSuite
-## The fan's motion and acoustics envelope, held against the Rust SoundFan
-## engine node. Ported 1:1 from the retired custom runner; the acoustic
-## voice now lives in designer knobs (exported properties defaulting to
-## the shipped constants), so the envelope pins read a fresh node's
-## defaults, and the build constants cross as static methods — ClassDB
-## registers only integer constants, so floats cannot cross as constants.
+## The fan, held to what makes it a FAN rather than a sound source in
+## general. The shared half — the volume ladder, the cadence gate, the
+## acoustic image, the injection door — is source_test's; this suite pins
+## the motion curves the head and its collider both ride, and the one
+## acoustic property no other source has: the wash is AIMED, and aimed
+## wherever the head points at the instant of birth.
+##
+## The acoustic voice lives in designer knobs (exported properties
+## defaulting to the shipped constants), so the envelope pins read a fresh
+## node's defaults, and the build constants cross as static methods —
+## ClassDB registers only integer constants, so floats cannot cross as
+## constants.
 
 
 ## The head's oscillation must actually sweep, and never exceed its range —
@@ -26,12 +32,23 @@ func test_fan_blades_spin() -> void:
 	assert_bool(SoundFan.spin_angle(1.0) != SoundFan.spin_angle(1.1)).is_true()
 
 
-## A hum slot lives ring + 2s; the constant wash must not flood the pool.
-## The envelope holds for the DEFAULT knobs a fresh fan ships with.
+## The volume law, read back off a fresh fan: one knob at 0.75 reproduces
+## the hum the map was validated against — 9 m of reach — instead of a
+## separate range knob that could contradict it.
+func test_fan_volume_derives_the_validated_reach() -> void:
+	var fan: SoundFan = auto_free(SoundFan.new())
+	assert_float(fan.volume).is_equal_approx(0.75, 0.0001)
+	assert_float(fan.reach()).is_equal_approx(9.0, 0.0001)
+	fan.volume = 0.5  # half as loud is half as far: the law, not a table
+	assert_float(fan.reach()).is_equal_approx(6.0, 0.0001)
+
+
+## A hum slot lives ring + tail; the constant wash must not flood the pool
+## the hero's own taps and footsteps share. The envelope holds for the
+## DEFAULT knobs a fresh fan ships with.
 func test_fan_wash_stays_within_slot_headroom() -> void:
 	var fan: SoundFan = auto_free(SoundFan.new())
-	var concurrent := (fan.hum_range / fan.hum_speed + 2.0) / fan.whoosh_every
-	assert_bool(concurrent <= 12.0).is_true()
+	assert_bool(fan.slot_pressure() <= 12.0).is_true()
 
 
 func test_fan_wash_is_directed_cone() -> void:
@@ -54,10 +71,10 @@ func test_whoosh_beam_rides_pivot_and_keeps_cadence() -> void:
 	fan.update(0.4)  # the first beat: the cadence gate starts at 0.4
 	assert_int(pulses.live_count(0.4)).is_equal(1)
 	assert_float(pulses.dat[0].x).is_equal_approx(0.4, 0.0001)
-	assert_float(pulses.dat[0].y).is_equal(fan.hum_range)
-	assert_float(pulses.dat[0].z).is_equal(fan.hum_speed)
+	assert_float(pulses.dat[0].y).is_equal_approx(fan.reach(), 0.0001)
+	assert_float(pulses.dat[0].z).is_equal(fan.wave_speed)
 	assert_int(int(floorf(pulses.dat[0].w / 10.0))).is_equal(3)
-	assert_float(fmod(pulses.dat[0].w, 10.0) / 9.0).is_equal_approx(fan.hum_gain, 0.001)
+	assert_float(fmod(pulses.dat[0].w, 10.0) / 9.0).is_equal_approx(fan.volume, 0.001)
 	# the beam: cone width from the knob, direction from the mounting yaw
 	# composed with the pivot's oscillation at this very moment
 	assert_float(pulses.dir[0].w).is_equal_approx(fan.beam_cos, 0.0001)
@@ -74,6 +91,22 @@ func test_whoosh_beam_rides_pivot_and_keeps_cadence() -> void:
 	fan.update(5.0)  # the first hum expired at 4.4, freeing its slot...
 	assert_float(pulses.dat[0].x).is_equal(5.0)
 	assert_float(pulses.dat[1].x).is_equal(-1.0)  # ...and NO burst backfilled
+
+
+## The beam MOVES: two beats a quarter of the sweep apart are aimed in
+## measurably different directions. Nothing else in the world does this —
+## it is the whole difference between a fan and a radio.
+func test_the_wash_sweeps_between_beats() -> void:
+	var pulses := Pulses.new()
+	var fan: SoundFan = auto_free(SoundFan.new())
+	fan.pulses = pulses
+	fan.data_mat = ShaderMaterial.new()
+	add_child(fan)
+	fan.update(0.4)
+	var first := Vector3(pulses.dir[0].x, pulses.dir[0].y, pulses.dir[0].z)
+	fan.update(3.0)
+	var later := Vector3(pulses.dir[1].x, pulses.dir[1].y, pulses.dir[1].z)
+	assert_bool(first.dot(later) < 0.97).is_true()
 
 
 ## No silent nulls: a fan without its injected pool and material reports the

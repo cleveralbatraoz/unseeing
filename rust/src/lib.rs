@@ -29,14 +29,21 @@
 //!   answer as a few points, ranked in a deterministic total order.
 //! - [`echo_queue`] — scheduled reflections that fire at the exact
 //!   instant the primary wavefront reaches their surface point.
-//! - [`fan_wave`] — the oscillating fan's motion curves and whoosh
-//!   cadence, the world's one constant sound source.
+//! - [`sound_source`] — what a world sound source IS: the volume ladder
+//!   (amplitude is gain, reach is linear in it), even spread against
+//!   directed cone, and the cadence gate every source's clock runs through.
+//! - [`fan_wave`] — the oscillating fan's motion curves and its shipped
+//!   voice: the world's DIRECTED source, a cone swept by a pivoting head.
+//! - [`radio_wave`] — the radio's shipped voice: the world's LOUDEST and
+//!   EVEN source, and the pinned ladder between the two.
 //! - [`viewmodel`] — the hero's own body as the camera sees it: head-bob
 //!   and sway curves, the cane's carry and strike, the footstep cadence.
 //! - [`settings_menu`] — the settings overlay's model: its rows, its
 //!   cursor, what a key press means, and the exact text each row shows.
 //! - [`level_plan`] — the level's derived technical contracts: wall box
 //!   dimensions, axis snapping, centerlines, the dev demo tap.
+//! - [`prop_shape`] — the geometry of the shapes a prop can be: the
+//!   generated triangular prism the engine ships no primitive for.
 //! - [`oid_palette`] — which flat object id each box in the world carries,
 //!   colouring the touch graph so every seam between two objects draws.
 //!
@@ -63,8 +70,11 @@ mod ffi;
 pub mod level_plan;
 mod nodes;
 pub mod oid_palette;
+pub mod prop_shape;
 pub mod pulse_pool;
+pub mod radio_wave;
 pub mod ray_fan;
 pub mod settings_menu;
 pub mod sight;
+pub mod sound_source;
 pub mod viewmodel;

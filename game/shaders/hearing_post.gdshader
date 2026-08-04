@@ -56,9 +56,10 @@ void fragment() {
 	vec3 rd = normalize(world_far - cam);
 	float scene_d = c_c.b * DIST_PACK_RANGE;
 	// the surface visible at this pixel: if it lies BEHIND a wall from the
-	// eye it is an always-on-top skin x-rayed through the wall (the fan) —
-	// no player-made ring may wash it. A real-depth surface is never behind
-	// a wall (the wall would hide it), so this fires only on the x-ray fan.
+	// eye it is an always-on-top skin x-rayed through the wall (a sound
+	// source) — no player-made ring may wash it. A real-depth surface is
+	// never behind a wall (the wall would hide it), so this fires only on
+	// the x-rayed sources.
 	vec3 seen_pt = cam + rd * scene_d;
 	bool seen_walled = wall_crossings(cam, seen_pt) > 0;
 
@@ -72,20 +73,20 @@ void fragment() {
 	float nrm = abs(c_l.g - c_r.g) + abs(c_u.g - c_d.g);
 	float edge = max(smoothstep(0.012, 0.03, lap), smoothstep(0.04, 0.08, nrm));
 	float reveal = max(c_c.r, max(max(c_l.r, c_r.r), max(c_u.r, c_d.r)));
-	// the x-ray fan's OUTLINE must never borrow the lit wall behind it. Its
-	// silhouette is a distance edge shared with that wall, so BOTH sides —
-	// the fan's pixels AND the wall's pixels touching it — must be capped to
-	// the fan's OWN dim reveal. Only at edge pixels (cheap): check whether
-	// any of the five taps is a surface seen through a wall (the x-ray fan),
-	// and if so clamp the reveal to that fan tap's reveal.
+	// an x-rayed source's OUTLINE must never borrow the lit wall behind it.
+	// Its silhouette is a distance edge shared with that wall, so BOTH
+	// sides — the source's pixels AND the wall's pixels touching it — must
+	// be capped to the source's OWN dim reveal. Only at edge pixels
+	// (cheap): check whether any of the five taps is a surface seen through
+	// a wall (an x-rayed source), and if so clamp the reveal to that tap's.
 	if (edge > 0.0) {
-		float fan_r = -1.0;
-		if (seen_walled) { fan_r = c_c.r; }
-		if (wall_crossings(cam, cam + rd * (c_l.b * DIST_PACK_RANGE)) > 0) { fan_r = max(fan_r, c_l.r); }
-		if (wall_crossings(cam, cam + rd * (c_r.b * DIST_PACK_RANGE)) > 0) { fan_r = max(fan_r, c_r.r); }
-		if (wall_crossings(cam, cam + rd * (c_u.b * DIST_PACK_RANGE)) > 0) { fan_r = max(fan_r, c_u.r); }
-		if (wall_crossings(cam, cam + rd * (c_d.b * DIST_PACK_RANGE)) > 0) { fan_r = max(fan_r, c_d.r); }
-		if (fan_r >= 0.0) { reveal = min(reveal, fan_r); }
+		float src_r = -1.0;
+		if (seen_walled) { src_r = c_c.r; }
+		if (wall_crossings(cam, cam + rd * (c_l.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_l.r); }
+		if (wall_crossings(cam, cam + rd * (c_r.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_r.r); }
+		if (wall_crossings(cam, cam + rd * (c_u.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_u.r); }
+		if (wall_crossings(cam, cam + rd * (c_d.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_d.r); }
+		if (src_r >= 0.0) { reveal = min(reveal, src_r); }
 	}
 	vec3 col = vec3(edge * reveal);
 
@@ -116,9 +117,9 @@ void fragment() {
 			vec3 hp = cam + rd * t;
 			float mute = 1.0;
 			if (typ < 2.5) {
-				// a player-made ring dies at the world, and never washes the
-				// x-ray fan seen through a wall — the hero's sound is in another
-				// room from it
+				// a player-made ring dies at the world, and never washes an
+				// x-rayed source seen through a wall — the hero's sound is in
+				// another room from it
 				if (t >= scene_d || seen_walled) { continue; }
 			} else if (t >= scene_d) {
 				mute = HUM_THROUGH;  // the hum passes the world, muffled

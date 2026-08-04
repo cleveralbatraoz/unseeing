@@ -45,7 +45,8 @@ const float ALWAYS_ON_TOP = 0.999999;
 //   - a cane tap, its echoes, and footsteps (0, 1, 2) are cut CRISP at a
 //     wall — a player sound does not pass, and their shells die at the
 //     world too;
-//   - the fan's hum (3) is MUFFLED, not silenced — HUM_THROUGH per wall,
+//   - a world SOURCE's wave (3 — the fan's hum, the radio) is MUFFLED,
+//     not silenced: HUM_THROUGH per wall,
 //     the same factor its shell passes by, so a far surface dims instead
 //     of turning black against a ring still travelling through the wall.
 // crossings_from skips the wall the source is born inside, so a tap or an
@@ -80,7 +81,8 @@ float reveal_at(vec3 world) {
 		vec3 to_src = (u_ppos[i] - world) / max(dist, 0.001);
 		// the beam gate comes first: a fragment outside a DIRECTED wash's
 		// cone reveals nothing, so skip the wall-occlusion loop there. This
-		// spares the fan's narrow sweep only — the hero's own taps, echoes
+		// spares a DIRECTED source's narrow sweep only (the fan; a radio's
+		// even sphere pays like any other wave) — the hero's own taps, echoes
 		// and footsteps are omni (cone == 1), so they pay the per-fragment
 		// wall loop wherever their radius still reaches, which is correct:
 		// those sounds ARE cut at walls. The cost is O(live pulses × walls)

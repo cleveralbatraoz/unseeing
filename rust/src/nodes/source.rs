@@ -1,0 +1,176 @@
+//! The sound-source abstraction at the engine boundary — the layer the fan
+//! stopped being a special case in.
+//!
+//! The world's own sounds (the ones the hero did NOT make) all behave the
+//! same way and differ only in their [`Voice`]: they are born as pulse kind
+//! [`SOURCE_KIND`], their waves pass walls muffled instead of dying at them,
+//! and they wear the always-on-top acoustic-image skin so their silhouette
+//! is felt through a wall as a dimmed ghost. A fan and a radio are two
+//! voices, not two systems.
+//!
+//! WHY A TRAIT AND NOT A BASE CLASS. gdext cannot derive one registered
+//! class from another, so "a fan IS a source" cannot be inheritance. It is
+//! [`SoundSource`], a plain Rust trait, published to the engine by
+//! `#[godot_dyn]`: that registers a `Class -> dyn SoundSource` upcast, and
+//! [`godot::obj::Gd::try_dynify`] then turns any child node whose DYNAMIC
+//! class implements it into a `DynGd<Node3D, dyn SoundSource>`. So the level
+//! walks its children once and collects every source there is without ever
+//! naming a concrete class — adding a third source class means writing that
+//! class and nothing else. Dependency injection runs the same way: the level
+//! hands each source the wave pool and the acoustic-image skin through the
+//! trait, and a source never reaches out for either.
+//!
+//! WHAT LIVES HERE. Only the machinery every source shares: the cadence gate
+//! that decides when a wave is born, the limb builder that tags each mesh
+//! with its flat object id and remembers it, the push of the per-object
+//! standing image, and the one call into the wave pool. The LAWS are pure
+//! and live in [`crate::sound_source`]; the BODIES — what a fan looks like,
+//! what a radio looks like — live in the node files. Nothing in between.
+
+use godot::classes::{Material, MeshInstance3D, Node3D, RefCounted};
+use godot::prelude::*;
+
+use crate::sound_source::{Cadence, SOURCE_KIND, Voice};
+
+/// The per-instance shader parameter carrying a source's STANDING acoustic
+/// image: how strongly its silhouette is felt right now, volume times the
+/// muffle of every wall between it and the eye. It is an INSTANCE uniform,
+/// not a material uniform, because all sources share one acoustic-image
+/// material — a material uniform would make the quiet fan and the loud
+/// radio dim and brighten as one. `data_xray.gdshader` declares it.
+pub(crate) const IMAGE_PARAM: &str = "u_source_floor";
+
+/// The parameter each limb's flat object id rides in — `data_core`'s
+/// `u_oid`, the G channel the outline pass diffs to draw creases.
+pub(crate) const OID_PARAM: &str = "u_oid";
+
+/// What the level needs of a sound source, whatever the thing actually is.
+/// Implemented by every source node through `#[godot_dyn]`, which is what
+/// lets the level hold them all as one list.
+pub trait SoundSource {
+    /// Where this source's waves are born, in world space, right now — the
+    /// fan's spinning hub as the head sweeps, the radio's speaker cone. The
+    /// level also measures the walls between the eye and THIS point to
+    /// decide how muffled the source's image is.
+    fn hub(&self) -> Vector3;
+
+    /// This source's acoustic identity: volume, cadence, speed, spread.
+    /// Read from the node's designer knobs, so a fan turned down in the
+    /// Inspector answers differently.
+    fn voice(&self) -> Voice;
+
+    /// The flat object ids this source paints its limbs with. The level
+    /// hands them to the id colouring as fixed anchors, so no wall or prop
+    /// the source stands against takes an id too close to melt into it.
+    fn oids(&self) -> &'static [f64];
+
+    /// The single injection point: the wave pool every sound enters and the
+    /// acoustic-image skin every limb renders through. Called by the level
+    /// BEFORE the source enters the tree, because a source that cannot
+    /// sound or be seen must refuse to build rather than fail later.
+    fn inject(&mut self, pulses: Gd<RefCounted>, skin: Gd<Material>);
+
+    /// Advance this source's clockwork to `t` and emit whatever waves fall
+    /// due. Driven by the level with the SIMULATED clock, like every
+    /// animated thing, so movie-maker runs and time scaling stay correct.
+    fn advance(&mut self, t: f64);
+
+    /// Set how strongly this source's standing image is felt: its volume
+    /// attenuated by the walls between it and the eye, computed once per
+    /// frame by the level. Pushed to every limb as [`IMAGE_PARAM`].
+    fn set_image(&mut self, image: f64);
+}
+
+/// The organs every sound source has, whatever its body looks like: the
+/// cadence gate its clock runs through, and the mesh limbs it draws itself
+/// with (kept so the standing image can be pushed to each one).
+///
+/// A source node owns one of these and its own `pulses`/`skin` handles; the
+/// rig deliberately does NOT own those, so a node's injection surface stays
+/// visible in its own fields where a designer and a test can see it.
+#[derive(Default)]
+pub(crate) struct SourceRig {
+    limbs: Vec<Gd<MeshInstance3D>>,
+    cadence: Cadence,
+}
+
+impl SourceRig {
+    /// Set the gate to a voice's cadence. Called when the source enters the
+    /// tree, once the designer's knobs are known.
+    pub(crate) fn tune(&mut self, voice: &Voice) {
+        self.cadence = Cadence::every(voice.cadence);
+    }
+
+    /// Has a wave's moment come? One beat per cadence, never a backfilled
+    /// burst after a stalled clock — the law lives in [`Cadence`].
+    pub(crate) fn beat(&mut self, t: f64) -> Option<f64> {
+        self.cadence.beat(t)
+    }
+
+    /// Build one limb: a mesh instance drawn through the injected skin,
+    /// tagged with its flat object id, positioned and rotated in its
+    /// parent. Remembered, so the standing image reaches it every frame.
+    pub(crate) fn limb(
+        &mut self,
+        parent: &mut Gd<Node3D>,
+        mesh: &Gd<godot::classes::Mesh>,
+        at: Vector3,
+        rotation: Vector3,
+        oid: f64,
+        skin: Option<&Gd<Material>>,
+    ) {
+        let mut mi = MeshInstance3D::new_alloc();
+        mi.set_mesh(mesh);
+        if let Some(skin) = skin {
+            mi.set_material_override(skin);
+        }
+        mi.set_instance_shader_parameter(OID_PARAM, &oid.to_variant());
+        mi.set_position(at);
+        mi.set_rotation(rotation);
+        parent.add_child(&mi);
+        self.limbs.push(mi);
+    }
+
+    /// Push the standing acoustic image onto every limb this source built.
+    /// Per instance, not per material: the world's sources share one skin,
+    /// and each must dim by its OWN volume and its OWN walls.
+    pub(crate) fn set_image(&mut self, image: f64) {
+        for limb in &mut self.limbs {
+            limb.set_instance_shader_parameter(IMAGE_PARAM, &image.to_variant());
+        }
+    }
+
+    /// Did this rig ever build anything? False for a source that refused to
+    /// build uninjected — its `advance` must then be a harmless no-op.
+    pub(crate) fn is_built(&self) -> bool {
+        !self.limbs.is_empty()
+    }
+}
+
+/// Put one wave into the pool: a source's voice, born at `at`, aimed along
+/// `aim` (which an even spread ignores), at time `t`.
+///
+/// The pool is reached dynamically, by name — today it is the GDScript
+/// `Pulses` shim, tomorrow the `WaveCore` itself, and a source only ever
+/// asks it to `emit`, so both answer. A silent voice is not asked at all:
+/// the pool rightly refuses a zero-radius wave, and asking every cadence
+/// would be a steady drip of refusals in the log.
+pub(crate) fn sound(pulses: &mut Gd<RefCounted>, voice: &Voice, at: Vector3, aim: Vector3, t: f64) {
+    if !voice.volume.audible() {
+        return;
+    }
+    let wave = voice.wave(aim);
+    pulses.call(
+        "emit",
+        &[
+            i64::from(SOURCE_KIND).to_variant(),
+            at.to_variant(),
+            wave.range.to_variant(),
+            wave.speed.to_variant(),
+            wave.gain.to_variant(),
+            t.to_variant(),
+            wave.beam.to_variant(),
+            wave.cos_half.to_variant(),
+        ],
+    );
+}

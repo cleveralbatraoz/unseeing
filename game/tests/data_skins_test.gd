@@ -21,17 +21,18 @@ func _text(path: String) -> String:
 
 
 ## The x-ray skin: culled back faces (mandatory under an always-pass depth
-## test), the always-on-top depth write, and the per-object source muffle
-## on its standing floor — the acoustic image's own contract. It shares the
-## reveal loop, the object id and the wall table through the data core; only
-## the faked depth and the muffled floor are its own.
+## test), the always-on-top depth write, and the standing acoustic image on
+## its own floor. That floor is an INSTANCE uniform, and the world now has
+## more than one source, so this is load-bearing rather than stylistic: a
+## material uniform would make the quiet fan and the loud radio — which
+## share this one skin — brighten and dim as a single object.
 func test_xray_skin_carries_the_acoustic_image_contract() -> void:
 	var src := _text(XRAY_PATH)
 	assert_str(src).contains("render_mode unshaded, cull_back")
 	assert_str(src).contains('#include "res://shaders/data_core.gdshaderinc"')
 	assert_str(src).contains("DEPTH = ALWAYS_ON_TOP;")
-	assert_str(src).contains("uniform float u_source_muffle = 1.0;")
-	assert_str(src).contains("u_base * u_source_muffle")
+	assert_str(src).contains("instance uniform float u_source_floor = 0.0;")
+	assert_str(src).contains("max(reveal_at(v_world), u_source_floor)")
 
 
 ## The shared pulse-pool include carries the wall table every occluding
@@ -61,8 +62,8 @@ func test_pool_slab_test_mirrors_the_rust_reference() -> void:
 	assert_str(src).contains("t1 = min(t1, max(ta, tb));")
 	assert_str(src).contains("wall_contains(u_walls[i], from, u_wall_top)")
 	# ...including the exact cheap refusal in front of it (sight.rs::near),
-	# which is what keeps the per-fragment sight loop affordable as a level
-	# grows more walls
+	# which is what keeps the per-fragment sight loop affordable now that
+	# the map holds nineteen walls instead of ten
 	assert_str(src).contains("if (!wall_near(from, to, rect)) { return false; }")
 	assert_str(src).contains("min(from.x, to.x) <= rect.z && max(from.x, to.x) >= rect.x")
 
@@ -78,17 +79,17 @@ func test_hum_through_is_one_shared_constant() -> void:
 
 ## The hearing pass never washes a player-made ring over an x-ray surface
 ## seen through a wall: it tests once per pixel whether the visible surface
-## lies behind a wall (the always-on-top fan) and drops player shells
-## there — depth alone can't, since the fan corrupts it at its own pixels.
-## And the fan's OUTLINE is gated by its OWN dim reveal on BOTH sides of its
-## silhouette (its pixels AND the wall pixels touching it), never by the lit
-## wall behind it — so tapping that wall can't flare its edge.
-func test_hearing_pass_never_washes_player_rings_on_the_xray_fan() -> void:
+## lies behind a wall (any always-on-top source) and drops player shells
+## there — depth alone can't, since a source corrupts it at its own pixels.
+## And a source's OUTLINE is gated by its OWN dim reveal on BOTH sides of
+## its silhouette (its pixels AND the wall pixels touching it), never by the
+## lit wall behind it — so tapping that wall can't flare its edge.
+func test_hearing_pass_never_washes_player_rings_on_an_xrayed_source() -> void:
 	var src := _text(POST_PATH)
 	assert_str(src).contains("bool seen_walled = wall_crossings(cam, seen_pt) > 0;")
 	assert_str(src).contains("if (t >= scene_d || seen_walled) { continue; }")
-	assert_str(src).contains("if (seen_walled) { fan_r = c_c.r; }")
-	assert_str(src).contains("if (fan_r >= 0.0) { reveal = min(reveal, fan_r); }")
+	assert_str(src).contains("if (seen_walled) { src_r = c_c.r; }")
+	assert_str(src).contains("if (src_r >= 0.0) { reveal = min(reveal, src_r); }")
 
 
 ## The depth hack lives once, in the core, and is a FRAGMENT depth write

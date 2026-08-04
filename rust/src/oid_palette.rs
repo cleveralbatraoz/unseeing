@@ -27,6 +27,57 @@
 //! non-negotiable half: the same scene must colour identically on every
 //! platform and every run, or desktop and wasm would draw different worlds.
 
+//!
+//! # THE ID BUDGET
+//!
+//! The G channel is one number in [0, 1] and every object in the world has
+//! to fit in it. Most of them do not need their own: the five WORLD ids are
+//! handed out by the colouring below and reused wherever no pixel shows two
+//! solids meeting. What needs a FIXED id is anything the colouring cannot
+//! see — a slab, a creature, the hero's own body, a sound source painting
+//! its own limbs. Those are enumerated here, and this list is the one place
+//! to look before inventing another.
+//!
+//! ```text
+//!  id    who                                     assigned in
+//!  ----  --------------------------------------  ------------------------
+//!  0.05  a source's CASE — the part that stands   nodes/radio.rs
+//!        on world geometry (the radio's chassis)
+//!  0.15  the FLOOR slab                           nodes/level.rs
+//!  0.25  }                                        nodes/level.rs, by the
+//!  0.34  }  WORLD_OIDS — every wall, box,         colouring below: reused
+//!  0.43  }  column and wedge in the level         freely between solids
+//!  0.52  }                                        that never touch
+//!  0.61  }
+//!  0.33  a source's SHELL — the fan's housing,    nodes/fan.rs,
+//!        the radio's fascia                       nodes/radio.rs
+//!  0.63  a source's MOVING part (fan blades)      nodes/fan.rs
+//!  0.70  the companion cat                        nodes/cat.rs
+//!  0.82  the hero's legs and torso                nodes/hero.rs
+//!  0.90  the CEILING slab                         nodes/level.rs
+//!  0.96  the hero's arm and cane                  nodes/hero.rs
+//! ```
+//!
+//! Two entries sit closer than [`MIN_SEP`] on purpose — 0.33 against the
+//! world's 0.34, 0.63 against 0.61 — and that is exactly what [`Fixed`]
+//! exists for: a wall that touches a source is BANNED from the ids near it
+//! and takes another from the palette, while walls elsewhere keep all five.
+//! Reserving a clear band for every fixture would spend the channel on
+//! adjacencies that never happen.
+//!
+//! The SOURCE band is reused across sources under the same law as the world
+//! palette: the fan's housing and the radio's fascia share 0.33 because the
+//! two stand rooms apart and can never touch. Should a level ever place two
+//! sources against each other, that pair needs splitting — and the acoustic
+//! image is drawn always-on-top, so their silhouette would still be carried
+//! by the distance step; only the seam would be missing.
+//!
+//! ADDING AN OBJECT. If it is a solid a designer places, do nothing: the
+//! colouring will paint it. If it paints its own limbs, pick an id at least
+//! [`MIN_SEP`] from every id in the table above that it can TOUCH, add it
+//! here, and hand it to the level as a [`Fixed`] anchor so the colouring
+//! keeps its neighbours clear.
+
 /// Ids at least this far apart draw a full-strength crease, straight off
 /// the shader's `smoothstep(0.04, 0.08, nrm)` upper knee. Below it the seam
 /// fades; at zero it is gone.

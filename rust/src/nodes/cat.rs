@@ -29,7 +29,7 @@ use super::limbs::{sphere, sphere_lod, tube, tube_res};
 use crate::cat_body::{self, CatPose, Tail};
 use crate::cat_brain::{CatBrain, RoamRect};
 use crate::cat_gait::{self, CatGait};
-use crate::fan_wave::WhooshScheduler;
+use crate::sound_source::Cadence;
 
 /// Collider radius — small enough to slip between furniture legs.
 const COL_RADIUS: f32 = 0.11;
@@ -77,7 +77,7 @@ pub struct WaveCat {
     pose: Option<CatPose>,
     /// The idle-presence cadence gate — fires the cat's slow heartbeat
     /// pulse so a standing cat never sinks into full black.
-    presence: WhooshScheduler,
+    presence: Cadence,
     sit: f64,
     now: f64,
     sim_t: f64,
@@ -144,7 +144,7 @@ impl ICharacterBody3D for WaveCat {
         self.tail = Some(Tail::new(sk.tail_root, sk.tail_back, rightward(yaw)));
         self.gait = Some(gait);
         self.pose = Some(pose);
-        self.presence = WhooshScheduler::with_cadence(cat_gait::PRESENCE_EVERY);
+        self.presence = Cadence::every(cat_gait::PRESENCE_EVERY);
         self.last_pos = pos;
         self.mesh_dirty = true;
     }
@@ -212,7 +212,7 @@ impl ICharacterBody3D for WaveCat {
         }
         // the idle heartbeat: a faint bloom from the chest on a slow beat,
         // walking or still, so the hero can always find the cat
-        if self.presence.update(now).is_some() {
+        if self.presence.beat(now).is_some() {
             let chest = Vector3::new(new_pos.x, cat_gait::PRESENCE_HEIGHT as f32, new_pos.z);
             self.emit_wave(
                 chest,

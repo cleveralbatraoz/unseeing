@@ -42,11 +42,19 @@ pub const REFUSAL_MESSAGE: &str = "Pulses.emit: speed and max_r must be positive
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EmitRefused;
 
+/// The `dir.w` value marking an omnidirectional pulse — a wave with no
+/// direction at all. Public because a source's [`crate::sound_source::Spread`]
+/// must speak the same sentinel the shaders decode.
+pub const OMNI_COS: f64 = -2.0;
+
 /// Ring time + outline-fade tail; echoes and footsteps expire sooner so the
 /// live-slot count (which both shaders loop over per pixel) stays small.
 /// Total over every i32: unknown kinds get the tap's long tail, exactly as
-/// GDScript's `match` wildcard did.
-fn fade_tail(kind: i32) -> f64 {
+/// GDScript's `match` wildcard did. Public because a source's slot budget
+/// ([`crate::sound_source::Voice::slot_pressure`]) is this tail plus its
+/// ring time — one source of truth for how long a wave occupies its slot.
+#[must_use]
+pub fn fade_tail(kind: i32) -> f64 {
     match kind {
         1 => 3.5,
         2 => 2.5,
@@ -182,7 +190,11 @@ impl PulsePool {
             beam_dir.x,
             beam_dir.y,
             beam_dir.z,
-            if omni { -2.0 } else { cos_half as f32 },
+            if omni {
+                OMNI_COS as f32
+            } else {
+                cos_half as f32
+            },
         );
         self.t0[slot] = now;
         self.end[slot] = now + max_r / speed + fade_tail(kind);
@@ -206,7 +218,7 @@ impl PulsePool {
         gain: f64,
         now: f64,
     ) -> Result<(), EmitRefused> {
-        self.emit(kind, at, max_r, speed, gain, now, Vector3::ZERO, -2.0)
+        self.emit(kind, at, max_r, speed, gain, now, Vector3::ZERO, OMNI_COS)
     }
 
     /// Highest live slot + 1 — lets the shaders break out of dead loop
