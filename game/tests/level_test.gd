@@ -361,6 +361,24 @@ func test_shipped_level_exposes_and_injects_the_cat() -> void:
 	assert_vector(cat.position).is_equal_approx(Vector3(2.8, 0, 7.6), Vector3.ONE * 0.001)
 
 
+func _count_props(node: Node) -> int:
+	var n := 0
+	for child: Node in node.get_children():
+		if child is WaveProp:
+			n += 1
+		n += _count_props(child)
+	return n
+
+
+## The furniture census: the spawn room's table and chair (11 parts) plus
+## the fan room's four diagnostic crates — the witnesses the fan lights and
+## the hero sees only in line of sight, hidden behind the divider from the
+## spawn. 15 props. A prop added or lost in the editor trips this before
+## any probe has to.
+func test_shipped_prop_census() -> void:
+	assert_int(_count_props(_shipped_level())).is_equal(15)
+
+
 ## Every authored box in the level that carries a flat object id, paired
 ## with the world box it fills. The fan and the cat are deliberately absent:
 ## each is a MULTI-box object whose limbs SHARE one id on purpose, so that
@@ -394,11 +412,12 @@ func _painted_boxes(node: Node, out: Array[Dictionary]) -> void:
 ## draw their seam, and the shader fades it over smoothstep(0.04, 0.08).
 ## Two touching boxes closer than 0.08 in id therefore draw a weak seam, and
 ## IDENTICAL ids draw none at all: the pair melts into one silhouette. The
-## shipped level must clear the knee on every touching pair.
+## shipped level must clear the knee on every touching pair — the ten walls
+## and fifteen props (spawn-room table and chair, four fan-room crates).
 func test_shipped_touching_boxes_draw_their_seam() -> void:
 	var boxes: Array[Dictionary] = []
 	_painted_boxes(_shipped_level(), boxes)
-	assert_int(boxes.size()).is_equal(21)
+	assert_int(boxes.size()).is_equal(25)
 	var melted: Array[String] = []
 	for i: int in boxes.size():
 		for j: int in range(i + 1, boxes.size()):

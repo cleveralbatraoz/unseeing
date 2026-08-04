@@ -96,3 +96,19 @@ transform = Transform3D(-1, 0, 8.7422777e-08, 0, 1, 0, -8.7422777e-08, 0, -1, 2.
 
 [node name="SpawnPoint" type="Marker3D" parent="." unique_id=1242609234]
 transform = Transform3D(-0.32328954, 0, -0.9463001, 0, 1, 0, 0.9463001, 0, -0.32328954, 3, 0, 4)
+
+[node name="FanCrateNear" type="WaveProp" parent="." unique_id=700000001]
+size = Vector3(0.7, 0.7, 0.7)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 11, 0.35, 4.4)
+
+[node name="FanCrateNorth" type="WaveProp" parent="." unique_id=700000002]
+size = Vector3(0.6, 0.6, 0.6)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 12.6, 0.3, 3.3)
+
+[node name="FanCrateSouth" type="WaveProp" parent="." unique_id=700000003]
+size = Vector3(0.6, 0.6, 0.6)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 12.6, 0.3, 5.5)
+
+[node name="FanPost" type="WaveProp" parent="." unique_id=700000004]
+size = Vector3(0.5, 1, 0.5)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 14.5, 0.5, 4.4)
