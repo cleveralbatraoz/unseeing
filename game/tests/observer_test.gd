@@ -376,6 +376,31 @@ func test_explain_ray_names_the_wall_between_spawn_and_fan() -> void:
 	assert_array(crossed).is_equal(["DividerNorth"])
 
 
+## The wall names are pinned to the table they name, not to whatever the
+## scene tree holds at the moment the question is asked.
+##
+## The occluder table is derived ONCE, when the level enters the tree, and
+## `walls[i].name` claims to name `wall_rects[i]`. A name list re-walked from
+## the live tree on every call breaks that the instant a wall is added in
+## front of the others: index 0 would name the newcomer while the table's
+## slot 0 still holds the wall it was built from, and explain_ray would blame
+## an innocent wall for an occlusion — the exact confident-wrong answer this
+## layer exists to prevent. (Re-walking is also O(scene nodes) per sight
+## line, with a dynamic-cast probe per node, which a fan of rays pays per
+## ray.)
+func test_wall_names_stay_pinned_to_the_table_they_name() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _observer()
+	obs.inject(level, _eye())
+	var before: Array[String] = _wall_names(obs)
+	assert_int(before.size()).is_greater(0)
+	var newcomer := WaveWall.new()
+	newcomer.name = "AddedAfterTheTableWasDerived"
+	level.add_child(newcomer)
+	level.move_child(newcomer, 0)
+	assert_array(_wall_names(obs)).is_equal(before)
+
+
 ## The composition root opens the window: main hands the observer the level
 ## it built and the hero's OWN eye, so a snapshot taken off the live scene
 ## answers rather than refusing. Read back from the real main scene — a
@@ -544,6 +569,15 @@ func test_an_observer_outside_the_tree_refuses_rather_than_promising() -> void:
 	var refusal: Dictionary = obs.take_explanation(id)
 	assert_int(refusal.size()).is_equal(1)
 	assert_str(refusal["unavailable"]).contains("physics world")
+
+
+## Every wall the occluder table names, in table order — read through the
+## one surface that publishes them.
+func _wall_names(obs: WaveObserver) -> Array[String]:
+	var names: Array[String] = []
+	for wall: Dictionary in obs.explain_ray(Vector3.ZERO, Vector3.ONE)["walls"]:
+		names.append(wall["name"])
+	return names
 
 
 func _observer() -> WaveObserver:

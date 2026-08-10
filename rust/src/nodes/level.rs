@@ -111,6 +111,11 @@ pub struct WaveLevel {
     tap_normal: Vector3,
     source_children: Vec<DynGd<Node, dyn SoundSource>>,
     cat_children: Vec<Gd<WaveCat>>,
+    /// The walls the occluder table was built FROM, in table order, kept so
+    /// a crossing can be named without re-walking the scene — and, more
+    /// importantly, so the names cannot drift out of step with the table.
+    /// See [`Self::wall_names`].
+    wall_children: Vec<Gd<WaveWall>>,
     base: Base<Node3D>,
 }
 
@@ -316,6 +321,7 @@ impl WaveLevel {
         self.assign_oids(&census);
         self.source_children = census.sources;
         self.cat_children = census.cats;
+        self.wall_children = census.walls;
         let lift = Vector3::new(0.0, level_plan::SPAWN_LIFT as f32, 0.0);
         if let Some(marker) = census.spawn {
             self.spawn_at = marker.get_global_position() + lift;
@@ -516,12 +522,35 @@ impl WaveLevel {
     /// crossing can be NAMED and not merely counted. Truncated exactly as
     /// the table is: past the shader's last slot a wall does not occlude,
     /// and naming it would describe an occlusion that never happens.
+    ///
+    /// Read off the handles [`Self::derive`] built the table from, NOT off a
+    /// fresh walk of the tree. Two reasons, and the first is correctness:
+    /// the table is derived once and `names[i]` claims to name
+    /// `occluders[i]`, so a walk that found the scene rearranged — a wall
+    /// added, moved to the front, or freed — would slide every name one slot
+    /// off its rect and blame an innocent wall for an occlusion. The second
+    /// is cost: the walk is O(scene nodes) with a dynamic-cast probe per
+    /// node, and a fan of sight lines paid it per ray.
+    ///
+    /// This is not a mirrored copy of the names. The handles are live and
+    /// the NAME is read through them on every call, so a renamed wall
+    /// reports its new name; only the identity and the order are pinned,
+    /// exactly as `source_children` and `cat_children` already are. A wall
+    /// freed since derivation keeps its SLOT, under a placeholder — dropping
+    /// it would shift every name after it, which is the bug this exists to
+    /// prevent.
     pub(super) fn wall_names(&self) -> Vec<String> {
-        self.census()
-            .walls
+        self.wall_children
             .iter()
             .take(self.occluders.len())
-            .map(|wall| wall.get_name().to_string())
+            .enumerate()
+            .map(|(index, wall)| {
+                if wall.is_instance_valid() {
+                    wall.get_name().to_string()
+                } else {
+                    format!("<freed wall {index}>")
+                }
+            })
             .collect()
     }
 
