@@ -8,6 +8,7 @@ extends GdUnitTestSuite
 ## inventing anything — no zeros standing in for facts it cannot observe.
 
 const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
+const MAIN_SCENE := preload("res://scenes/main.tscn")
 
 ## The fan's shipped voice, from rust/src/fan_wave.rs: volume 0.75, cadence
 ## 0.4 s, wavefront 4.5 m/s. Everything the snapshot reports about it is
@@ -141,6 +142,20 @@ func test_explain_ray_names_the_wall_between_spawn_and_fan() -> void:
 		if wall["crossed"]:
 			crossed.append(wall["name"])
 	assert_array(crossed).is_equal(["DividerNorth"])
+
+
+## The composition root opens the window: main hands the observer the level
+## it built and the hero's OWN eye, so a snapshot taken off the live scene
+## answers rather than refusing. Read back from the real main scene — a
+## window wired to nothing looks exactly like a working one until asked.
+func test_the_composition_root_injects_the_observer() -> void:
+	var main: UnseeingMain = auto_free(MAIN_SCENE.instantiate() as UnseeingMain)
+	add_child(main)
+	var snap: Dictionary = main.observer.snapshot(0.0)
+	assert_bool(snap.has("unavailable")).is_false()
+	assert_int((snap["slots"] as Array).size()).is_equal(64)
+	assert_vector(snap["camera"]["position"]).is_equal(main.player.camera.global_position)
+	assert_int((snap["sources"] as Array).size()).is_equal(2)
 
 
 func _observer() -> WaveObserver:

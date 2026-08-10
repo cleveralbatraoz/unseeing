@@ -45,6 +45,8 @@ var cats: Array[WaveCat] = []
 var level: WaveLevel
 ## The settings overlay — Escape freezes the world and frees the mouse.
 var settings: SettingsMenu
+## The agent's window into the engine — reads every system, drives none.
+var observer: WaveObserver
 
 ## The game clock: simulated seconds accumulated from frame deltas — NOT wall
 ## time, so offline rendering (movie maker) and time scaling stay correct.
@@ -115,6 +117,13 @@ func _ready() -> void:
 	hero.body_mat = body_mat
 	add_child(hero)
 	_setup_post_quad(player.camera)
+	# the debug window: the level (which already holds the wave pool) and
+	# the hero's own eye, because how many walls stand between the hero and
+	# a source is measured from there. It reads and never drives, so a run
+	# with nothing asking it questions is a run it does not exist in.
+	observer = WaveObserver.new()
+	observer.inject(level, player.camera)
+	add_child(observer)
 	# the settings overlay, added LAST on purpose: unhandled input walks
 	# the tree bottom-up, so the overlay sees Escape before the world does
 	# and can swallow every key it takes.
