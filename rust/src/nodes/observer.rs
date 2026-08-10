@@ -41,7 +41,10 @@ use crate::observe::reflect::{
     self, Answer, ClusteredPoint, Collected, ExplanationLedger, ReflectionExplanation,
     ReflectionRequest,
 };
-use crate::observe::{EchoObservation, EyeObservation, FrameObservation, SourceObservation, frame};
+use crate::observe::{
+    EchoObservation, EyeObservation, FrameObservation, SceneObservation, SourceObservation,
+    SpawnObservation, frame,
+};
 use crate::ray_fan;
 
 /// No level: the observer was never handed the world to read.
@@ -172,12 +175,18 @@ impl WaveObserver {
             // actually answered, and a leak would be loud rather than
             // mistaken for a world rendered at flicker zero.
             flick.unwrap_or(f64::NAN),
-            sources(&level, eye, &rects),
-            rects,
-            EyeObservation {
-                position: eye,
-                basis: camera.get_global_transform().basis,
-                fov: f64::from(camera.get_fov()),
+            SceneObservation {
+                sources: sources(&level, eye, &rects),
+                wall_rects: rects,
+                eye: EyeObservation {
+                    position: eye,
+                    basis: camera.get_global_transform().basis,
+                    fov: f64::from(camera.get_fov()),
+                },
+                spawn: SpawnObservation {
+                    position: level.spawn_pos(),
+                    yaw: level.spawn_yaw(),
+                },
             },
         );
         frame_dict(&observation, flick.is_some())
@@ -493,6 +502,7 @@ fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionar
     );
     state.set("wall_truncated", observation.wall_truncated);
     state.set("camera", &camera_dict(&observation.eye));
+    state.set("spawn", &spawn_dict(&observation.spawn));
     state.set("unknown", &unknown);
     state
 }
@@ -569,6 +579,15 @@ fn camera_dict(eye: &EyeObservation) -> VarDictionary {
     entry.set("position", eye.position);
     entry.set("forward", -eye.basis.col_c());
     entry.set("fov", eye.fov);
+    entry
+}
+
+/// Where the hero woke — the landmark every other world coordinate in the
+/// snapshot is read against.
+fn spawn_dict(spawn: &SpawnObservation) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("position", spawn.position);
+    entry.set("yaw", spawn.yaw);
     entry
 }
 

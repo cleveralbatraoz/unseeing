@@ -84,6 +84,34 @@ pub struct EyeObservation {
     pub fov: f64,
 }
 
+/// Where the hero woke, as the level derived it from its marker.
+///
+/// Carried because it is the one landmark that turns the snapshot's world
+/// coordinates into a story a reader can follow — "the tap is two metres
+/// behind the spawn" — and because nothing else in the snapshot publishes
+/// it: the spawn exists only as a derivation from a scene marker.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpawnObservation {
+    /// The marker's place, already lifted to capsule height.
+    pub position: Vector3,
+    /// The way the hero faces on waking, in radians.
+    pub yaw: f64,
+}
+
+/// The scene as the boundary measured it this frame — everything
+/// [`frame`] needs that does not come out of the wave engine itself.
+///
+/// Grouped rather than passed one by one: these four are obtained the same
+/// way (walking Godot nodes in `crate::nodes::observer`) and travel
+/// together, where the pool and the clock come from elsewhere entirely.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneObservation {
+    pub sources: Vec<SourceObservation>,
+    pub wall_rects: Vec<Vector4>,
+    pub eye: EyeObservation,
+    pub spawn: SpawnObservation,
+}
+
 /// The whole state vector for one frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameObservation {
@@ -112,6 +140,7 @@ pub struct FrameObservation {
     /// have been dropped. Loud by construction.
     pub wall_truncated: bool,
     pub eye: EyeObservation,
+    pub spawn: SpawnObservation,
 }
 
 /// Compose one frame's observation from parts the boundary supplies.
@@ -124,9 +153,7 @@ pub fn frame(
     book: &EchoQueue,
     now: f64,
     flick: f64,
-    sources: Vec<SourceObservation>,
-    wall_rects: Vec<Vector4>,
-    eye: EyeObservation,
+    scene: SceneObservation,
 ) -> FrameObservation {
     let slots = slots(pool, now);
     let live_slots = slots
@@ -141,10 +168,11 @@ pub fn frame(
         slots,
         next_eviction: explain_eviction(pool, now),
         echoes: echoes(book, now),
-        sources,
-        wall_truncated: wall_rects.len() >= MAXW,
-        wall_rects,
-        eye,
+        sources: scene.sources,
+        wall_truncated: scene.wall_rects.len() >= MAXW,
+        wall_rects: scene.wall_rects,
+        eye: scene.eye,
+        spawn: scene.spawn,
     }
 }
 
@@ -189,16 +217,27 @@ mod tests {
         }
     }
 
+    /// A spawn nothing else in these tests produces, for the same reason
+    /// [`TEST_FOV`] exists.
+    fn test_spawn() -> SpawnObservation {
+        SpawnObservation {
+            position: Vector3::new(3.0, 0.9, 4.0),
+            yaw: -1.9,
+        }
+    }
+
+    /// A world with no walls and no sources, seen from the test eye.
+    fn test_scene(wall_rects: Vec<Vector4>) -> SceneObservation {
+        SceneObservation {
+            sources: Vec::new(),
+            wall_rects,
+            eye: test_eye(),
+            spawn: test_spawn(),
+        }
+    }
+
     fn empty_frame(pool: &PulsePool, now: f64) -> FrameObservation {
-        frame(
-            pool,
-            &EchoQueue::new(),
-            now,
-            1.0,
-            Vec::new(),
-            Vec::new(),
-            test_eye(),
-        )
+        frame(pool, &EchoQueue::new(), now, 1.0, test_scene(Vec::new()))
     }
 
     /// The composer carries the pieces through without recomputing them:
@@ -255,24 +294,8 @@ mod tests {
         let pool = PulsePool::new();
         let rect = Vector4::new(0.0, 0.0, 1.0, 1.0);
         let book = EchoQueue::new();
-        let short = frame(
-            &pool,
-            &book,
-            0.0,
-            1.0,
-            Vec::new(),
-            vec![rect; 31],
-            test_eye(),
-        );
-        let full = frame(
-            &pool,
-            &book,
-            0.0,
-            1.0,
-            Vec::new(),
-            vec![rect; 32],
-            test_eye(),
-        );
+        let short = frame(&pool, &book, 0.0, 1.0, test_scene(vec![rect; 31]));
+        let full = frame(&pool, &book, 0.0, 1.0, test_scene(vec![rect; 32]));
         assert!(!short.wall_truncated);
         assert!(full.wall_truncated);
     }
@@ -299,7 +322,7 @@ mod tests {
         let pool = PulsePool::new();
         let mut book = EchoQueue::new();
         book.schedule(0.0, 5.5, Vector3::new(1.0, 2.0, 3.0), 1.0, 5.5);
-        let f = frame(&pool, &book, 0.25, 1.0, Vec::new(), Vec::new(), test_eye());
+        let f = frame(&pool, &book, 0.25, 1.0, test_scene(Vec::new()));
         assert_eq!(f.echoes.len(), 1);
         assert!((f.echoes[0].at_t - 1.0).abs() < 1e-9);
         assert!((f.echoes[0].fires_in - 0.75).abs() < 1e-9);
@@ -316,7 +339,7 @@ mod tests {
         let pool = PulsePool::new();
         let mut book = EchoQueue::new();
         book.schedule(0.0, 5.5, Vector3::ZERO, 1.0, 5.5);
-        let f = frame(&pool, &book, 1.5, 1.0, Vec::new(), Vec::new(), test_eye());
+        let f = frame(&pool, &book, 1.5, 1.0, test_scene(Vec::new()));
         assert!((f.echoes[0].fires_in + 0.5).abs() < 1e-9);
     }
 

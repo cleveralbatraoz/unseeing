@@ -308,6 +308,27 @@ func test_the_shipped_level_has_no_object_id_violations() -> void:
 	assert_array(e["names"]).contains(["Floor", "Ceiling", "DividerNorth", "Fan @0.33"])
 
 
+## Where the hero woke. Every position in a snapshot is a world coordinate,
+## and the one landmark that turns those into a story — "the tap is two
+## metres behind the spawn", "the fan is through the wall from where I
+## started" — is the spawn itself. It is derived from the marker, not
+## authored anywhere an agent can read, so a snapshot without it leaves the
+## reader unable to place anything else it reports.
+##
+## Hand-derived from the shipped scene: the SpawnPoint marker stands at
+## (3, 0, 4) and the level lifts it to capsule height, SPAWN_LIFT = 0.9
+## (rust/src/level_plan.rs). The yaw is checked against the level's own
+## accessor — two independent surfaces onto one derivation, which is what
+## catches the boundary inventing a heading rather than carrying one.
+func test_the_snapshot_says_where_the_hero_woke() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _observer()
+	obs.inject(level, _eye())
+	var spawn: Dictionary = obs.snapshot(0.0)["spawn"]
+	assert_vector(spawn["position"]).is_equal_approx(Vector3(3.0, 0.9, 4.0), Vector3.ONE * 0.0001)
+	assert_float(spawn["yaw"]).is_equal_approx(level.spawn_yaw(), 0.0001)
+
+
 ## A source that cannot fire has no next emit, and says so. The cadence gate
 ## refuses a non-positive interval outright (rust/src/sound_source.rs), so the
 ## appointment it is holding will never be kept — reporting the stale number

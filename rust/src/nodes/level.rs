@@ -204,13 +204,13 @@ impl WaveLevel {
     /// Where the hero wakes: the SpawnPoint marker lifted to capsule
     /// height.
     #[func]
-    fn spawn_pos(&self) -> Vector3 {
+    pub(super) fn spawn_pos(&self) -> Vector3 {
         self.spawn_at
     }
 
     /// The way the hero faces on waking (yaw, radians) — the marker's.
     #[func]
-    fn spawn_yaw(&self) -> f64 {
+    pub(super) fn spawn_yaw(&self) -> f64 {
         self.spawn_heading
     }
 
