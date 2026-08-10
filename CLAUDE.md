@@ -504,6 +504,35 @@ exact release, and `ci/pipeline.sh` refuses a mismatched binary.
 - Connect any MCP server that helps (e.g. tools that can actually *play* the
   game for UI/UX testing), or write one if it doesn't exist.
 
+### Debug by reading state, not by looking at frames
+
+**Rendering a frame and staring at it is the last resort, not the first.** A
+picture can show that a seam did not draw; it cannot say that two solids were
+handed the same object id. `WaveObserver` (`rust/src/nodes/observer.rs`) answers
+that class of question as structured data — the pulse pool decoded, the next
+eviction and its rule, the object-id touch graph with its violations, wall
+crossings, and the whole reflection fan including the rays that struck nothing.
+The pure law lives in `rust/src/observe/`, cargo-testable with no Godot.
+
+Three transports, one surface: gdUnit4 suites in the headless gate, godot-mcp
+live in a session (`docs/superpowers/mcp/godot-mcp-loop.md`), and — not yet
+built — a windowed dump scene. The wiki page *Engineering — Debugging and
+Observability* is the reference.
+
+**If you reach for a screenshot, that is a signal, not a workflow**: the layer
+has a hole where you are standing. Report what you needed.
+
+**And know its limit: `explain_ray` reports what Rust believes, never what the
+screen draws.** No gate asserts that the hand-transliterated GLSL still agrees
+with `rust/src/sight.rs`, so on a Rust/GPU disagreement this layer will side
+with Rust and tell you the shader is fine.
+
+**`game/addons/godot_mcp/` is gitignored and must stay untracked** —
+`deploy.sh` ships the tree by `git archive`, so a committed addon reaches the
+droplet and the wasm export, and `ci/vendor-gdunit4.sh` fingerprints
+`game/addons/` believing gdUnit4 is its only tenant. `test/repo_hygiene.sh`
+pins both halves.
+
 ### The installed skill set
 
 `superpowers@claude-plugins-official` v6.2.0, user scope, upstream commit

@@ -18,3 +18,18 @@ game/override.cfg
 # window before that call, and anything ever written outside `sdd/`, are
 # covered by nothing. Hence the rule for the whole directory, here.
 .superpowers/
+# The godot-mcp editor addon — a DEVELOPER TOOL, never a shipped dependency,
+# and the one thing under game/addons/ that must never be committed.
+#
+# Two reasons, both load-bearing. deploy.sh ships the tree by `git archive`
+# into a bare repo whose post-receive hook untars it, so anything committed
+# here reaches the droplet AND the wasm export — a Node-backed debugging tool
+# riding into the shipped game. And ci/vendor-gdunit4.sh governs this
+# directory on the assumption that gdUnit4 is its only tenant: its `verify`
+# fingerprints the tree, so a second addon is drift it would have to be taught
+# to forgive.
+#
+# Install it locally (`npx @satelliteoflove/godot-mcp --install-addon`) and
+# leave it untracked. test/repo_hygiene.sh pins both halves of that: nothing
+# under the path is tracked, and this rule still covers it.
+game/addons/godot_mcp/

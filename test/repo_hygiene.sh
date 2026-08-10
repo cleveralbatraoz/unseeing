@@ -70,17 +70,45 @@ if git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then HAVE_INDEX=1; fi
 # `git add -A` swallows it, and anything written outside `sdd/` is never
 # covered at all. The standing rule belongs here, not in a directory the tool
 # creates for itself.
+#
+# game/addons/godot_mcp/ is the godot-mcp editor addon: a developer tool, and
+# the one tenant of game/addons/ that must never be committed. deploy.sh ships
+# the tree by `git archive` into a bare repo, so a committed addon reaches the
+# droplet and the wasm export; and ci/vendor-gdunit4.sh fingerprints this
+# directory believing gdUnit4 is alone in it.
 if [ "$HAVE_INDEX" = 0 ]; then
   skip "ignore rules (no git metadata — deploy work tree is a tar extract)"
 else
   for p in .claude/settings.json .claude/worktrees/some-task/README.md \
-           game/override.cfg .superpowers/sdd/a-plan/progress.md; do
+           game/override.cfg .superpowers/sdd/a-plan/progress.md \
+           game/addons/godot_mcp/plugin.cfg; do
     if git -C "$DIR" check-ignore -q "$p" 2>/dev/null; then
       ok "$p is ignored"
     else
       bad "$p is NOT ignored (no .gitignore rule covers it)"
     fi
   done
+fi
+
+# --- the one addon that must stay out --------------------------------------
+# The ignore rule above is half the guard: it stops `git add -A` from sweeping
+# the addon in. This is the other half, and it is the one that matters after
+# the fact — `git add -f` and a rule deleted in a later edit both defeat the
+# first check while leaving this one to catch the result.
+#
+# Checked as a TRACKED-PATH question rather than a working-tree one on purpose:
+# the addon is expected to be present on a developer's disk and absent from
+# every commit, so its existence proves nothing either way. Only the index does.
+if [ "$HAVE_INDEX" = 0 ]; then
+  skip "godot-mcp addon stays untracked (no git metadata)"
+else
+  mcp="$(git -C "$DIR" ls-files -- 'game/addons/godot_mcp' | head -20)"
+  if [ -z "$mcp" ]; then
+    ok "game/addons/godot_mcp/ is not tracked"
+  else
+    bad "godot-mcp addon is TRACKED — it would ship to the droplet and the wasm export:"
+    echo "$mcp" | sed 's/^/hygiene:      /'
+  fi
 fi
 
 # --- pre-commit size guard --------------------------------------------------
