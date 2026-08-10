@@ -756,6 +756,36 @@ mod tests {
             .collect();
         assert_eq!(held, vec![4]);
     }
+
+    /// The two transmissions must be keyed to their own occluder, not both
+    /// to the camera's. On the birth-wall geometry the SOURCE occluder
+    /// (`source_crossings`) sees zero walls, so `hum_transmission` — the
+    /// exponent `source_reveal_vis` in the shader actually applies — is
+    /// full at 1.0 (`0.55^0`); the CAMERA occluder still sees the one wall
+    /// it exits, so `source_transmission` — the exponent `source_muffle`
+    /// applies — is dimmed to 0.30 (`0.30^1`). A version that exponentiates
+    /// both by `camera_crossings` would report 0.55 for `hum_transmission`
+    /// here instead of 1.0, and no other test in this module can tell the
+    /// two exponent bases apart.
+    #[test]
+    fn the_two_transmissions_use_their_own_occluder() {
+        let e = explain_ray(
+            Vector3::new(6.4, 0.9, 4.0),
+            Vector3::new(10.0, 0.9, 4.0),
+            &shipped_rects(),
+            WALL_TOP,
+        );
+        assert!(
+            (e.hum_transmission - 1.0).abs() < 1e-9,
+            "got {}",
+            e.hum_transmission
+        );
+        assert!(
+            (e.source_transmission - 0.30).abs() < 1e-9,
+            "got {}",
+            e.source_transmission
+        );
+    }
 }
 ```
 
@@ -808,18 +838,24 @@ pub struct RayExplanation {
     pub camera_crossings: u32,
     /// Source to lit point: the birth wall is skipped.
     pub source_crossings: u32,
-    /// `HUM_THROUGH^n` — how much of a source's WAVE survives.
+    /// `HUM_THROUGH ^ source_crossings` — how much of a source's WAVE
+    /// survives (the shader's `source_reveal_vis`, keyed to the SOURCE
+    /// occluder so a sound born flush on a wall still lights its own face).
     pub hum_transmission: f64,
-    /// `SOURCE_THROUGH^n` — how much of its SILHOUETTE survives.
+    /// `SOURCE_THROUGH ^ camera_crossings` — how much of its SILHOUETTE
+    /// survives (the engine's `source_muffle`, keyed to the CAMERA
+    /// occluder — every wall between the eye and the source counts).
     pub source_transmission: f64,
 }
 
 /// Explain what the walls do to the sight line `from -> to`.
 ///
-/// Total on any input; a degenerate segment simply crosses nothing. The
-/// counts come from `sight`'s own functions rather than from the per-wall
-/// verdicts, so a disagreement between the two would surface as a failing
-/// test here rather than as a plausible-looking wrong answer in the field.
+/// Total on any input, including a degenerate segment (`from == to` still
+/// runs every wall test — a point can lie inside a wall's occluder box, so
+/// it is not guaranteed to cross nothing). The counts come from `sight`'s
+/// own functions rather than from the per-wall verdicts, so a disagreement
+/// between the two would surface as a failing test here rather than as a
+/// plausible-looking wrong answer in the field.
 #[must_use]
 pub fn explain_ray(
     from: Vector3,
@@ -846,7 +882,13 @@ pub fn explain_ray(
         walls,
         camera_crossings,
         source_crossings,
-        hum_transmission: HUM_THROUGH.powi(camera_crossings as i32),
+        // HUM_THROUGH is the source_reveal_vis exponent base
+        // (data_core.gdshaderinc), which reads off wall_crossings_from —
+        // the SOURCE occluder that skips the wall a source is born inside.
+        hum_transmission: HUM_THROUGH.powi(source_crossings as i32),
+        // SOURCE_THROUGH is the source_muffle exponent base
+        // (nodes/level.rs), which reads off sight::crossings — the CAMERA
+        // occluder, every wall counted.
         source_transmission: SOURCE_THROUGH.powi(camera_crossings as i32),
     }
 }
@@ -862,11 +904,11 @@ pub mod ray;
 
 Run: `cd rust && cargo test --lib observe:: 2>&1 | tail -20`
 
-Expected: PASS, 14 tests.
+Expected: PASS, 15 tests.
 
 - [ ] **Step 5: Run the mutation check**
 
-1. Change `HUM_THROUGH.powi(...)` to `HUM_THROUGH * f64::from(camera_crossings)` → `two_walls_compose_their_transmission` must fail.
+1. Change `HUM_THROUGH.powi(...)` to `HUM_THROUGH * f64::from(source_crossings)` → `two_walls_compose_their_transmission` must fail.
 2. Change `crossings_from` to `crossings` for `source_crossings` → `the_birth_wall_asymmetry_is_reported_not_hidden` must fail.
 3. Change the `walls` collect to filter on `crossed` → `a_clear_line_still_reports_every_wall` must fail.
 
