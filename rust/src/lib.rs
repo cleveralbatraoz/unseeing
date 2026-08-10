@@ -69,6 +69,7 @@ pub mod fan_wave;
 mod ffi;
 pub mod level_plan;
 mod nodes;
+pub mod observe;
 pub mod oid_palette;
 pub mod prop_shape;
 pub mod pulse_pool;
