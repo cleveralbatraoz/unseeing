@@ -662,9 +662,10 @@ mod tests {
 
     const WALL_TOP: f32 = level_plan::WALL_H as f32;
 
-    /// The shipped map's wall centerlines, inflated into sight occluders —
-    /// the same fixture sight.rs pins itself against.
-    fn shipped_rects() -> Vec<Vector4> {
+    /// A RETIRED 20×20/10-wall map, not the shipped 28×28/19-wall scene —
+    /// the same fixture sight.rs pins itself against, under the name it was
+    /// corrected to in Task 8.
+    fn retired_map_rects() -> Vec<Vector4> {
         [
             Vector4::new(0.6, 0.6, 19.4, 0.6),
             Vector4::new(19.4, 0.6, 19.4, 19.4),
@@ -691,7 +692,7 @@ mod tests {
         let e = explain_ray(
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(8.6, 1.15, 4.4),
-            &shipped_rects(),
+            &retired_map_rects(),
             WALL_TOP,
         );
         assert_eq!(e.camera_crossings, 1);
@@ -708,7 +709,7 @@ mod tests {
         let e = explain_ray(
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 10.0),
-            &shipped_rects(),
+            &retired_map_rects(),
             WALL_TOP,
         );
         assert_eq!(e.camera_crossings, 2);
@@ -724,7 +725,7 @@ mod tests {
         let e = explain_ray(
             Vector3::new(8.0, 1.0, 4.0),
             Vector3::new(12.0, 1.5, 6.0),
-            &shipped_rects(),
+            &retired_map_rects(),
             WALL_TOP,
         );
         assert_eq!(e.camera_crossings, 0);
@@ -743,7 +744,7 @@ mod tests {
         let e = explain_ray(
             Vector3::new(6.4, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 4.0),
-            &shipped_rects(),
+            &retired_map_rects(),
             WALL_TOP,
         );
         assert_eq!(e.camera_crossings, 1);
@@ -772,7 +773,7 @@ mod tests {
         let e = explain_ray(
             Vector3::new(6.4, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 4.0),
-            &shipped_rects(),
+            &retired_map_rects(),
             WALL_TOP,
         );
         assert!(
