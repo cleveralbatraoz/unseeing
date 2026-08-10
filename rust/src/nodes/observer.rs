@@ -18,18 +18,26 @@
 //! invent an eye at the origin, and a plausible wrong number is the most
 //! dangerous answer of all. The eye-free explainers keep working.
 
-use godot::classes::{Camera3D, Material, MeshInstance3D, ShaderMaterial};
+use godot::classes::{
+    Camera3D, INode, Material, MeshInstance3D, PhysicsDirectSpaceState3D,
+    PhysicsRayQueryParameters3D, ShaderMaterial,
+};
 use godot::prelude::*;
 
 use super::level::WaveLevel;
 use super::source;
+use crate::clustering::RayHit;
 use crate::ffi::WaveCore;
 use crate::level_plan;
 use crate::observe::evict::{EvictionPlan, EvictionRule, explain_eviction};
 use crate::observe::oids::{OidExplanation, explain_oids_checked};
 use crate::observe::pool::{SlotObservation, SlotState};
 use crate::observe::ray::{self, RayExplanation};
+use crate::observe::reflect::{
+    Answer, ClusteredPoint, Collected, ExplanationLedger, ReflectionExplanation, ReflectionRequest,
+};
 use crate::observe::{FrameObservation, SourceObservation, frame};
+use crate::ray_fan;
 
 /// No level: the observer was never handed the world to read.
 const NO_LEVEL: &str = "observer was never injected a level";
@@ -50,6 +58,17 @@ const DEAD_LEVEL: &str = "the injected level has been freed";
 /// The camera was injected and has since been freed.
 const DEAD_CAMERA: &str = "the injected camera has been freed";
 
+/// An explanation id nobody is holding an answer for. Never issued,
+/// already collected, or aged out of the book — all three mean the same
+/// thing to the asker, and none of them is a fan that struck nothing.
+const NO_SUCH_REQUEST: &str =
+    "no such explanation request — never issued, already collected, or aged out";
+
+/// The observer stands outside any physics world, so the reflection fan
+/// has nothing to cast against. Refused rather than answered with zero
+/// hits: a fan that struck nothing is a fact about the ROOM.
+const NO_SPACE: &str = "the observer stands in no physics world — reflection rays need one";
+
 /// The agent's window into the running wave engine: it reads every system
 /// and drives none.
 #[derive(GodotClass)]
@@ -57,7 +76,31 @@ const DEAD_CAMERA: &str = "the injected camera has been freed";
 pub struct WaveObserver {
     level: Option<Gd<WaveLevel>>,
     camera: Option<Gd<Camera3D>>,
+    /// Reflection questions waiting on a physics frame, and the answers
+    /// that frame produced.
+    explanations: ExplanationLedger,
     base: Base<Node>,
+}
+
+#[godot_api]
+impl INode for WaveObserver {
+    /// The one moment a physics space may be touched. Every reflection
+    /// question booked since the last tick is cast and answered here, into
+    /// a SCRATCH buffer that never reaches the echo book the game drains.
+    fn physics_process(&mut self, _dt: f64) {
+        let requests = self.explanations.take_requests();
+        if requests.is_empty() {
+            return; // the overwhelmingly common case: no work, no space lookup
+        }
+        let space = self.space_state();
+        for (id, request) in requests {
+            let answer = match space.clone() {
+                Some(space) => Answer::Explained(Box::new(cast_and_explain(&request, space))),
+                None => Answer::Refused(NO_SPACE),
+            };
+            self.explanations.answer(id, answer);
+        }
+    }
 }
 
 #[godot_api]
@@ -162,6 +205,67 @@ impl WaveObserver {
         let plan = explain_eviction(core.bind().pool(), now);
         eviction_dict(&plan)
     }
+
+    /// Ask why a surface answered, or did not, and get an id back.
+    ///
+    /// This is a REQUEST rather than an answer because the reflection fan
+    /// is cast with physics rays, and a space state may only be touched
+    /// inside the physics tick — the same reason the player queues its
+    /// waves. The next `_physics_process` casts it; [`Self::take_explanation`]
+    /// collects it.
+    ///
+    /// The sound is described, never emitted: no kind, no loudness, no
+    /// space is carried in, and nothing the answer touches is the running
+    /// game's. `normal` is the birth surface's, or `ZERO` for a sound born
+    /// in the air; `now` is the clock the appointments are measured from,
+    /// which is why it is asked for rather than invented.
+    #[func]
+    fn request_explain_reflection(
+        &mut self,
+        at: Vector3,
+        normal: Vector3,
+        max_r: f64,
+        speed: f64,
+        max_echoes: i64,
+        now: f64,
+    ) -> i64 {
+        self.explanations.request(ReflectionRequest {
+            at,
+            normal,
+            max_r,
+            speed,
+            max_echoes,
+            now,
+        })
+    }
+
+    /// Collect a booked explanation: `{"pending": true}` until the physics
+    /// frame has run, the explanation exactly once thereafter, and a
+    /// refusal for an id nobody holds an answer for.
+    #[func]
+    fn take_explanation(&mut self, request_id: i64) -> VarDictionary {
+        match self.explanations.collect(request_id) {
+            Collected::Pending => {
+                let mut waiting = VarDictionary::new();
+                waiting.set("pending", true);
+                waiting
+            }
+            Collected::Ready(Answer::Explained(explanation)) => {
+                reflection_dict(request_id, &explanation)
+            }
+            Collected::Ready(Answer::Refused(reason)) => unavailable(reason),
+            Collected::Unknown => unavailable(NO_SUCH_REQUEST),
+        }
+    }
+
+    /// The nominal size of the golden-angle reflection fan, before any
+    /// hemisphere cull. Served from the same pure core the engine casts
+    /// from, so an agent comparing it against an explanation's `rays_cast`
+    /// is reading one number, not two that can drift.
+    #[func]
+    fn ray_fan_size(&self) -> i64 {
+        ray_fan::RAYS as i64
+    }
 }
 
 impl WaveObserver {
@@ -184,6 +288,65 @@ impl WaveObserver {
             Some(camera) => Ok(camera),
         }
     }
+
+    /// The physics space the observer itself stands in. A plain `Node` has
+    /// no world of its own — it borrows its viewport's, which is the same
+    /// world the level it was injected with is drawn and collided in, as
+    /// long as both were placed in the same tree. An observer outside a
+    /// tree has none, and says so rather than casting into nothing.
+    fn space_state(&self) -> Option<Gd<PhysicsDirectSpaceState3D>> {
+        self.base()
+            .get_viewport()
+            .and_then(|viewport| viewport.get_world_3d())
+            .and_then(|world| world.get_direct_space_state())
+    }
+}
+
+/// Cast one reflection fan and explain it.
+///
+/// The casting mirrors `WaveCore::emit_reflecting` exactly — same lifted
+/// origin, same clamped reach, same default query, same hemisphere cull —
+/// because an explanation that sampled the world differently from the
+/// engine would answer a question nobody asked. What it does NOT mirror is
+/// the tail: the hits go into a local vector and then into the pure
+/// explainer, and no echo is ever scheduled.
+fn cast_and_explain(
+    request: &ReflectionRequest,
+    mut space: Gd<PhysicsDirectSpaceState3D>,
+) -> ReflectionExplanation {
+    let origin = request.ray_origin();
+    // f64 reach, narrowed once where the ray vector is scaled — exactly
+    // where the engine's own emit path narrows it
+    let reach = request.reach() as f32;
+    let mut rays_cast = 0usize;
+    let mut hits: Vec<RayHit> = Vec::with_capacity(ray_fan::RAYS);
+    for dir in request.directions() {
+        let Some(query) = PhysicsRayQueryParameters3D::create(origin, origin + dir * reach) else {
+            // the physics server refused to build the query: this ray was
+            // never cast, so it is not counted as one — and a debugging
+            // tool that quietly lost a ray would be worse than useless
+            godot_error!("WaveObserver: the physics server refused a reflection query");
+            continue;
+        };
+        rays_cast += 1;
+        let struck = space.intersect_ray(&query);
+        let (Some(position), Some(normal)) = (
+            struck
+                .get("position")
+                .and_then(|v| v.try_to::<Vector3>().ok()),
+            struck
+                .get("normal")
+                .and_then(|v| v.try_to::<Vector3>().ok()),
+        ) else {
+            continue; // empty dictionary: the ray struck nothing, and that is REPORTED
+        };
+        hits.push(RayHit {
+            position,
+            normal,
+            dist: (position - origin).length(),
+        });
+    }
+    crate::observe::reflect::explain_clustering(request, rays_cast, &hits)
 }
 
 /// The one refusal shape. A dictionary carrying only this key is how an
@@ -386,6 +549,51 @@ fn ray_dict(explanation: &RayExplanation, names: &[String]) -> VarDictionary {
     entry.set("hum_transmission", explanation.hum_transmission);
     entry.set("source_transmission", explanation.source_transmission);
     entry.set("walls", &walls);
+    entry
+}
+
+/// One reflection fan, as an agent reads it.
+///
+/// Every ray is present in the counts, and every reason a hit failed to
+/// answer is a SEPARATE key. An agent asking "why did that wall stay
+/// silent" gets to distinguish a ray that reached its full length and
+/// found nothing, a hit vetoed as the sound's own birth surface, a hit
+/// that merged into a nearer strike's cell, and a cell that ranked past
+/// the echo budget — four different bugs, four different fixes.
+fn reflection_dict(request_id: i64, explanation: &ReflectionExplanation) -> VarDictionary {
+    let points: Array<VarDictionary> = explanation.points.iter().map(point_dict).collect();
+    let mut entry = VarDictionary::new();
+    entry.set("request_id", request_id);
+    entry.set("at", explanation.at);
+    entry.set("origin", explanation.origin);
+    entry.set("normal", explanation.normal);
+    entry.set("reach", explanation.reach);
+    entry.set("fan_size", explanation.fan_size as i64);
+    entry.set("rays_cast", explanation.rays_cast as i64);
+    entry.set("rays_struck", explanation.rays_struck as i64);
+    entry.set("rays_missed", explanation.rays_missed() as i64);
+    entry.set("self_surface_drops", explanation.self_surface_drops as i64);
+    entry.set("merged_into_cells", explanation.merged_into_cells as i64);
+    entry.set("cells_found", explanation.cells_found as i64);
+    entry.set("budget", explanation.budget as i64);
+    entry.set(
+        "dropped_past_budget",
+        explanation.dropped_past_budget as i64,
+    );
+    entry.set("clusters_kept", explanation.clusters_kept() as i64);
+    entry.set("points", &points);
+    entry
+}
+
+/// One answering point. `dist` widens to f64 here and nowhere earlier —
+/// it is a single-precision geometry length everywhere inside the engine,
+/// and Godot has no narrower float on the wire.
+fn point_dict(point: &ClusteredPoint) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("point", point.point);
+    entry.set("dist", f64::from(point.dist));
+    entry.set("at_t", point.at_t);
+    entry.set("gain_fraction", point.gain_fraction);
     entry
 }
 

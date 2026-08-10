@@ -32,6 +32,15 @@ const FAN_FLOOR_ONE_WALL := 0.225
 ## this frame. Nothing derives from it — it only has to be recognisable.
 const FLICK := 0.6
 
+## Where the hero wakes, which is where the explained cane tap lands: a
+## point with walls, a table and a ceiling inside the fan's reach, and open
+## floor to the south beyond it — so the same fan both strikes and misses.
+const TAP_AT := Vector3(3.0, 0.9, 4.0)
+## The cane tap's shipped wave: 6 m of range at 5.5 m/s, so the reflection
+## fan reaches 0.8 x 6 = 4.8 m.
+const TAP_MAX_R := 6.0
+const TAP_SPEED := 5.5
+
 
 func test_uninjected_observer_refuses_rather_than_reporting_zeros() -> void:
 	var obs := _observer()
@@ -225,8 +234,125 @@ func test_the_composition_root_injects_the_observer() -> void:
 	assert_int((snap["sources"] as Array).size()).is_equal(2)
 
 
+## Asking why a wall stayed silent must not make it speak. The explanation
+## re-runs the fan into a scratch buffer; if a single hit reached the real
+## echo book, the question would have answered itself by changing the thing
+## it asked about. This test was watched failing against a deliberately
+## mutating implementation before it was trusted.
+func test_explaining_a_reflection_schedules_no_echoes() -> void:
+	var pulses := Pulses.new()
+	var level := _shipped_level(pulses)
+	var obs := _tree_observer(level)
+	var before: int = pulses.pending_echo_count()
+	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 6, 0.0)
+	await _physics_answer()
+	var e: Dictionary = obs.take_explanation(id)
+	assert_bool(e.has("pending")).is_false()
+	assert_bool(e.has("unavailable")).is_false()
+	assert_int(e["clusters_kept"]).is_greater(0)
+	assert_int(pulses.pending_echo_count()).is_equal(before)
+
+
+## A physics space may only be touched inside the physics tick, so the
+## answer cannot be synchronous: the request books an id and the frame does
+## the casting. Pending is a state, never a zero-hit fan.
+func test_an_explanation_is_pending_before_the_physics_frame_runs() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _tree_observer(level)
+	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 6, 0.0)
+	var pending: Dictionary = obs.take_explanation(id)
+	assert_int(pending.size()).is_equal(1)
+	assert_bool(pending["pending"]).is_true()
+
+
+## An id that was never issued, and one whose answer has already been
+## collected, are the same refusal — and it carries exactly one key.
+func test_an_unknown_or_already_collected_request_is_refused() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _tree_observer(level)
+	var refusal: Dictionary = obs.take_explanation(9999)
+	assert_int(refusal.size()).is_equal(1)
+	assert_bool(refusal.has("unavailable")).is_true()
+	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 6, 0.0)
+	await _physics_answer()
+	assert_bool(obs.take_explanation(id).has("unavailable")).is_false()
+	assert_bool(obs.take_explanation(id).has("unavailable")).is_true()
+
+
+## The whole fan, not only the hits. The nominal fan is 26 rays; the
+## hemisphere cull in front of the birth normal drops the ones that would
+## point into the surface, so FEWER are cast — and both numbers are
+## reported, or an agent could never see the cull. Rays that reached their
+## full length and found nothing are the headline: in this world absence of
+## echo is information, and a report of only the hits would hide it.
+func test_the_explanation_reports_every_ray_not_only_the_hits() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _tree_observer(level)
+	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 6, 0.0)
+	await _physics_answer()
+	var e: Dictionary = obs.take_explanation(id)
+	var fan_size: int = e["fan_size"]
+	var cast: int = e["rays_cast"]
+	var struck: int = e["rays_struck"]
+	var missed: int = e["rays_missed"]
+	assert_int(fan_size).is_equal(obs.ray_fan_size())
+	assert_int(cast).is_greater(0)
+	assert_int(cast).is_less(fan_size)
+	assert_int(missed).is_greater(0)
+	assert_int(cast).is_equal(missed + struck)
+	assert_int(e["clusters_kept"]).is_less_equal(6)
+	assert_float(e["reach"]).is_equal_approx(TAP_MAX_R * 0.8, 0.0001)
+	assert_vector(e["origin"]).is_equal_approx(TAP_AT + Vector3.UP * 0.08, Vector3.ONE * 0.0001)
+
+
+## Every hit is accounted for by a NAMED reason. "The wall was found and
+## then dropped past the budget", "the wall was the surface the sound was
+## born on", and "the wall was never struck at all" are three different
+## answers to why a wall stayed silent, and the report must not collapse
+## them. The identity holds over the shipped room's real geometry.
+func test_the_explanation_names_why_each_hit_did_not_answer() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _tree_observer(level)
+	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 2, 0.0)
+	await _physics_answer()
+	var e: Dictionary = obs.take_explanation(id)
+	var struck: int = e["rays_struck"]
+	var self_surface: int = e["self_surface_drops"]
+	var merged: int = e["merged_into_cells"]
+	var cells: int = e["cells_found"]
+	var past_budget: int = e["dropped_past_budget"]
+	var kept: int = e["clusters_kept"]
+	assert_int(e["budget"]).is_equal(2)
+	assert_int(kept).is_equal(2)
+	assert_int(struck).is_equal(self_surface + merged + cells)
+	assert_int(cells).is_equal(past_budget + kept)
+	assert_int(past_budget).is_greater(0)
+	var point: Dictionary = e["points"][0]
+	var dist: float = point["dist"]
+	assert_float(point["at_t"]).is_equal_approx(dist / TAP_SPEED, 0.0001)
+	assert_float(point["gain_fraction"]).is_greater(0.0)
+
+
 func _observer() -> WaveObserver:
 	return auto_free(WaveObserver.new()) as WaveObserver
+
+
+## An observer standing in the same world as the level it reads. Reflection
+## rays are cast against the space the observer's own viewport holds, so it
+## has to be IN the tree — an observer outside one can only ever answer
+## pending.
+func _tree_observer(level: WaveLevel) -> WaveObserver:
+	var obs := _observer()
+	add_child(obs)
+	obs.inject(level, _eye())
+	return obs
+
+
+## One physics tick, plus the idle frame that follows it — the request is
+## booked from script and drained by the next `_physics_process`.
+func _physics_answer() -> void:
+	await get_tree().physics_frame
+	await get_tree().physics_frame
 
 
 ## The shipped level, instanced the way main does: injected first, then
