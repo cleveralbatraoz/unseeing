@@ -1,5 +1,12 @@
+# gdlint:ignore = max-public-methods
 extends GdUnitTestSuite
 ## WaveObserver — the debug observability boundary.
+##
+## (The directive above must sit on line 1 — gdlint keys an ignore to the
+## line its problem is reported on. A gdUnit4 suite is a list of cases, not
+## a class with an API: every case is a public method, so the 20-method
+## ceiling counts coverage rather than surface. It is suppressed HERE and
+## nowhere else, so the rule keeps its teeth over `game/scripts/`.)
 ##
 ## These pin the CONTRACT the live debugging loop depends on: an observer
 ## missing any system it reads refuses loudly, and an injected one reports
@@ -124,13 +131,39 @@ func test_snapshot_reports_a_tap_that_was_emitted() -> void:
 	assert_float(snap["now"]).is_equal_approx(0.5, 0.0001)
 	assert_float(snap["flick"]).is_equal_approx(FLICK, 0.0001)
 	assert_array(snap["unknown"]).is_empty()
-	assert_int(snap["live_count"]).is_equal(1)
+	assert_int(snap["slot_scan_limit"]).is_equal(1)
+	assert_int(snap["live_slots"]).is_equal(1)
 	assert_int((snap["slots"] as Array).size()).is_equal(64)
 	var slot: Dictionary = snap["slots"][0]
 	assert_int(slot["kind"]).is_equal(0)
 	assert_float(slot["ring_radius"]).is_equal_approx(2.75, 0.001)
 	assert_str(slot["state"]).is_equal("Live")
 	assert_str(snap["slots"][1]["state"]).is_equal("Never")
+
+
+## The two pool numbers on the wire answer different questions, and a hole
+## in the pool is where they part company. `slot_scan_limit` is the bound
+## the shaders break their per-pixel loop at — highest live slot + 1, holes
+## spanned — while `live_slots` counts the slots that actually report
+## "Live". The shipped pool wraps continuously, so the bound sits at 64 for
+## a whole slot lifetime once slot 63 has been claimed: an agent reading it
+## as a census would chase eviction pressure that does not exist.
+##
+## Hand-derived from the wave contract: a kind-2 sound with a 1.6 m ring at
+## 4 m/s dies at 0.4 + 2.5 = 2.9 s; the kind-0 tap behind it lives to
+## 6/5.5 + 6 = 7.09 s. Observed at 5 s, one is dead under one that is live.
+func test_snapshot_separates_the_scan_bound_from_the_live_count() -> void:
+	var pulses := Pulses.new()
+	var level := _shipped_level(pulses, _eye())
+	var obs := _observer()
+	obs.inject(level, _eye())
+	pulses.emit(2, Vector3.ZERO, 1.6, 4.0, 0.8, 0.0)
+	pulses.emit(0, Vector3.ZERO, 6.0, 5.5, 1.0, 0.0)
+	var snap: Dictionary = obs.snapshot(5.0)
+	assert_int(snap["slot_scan_limit"]).is_equal(2)
+	assert_int(snap["live_slots"]).is_equal(1)
+	assert_str(snap["slots"][0]["state"]).is_equal("Expired")
+	assert_str(snap["slots"][1]["state"]).is_equal("Live")
 
 
 ## What could not be observed is NAMED, and its key is absent rather than

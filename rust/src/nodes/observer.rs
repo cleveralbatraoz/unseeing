@@ -8,7 +8,7 @@
 //! Every entry point refuses loudly when it cannot reach something it must
 //! read: a snapshot of nothing and a snapshot of an empty world must never
 //! serialise the same. The refusal carries ONE key — an agent that reads
-//! `live_count == 0` from an observer that never had a pool will spend an
+//! `live_slots == 0` from an observer that never had a pool will spend an
 //! hour debugging silence that was never there.
 //!
 //! The camera is not optional equipment for a snapshot, and that is the
@@ -448,7 +448,11 @@ fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionar
     } else {
         unknown.push("flick");
     }
-    state.set("live_count", observation.live_count as i64);
+    // Two numbers, deliberately named apart: the loop bound the shaders
+    // break at spans dead slots under live ones, so a reader that took it
+    // for a census would see a saturated pool that is not there.
+    state.set("slot_scan_limit", observation.slot_scan_limit as i64);
+    state.set("live_slots", observation.live_slots as i64);
     let slots: Array<VarDictionary> = observation.slots.iter().map(slot_dict).collect();
     state.set("slots", &slots);
     state.set("next_eviction", &eviction_dict(&observation.next_eviction));

@@ -17,7 +17,7 @@ pub mod reflect;
 use godot::builtin::{Basis, Vector3, Vector4};
 
 use self::evict::{EvictionPlan, explain_eviction};
-use self::pool::{SlotObservation, slots};
+use self::pool::{SlotObservation, SlotState, slots};
 use crate::pulse_pool::PulsePool;
 use crate::sight::MAXW;
 
@@ -42,7 +42,18 @@ pub struct SourceObservation {
 pub struct FrameObservation {
     pub now: f64,
     pub flick: f64,
-    pub live_count: usize,
+    /// HIGH-WATER MARK, never a census: highest live slot + 1, the bound
+    /// the shaders break their per-pixel loop at. Holes are SPANNED — a
+    /// dead slot 0 under a live slot 1 scans to 2 — and the shipped pool
+    /// wraps continuously, so once slot 63 has been claimed this sits at
+    /// [`crate::pulse_pool::MAXP`] for that slot's whole lifetime while far
+    /// fewer slots are live. [`Self::live_slots`] is the count.
+    pub slot_scan_limit: usize,
+    /// How many slots are actually live, counted from [`Self::slots`] — so
+    /// it agrees with the per-slot `state` an agent reads beside it, and is
+    /// decoded from the same f32 lanes the shaders consume rather than from
+    /// the pool's f64 shadow.
+    pub live_slots: usize,
     pub slots: Vec<SlotObservation>,
     pub next_eviction: EvictionPlan,
     pub sources: Vec<SourceObservation>,
@@ -68,11 +79,17 @@ pub fn frame(
     camera: Vector3,
     camera_basis: Basis,
 ) -> FrameObservation {
+    let slots = slots(pool, now);
+    let live_slots = slots
+        .iter()
+        .filter(|slot| slot.state == SlotState::Live)
+        .count();
     FrameObservation {
         now,
         flick,
-        live_count: pool.live_count(now),
-        slots: slots(pool, now),
+        slot_scan_limit: pool.live_count(now),
+        live_slots,
+        slots,
         next_eviction: explain_eviction(pool, now),
         sources,
         wall_truncated: wall_rects.len() >= MAXW,
@@ -85,6 +102,7 @@ pub fn frame(
 #[cfg(test)]
 mod tests {
     use super::evict::EvictionRule;
+    use super::pool::SlotState;
     use super::*;
     use crate::pulse_pool::PulsePool;
     use godot::builtin::{Basis, Vector3, Vector4};
@@ -102,7 +120,9 @@ mod tests {
     }
 
     /// The composer carries the pieces through without recomputing them:
-    /// live_count agrees with the pool, and the eviction plan is present.
+    /// both pool numbers agree with the pool, and the eviction plan is
+    /// present. One emit is the one case where a bound and a census are
+    /// numerically identical — the next test is what tells them apart.
     #[test]
     fn a_frame_carries_pool_state_and_the_next_eviction() {
         let mut pool = PulsePool::new();
@@ -110,10 +130,39 @@ mod tests {
             .unwrap();
         let f = empty_frame(&pool, 0.5);
         assert_eq!(f.now, 0.5);
-        assert_eq!(f.live_count, 1);
+        assert_eq!(f.slot_scan_limit, 1);
+        assert_eq!(f.live_slots, 1);
         assert_eq!(f.slots.len(), 64);
         assert_eq!(f.next_eviction.rule, EvictionRule::Expired);
         assert_eq!(f.next_eviction.slot, 1);
+    }
+
+    /// The two pool numbers are different questions, and a hole is where
+    /// they part company: a dead slot 0 under a live slot 1 scans to 2
+    /// while exactly ONE slot is live. The shipped pool wraps continuously,
+    /// so once slot 63 has been claimed the scan limit sits at 64 for that
+    /// slot's whole lifetime — a reader that took it for a census would
+    /// diagnose a saturated pool and chase eviction pressure that is not
+    /// there.
+    #[test]
+    fn the_scan_limit_spans_holes_that_the_live_census_does_not() {
+        let mut pool = PulsePool::new();
+        // slot 0: kind 2, ring 1.6/4.0 = 0.4 s + a 2.5 s tail — dead by 2.9
+        pool.emit_omni(2, Vector3::ZERO, 1.6, 4.0, 0.8, 0.0)
+            .unwrap();
+        // slot 1: kind 0, ring 6/5.5 s + a 6 s tail — alive well past 5
+        pool.emit_omni(0, Vector3::ZERO, 6.0, 5.5, 1.0, 0.0)
+            .unwrap();
+        let f = empty_frame(&pool, 5.0);
+        assert_eq!(f.slot_scan_limit, 2);
+        assert_eq!(f.live_slots, 1);
+        assert_eq!(
+            f.slots
+                .iter()
+                .filter(|s| s.state == SlotState::Live)
+                .count(),
+            1
+        );
     }
 
     /// A wall table at the shader's ceiling is flagged. The level
