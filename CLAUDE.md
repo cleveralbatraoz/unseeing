@@ -89,6 +89,13 @@ Plus the platform research reports (gdext reliability, Linux CI, Steam).
 Where the two disagree the code wins — and updating the wiki in the same
 session is part of the change, exactly like updating this file.
 
+**Specs and plans are a different artifact and live in the repo**, under
+`docs/superpowers/specs/` and `docs/superpowers/plans/` (see the workflow
+below). A spec records what we decided to build and why, frozen at the
+moment of the decision; a wiki page describes how the shipped thing works
+now. Neither replaces the other, and a task that produces a spec still owes
+the wiki its page.
+
 ## Your role
 
 Act as a **principal game developer engineer**. Follow modern industry
@@ -100,44 +107,127 @@ The technical bar: **ideal**. Every decision must be proved, not assumed.
 Physics and sound-wave propagation are the main technical challenge here and
 must work perfectly.
 
-## Workflow: research → questions → full autonomy
+## Workflow: superpowers governs
 
-1. **Research first.** Start from the **wiki** (above) — it is written to
-   replace most of this step — then investigate the actual code. Never suppose — acknowledge by running code, tests, and
-   tracing. Most problems are already solved by other projects: search GitHub/
-   GitLab/the internet for existing solutions, and research the physics/math/
-   mechanics itself when needed. Copy whatever works — license risk is
-   accepted on this project.
-2. **Ask every question upfront.** Surface all open questions *before*
-   implementation starts, and keep asking until none remain.
-3. **Then full autonomy.** Once questions are answered, proceed without
-   further confirmation: install anything, run anything, use the server,
-   spawn agents, consume whatever resources the task needs — including
-   deploys.
-4. **Write it back.** The task ends in documentation, not in a green test:
-   update the **wiki** pages for every mechanic you touched and every
-   research result you produced (creating the page if there isn't one),
-   record the *crucial* facts — a decision, constraint, or gotcha that
-   changes future work — in persistent memory, and update CLAUDE.md itself
-   when the rules or stack evolve.
+The **superpowers** plugin (v6.2.0, official marketplace, installed at user
+scope) owns the development process here. Its fourteen skills are the
+method; this file is the project's specifics. **Where a skill and this file
+disagree, the skill wins** — a deliberate 2026-08-10 decision, and the rules
+below were rewritten to match rather than left to contradict.
+
+The spine, in order:
+
+1. **brainstorming** — before any feature, component, behaviour change or
+   other creative work. Its hard gate holds: no implementation until a
+   design has been presented and approved. Its first step, "explore project
+   context", is where this project's research rule lives — **start from the
+   wiki** (above), then the code, then the internet. Never suppose; verify
+   by running code, tests and traces. Most problems are already solved
+   elsewhere: search GitHub/GitLab/the web for existing solutions and
+   research the physics/maths itself when needed. Copy whatever works —
+   license risk is accepted on this project.
+2. **writing-plans** — the approved spec becomes a bite-sized, TDD-shaped
+   plan whose Global Constraints carry this file's non-negotiables verbatim
+   (the perception laws, the id budget, the platform set).
+3. **subagent-driven-development** (preferred) or **executing-plans** —
+   execution, with a fresh implementer per task, a task review after each,
+   and the ledger under `.superpowers/` that survives compaction.
+4. **finishing-a-development-branch** — the integration decision.
+
+Alongside them, always: **systematic-debugging** for any bug, test failure
+or unexpected behaviour before proposing a fix;
+**verification-before-completion** before any claim that something works;
+**requesting-code-review** after each task and before merge;
+**using-git-worktrees** at the start (see below).
+
+**What this changed, deliberately:**
+
+- **Autonomy is now bounded at both ends.** It used to run from "questions
+  answered" straight through to deploy. Brainstorming's gate now stands at
+  the front — a written, approved design before code — and
+  finishing-a-development-branch stands at the back: merge, PR or keep is
+  the user's choice, presented as that skill's menu, never assumed. Between
+  those two gates autonomy is unchanged and total: install anything, run
+  anything, spawn agents, use the server, deploy.
+- **Subagents are part of the method, not an escalation.** Implementers,
+  reviewers and parallel investigators get dispatched as the skills
+  prescribe, without asking first.
+- **Specs and plans are committed to this repo**, at superpowers' paths:
+  `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and
+  `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`. This does not demote the
+  wiki — the two hold different things. A spec is what we decided to build
+  and why, frozen at decision time; the wiki is how the shipped thing works
+  today. Both get written.
+- **Review is mandatory, not proportional to size.** Every task and every
+  merge, dispatched to a subagent with superpowers'
+  `requesting-code-review/code-reviewer.md` rubric. Algorithmic complexity
+  and performance remain part of every review.
+
+**Write it back.** Unchanged and still the last step: the task ends in
+documentation, not in a green test. Update the **wiki** pages for every
+mechanic you touched and every research result you produced (creating the
+page if there isn't one), record the *crucial* facts — a decision,
+constraint or gotcha that changes future work — in persistent memory, and
+update this file when the rules or stack evolve.
 
 ## Parallel sessions: one worktree each
 
 **Every session/task works in its own git worktree.** Multiple sessions and
 agents modify this repo in parallel; never work directly in the shared main
-checkout. At the start of each session/task, create or enter a dedicated
-worktree (`git worktree add` or the harness's worktree isolation), do all
-work there, and land it back as the usual small green commits. Remove the
-worktree when the task is done.
+checkout. Follow **using-git-worktrees**: detect existing isolation first
+(`git rev-parse --git-dir` against `--git-common-dir`, minus the submodule
+case), and if you are already in a linked worktree do not create a second
+one.
+
+**Use the harness's native worktree tool, never `git worktree add`.** The
+skill's own priority order says so, and it matters here: this project's
+worktrees live under `.claude/worktrees/`, which the native tool owns
+end to end — placement, branch, and cleanup. A hand-rolled `git worktree
+add` leaves state the harness cannot see or remove, and the fallback's
+`.worktrees/` default is not this repo's layout.
+
+Cleanup follows the same ownership rule, from
+**finishing-a-development-branch**: `.claude/worktrees/` is host-managed, so
+release it with the harness's exit tool rather than `git worktree remove`.
+Work lands back as the usual small green commits.
 
 ## Strict TDD
 
-- Every behavior change starts with a test: **write the test → observe
-  current behavior → change the code → test passes → done.**
-- Trace every problem to its root. Never apply a fix naively; never touch
-  code whose behavior you don't clearly understand.
+The **test-driven-development** skill is the procedure; this is what it
+means here.
+
+- Every behavior change starts with a test: **write the test → watch it fail
+  for the right reason → minimal code → watch it pass → refactor.** The
+  middle step is not a formality: a test you never saw fail has not been
+  shown to test anything.
+- **Production code written before its test gets deleted, not retrofitted.**
+  Not kept as reference, not adapted while the test is written. Exploration
+  is allowed and thrown away.
+- **Every test names the break it catches** (`writing-good-tests.md`), and
+  the wave core is exactly where that discipline pays:
+  - **No mirror assertions.** An expected value computed by the code under
+    test — or by its helpers — passes no matter what that code does.
+    Propagation maths is the natural home of this bug. Hand-derive the
+    literal, or use a checked fixture.
+  - **No change detectors.** Not `assert_eq!(REACH_PER_VOLUME, 12.0)` but
+    the behaviour that depends on it: a source at volume 0.5 reaches 6 m and
+    not 7.
+  - **Run the mutation check before finishing.** Flip a constant, a branch,
+    a side effect, an early return — each realistic mutation must fail at
+    least one test. A mutation nothing catches marks the behaviour as
+    unprotected.
 - Test *everything* — features, physics, edge cases. Tests pin behavior down
   so anything can be changed fearlessly.
+- **Debugging is its own procedure**, not an improvisation:
+  **systematic-debugging**. Root cause before any fix, traced backward to
+  the original trigger; one hypothesis at a time; the failing test comes
+  before the fix. And the rule this project did not have — **after three
+  failed fixes, stop and question the architecture.** Three fixes that each
+  reveal a new problem somewhere else is not a run of bad hypotheses, it is
+  a wrong design, and the fourth attempt will not find it.
+- **Arbitrary waits are a defect** (`condition-based-waiting.md`): poll for
+  the condition, never guess the duration. A `sleep` inside the deploy gate
+  either blocks a good deploy or waves a bad one through.
 - Godot: **gdUnit4** is the test framework — suites in `game/tests/`, run
   headless from `ci/pipeline.sh` (the old custom runner is gone; that
   migration is done). Browser-level behavior: the headless-Chrome smoke
@@ -314,10 +404,58 @@ exact release, and `ci/pipeline.sh` refuses a mismatched binary.
 
 - Use subagents freely — most tasks want a mix of tester / critic / software
   architect / programmer / product / plain-gamer perspectives. Run as many as
-  needed.
-- **Review is part of every task, proportional to its size**: features and
-  physics/wave work get a full multi-agent design review + performance review
-  (redesign if it fails); trivial fixes get a lightweight self-review.
-  Algorithmic complexity and performance are always part of the review.
+  needed. **dispatching-parallel-agents** is the rule for splitting them:
+  one agent per *independent* problem domain, each with a scope, a
+  constraint, and a named return; related failures get investigated together
+  instead.
+- **Review is mandatory after every task and before every merge** — not
+  proportional to size, which is the one place this project's old rule gave
+  way. Dispatch it to a subagent with superpowers'
+  `requesting-code-review/code-reviewer.md` rubric, and hand it a diff file
+  rather than your session's history. Algorithmic complexity and performance
+  remain part of every review. Reviewers are read-only: never move HEAD on
+  the checkout under review — with this many live worktrees that is not a
+  theoretical concern.
+- **Feedback gets verified, not performed** (**receiving-code-review**).
+  Check every suggestion against this codebase before implementing it, push
+  back with technical reasoning when it is wrong for the stack, and clarify
+  the whole list before implementing any of it.
+- **A subagent's success report is not evidence**
+  (**verification-before-completion**). Check the diff. This project has
+  already paid for the general form of that lesson once: `git push` reported
+  success while the post-receive hook failed, which is why `deploy.sh` reads
+  `UNSEEING_BUILD` back off the live page instead of trusting an exit code.
 - Connect any MCP server that helps (e.g. tools that can actually *play* the
   game for UI/UX testing), or write one if it doesn't exist.
+
+### The installed skill set
+
+`superpowers@claude-plugins-official` v6.2.0, user scope, upstream commit
+`44c9b2d`. Update with `claude plugin install`/`marketplace update`; it is
+*not* vendored in this tree, so it needs no entry in `ci/gdunit4.lock`'s
+model and nothing in `game/addons/`.
+
+- **Process:** using-superpowers, brainstorming, writing-plans,
+  executing-plans, subagent-driven-development,
+  finishing-a-development-branch.
+- **Craft:** test-driven-development (+ `writing-good-tests.md`),
+  systematic-debugging (+ root-cause-tracing, defense-in-depth,
+  condition-based-waiting), verification-before-completion.
+- **Collaboration:** requesting-code-review, receiving-code-review,
+  dispatching-parallel-agents, using-git-worktrees.
+- **Meta:** writing-skills — TDD for process docs. Use it for any
+  project-specific skill we author (a deploy skill, a probe skill), and
+  baseline an agent *without* the doc before writing it.
+
+Two consequences worth stating outright, because they touch rules elsewhere
+in this file:
+
+- **brainstorming may offer a browser "visual companion"** — a local Node
+  HTTP server for mockups and diagrams. That is outside the deliberately
+  small stack, so it stays exactly as the skill defines it: offered to the
+  user, run only on acceptance, and never a dependency of the game, the
+  build, or the deploy.
+- **Nothing about superpowers changes the commit rules.** Its plan
+  templates show `feat:`-style messages as illustration, not doctrine; it
+  has no commit-message policy of its own to conflict with. This project's
+  narrative subject lines stand, as does the ban on assistant attribution.
