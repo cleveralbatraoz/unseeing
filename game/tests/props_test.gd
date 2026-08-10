@@ -38,6 +38,13 @@ func _collider(body: Node) -> CollisionShape3D:
 	return null
 
 
+## The world box a shape actually draws — what the eye is shown, and the
+## only place the origin law can be read once a node is turned.
+func _world_box(body: Node) -> AABB:
+	var skin := _skin(body)
+	return skin.global_transform * skin.get_aabb()
+
+
 ## A column is a real cylinder to the eye AND to the rays: mesh and collider
 ## carry the same radius and height, and both follow the knobs live.
 func test_column_builds_a_cylinder_the_rays_can_strike() -> void:
@@ -82,6 +89,94 @@ func test_column_stands_on_its_node() -> void:
 	assert_vector(_collider(column).position).is_equal_approx(
 		Vector3(0, 1.5, 0), Vector3.ONE * LIFT_EPS
 	)
+
+
+## THE ORIGIN LAW, generalised — because "a column stands on its node" is a
+## law about the FLOOR, and the floor is a world thing. The lift that
+## implements it is a local offset of half the height, so the moment the
+## node is turned off vertical the lift points sideways and the barrel sinks:
+## laid on its side it went a full radius through the floor. Standing means
+## the shape's LOWEST point in world space rests at the node's own y —
+## which for a tipped cylinder is the RADIUS, not half the height.
+func test_a_tipped_column_still_stands_on_its_node() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.3
+	column.height = 0.9
+	column.rotation.z = PI * 0.5
+	add_child(column)
+	var box := _world_box(column)
+	(
+		assert_float(box.position.y)
+		. append_failure_message("the barrel sank to y = %.3f" % box.position.y)
+		. is_equal_approx(0.0, 0.001)
+	)
+	# lying down it is two radii tall and a height long, and it rests on
+	# the floor rather than hovering a half-height over it
+	assert_float(box.size.y).is_equal_approx(0.6, 0.001)
+	assert_float(box.size.x).is_equal_approx(0.9, 0.001)
+
+
+## The same law on the wedge, whose underside is a flat face rather than a
+## curve: tipped a quarter turn it stands on what used to be its tall end,
+## and its lowest point is still the node's own y.
+func test_a_tipped_wedge_still_stands_on_its_node() -> void:
+	var wedge: WaveWedge = auto_free(WaveWedge.new())
+	wedge.size = Vector3(1.2, 0.6, 0.8)
+	wedge.rotation.z = PI * 0.5
+	add_child(wedge)
+	var box := _world_box(wedge)
+	(
+		assert_float(box.position.y)
+		. append_failure_message("the ramp sank to y = %.3f" % box.position.y)
+		. is_equal_approx(0.0, 0.001)
+	)
+	assert_float(box.size.y).is_equal_approx(1.2, 0.001)
+
+
+## A shape hangs under whatever transform reaches it, its own and its
+## ancestors' alike, so the law has to be read in the space the floor is in.
+## A barrel dropped into a prefab that has been tipped over would otherwise
+## stand on the node only while the prefab was upright.
+func test_an_inherited_tip_sinks_nothing_either() -> void:
+	var room: Node3D = auto_free(Node3D.new())
+	room.position = Vector3(3, 0, 5)
+	room.rotation.z = PI * 0.5
+	var column := WaveColumn.new()
+	column.radius = 0.3
+	column.height = 0.9
+	room.add_child(column)
+	add_child(room)
+	var box := _world_box(column)
+	(
+		assert_float(box.position.y)
+		. append_failure_message("the barrel sank to y = %.3f" % box.position.y)
+		. is_equal_approx(0.0, 0.001)
+	)
+
+
+## Turning a node after it is built has to re-lift it, or the law holds
+## only for shapes a designer never touches again: rotating a barrel in the
+## viewport fires no knob setter, and the editor would show it sinking with
+## no way to get it back except reloading the scene.
+func test_turning_a_placed_column_re_lifts_it() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.3
+	column.height = 0.9
+	add_child(column)
+	assert_float(_world_box(column).position.y).is_equal_approx(0.0, 0.001)
+	column.rotation.z = PI * 0.5
+	# the engine accumulates transform changes and notifies once, so ask for
+	# the update the frame boundary would have brought
+	column.force_update_transform()
+	(
+		assert_float(_world_box(column).position.y)
+		. append_failure_message("a turned barrel kept the lift it was built with")
+		. is_equal_approx(0.0, 0.001)
+	)
+	column.rotation.z = 0.0
+	column.force_update_transform()
+	assert_float(_world_box(column).position.y).is_equal_approx(0.0, 0.001)
+	assert_float(_world_box(column).size.y).is_equal_approx(0.9, 0.001)
 
 
 ## A wedge is GENERATED — the engine ships neither a triangular prism mesh

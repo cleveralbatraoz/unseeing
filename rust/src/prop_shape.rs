@@ -16,7 +16,82 @@
 //! (`data_pass.gdshader`), so a face is never dropped for facing away. The
 //! normals are what must be right.
 
-use godot::builtin::Vector3;
+use godot::builtin::{Basis, Vector3};
+
+/// World UP as the shape's own coordinates see it, carrying whatever
+/// stretch the basis applies — the second ROW of the basis. Its dot with a
+/// local point is that point's world height above the node, which is the
+/// only question the standing law asks.
+fn world_up_row(basis: Basis) -> Vector3 {
+    Vector3::new(basis.col_a().y, basis.col_b().y, basis.col_c().y)
+}
+
+/// How far a cylinder of `radius` and `height`, centred on its node and
+/// then turned by `basis`, hangs BELOW the node.
+///
+/// Exact for any basis, scale and shear included: the extreme of a
+/// linearly mapped body is the body's own extreme taken along the
+/// transposed direction, and a cylinder's is closed form — the half-height
+/// along its axis component, the radius across the other two. Upright that
+/// is the half-height and nothing else; laid on its side it is the RADIUS,
+/// which is exactly the case a "lift by half the height" gets backwards.
+#[must_use]
+pub fn cylinder_underhang(basis: Basis, radius: f32, height: f32) -> f32 {
+    let up = world_up_row(basis);
+    height.abs() * 0.5 * up.y.abs() + radius.abs() * up.x.hypot(up.z)
+}
+
+/// How far a convex hull, centred on its node and then turned by `basis`,
+/// hangs BELOW the node. A convex body's extreme is always at a vertex, so
+/// walking the hull points is exact rather than a bound. Total on an empty
+/// hull: nothing hangs below nothing.
+#[must_use]
+pub fn hull_underhang(basis: Basis, points: &[Vector3]) -> f32 {
+    let up = world_up_row(basis);
+    let low = points
+        .iter()
+        .map(|p| p.dot(up))
+        .fold(f32::INFINITY, f32::min);
+    if low.is_finite() { -low } else { 0.0 }
+}
+
+/// The LOCAL offset that puts a shape hanging `underhang` below its node
+/// back on top of it: `underhang` meters straight up in WORLD space,
+/// pulled back through the basis the shape is drawn under. That is what
+/// makes "stands on its node" a law about the FLOOR rather than about the
+/// node's own +Y — the two only agree while the node is upright.
+///
+/// Total on a basis that cannot be inverted (a prefab scaled flat, a knob
+/// dragged to nothing): there is no world up to travel along, so nothing
+/// moves. The determinant is checked BEFORE the inverse is asked for —
+/// `Basis::inverse` runs into a `glam_assert` on a singular matrix, which
+/// is a panic in a debug build and nonsense in a release one.
+#[must_use]
+pub fn standing_lift(basis: Basis, underhang: f32) -> Vector3 {
+    let det = basis.determinant();
+    if !underhang.is_finite() || !det.is_finite() || det == 0.0 {
+        return Vector3::ZERO;
+    }
+    let lift = basis.inverse() * Vector3::new(0.0, underhang, 0.0);
+    if lift.is_finite() {
+        lift
+    } else {
+        Vector3::ZERO
+    }
+}
+
+/// The lift a cylinder needs to stand on its node under `basis` — the one
+/// call [`crate::nodes`]' column makes.
+#[must_use]
+pub fn cylinder_lift(basis: Basis, radius: f32, height: f32) -> Vector3 {
+    standing_lift(basis, cylinder_underhang(basis, radius, height))
+}
+
+/// The lift a wedge of `size` needs to stand on its node under `basis`.
+#[must_use]
+pub fn wedge_lift(basis: Basis, size: Vector3) -> Vector3 {
+    standing_lift(basis, hull_underhang(basis, &wedge_hull(size)))
+}
 
 /// The six corners of a wedge that fills `size`: a box whose top has been
 /// sloped away, rising from the bottom of the −X end to the full height at
@@ -84,6 +159,139 @@ mod tests {
     use super::*;
 
     const SIZE: Vector3 = Vector3::new(1.2, 0.6, 0.8);
+    const RADIUS: f32 = 0.3;
+    const HEIGHT: f32 = 0.9;
+
+    /// A turn of `deg` about `axis`, built from the engine's own primitive
+    /// rather than from anything the code under test shares.
+    fn turned(axis: Vector3, deg: f32) -> Basis {
+        Basis::from_axis_angle(axis.normalized(), deg.to_radians())
+    }
+
+    /// The lowest world height any point of a lifted cylinder reaches,
+    /// found by walking its two rims — a brute-force answer to hold the
+    /// closed form against.
+    fn lowest_of_cylinder(basis: Basis, lift: Vector3) -> f32 {
+        let mut low = f32::INFINITY;
+        for i in 0..720u16 {
+            let a = f32::from(i) * std::f32::consts::TAU / 720.0;
+            for cap in [-1.0f32, 1.0] {
+                let p = Vector3::new(RADIUS * a.cos(), cap * HEIGHT * 0.5, RADIUS * a.sin());
+                low = low.min((basis * (p + lift)).y);
+            }
+        }
+        low
+    }
+
+    /// The same for a wedge, which needs no sampling: a convex hull's
+    /// extreme is always one of its corners.
+    fn lowest_of_wedge(basis: Basis, lift: Vector3) -> f32 {
+        wedge_hull(SIZE)
+            .iter()
+            .map(|p| (basis * (*p + lift)).y)
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    /// The law as every shipped column and wedge meets it: upright, the
+    /// lift is exactly half the height and not a float's breadth more.
+    /// This is the promise that generalising the law changes no authored
+    /// content — the shipped map's 34 columns and wedges are all upright.
+    #[test]
+    fn an_upright_shape_lifts_exactly_half_its_height() {
+        assert_eq!(
+            cylinder_lift(Basis::IDENTITY, RADIUS, HEIGHT),
+            Vector3::new(0.0, HEIGHT * 0.5, 0.0)
+        );
+        assert_eq!(
+            wedge_lift(Basis::IDENTITY, SIZE),
+            Vector3::new(0.0, SIZE.y * 0.5, 0.0)
+        );
+        // and a yaw — the only turn a room prefab actually carries — is
+        // still exactly half a height, because a turn about UP cannot
+        // change what is under a shape
+        let yawed = turned(Vector3::UP, 90.0);
+        assert!(
+            (cylinder_lift(yawed, RADIUS, HEIGHT) - Vector3::new(0.0, HEIGHT * 0.5, 0.0)).length()
+                < 1e-6
+        );
+    }
+
+    /// Tipped a quarter turn, a barrel rests on its SIDE: what holds it off
+    /// the floor is the radius, and half the height would float it 0.45 m
+    /// instead — the mirror image of the sinking a local lift causes.
+    #[test]
+    fn a_tipped_cylinder_stands_on_its_radius() {
+        let tipped = turned(Vector3::BACK, 90.0);
+        assert!((cylinder_underhang(tipped, RADIUS, HEIGHT) - RADIUS).abs() < 1e-6);
+        // the lift is LOCAL, and it has to come out as world up
+        let lift = cylinder_lift(tipped, RADIUS, HEIGHT);
+        assert!((tipped * lift - Vector3::new(0.0, RADIUS, 0.0)).length() < 1e-6);
+    }
+
+    /// The law itself, on turns no designer would type and the arithmetic
+    /// must survive anyway: whatever the placement, the shape's LOWEST
+    /// point ends up on the node's own y — never under it (sunk) and never
+    /// over it (hovering).
+    #[test]
+    fn a_shape_turned_any_way_puts_its_lowest_point_on_the_node() {
+        for basis in [
+            Basis::IDENTITY,
+            turned(Vector3::BACK, 90.0),
+            turned(Vector3::BACK, 37.0),
+            turned(Vector3::RIGHT, 90.0),
+            turned(Vector3::RIGHT, 180.0),
+            turned(Vector3::new(1.0, 1.0, 1.0), 54.7),
+            turned(Vector3::new(-2.0, 0.5, 1.0), 200.0),
+        ] {
+            let low = lowest_of_cylinder(basis, cylinder_lift(basis, RADIUS, HEIGHT));
+            assert!(low.abs() < 1e-4, "cylinder rests at {low}");
+            let low = lowest_of_wedge(basis, wedge_lift(basis, SIZE));
+            assert!(low.abs() < 1e-5, "wedge rests at {low}");
+        }
+    }
+
+    /// A shape hangs under its ancestors' transform too, and a prefab may
+    /// carry a scale. The support taken through the basis is exact under
+    /// one — no linearisation, no bounding box — so a scaled AND turned
+    /// barrel still lands on the floor.
+    #[test]
+    fn a_scaled_placement_still_lands_on_the_floor() {
+        for scale in [
+            Vector3::new(2.0, 2.0, 2.0),
+            Vector3::new(3.0, 0.5, 1.0),
+            Vector3::new(0.25, 4.0, 2.0),
+        ] {
+            for deg in [0.0, 25.0, 90.0] {
+                let basis =
+                    Basis::from_diagonal(scale.x, scale.y, scale.z) * turned(Vector3::BACK, deg);
+                let low = lowest_of_cylinder(basis, cylinder_lift(basis, RADIUS, HEIGHT));
+                assert!(
+                    low.abs() < 1e-4,
+                    "cylinder rests at {low} under {scale}/{deg}"
+                );
+                let low = lowest_of_wedge(basis, wedge_lift(basis, SIZE));
+                assert!(low.abs() < 1e-5, "wedge rests at {low} under {scale}/{deg}");
+            }
+        }
+    }
+
+    /// Total on the placements a designer can reach by accident: a basis
+    /// flattened to nothing has no world up to lift along, and the answer
+    /// must be a finite offset rather than the infinity a plain inverse
+    /// hands back.
+    #[test]
+    fn a_degenerate_placement_stays_finite() {
+        for basis in [
+            Basis::from_diagonal(0.0, 0.0, 0.0),
+            Basis::from_diagonal(1.0, 0.0, 1.0),
+            Basis::from_diagonal(0.0, 1.0, 0.0),
+        ] {
+            assert!(cylinder_lift(basis, RADIUS, HEIGHT).is_finite());
+            assert!(wedge_lift(basis, SIZE).is_finite());
+        }
+        assert!(standing_lift(Basis::IDENTITY, f32::NAN).is_finite());
+        assert_eq!(hull_underhang(Basis::IDENTITY, &[]), 0.0);
+    }
 
     /// Every vertex the wedge emits lies inside the box a designer sized
     /// it with — which is what lets the level derive its world box, and so

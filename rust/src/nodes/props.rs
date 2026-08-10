@@ -19,8 +19,18 @@
 //! the floor — because a barrel or a ramp that is not resting on something
 //! is a mistake, and the common case should need no arithmetic from the
 //! designer.
+//!
+//! Standing is a law about the FLOOR, so it is read in the space the floor
+//! is in: the shape's LOWEST point in WORLD space rests at the node's own
+//! y, whatever turn its own transform and its ancestors' put on it. Upright
+//! that is half the height and existing content never moves; laid on its
+//! side a barrel rests on its RADIUS. The arithmetic is
+//! [`prop_shape::cylinder_lift`] / [`prop_shape::wedge_lift`], and it is
+//! re-read on every transform change — a designer turning a barrel in the
+//! viewport fires no knob setter at all, and would otherwise watch it sink.
 
 use godot::classes::mesh::{ArrayType, PrimitiveType};
+use godot::classes::notify::Node3DNotification;
 use godot::classes::{
     ArrayMesh, BoxMesh, BoxShape3D, CollisionShape3D, ConvexPolygonShape3D, CylinderMesh,
     CylinderShape3D, IStaticBody3D, Material, Mesh, Shape3D, StaticBody3D,
@@ -166,8 +176,19 @@ impl IStaticBody3D for WaveColumn {
         self.mesh = Some(mesh);
         self.shape = Some(shape);
         self.reshape();
+        self.base_mut().set_notify_transform(true);
         let name = self.base().get_name();
         self.fold.say(Some(name));
+    }
+
+    /// A turned node is a re-lift: the standing law is read off the
+    /// placement, and moving a node fires no knob setter. Cheap enough to
+    /// run on every transform change — it is a support and an inverse, and
+    /// a prop moves only when a designer drags it.
+    fn on_notification(&mut self, what: Node3DNotification) {
+        if matches!(what, Node3DNotification::TRANSFORM_CHANGED) {
+            self.relift();
+        }
     }
 }
 
@@ -208,8 +229,6 @@ impl WaveColumn {
 
     /// Mesh, collider and lift together, so a knob dragged in the
     /// Inspector moves what the waves strike and not only what is drawn.
-    /// The lift is half the height, which is what puts the BASE on the
-    /// node — the engine's cylinder primitives are centred.
     ///
     /// Both knobs are magnitudes by the time they land in the fields (the
     /// setters fold, [`SignFold`]), so nothing here has a sign to defend
@@ -217,7 +236,6 @@ impl WaveColumn {
     fn reshape(&mut self) {
         let radius = self.radius as f32;
         let height = self.height as f32;
-        let lift = Vector3::new(0.0, height * 0.5, 0.0);
         if let Some(mesh) = self.mesh.as_mut() {
             mesh.set_top_radius(radius);
             mesh.set_bottom_radius(radius);
@@ -227,6 +245,16 @@ impl WaveColumn {
             shape.set_radius(radius);
             shape.set_height(height);
         }
+        self.relift();
+    }
+
+    /// Ride the limbs up onto the lift this placement asks for, so the
+    /// cylinder's lowest point rests on the node. Upright that is half the
+    /// height — the engine's cylinder primitives are centred — and turned
+    /// it is whatever [`prop_shape::cylinder_lift`] says.
+    fn relift(&mut self) {
+        let basis = placement_basis(&self.base());
+        let lift = prop_shape::cylinder_lift(basis, self.radius as f32, self.height as f32);
         lift_limbs(self.skin.limb(), self.collider.as_mut(), lift);
     }
 }
@@ -285,7 +313,7 @@ impl IStaticBody3D for WaveWedge {
         let built = build_body(
             &mesh.clone().upcast::<Mesh>(),
             &shape.clone().upcast::<Shape3D>(),
-            lift_of(self.size),
+            Vector3::ZERO,
             self.skin.material(),
         );
         let mut base = self.base_mut();
@@ -296,8 +324,20 @@ impl IStaticBody3D for WaveWedge {
         self.collider = Some(built.collider);
         self.mesh = Some(mesh);
         self.shape = Some(shape);
+        self.relift();
+        self.base_mut().set_notify_transform(true);
         let name = self.base().get_name();
         self.fold.say(Some(name));
+    }
+
+    /// A turned node is a re-lift — see [`WaveColumn`]. Only the LIFT is
+    /// redone, never the geometry: a wedge regenerates 24 vertices and a
+    /// hull from scratch, and a designer dragging one across the viewport
+    /// sends a transform change per frame.
+    fn on_notification(&mut self, what: Node3DNotification) {
+        if matches!(what, Node3DNotification::TRANSFORM_CHANGED) {
+            self.relift();
+        }
     }
 }
 
@@ -333,7 +373,14 @@ impl WaveWedge {
             return; // knob dragged before _ready: the build will read it
         };
         cut_wedge(mesh, shape, size);
-        let lift = lift_of(size);
+        self.relift();
+    }
+
+    /// Ride the limbs up onto the lift this placement asks for, so the
+    /// prism's lowest corner rests on the node.
+    fn relift(&mut self) {
+        let basis = placement_basis(&self.base());
+        let lift = prop_shape::wedge_lift(basis, self.size);
         lift_limbs(self.skin.limb(), self.collider.as_mut(), lift);
     }
 }
@@ -353,10 +400,19 @@ impl WaveSolid for WaveWedge {
     }
 }
 
-/// Where a wedge's limbs sit above its node: half a height, which is what
-/// makes the shape STAND on the node rather than straddle it.
-fn lift_of(size: Vector3) -> Vector3 {
-    Vector3::new(0.0, size.y.abs() * 0.5, 0.0)
+/// The basis a shape is actually drawn under: its whole global placement
+/// when it is in the tree — the standing law is about the world floor, and
+/// a shape hangs under its ancestors' turn as much as its own — and its own
+/// local basis when it is not. A knob set during a scene load runs before
+/// the node has a parent, and asking for a global transform there is an
+/// engine error rather than a transform; `_ready` re-lifts on the real
+/// placement a moment later regardless.
+fn placement_basis(node: &Gd<StaticBody3D>) -> Basis {
+    if node.is_inside_tree() {
+        node.get_global_transform().basis
+    } else {
+        node.get_transform().basis
+    }
 }
 
 /// Cut a wedge of `size` into the given mesh and hull — the one place the
