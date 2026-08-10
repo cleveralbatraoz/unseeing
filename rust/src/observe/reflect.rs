@@ -44,6 +44,29 @@ pub const EXPLANATION_MEMORY: usize = 32;
 /// that survives to each answering point.
 const UNIT_GAIN: f64 = 1.0;
 
+/// A wavefront that does not move cannot keep an appointment: at zero
+/// speed every echo fires at infinity, and at a negative one they fire
+/// before the sound was made. The engine's own pool refuses non-positive
+/// speed and radius (`PulsePool::emit`); a question about a sound it would
+/// refuse is refused in the same spirit — and a non-finite number here
+/// would reach an agent through `JSON.stringify` as `null`, which reads as
+/// a missing field rather than as an error.
+pub const REFUSED_SPEED: &str = "reflection request refused: speed must be finite and positive — an appointment needs a moving wavefront";
+
+/// The fan's reach is `min(max_r * 0.8, 6)`, so a non-positive or
+/// non-finite range asks for a fan with no length.
+pub const REFUSED_MAX_R: &str = "reflection request refused: max_r must be finite and positive — the fan's reach derives from it";
+
+/// Every appointment is measured from `now`, so a non-finite clock makes
+/// every one of them non-finite too.
+pub const REFUSED_CLOCK: &str =
+    "reflection request refused: now must be finite — every appointment is measured from it";
+
+/// A NaN origin or normal casts rays nowhere and reports positions no
+/// agent can act on.
+pub const REFUSED_GEOMETRY: &str =
+    "reflection request refused: at and normal must be finite — a non-finite origin casts nothing";
+
 /// One question: the sound whose reflections are being explained, as it
 /// would have been emitted. The kind, the loudness and the space are all
 /// absent on purpose — a question must not carry the things that would
@@ -66,6 +89,32 @@ pub struct ReflectionRequest {
 }
 
 impl ReflectionRequest {
+    /// Why this question cannot be answered, if it cannot.
+    ///
+    /// Checked once, at the boundary, BEFORE a frame is promised: a
+    /// request that could only ever produce infinities is refused in the
+    /// layer's own one-key grammar rather than answered with numbers that
+    /// cross the wire as `null`. Total over every float, NaN included.
+    #[must_use]
+    pub fn refusal(&self) -> Option<&'static str> {
+        // finiteness FIRST, so the ordered comparison that follows never
+        // sees a NaN — `NaN <= 0.0` is false, and a bare `<= 0.0` test
+        // would quietly accept it
+        if !self.speed.is_finite() || self.speed <= 0.0 {
+            return Some(REFUSED_SPEED);
+        }
+        if !self.max_r.is_finite() || self.max_r <= 0.0 {
+            return Some(REFUSED_MAX_R);
+        }
+        if !self.now.is_finite() {
+            return Some(REFUSED_CLOCK);
+        }
+        if !self.at.is_finite() || !self.normal.is_finite() {
+            return Some(REFUSED_GEOMETRY);
+        }
+        None
+    }
+
     /// Where the rays actually start: lifted off the birth surface, or
     /// they would begin inside the struck collider and answer from places
     /// the wave never reached.
@@ -251,6 +300,13 @@ pub enum Collected {
 /// question asked from anywhere else has to wait for one. This holds the
 /// waiting questions and the answered ones, and hands each answer over
 /// exactly once.
+///
+/// BOTH halves are bounded by [`EXPLANATION_MEMORY`], and for the same
+/// reason. A loop that asks and never collects fills the answered half; an
+/// observer whose physics frame never runs — outside a tree, or paused
+/// without the process mode that survives a pause — fills the waiting one.
+/// Neither may grow without bound inside a running game, and an entry that
+/// has aged out of either half reads as an unknown id.
 #[derive(Debug, Default)]
 pub struct ExplanationLedger {
     next_id: i64,
@@ -265,6 +321,9 @@ impl ExplanationLedger {
     pub fn request(&mut self, request: ReflectionRequest) -> i64 {
         self.next_id = self.next_id.saturating_add(1);
         self.waiting.push((self.next_id, request));
+        if self.waiting.len() > EXPLANATION_MEMORY {
+            self.waiting.remove(0);
+        }
         self.next_id
     }
 
@@ -276,7 +335,13 @@ impl ExplanationLedger {
     }
 
     /// File an answer, ageing out the oldest once the book is full.
+    ///
+    /// The question leaves the waiting half whether it was taken from
+    /// there or not, so a boundary that can answer a request the moment it
+    /// is made — an impossible request, or one asked with no world to cast
+    /// in — does not leave a phantom waiting behind it.
     pub fn answer(&mut self, id: i64, answer: Answer) {
+        self.waiting.retain(|(key, _)| *key != id);
         self.ready.push((id, answer));
         if self.ready.len() > EXPLANATION_MEMORY {
             self.ready.remove(0);
@@ -478,6 +543,73 @@ mod tests {
         assert_balanced(&e);
     }
 
+    /// A question about a sound that cannot travel is refused, not
+    /// answered with infinities. `at_t = now + d / 0` is `+INF`, and a
+    /// negative speed schedules echoes before the sound was made — and
+    /// `JSON.stringify` renders both as `null`, so an agent would read a
+    /// missing field where there was an error.
+    #[test]
+    fn a_wavefront_that_cannot_travel_is_refused() {
+        for speed in [0.0, -5.5, f64::NAN, f64::INFINITY] {
+            let request = ReflectionRequest { speed, ..tap() };
+            assert_eq!(request.refusal(), Some(REFUSED_SPEED), "speed {speed}");
+        }
+    }
+
+    /// The fan's reach derives from the range, so a range that cannot
+    /// reach is refused under its own name.
+    #[test]
+    fn a_range_that_cannot_reach_is_refused() {
+        for max_r in [0.0, -6.0, f64::NAN, f64::INFINITY] {
+            let request = ReflectionRequest { max_r, ..tap() };
+            assert_eq!(request.refusal(), Some(REFUSED_MAX_R), "max_r {max_r}");
+        }
+    }
+
+    /// A non-finite clock or origin poisons every number downstream.
+    #[test]
+    fn a_non_finite_clock_or_origin_is_refused() {
+        assert_eq!(
+            ReflectionRequest {
+                now: f64::NAN,
+                ..tap()
+            }
+            .refusal(),
+            Some(REFUSED_CLOCK)
+        );
+        assert_eq!(
+            ReflectionRequest {
+                at: Vector3::new(f32::NAN, 0.0, 0.0),
+                ..tap()
+            }
+            .refusal(),
+            Some(REFUSED_GEOMETRY)
+        );
+        assert_eq!(
+            ReflectionRequest {
+                normal: Vector3::new(0.0, f32::INFINITY, 0.0),
+                ..tap()
+            }
+            .refusal(),
+            Some(REFUSED_GEOMETRY)
+        );
+    }
+
+    /// The shipped cane tap passes, and every number an accepted request
+    /// produces is finite — which is what keeps `null` off the wire.
+    #[test]
+    fn an_accepted_request_produces_only_finite_numbers() {
+        let request = tap();
+        assert_eq!(request.refusal(), None);
+        let e = explain_clustering(&request, 14, &[hit(Vector3::new(6.0, 0.0, 4.0), 3.0)]);
+        assert!(e.reach.is_finite());
+        for point in &e.points {
+            assert!(point.dist.is_finite());
+            assert!(point.at_t.is_finite());
+            assert!(point.gain_fraction.is_finite());
+        }
+    }
+
     fn explanation() -> Answer {
         Answer::Explained(Box::new(explain_clustering(&tap(), 4, &[])))
     }
@@ -535,6 +667,37 @@ mod tests {
             ledger.collect(ids[ids.len() - 1]),
             Collected::Ready(_)
         ));
+    }
+
+    /// The waiting half is bounded by the same rule as the answered one.
+    /// An observer whose physics frame never runs — outside a tree, or
+    /// paused — would otherwise accumulate questions forever inside a
+    /// running game.
+    #[test]
+    fn waiting_questions_age_out_rather_than_growing_forever() {
+        let mut ledger = ExplanationLedger::default();
+        let ids: Vec<i64> = (0..(EXPLANATION_MEMORY + 2))
+            .map(|_| ledger.request(tap()))
+            .collect();
+        assert_eq!(ledger.collect(ids[0]), Collected::Unknown);
+        assert_eq!(ledger.collect(ids[1]), Collected::Unknown);
+        assert_eq!(ledger.collect(ids[2]), Collected::Pending);
+        assert_eq!(ledger.take_requests().len(), EXPLANATION_MEMORY);
+    }
+
+    /// A question answered the moment it is asked leaves no phantom
+    /// waiting behind it: the boundary refuses an impossible request, or
+    /// one with no world to cast in, without a frame ever running.
+    #[test]
+    fn answering_at_once_withdraws_the_waiting_question() {
+        let mut ledger = ExplanationLedger::default();
+        let id = ledger.request(tap());
+        ledger.answer(id, Answer::Refused("no space"));
+        assert!(ledger.take_requests().is_empty());
+        assert_eq!(
+            ledger.collect(id),
+            Collected::Ready(Answer::Refused("no space"))
+        );
     }
 
     /// A refusal survives the book intact: the frame ran, the cast could

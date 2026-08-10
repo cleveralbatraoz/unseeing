@@ -19,7 +19,7 @@
 //! dangerous answer of all. The eye-free explainers keep working.
 
 use godot::classes::{
-    Camera3D, INode, Material, MeshInstance3D, PhysicsDirectSpaceState3D, ShaderMaterial,
+    Camera3D, INode, Material, MeshInstance3D, PhysicsDirectSpaceState3D, ShaderMaterial, node,
 };
 use godot::prelude::*;
 
@@ -83,6 +83,20 @@ pub struct WaveObserver {
 
 #[godot_api]
 impl INode for WaveObserver {
+    /// The window keeps working while the world is frozen.
+    ///
+    /// The documented debugging loop is freeze, input, step, snapshot,
+    /// explain — so pausing the tree is its FIRST move, and an observer
+    /// that stopped ticking under a pause would answer `pending` forever
+    /// to every question asked inside the loop it exists to serve.
+    /// `SettingsMenu` opts itself out of the pause it causes for the same
+    /// reason (it must still hear Escape); this is the same rule, not an
+    /// exception to it. Nothing here drives the world, so running while
+    /// paused cannot advance the state being observed.
+    fn ready(&mut self) {
+        self.base_mut().set_process_mode(node::ProcessMode::ALWAYS);
+    }
+
     /// The one moment a physics space may be touched. Every reflection
     /// question booked since the last tick is cast and answered here, into
     /// a SCRATCH buffer that never reaches the echo book the game drains.
@@ -219,6 +233,12 @@ impl WaveObserver {
     /// in the air; `now` is the clock the appointments are measured from,
     /// which is why it is asked for rather than invented.
     ///
+    /// An id always comes back, and what cannot be answered is answered
+    /// AT ONCE with a refusal rather than promised to a frame: a request
+    /// whose numbers could only ever produce infinities, and an observer
+    /// standing in no physics world, are both known here — and a caller
+    /// left polling `pending` forever could not tell either of them from a
+    /// frame that simply has not run yet.
     #[func]
     fn request_explain_reflection(
         &mut self,
@@ -237,7 +257,13 @@ impl WaveObserver {
             max_echoes,
             now,
         };
-        self.explanations.request(request)
+        let id = self.explanations.request(request);
+        if let Some(reason) = request.refusal() {
+            self.explanations.answer(id, Answer::Refused(reason));
+        } else if self.space_state().is_none() {
+            self.explanations.answer(id, Answer::Refused(NO_SPACE));
+        }
+        id
     }
 
     /// Collect a booked explanation: `{"pending": true}` until the physics

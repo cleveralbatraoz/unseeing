@@ -339,6 +339,54 @@ func test_the_explanation_names_why_each_hit_did_not_answer() -> void:
 	assert_float(point["gain_fraction"]).is_greater(0.0)
 
 
+## The documented debugging loop freezes the world FIRST, then asks. An
+## observer that stopped ticking under a pause would answer pending forever
+## to every question asked inside the loop it exists to serve — so it opts
+## out of the pause exactly as the settings overlay does, and for the same
+## reason. Nothing it does can advance the frozen world.
+func test_a_frozen_world_still_answers() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _tree_observer(level)
+	get_tree().paused = true
+	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 6, 0.0)
+	await _physics_answer()
+	var e: Dictionary = obs.take_explanation(id)
+	get_tree().paused = false
+	assert_bool(e.has("pending")).is_false()
+	assert_bool(e.has("unavailable")).is_false()
+	assert_int(e["rays_cast"]).is_greater(0)
+
+
+## A question whose numbers could only ever produce infinities is refused AT
+## ONCE, without a frame. `at_t = now + d / 0` is +INF, and JSON.stringify
+## renders that as null — an agent would read a missing field where there
+## was an error. No polling, no pending, one key.
+func test_a_sound_that_cannot_travel_is_refused_at_once() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _tree_observer(level)
+	for bad: PackedFloat64Array in [
+		PackedFloat64Array([0.0, TAP_MAX_R]),
+		PackedFloat64Array([-5.5, TAP_MAX_R]),
+		PackedFloat64Array([TAP_SPEED, 0.0])
+	]:
+		var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, bad[1], bad[0], 6, 0.0)
+		var refusal: Dictionary = obs.take_explanation(id)
+		assert_int(refusal.size()).is_equal(1)
+		assert_str(refusal["unavailable"]).contains("refused")
+
+
+## An observer standing in no tree has no world to cast in, and says so
+## instead of promising an answer no frame will ever deliver. Every other
+## verb on this class works out of the tree, so silence here would look
+## exactly like a slow frame.
+func test_an_observer_outside_the_tree_refuses_rather_than_promising() -> void:
+	var obs := _observer()
+	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 6, 0.0)
+	var refusal: Dictionary = obs.take_explanation(id)
+	assert_int(refusal.size()).is_equal(1)
+	assert_str(refusal["unavailable"]).contains("physics world")
+
+
 func _observer() -> WaveObserver:
 	return auto_free(WaveObserver.new()) as WaveObserver
 
