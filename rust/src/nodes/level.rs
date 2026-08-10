@@ -527,11 +527,25 @@ impl WaveLevel {
 
     /// Every painted box in the level with the id it ACTUALLY carries,
     /// read back off the mesh instances rather than mirrored from the
-    /// colouring's own choice. The set is the one [`Self::assign_oids`]
-    /// reasons about: the solids it paints, plus the fixed anchors it
-    /// colours around — the two slabs everything stands on, and each
-    /// source's own ids. A wall melting into the floor, or a crate into
-    /// the fan's housing, is exactly what this has to be able to show.
+    /// colouring's own choice.
+    ///
+    /// The set and the SHAPES are the ones [`Self::assign_oids`] reasons
+    /// about, deliberately measured the same way: the solids it paints, the
+    /// two slabs everything stands on, and each source under its SWEPT box —
+    /// grown by `sweep_margin` exactly as the colouring grows it, because a
+    /// check that measured the fan by the single pose it happens to hold
+    /// would be weaker than the law it explains, and would clear a crate the
+    /// guard ring reaches on half of every cycle.
+    ///
+    /// The level's creatures are here too, though the colouring does not
+    /// paint them: [`WaveCat`] carries a hardcoded id in the 0.7+ band, and a
+    /// census that stopped at the static world would give a seam bug
+    /// involving the one moving thing in the room a clean bill of health.
+    ///
+    /// THE HERO'S BODY IS NOT HERE, and cannot be: `HeroBody` is a child of
+    /// the composition root, not of the level, so this walk never sees it.
+    /// The other occupant of the creature band is therefore outside every
+    /// report this function feeds.
     pub(super) fn oid_census(&self) -> Vec<PaintedSolid> {
         let census = self.census();
         let mut painted = Vec::new();
@@ -562,9 +576,11 @@ impl WaveLevel {
                 continue;
             };
             let name = node.get_name().to_string();
-            // one entry per id a source paints its limbs with, all sharing
-            // the source's union box — the shape the colouring anchors on
-            for &oid in source.dyn_bind().oids() {
+            let bound = source.dyn_bind();
+            let area = area.grown_flat(bound.sweep_margin());
+            // one box for all of a source's ids, and the same union the
+            // colouring anchored on — see `assign_oids`
+            for &oid in bound.oids() {
                 painted.push(PaintedSolid {
                     name: format!("{name} @{oid}"),
                     area,
@@ -572,8 +588,38 @@ impl WaveLevel {
                 });
             }
         }
+        for cat in &census.cats {
+            let node = cat.clone().upcast::<Node>();
+            let (Some(area), Some(oid)) = (mesh_world_box(&node), painted_oid(&node)) else {
+                continue; // a creature that draws nothing can show no seam
+            };
+            painted.push(PaintedSolid {
+                name: node.get_name().to_string(),
+                area,
+                oid,
+            });
+        }
         painted
     }
+}
+
+/// The flat object id a creature is painted with, read off the first limb
+/// that carries one. A creature paints every limb with one id (the whole
+/// animal is one silhouette), so the first limb speaks for it; `None` for a
+/// node whose limbs were never painted, which the census then leaves out
+/// rather than reporting under [`oid_palette::NO_OID`] as though the shader
+/// had been handed a real value.
+fn painted_oid(node: &Gd<Node>) -> Option<f64> {
+    if let Ok(skin) = node.clone().try_cast::<MeshInstance3D>()
+        && let Ok(oid) = skin
+            .get_instance_shader_parameter(OID_PARAM)
+            .try_to::<f64>()
+    {
+        return Some(oid);
+    }
+    node.get_children()
+        .iter_shared()
+        .find_map(|child| painted_oid(&child))
 }
 
 /// The flat object id a mesh instance carries right now — the one source

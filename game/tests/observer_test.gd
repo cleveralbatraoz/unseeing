@@ -299,6 +299,64 @@ func test_the_shipped_level_has_no_object_id_violations() -> void:
 	assert_array(e["names"]).contains(["Floor", "Ceiling", "DividerNorth", "Fan @0.33"])
 
 
+## The creatures are IN the report. WaveCat and the hero's body occupy the
+## 0.7+ id band on purpose — a cat walking in front of a wall must not melt
+## into it — and a census that stopped at the walls, props and sources would
+## give a seam bug involving the one moving thing in the room a clean bill of
+## health, under a doc comment promising "every painted box in the level".
+##
+## The hero's body is deliberately NOT here and cannot be: HeroBody is a child
+## of the composition root, not of the level, so the level's own walk never
+## sees it. That is named in the census doc comment rather than left to be
+## discovered.
+func test_the_oid_census_includes_the_levels_creatures() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _observer()
+	obs.inject(level, _eye())
+	var e: Dictionary = obs.explain_oids()
+	assert_array(e["names"]).contains(["Cat"])
+	assert_array(e["violations"]).is_empty()
+
+
+## The census measures a source by the box it SWEEPS, exactly as the colouring
+## did — not by the single pose it happens to hold. assign_oids grows a
+## source's anchor by its sweep_margin before it colours anything around it;
+## a check built from the ungrown box is weaker than the law it explains, and
+## would hand back "no such pair, no violations" for a prop the fan's guard
+## ring reaches on half of every cycle.
+##
+## Hand-derived from the fan's own build dimensions (rust/src/nodes/fan.rs):
+## the guard ring's outer radius is 0.44 m, so an unswept fan at the origin
+## reaches x = 0.44; the head swings PIVOT_RANGE = 0.85 rad each way
+## (rust/src/fan_wave.rs), so the sweep margin is 0.44 x sin(0.85) = 0.331 and
+## the swept fan reaches x = 0.771. A 0.2 m cube centred at x = 0.60 spans
+## 0.50 to 0.70: clear of the pose by 0.06 (six times Box3::TOUCH_EPS), and
+## well inside the sweep.
+func test_the_oid_census_measures_a_source_by_what_it_sweeps() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var fan := SoundFan.new()
+	fan.name = "Fan"
+	level.add_child(fan)
+	var neighbour := WaveProp.new()
+	neighbour.name = "SweptNeighbour"
+	neighbour.size = Vector3(0.2, 0.2, 0.2)
+	neighbour.position = Vector3(0.6, 1.15, 0.0)
+	level.add_child(neighbour)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var obs := _observer()
+	obs.inject(level, _eye())
+	var e: Dictionary = obs.explain_oids()
+	var seams: Array[String] = []
+	for pair: Dictionary in e["pairs"]:
+		seams.append("%s|%s" % [pair["name_a"], pair["name_b"]])
+	# pairs come back in ascending census order, and the census lists the
+	# painted solids before the sources — so the prop is the a side
+	assert_array(seams).contains(["SweptNeighbour|Fan @0.33", "SweptNeighbour|Fan @0.63"])
+	assert_array(e["violations"]).is_empty()
+
+
 ## Occlusion, answerable. Spawn to fan head crosses exactly one wall on the
 ## shipped map — DividerNorth, at x = 6.4 — so the fan's WAVE arrives at
 ## HUM_THROUGH (0.55) and its silhouette at SOURCE_THROUGH (0.3).
