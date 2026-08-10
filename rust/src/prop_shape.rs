@@ -93,6 +93,56 @@ pub fn wedge_lift(basis: Basis, size: Vector3) -> Vector3 {
     standing_lift(basis, hull_underhang(basis, &wedge_hull(size)))
 }
 
+/// Is a node scale near enough to 1 that folding it would only move things
+/// by float dust? Decomposing a rotated basis does not always give back an
+/// exact 1, and the shipped map is 129 nodes of scale exactly 1 — a fold
+/// that fired on dust would nudge every one of them.
+#[must_use]
+pub fn scale_is_neutral(scale: Vector3) -> bool {
+    (scale - Vector3::ONE).length() <= 1e-6
+}
+
+/// A three-component size under a node scale — exact, because a box and a
+/// wedge are both built along their own local axes, so scaling the node and
+/// scaling the knob are the same operation. Only the MAGNITUDE survives: a
+/// mirrored axis is a reflection, not a size.
+#[must_use]
+pub fn fold_box_scale(size: Vector3, scale: Vector3) -> Vector3 {
+    size * scale.abs()
+}
+
+/// A cylinder's two knobs under a node scale, and whether the scale was
+/// expressible at all.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColumnKnobs {
+    /// Radius in meters.
+    pub radius: f64,
+    /// Height in meters.
+    pub height: f64,
+    /// False when the cross-section was pulled by different amounts across
+    /// X and Z. That asks for an ELLIPTIC cylinder — a shape neither
+    /// `CylinderMesh` nor `CylinderShape3D` can be, and one this
+    /// vocabulary deliberately does not own.
+    pub round: bool,
+}
+
+/// A cylinder's knobs under a node scale. The axial component is exact;
+/// across the cross-section the LARGER of the two is taken, so the barrel
+/// that comes out CONTAINS the one that was drawn. Erring inwards would
+/// leave drawn geometry outside the collider — the one failure mode this
+/// renderer cannot show and the cane cannot feel.
+#[must_use]
+pub fn fold_column_scale(radius: f64, height: f64, scale: Vector3) -> ColumnKnobs {
+    let across_x = f64::from(scale.x.abs());
+    let across_z = f64::from(scale.z.abs());
+    let wider = across_x.max(across_z);
+    ColumnKnobs {
+        radius: radius * wider,
+        height: height * f64::from(scale.y.abs()),
+        round: (across_x - across_z).abs() <= 1e-6 * wider.max(1.0),
+    }
+}
+
 /// The six corners of a wedge that fills `size`: a box whose top has been
 /// sloped away, rising from the bottom of the −X end to the full height at
 /// the +X end. The hull is centred on the origin; the wedge NODE lifts it
@@ -273,6 +323,53 @@ mod tests {
                 assert!(low.abs() < 1e-5, "wedge rests at {low} under {scale}/{deg}");
             }
         }
+    }
+
+    /// A box and a wedge take a scale whole: three components into three,
+    /// along the same local axes the geometry is built on. Only magnitudes
+    /// — a mirrored axis is a reflection, and no size expresses one.
+    #[test]
+    fn a_box_takes_a_scale_whole() {
+        assert_eq!(
+            fold_box_scale(Vector3::new(0.5, 0.5, 0.5), Vector3::new(4.0, 1.0, 2.0)),
+            Vector3::new(2.0, 0.5, 1.0)
+        );
+        assert_eq!(
+            fold_box_scale(Vector3::new(0.5, 0.5, 0.5), Vector3::new(-2.0, 1.0, 1.0)),
+            Vector3::new(1.0, 0.5, 0.5)
+        );
+    }
+
+    /// A cylinder has ONE radius against three scale components. Uniform,
+    /// nothing is lost; pulled unevenly across the cross-section it is not
+    /// representable at all, and the fold says so AND grows to contain
+    /// what was drawn rather than shrinking inside it.
+    #[test]
+    fn a_cylinder_takes_the_scale_it_can_and_reports_the_rest() {
+        let round = fold_column_scale(0.3, 0.9, Vector3::new(2.0, 2.0, 2.0));
+        assert!((round.radius - 0.6).abs() < 1e-9);
+        assert!((round.height - 1.8).abs() < 1e-9);
+        assert!(round.round);
+
+        let flat = fold_column_scale(0.3, 0.9, Vector3::new(2.0, 3.0, 1.0));
+        assert!((flat.radius - 0.6).abs() < 1e-9, "took the narrower axis");
+        assert!((flat.height - 2.7).abs() < 1e-9);
+        assert!(!flat.round, "an elliptic cross-section reported as round");
+
+        // a mirror is a magnitude here too, and mirroring a cylinder is
+        // not a shape change at all
+        let mirrored = fold_column_scale(0.3, 0.9, Vector3::new(-2.0, -2.0, -2.0));
+        assert_eq!(mirrored, round);
+    }
+
+    /// The fold must not fire on the float dust a decomposed rotation
+    /// leaves behind — the shipped map is 129 nodes of scale exactly 1.
+    #[test]
+    fn only_a_real_scale_is_worth_folding() {
+        assert!(scale_is_neutral(Vector3::ONE));
+        assert!(scale_is_neutral(Vector3::new(1.0, 1.0 - 1e-8, 1.0 + 1e-8)));
+        assert!(!scale_is_neutral(Vector3::new(1.0, 1.0, 1.001)));
+        assert!(!scale_is_neutral(Vector3::new(-1.0, -1.0, -1.0)));
     }
 
     /// Total on the placements a designer can reach by accident: a basis

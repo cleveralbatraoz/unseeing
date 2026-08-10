@@ -269,6 +269,111 @@ func test_a_negative_knob_folds_on_every_shape() -> void:
 	assert_vector(wedge.size).is_equal(Vector3(1.2, 0.6, 0.8))
 
 
+## THE S KEY, answered the same way twice. A wall discards its node scale
+## and says so; the three prop shapes ABSORBED it silently — a prop of
+## 0.5 under scale (4, 1, 2) drew, collided and coloured as 2.0 x 0.5 x 1.0,
+## which is self-consistent (the world was right) while the Inspector went
+## on reporting 0.5. Two halves of one vocabulary behaving oppositely on the
+## same key is the trap; a knob that lies is worse than either. So the scale
+## folds INTO the knob and the node comes back at 1: the geometry does not
+## move, and the number a designer reads is the number that was built.
+func test_a_scaled_prop_folds_the_scale_into_its_size_knob() -> void:
+	var prop: WaveProp = auto_free(WaveProp.new())
+	prop.size = Vector3(0.5, 0.5, 0.5)
+	prop.scale = Vector3(4, 1, 2)
+	add_child(prop)
+	assert_vector(prop.size).is_equal_approx(Vector3(2, 0.5, 1), Vector3.ONE * LIFT_EPS)
+	assert_vector(prop.scale).is_equal_approx(Vector3.ONE, Vector3.ONE * LIFT_EPS)
+	assert_vector((_skin(prop).mesh as BoxMesh).size).is_equal_approx(
+		Vector3(2, 0.5, 1), Vector3.ONE * LIFT_EPS
+	)
+	assert_vector((_shape(prop) as BoxShape3D).size).is_equal_approx(
+		Vector3(2, 0.5, 1), Vector3.ONE * LIFT_EPS
+	)
+	# the fold is a change of vocabulary, not of geometry: the world box is
+	# exactly the one the scaled node drew
+	assert_vector(_world_box(prop).size).is_equal_approx(Vector3(2, 0.5, 1), Vector3.ONE * 0.001)
+
+
+## A wedge's size is three components against a three-component scale, so
+## the fold is exact there too — every vertex it generates lies on its own
+## local axes.
+func test_a_scaled_wedge_folds_the_scale_into_its_size_knob() -> void:
+	var wedge: WaveWedge = auto_free(WaveWedge.new())
+	wedge.size = Vector3(1.2, 0.5, 0.8)
+	wedge.scale = Vector3(2, 1, 3)
+	add_child(wedge)
+	assert_vector(wedge.size).is_equal_approx(Vector3(2.4, 0.5, 2.4), Vector3.ONE * LIFT_EPS)
+	assert_vector(wedge.scale).is_equal_approx(Vector3.ONE, Vector3.ONE * LIFT_EPS)
+	assert_vector(_world_box(wedge).size).is_equal_approx(
+		Vector3(2.4, 0.5, 2.4), Vector3.ONE * 0.001
+	)
+	assert_float(_world_box(wedge).position.y).is_equal_approx(0.0, 0.001)
+
+
+## A column carries ONE radius and ONE height against a three-component
+## scale. Uniform, that is exactly representable and the fold loses nothing.
+func test_a_uniformly_scaled_column_folds_exactly() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.3
+	column.height = 0.9
+	column.scale = Vector3(2, 2, 2)
+	add_child(column)
+	assert_float(column.radius).is_equal_approx(0.6, LIFT_EPS)
+	assert_float(column.height).is_equal_approx(1.8, LIFT_EPS)
+	assert_vector(column.scale).is_equal_approx(Vector3.ONE, Vector3.ONE * LIFT_EPS)
+	assert_float(_world_box(column).size.y).is_equal_approx(1.8, 0.001)
+	assert_float(_world_box(column).position.y).is_equal_approx(0.0, 0.001)
+
+
+## Pulled by different amounts across X and Z, a cylinder is an ELLIPTIC
+## cylinder — a shape neither CylinderMesh nor CylinderShape3D can be, and
+## one this vocabulary deliberately does not own. The fold takes the LARGER
+## of the two, so the barrel a designer ends up with CONTAINS the one they
+## drew: erring inwards would leave drawn geometry outside the collider,
+## and refusing the scale outright would throw away the axial stretch they
+## can perfectly well have.
+func test_a_non_uniformly_scaled_column_grows_to_contain_what_was_drawn() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.3
+	column.height = 0.9
+	column.scale = Vector3(2, 3, 1)
+	add_child(column)
+	assert_float(column.height).is_equal_approx(2.7, LIFT_EPS)
+	assert_float(column.radius).is_equal_approx(0.6, LIFT_EPS)
+	assert_vector(column.scale).is_equal_approx(Vector3.ONE, Vector3.ONE * LIFT_EPS)
+	assert_float(_world_box(column).size.y).is_equal_approx(2.7, 0.001)
+
+
+## A mirrored axis is not a size, so only its magnitude survives the fold —
+## and the shape must not silently keep drawing at the scaled extent it had.
+func test_a_mirrored_scale_folds_to_its_magnitude() -> void:
+	var prop: WaveProp = auto_free(WaveProp.new())
+	prop.size = Vector3(0.5, 0.5, 0.5)
+	prop.scale = Vector3(-2, 1, 1)
+	add_child(prop)
+	assert_vector(prop.size).is_equal_approx(Vector3(1, 0.5, 0.5), Vector3.ONE * LIFT_EPS)
+	assert_vector(_world_box(prop).size).is_equal_approx(Vector3(1, 0.5, 0.5), Vector3.ONE * 0.001)
+
+
+## An unscaled node must come through untouched — the shipped map is 129
+## nodes of scale exactly 1, and a fold that fired on float dust would move
+## every one of them.
+func test_an_unscaled_shape_is_left_alone() -> void:
+	var prop: WaveProp = auto_free(WaveProp.new())
+	prop.size = Vector3(0.9, 0.05, 0.6)
+	prop.rotation.y = 0.3
+	add_child(prop)
+	assert_vector(prop.size).is_equal(Vector3(0.9, 0.05, 0.6))
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.28
+	column.height = 0.9
+	column.rotation.y = 2.1
+	add_child(column)
+	assert_float(column.radius).is_equal(0.28)
+	assert_float(column.height).is_equal(0.9)
+
+
 ## All three shapes reach the level through ONE door: the level hands out
 ## the world skin and the flat object id without knowing which shape it has
 ## — that is the whole point of the solid abstraction. A shape that answered

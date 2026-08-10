@@ -28,6 +28,16 @@
 //! [`prop_shape::cylinder_lift`] / [`prop_shape::wedge_lift`], and it is
 //! re-read on every transform change — a designer turning a barrel in the
 //! viewport fires no knob setter at all, and would otherwise watch it sink.
+//!
+//! SIZE LAW: the knob is the one size a shape has, and it never lies. A
+//! minus sign folds to its magnitude ([`SignFold`]), and the node's SCALE
+//! is folded into the knob on entering the tree, the node coming back at 1
+//! ([`drop_scale`]). Absorbed silently — which is what happened before —
+//! the S key was a second size knob the Inspector could not see: a prop of
+//! 0.5 under scale (4, 1, 2) drew, collided and coloured as 2.0 x 0.5 x 1.0
+//! while the Inspector went on reporting 0.5. A wall discards its scale
+//! instead of folding it, because its length feeds an occluding centerline;
+//! a prop's extent is free, so it can hold what the scale meant.
 
 use godot::classes::mesh::{ArrayType, PrimitiveType};
 use godot::classes::notify::Node3DNotification;
@@ -65,6 +75,11 @@ pub struct WaveProp {
 #[godot_api]
 impl IStaticBody3D for WaveProp {
     fn ready(&mut self) {
+        let scaled = scale_to_fold(&self.base());
+        if let Some(scale) = scaled {
+            self.size = prop_shape::fold_box_scale(self.size, scale);
+            drop_scale(&mut self.base_mut(), scale, "");
+        }
         let built = build_box(self.size, Vector3::ZERO, self.skin.material());
         let mut base = self.base_mut();
         base.add_child(&built.skin);
@@ -154,6 +169,20 @@ pub struct WaveColumn {
 #[godot_api]
 impl IStaticBody3D for WaveColumn {
     fn ready(&mut self) {
+        let scaled = scale_to_fold(&self.base());
+        if let Some(scale) = scaled {
+            let knobs = prop_shape::fold_column_scale(self.radius, self.height, scale);
+            self.radius = knobs.radius;
+            self.height = knobs.height;
+            let lost = if knobs.round {
+                ""
+            } else {
+                " The cross-section was pulled unevenly across X and Z, which asks for \
+                 an elliptic cylinder this vocabulary does not own — the wider radius \
+                 was taken, so the shape contains what was drawn."
+            };
+            drop_scale(&mut self.base_mut(), scale, lost);
+        }
         let mut mesh = CylinderMesh::new_gd();
         // fewer segments than the engine default: a flat object id means the
         // facets never draw as creases, so the count buys nothing but
@@ -304,6 +333,17 @@ pub struct WaveWedge {
 #[godot_api]
 impl IStaticBody3D for WaveWedge {
     fn ready(&mut self) {
+        let scaled = scale_to_fold(&self.base());
+        if let Some(scale) = scaled {
+            self.size = prop_shape::fold_box_scale(self.size, scale);
+            let lost = if scale.x < 0.0 || scale.y < 0.0 || scale.z < 0.0 {
+                " A mirrored axis is a reflection, and no size expresses one — the \
+                 slope still rises toward +X; turn the node to aim it."
+            } else {
+                ""
+            };
+            drop_scale(&mut self.base_mut(), scale, lost);
+        }
         // the geometry is generated BEFORE the shape is attached: a
         // ConvexPolygonShape3D with no points cannot build a hull, and the
         // engine says so loudly the instant a collider is given one
@@ -398,6 +438,36 @@ impl WaveSolid for WaveWedge {
     fn oid(&self) -> f64 {
         self.skin.oid()
     }
+}
+
+/// The node's own scale, if there is anything worth folding into a size
+/// knob — read once, on entering the tree, exactly where the wall reads its
+/// own basis. `None` when the node is already at 1, which is every node in
+/// the shipped map.
+///
+/// It is deliberately the LOCAL scale and not the inherited one: a prefab
+/// scaled as a whole should carry its contents with it, and only a wall
+/// (whose centerline is physics, not decoration) refuses that.
+fn scale_to_fold(node: &Gd<StaticBody3D>) -> Option<Vector3> {
+    let scale = node.get_scale();
+    (!prop_shape::scale_is_neutral(scale)).then_some(scale)
+}
+
+/// Put the node back at scale 1 and say what was folded, naming the node.
+///
+/// The mirror of the wall's "use the length knob, never scale": there, the
+/// scale is discarded; here it is ABSORBED, because a prop's knob is a free
+/// extent and can hold it. Either way the S key stops being a second size
+/// knob that the Inspector cannot see — which is what lets a knob read as
+/// prefab documentation.
+fn drop_scale(node: &mut Gd<StaticBody3D>, scale: Vector3, lost: &str) {
+    let name = node.get_name();
+    node.set_scale(Vector3::ONE);
+    godot_warn!(
+        "'{name}': folded the node scale {scale} into the size knob and reset the \
+         scale to 1 — a shape's knob is its one size, so the Inspector reads what is \
+         actually drawn.{lost}"
+    );
 }
 
 /// The basis a shape is actually drawn under: its whole global placement
