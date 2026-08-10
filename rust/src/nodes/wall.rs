@@ -13,6 +13,13 @@
 //! node's scale is discarded with the same stroke: `length` is the one size
 //! knob. The free shapes with no such contract live in [`super::props`].
 //!
+//! Both the snap and the centerline it feeds are read in WORLD space, and
+//! that is not a detail: a wall is authored inside whatever room prefab
+//! carries it, so the transform it draws under is its ancestors' as much as
+//! its own. Snapping the local basis under a turned room would leave the
+//! box drawn down one axis and the occluder derived down the other — sound
+//! passing through a wall the eye is shown, and stopping at air it is not.
+//!
 //! The world skin arrives from the level root ([`super::level`]) — the
 //! single injection point — not per-node; a bare node in the editor simply
 //! shows its plain box.
@@ -35,9 +42,6 @@ pub struct WaveWall {
     #[var(get = get_length, set = set_length)]
     #[init(val = 4.0)]
     length: f64,
-    /// The snapped quarter turn, derived on entering the tree: even runs
-    /// along world X, odd along world Z.
-    quadrant: u8,
     skin: Skin,
     mesh: Option<Gd<BoxMesh>>,
     shape: Option<Gd<BoxShape3D>>,
@@ -91,30 +95,39 @@ impl WaveWall {
     }
 
     /// This wall's centerline as the classic (x1, z1, x2, z2) segment —
-    /// the level root derives every contract from these. Tree-only: the
-    /// segment reads the global position `_ready` snapped.
+    /// the level root derives every contract from these. Tree-only, and
+    /// read WHOLE from one global transform: the same placement that puts
+    /// the box in front of the eye decides which axis the run goes down,
+    /// so the occluder can never end up perpendicular to the wall it
+    /// describes.
     pub(crate) fn segment(&self) -> Vector4 {
-        let at = self.base().get_global_position();
-        level_plan::wall_segment(at, self.length, self.quadrant)
+        let placed = self.base().get_global_transform();
+        let quadrant = level_plan::basis_quadrant(placed.basis);
+        level_plan::wall_segment(placed.origin, self.length, quadrant)
     }
 
-    /// The axis law: whatever free-hand rotation (or scale) the node
-    /// carries collapses onto the nearest exact quarter turn. Loud when
-    /// it actually moved something — the designer should learn the law,
-    /// not fight ghosts.
+    /// The axis law, enforced in WORLD space: whatever free-hand rotation
+    /// (or scale) reaches this node — its own, or inherited from any
+    /// ancestor above it — collapses onto the nearest exact quarter turn.
+    /// World space is the whole point: the centerline is derived there, so
+    /// snapping the LOCAL basis would leave a wall in a turned room drawing
+    /// down one axis and occluding down the other. A quadrant basis has
+    /// unit columns, so writing it globally discards inherited scale with
+    /// the same stroke — `length` stays the one size knob however deep a
+    /// room prefab nests the wall. Loud when it actually moved something —
+    /// the designer should learn the law, not fight ghosts.
     fn snap_to_axis(&mut self) {
-        let mut transform = self.base().get_transform();
-        self.quadrant = level_plan::yaw_quadrant(f64::from(self.base().get_rotation().y));
-        let snapped = level_plan::quadrant_basis(self.quadrant);
-        if !basis_close(transform.basis, snapped) {
+        let mut placed = self.base().get_global_transform();
+        let snapped = level_plan::quadrant_basis(level_plan::basis_quadrant(placed.basis));
+        if !basis_close(placed.basis, snapped) {
             godot_warn!(
                 "WaveWall '{}': snapped to the nearest quarter turn — walls are \
                  axis-aligned boxes by law (use the length knob, never scale)",
                 self.base().get_name(),
             );
         }
-        transform.basis = snapped;
-        self.base_mut().set_transform(transform);
+        placed.basis = snapped;
+        self.base_mut().set_global_transform(placed);
     }
 }
 

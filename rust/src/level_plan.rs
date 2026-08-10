@@ -82,6 +82,20 @@ pub fn yaw_quadrant(yaw: f64) -> u8 {
     (steps.round() as i64).rem_euclid(4) as u8
 }
 
+/// The nearest quarter turn to whatever yaw a BASIS carries, read off its
+/// X column — the axis a wall's length runs down, and the only column that
+/// decides the answer. A scale stretches that column without turning an
+/// axis-aligned one, so a wall inheriting a scaled room still reads the
+/// axis it actually draws along. Total on any basis, a degenerate (zero)
+/// column included: that reads as quadrant 0 rather than poisoning the
+/// arithmetic.
+#[must_use]
+pub fn basis_quadrant(basis: Basis) -> u8 {
+    // a yaw of θ puts the X column at (cos θ, 0, −sin θ)
+    let x = basis.col_a();
+    yaw_quadrant(f64::from(-x.z).atan2(f64::from(x.x)))
+}
+
 /// The exact basis of a quarter turn about Y: unit columns of 0 and ±1,
 /// bit-for-bit — the one orientation family under which a rotated box's
 /// world vertices are exact coordinate swaps, never trig approximations.
@@ -215,6 +229,8 @@ pub fn demo_tap(walls: &[Vector4], spawn: Vector3, fan: Vector3) -> Option<TapPl
 
 #[cfg(test)]
 mod tests {
+    use godot::builtin::EulerOrder;
+
     use super::*;
 
     /// The shipped map's wall centerlines — the validated design the
@@ -254,6 +270,42 @@ mod tests {
         assert_eq!(yaw_quadrant(-3.3), 2);
         assert_eq!(yaw_quadrant(7.0), 0);
         assert_eq!(yaw_quadrant(f64::NAN), 0);
+    }
+
+    /// A basis reports the quarter turn it is nearest to, whatever it
+    /// carries besides the turn: every quadrant basis reads back as
+    /// itself, a free-hand yaw rounds, a TILT does not disturb the reading
+    /// (only the X column's ground shadow decides), and — the case a room
+    /// prefab makes routine — an inherited SCALE stretches the columns
+    /// without turning them, so the answer is unchanged.
+    #[test]
+    fn a_basis_reports_the_quarter_turn_it_is_nearest_to() {
+        for k in 0..4u8 {
+            assert_eq!(
+                basis_quadrant(quadrant_basis(k)),
+                k,
+                "quadrant {k} round trip"
+            );
+        }
+        let yawed =
+            |yaw: f64| Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.0, yaw as f32, 0.0));
+        assert_eq!(basis_quadrant(yawed(0.2)), 0);
+        assert_eq!(basis_quadrant(yawed(1.2)), 1);
+        assert_eq!(basis_quadrant(yawed(-1.2)), 3);
+        // tilted and rolled off every axis, the way a dragged gizmo leaves it
+        let tilted = Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.2, 1.2, -0.1));
+        assert_eq!(basis_quadrant(tilted), 1);
+        // a 2x room: same turn, twice the columns
+        assert_eq!(
+            basis_quadrant(quadrant_basis(1).scaled(Vector3::splat(2.0))),
+            1
+        );
+        assert_eq!(
+            basis_quadrant(quadrant_basis(3).scaled(Vector3::new(0.5, 3.0, 2.0))),
+            3,
+        );
+        // and a collapsed basis answers rather than diverging
+        assert_eq!(basis_quadrant(quadrant_basis(2).scaled(Vector3::ZERO)), 0);
     }
 
     /// Every quadrant basis is exact: unit columns of 0 and ±1, so a
