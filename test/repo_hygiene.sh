@@ -64,10 +64,12 @@ if git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then HAVE_INDEX=1; fi
 # .superpowers/ is the scratch workspace the subagent-driven-development skill
 # writes one directory per plan into: task briefs, implementer reports, review
 # packages, and the progress ledger that survives compaction. The skill drops a
-# self-ignoring `.gitignore` there, but only once its first script has run — so
-# between entering a plan and that first call the ledger is untracked and
-# unignored, exactly the window in which `git add -A` swallows it. The standing
-# rule belongs here, not in a directory the tool creates for itself.
+# self-ignoring `.gitignore` into `.superpowers/sdd/` — one level down, and only
+# once its first script has run. So between entering a plan and that first call
+# the ledger is untracked and unignored, exactly the window in which
+# `git add -A` swallows it, and anything written outside `sdd/` is never
+# covered at all. The standing rule belongs here, not in a directory the tool
+# creates for itself.
 if [ "$HAVE_INDEX" = 0 ]; then
   skip "ignore rules (no git metadata — deploy work tree is a tar extract)"
 else
@@ -76,7 +78,7 @@ else
     if git -C "$DIR" check-ignore -q "$p" 2>/dev/null; then
       ok "$p is ignored"
     else
-      bad "$p is NOT ignored (see .gitignore)"
+      bad "$p is NOT ignored (no .gitignore rule covers it)"
     fi
   done
 fi

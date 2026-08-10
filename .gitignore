@@ -14,6 +14,7 @@ game/override.cfg
 .claude/
 # Per-plan scratch for subagent-driven development: task briefs, implementer
 # reports, review packages, and the progress ledger. The skill self-ignores
-# this directory once its first script runs; the window before that is when a
-# ledger gets committed, so the rule is stated here instead.
+# only `.superpowers/sdd/`, and only once its first script has run — so the
+# window before that call, and anything ever written outside `sdd/`, are
+# covered by nothing. Hence the rule for the whole directory, here.
 .superpowers/

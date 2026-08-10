@@ -115,6 +115,14 @@ method; this file is the project's specifics. **Where a skill and this file
 disagree, the skill wins** — a deliberate 2026-08-10 decision, and the rules
 below were rewritten to match rather than left to contradict.
 
+That direction has to be stated explicitly, because superpowers points the
+other way by default: `using-superpowers` ends "User instructions (CLAUDE.md,
+AGENTS.md, …) take precedence over skills." This file *is* such an
+instruction, and it uses that precedence to hand authority back. **The
+delegation is the instruction** — do not cite that clause to reverse it.
+The skills set the floor, never the ceiling: where this file asks for more
+than a skill does (below), that is an addition, not a conflict.
+
 The spine, in order:
 
 1. **brainstorming** — before any feature, component, behaviour change or
@@ -127,8 +135,17 @@ The spine, in order:
    research the physics/maths itself when needed. Copy whatever works —
    license risk is accepted on this project.
 2. **writing-plans** — the approved spec becomes a bite-sized, TDD-shaped
-   plan whose Global Constraints carry this file's non-negotiables verbatim
-   (the perception laws, the id budget, the platform set).
+   plan whose Global Constraints carry this file's non-negotiables verbatim:
+   the perception laws, the **object-id clearance**, the platform set, the
+   two layers, **the commit rules and the attribution ban**. That last pair
+   is not decoration. An implementer subagent is dispatched with its task
+   brief and the Global Constraints and nothing else — never the whole plan,
+   never this file — so a rule absent from that block does not exist as far
+   as the agent doing the work is concerned. Related: a plan's commit step
+   states *that* the task commits, never a literal `git commit -m "feat: …"`
+   line. The skill's template shows one as illustration; transcribed into a
+   brief it becomes the commit message this project spent a whole history
+   rewrite to make impossible.
 3. **subagent-driven-development** (preferred) or **executing-plans** —
    execution, with a fresh implementer per task, a task review after each,
    and the ledger under `.superpowers/` that survives compaction.
@@ -148,7 +165,15 @@ or unexpected behaviour before proposing a fix;
   finishing-a-development-branch stands at the back: merge, PR or keep is
   the user's choice, presented as that skill's menu, never assumed. Between
   those two gates autonomy is unchanged and total: install anything, run
-  anything, spawn agents, use the server, deploy.
+  anything, spawn agents, use the server, deploy. **Deploying is not the
+  integration decision** and does not wait on it — the web build ships
+  continuously from a green branch; merging that branch is a separate
+  question, asked at the end.
+- **Questions come one at a time now, not all upfront.** The old rule was
+  to surface every open question before implementation and keep asking until
+  none remained. Brainstorming's is the opposite — one question per message,
+  multiple choice where possible, refining as it goes — and it is the more
+  visible day-to-day change in this whole adoption.
 - **Subagents are part of the method, not an escalation.** Implementers,
   reviewers and parallel investigators get dispatched as the skills
   prescribe, without asking first.
@@ -160,8 +185,13 @@ or unexpected behaviour before proposing a fix;
   today. Both get written.
 - **Review is mandatory, not proportional to size.** Every task and every
   merge, dispatched to a subagent with superpowers'
-  `requesting-code-review/code-reviewer.md` rubric. Algorithmic complexity
-  and performance remain part of every review.
+  `requesting-code-review/code-reviewer.md` rubric. That raised the floor —
+  trivial fixes no longer get a self-review — and it removed no ceiling:
+  **physics and wave work still gets its full multi-agent design and
+  performance review, with redesign if it fails.** A diff review asks
+  whether the design decisions were sound; it is not the same instrument
+  and does not replace it. Algorithmic complexity and performance remain
+  part of every review.
 
 **Write it back.** Unchanged and still the last step: the task ends in
 documentation, not in a green test. Update the **wiki** pages for every
@@ -179,17 +209,30 @@ checkout. Follow **using-git-worktrees**: detect existing isolation first
 case), and if you are already in a linked worktree do not create a second
 one.
 
-**Use the harness's native worktree tool, never `git worktree add`.** The
-skill's own priority order says so, and it matters here: this project's
-worktrees live under `.claude/worktrees/`, which the native tool owns
-end to end — placement, branch, and cleanup. A hand-rolled `git worktree
-add` leaves state the harness cannot see or remove, and the fallback's
-`.worktrees/` default is not this repo's layout.
+**Where a native worktree tool exists, use it and never `git worktree
+add`.** That is the skill's own priority order, and it matters here: this
+project's worktrees live under `.claude/worktrees/`, which the native tool
+owns end to end — placement, branch, and cleanup. A hand-rolled `git
+worktree add` alongside it leaves state the harness cannot see or remove.
+**With no native tool**, take the skill's fallback but keep this repo's
+layout: `git worktree add .claude/worktrees/<branch> -b <branch>`. That
+path is already ignored, which satisfies the skill's safety check; its
+`.worktrees/` default is not this repo's layout and would need a new ignore
+rule to be safe.
 
 Cleanup follows the same ownership rule, from
-**finishing-a-development-branch**: `.claude/worktrees/` is host-managed, so
-release it with the harness's exit tool rather than `git worktree remove`.
-Work lands back as the usual small green commits.
+**finishing-a-development-branch**: it claims only `.worktrees/` and
+`worktrees/`, and everything else — `.claude/worktrees/` included — belongs
+to the host, so release it with the harness's exit tool rather than `git
+worktree remove`. Work lands back as the usual small green commits.
+
+**The one sanctioned exception to "never the shared checkout":** that
+skill's merge option runs `git checkout <base>; git pull; git merge` in the
+main checkout, because that is where `main` lives. Merging is an
+integration action, not work, so it is allowed there — but only against a
+clean tree. If `/Users/dmgalchenko/unseeing` has uncommitted changes or has
+been left on another branch, stop and say so rather than checking out over
+someone's work; other sessions may be live in it.
 
 ## Strict TDD
 
@@ -227,7 +270,17 @@ means here.
   a wrong design, and the fourth attempt will not find it.
 - **Arbitrary waits are a defect** (`condition-based-waiting.md`): poll for
   the condition, never guess the duration. A `sleep` inside the deploy gate
-  either blocks a good deploy or waves a bad one through.
+  either blocks a good deploy or waves a bad one through. **Standing debt:**
+  `test/web_smoke.sh` sleeps 3 s waiting for Chrome's DevTools port, and
+  `test/web_probe.py` sleeps twice more before its probes. They predate the
+  rule and violate it; the fix is to poll `/json/version` under a bound.
+  Until then this is tracked debt, not a licence for new ones.
+- **The skill's exceptions are declined here.** test-driven-development
+  permits skipping TDD for throwaway prototypes, generated code and config
+  files after asking. This project doesn't: prototypes get thrown away and
+  rewritten test-first, and the generated code that matters — the Rust
+  core's registered node classes — is exactly the code the physics rides
+  on. Stricter than the skill on purpose.
 - Godot: **gdUnit4** is the test framework — suites in `game/tests/`, run
   headless from `ci/pipeline.sh` (the old custom runner is gone; that
   migration is done). Browser-level behavior: the headless-Chrome smoke
@@ -284,6 +337,15 @@ pins that: committed, it would silently un-fullscreen the shipped game.
   Co-Authored-By or "Generated with" trailers; no mention of Claude, AI, or
   any assistant anywhere in the repository — commits, code, comments, docs,
   or PRs. Repo-local git identity: `Dmitrii Galchenko <dggrus@gmail.com>`.
+- **What that ban is, precisely: authorship attribution.** It was never a
+  ban on the words. This file is named for a tool, `.gitignore` describes
+  "per-session agent worktrees", and specs and plans now committed under
+  `docs/superpowers/` carry the header writing-plans mandates verbatim,
+  naming its own sub-skill — all fine, because none of them claims an
+  assistant wrote the work. The line is: **nothing in this repository may
+  credit, sign, or present an assistant as an author or collaborator.**
+  Tool identifiers, agent-facing instructions and process documentation are
+  not attribution. Commits, code comments and PR bodies stay clean of both.
 
 ## Binary assets: keep them out, and know when that stops being free
 
@@ -403,19 +465,25 @@ exact release, and `ci/pipeline.sh` refuses a mismatched binary.
 ## Agents, reviews, tooling
 
 - Use subagents freely — most tasks want a mix of tester / critic / software
-  architect / programmer / product / plain-gamer perspectives. Run as many as
-  needed. **dispatching-parallel-agents** is the rule for splitting them:
-  one agent per *independent* problem domain, each with a scope, a
-  constraint, and a named return; related failures get investigated together
-  instead.
+  architect / programmer / product / plain-gamer perspectives on the *same*
+  question. Run as many as needed; that is unaffected by anything below.
+- **dispatching-parallel-agents governs how work is divided**, which is a
+  different question: one agent per *independent* problem domain, each with
+  a scope, a constraint and a named return, and related failures
+  investigated together rather than split. Many lenses on one problem is
+  review; many problems in parallel is division. Don't let the second rule
+  eat the first.
 - **Review is mandatory after every task and before every merge** — not
   proportional to size, which is the one place this project's old rule gave
   way. Dispatch it to a subagent with superpowers'
   `requesting-code-review/code-reviewer.md` rubric, and hand it a diff file
-  rather than your session's history. Algorithmic complexity and performance
-  remain part of every review. Reviewers are read-only: never move HEAD on
-  the checkout under review — with this many live worktrees that is not a
-  theoretical concern.
+  rather than your session's history. **Physics and wave work keeps its
+  full multi-agent design and performance review on top of that**, with
+  redesign if it fails — the diff rubric asks whether design decisions were
+  sound, which is not the same instrument. Algorithmic complexity and
+  performance remain part of every review. Reviewers are read-only: never
+  move HEAD on the checkout under review — with this many live worktrees
+  that is not a theoretical concern.
 - **Feedback gets verified, not performed** (**receiving-code-review**).
   Check every suggestion against this codebase before implementing it, push
   back with technical reasoning when it is wrong for the stack, and clarify
@@ -431,9 +499,19 @@ exact release, and `ci/pipeline.sh` refuses a mismatched binary.
 ### The installed skill set
 
 `superpowers@claude-plugins-official` v6.2.0, user scope, upstream commit
-`44c9b2d`. Update with `claude plugin install`/`marketplace update`; it is
-*not* vendored in this tree, so it needs no entry in `ci/gdunit4.lock`'s
-model and nothing in `game/addons/`.
+`44c9b2d`. Update with `claude plugin install`/`marketplace update`.
+
+**It is deliberately unpinned, and that is a real exception to the rule two
+sections up.** gdUnit4 gets a lock file, a `verify` step in every build, and
+a disabled self-updater, because it is a project resource that ships inside
+the tested artifact — drift there changes what the game does. This ships
+nothing: it is user-scope tooling that never reaches a Windows, macOS or web
+export, so there is no lock file, no `game/addons/` entry and no CI check.
+The cost of that is honest: a `marketplace update` run in an unrelated
+project changes the method governing this one, silently. The version and
+commit above are therefore informational, and **a version bump is a reviewed
+edit to this section** — the same standard as gdUnit4's, enforced by
+attention rather than by CI.
 
 - **Process:** using-superpowers, brainstorming, writing-plans,
   executing-plans, subagent-driven-development,
@@ -455,7 +533,15 @@ in this file:
   small stack, so it stays exactly as the skill defines it: offered to the
   user, run only on acceptance, and never a dependency of the game, the
   build, or the deploy.
-- **Nothing about superpowers changes the commit rules.** Its plan
-  templates show `feat:`-style messages as illustration, not doctrine; it
-  has no commit-message policy of its own to conflict with. This project's
-  narrative subject lines stand, as does the ban on assistant attribution.
+- **The commit rules survive, but they are now reachable from a plan.**
+  Superpowers has no commit-message doctrine of its own — the `feat:`
+  strings in its plan template are illustration — so the narrative subject
+  lines stand. What changed is who reads them: a plan's task steps become
+  an implementer's entire brief, so the rules have to travel in Global
+  Constraints (see the workflow above) or they will not be there when a
+  commit is written.
+- **Committed specs and plans do not breach the attribution ban.** They
+  carry writing-plans' mandated header naming its own sub-skill, and
+  brainstormed prose picks up the skills' phrasing. That is process
+  documentation, not authorship — see the Commits section, which now draws
+  that line explicitly rather than leaving it to be rediscovered.
