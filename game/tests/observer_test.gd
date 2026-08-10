@@ -28,6 +28,10 @@ const MAIN_SCENE := preload("res://scenes/main.tscn")
 const FAN_VOLUME := 0.75
 ## FULL_REACH (12 m, sound_source.rs) x volume.
 const FAN_REACH := 9.0
+## Seconds between whooshes (FAN_CADENCE, rust/src/fan_wave.rs). A fresh gate
+## books its first wave one interval out, so on a level driven only at t = 0
+## the appointment still standing is at 0.4.
+const FAN_CADENCE := 0.4
 ## Ring time 9 / 4.5 = 2 s, plus the source kind's 2 s fade tail, a wave
 ## every 0.4 s: (2 + 2) / 0.4 slots held at steady state.
 const FAN_SLOT_PRESSURE := 10.0
@@ -279,6 +283,11 @@ func test_snapshot_describes_the_levels_sound_sources() -> void:
 	assert_float(fan["slot_pressure"]).is_equal_approx(FAN_SLOT_PRESSURE, 0.0001)
 	assert_int(fan["walls_to_eye"]).is_equal(1)
 	assert_float(fan["source_floor"]).is_equal_approx(FAN_FLOOR_ONE_WALL, 0.0001)
+	# the clockwork, not only the voice: "the fan has gone quiet" is a whole
+	# question class, and a snapshot that carried neither the interval nor the
+	# standing appointment could only answer it by waiting to see
+	assert_float(fan["cadence"]).is_equal_approx(FAN_CADENCE, 0.0001)
+	assert_float(fan["next_emit"]).is_equal_approx(FAN_CADENCE, 0.0001)
 
 
 ## The id budget over the SHIPPED map, checked by the same Rust the renderer
@@ -297,6 +306,30 @@ func test_the_shipped_level_has_no_object_id_violations() -> void:
 	# everything stands on, and one entry per id a source paints its own
 	# limbs with — each of which a wall or a crate may melt into
 	assert_array(e["names"]).contains(["Floor", "Ceiling", "DividerNorth", "Fan @0.33"])
+
+
+## A source that cannot fire has no next emit, and says so. The cadence gate
+## refuses a non-positive interval outright (rust/src/sound_source.rs), so the
+## appointment it is holding will never be kept — reporting the stale number
+## would tell an agent a wave is due in a fifth of a second when none is ever
+## coming, which is exactly the plausible-wrong-answer failure this layer is
+## built against. The key is absent and named, like every other absence.
+func test_a_silenced_source_reports_no_next_emit() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var fan := SoundFan.new()
+	fan.name = "Fan"
+	fan.cadence = 0.0
+	level.add_child(fan)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var obs := _observer()
+	obs.inject(level, _eye())
+	var snap: Dictionary = obs.snapshot(0.0)
+	var source: Dictionary = snap["sources"][0]
+	assert_float(source["cadence"]).is_equal_approx(0.0, 0.0001)
+	assert_bool(source.has("next_emit")).is_false()
+	assert_array(snap["unknown"]).contains(["sources[0].next_emit"])
 
 
 ## The creatures are IN the report. WaveCat and the hero's body occupy the

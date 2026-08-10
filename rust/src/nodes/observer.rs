@@ -430,6 +430,8 @@ fn sources(level: &WaveLevel, eye: Vector3, rects: &[Vector4]) -> Vec<SourceObse
                 position,
                 volume: voice.volume.amplitude(),
                 reach: voice.volume.reach(),
+                cadence: voice.cadence,
+                next_emit: bound.next_emit().unwrap_or(f64::NAN),
                 walls_to_eye: line.camera_crossings,
                 source_floor: standing_image(&node).unwrap_or(f64::NAN),
                 slot_pressure: voice.slot_pressure(),
@@ -479,6 +481,9 @@ fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionar
     for (index, source) in observation.sources.iter().enumerate() {
         if source.source_floor.is_nan() {
             unknown.push(&format!("sources[{index}].source_floor"));
+        }
+        if source.next_emit.is_nan() {
+            unknown.push(&format!("sources[{index}].next_emit"));
         }
     }
     state.set("sources", &sources);
@@ -537,6 +542,13 @@ fn source_dict(source: &SourceObservation) -> VarDictionary {
     entry.set("position", source.position);
     entry.set("volume", source.volume);
     entry.set("reach", source.reach);
+    entry.set("cadence", source.cadence);
+    // the same NaN-means-absent rule as source_floor below: a gate that
+    // cannot fire is holding an appointment it will never keep, and a date
+    // that never arrives is worse than an admitted absence
+    if !source.next_emit.is_nan() {
+        entry.set("next_emit", source.next_emit);
+    }
     entry.set("walls_to_eye", i64::from(source.walls_to_eye));
     // NaN is the "never pushed" marker set by `standing_image`, and the one
     // value the uniform can never legitimately hold: the key is left out

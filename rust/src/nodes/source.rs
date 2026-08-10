@@ -88,6 +88,20 @@ pub trait SoundSource {
         0.0
     }
 
+    /// When this source's next wave is due, on the same simulated clock
+    /// [`Self::advance`] is driven with — `None` when no appointment is
+    /// being kept (a source that never built, or one whose cadence knob
+    /// cannot fire). Read-only; nothing in the game asks, and the debug
+    /// observer would otherwise have to guess a source's clockwork from its
+    /// interval and the wall clock.
+    ///
+    /// The default answers `None` rather than inventing a date, so a source
+    /// class that keeps its clock somewhere other than a [`SourceRig`] is
+    /// honest about it until it says otherwise.
+    fn next_emit(&self) -> Option<f64> {
+        None
+    }
+
     /// Set how strongly this source's standing image is felt: its volume
     /// attenuated by the walls between it and the eye, computed once per
     /// frame by the level. Pushed to every limb as [`IMAGE_PARAM`].
@@ -124,6 +138,12 @@ impl SourceRig {
     pub(crate) fn beat(&mut self, t: f64, voice: &Voice) -> Option<f64> {
         self.cadence.retune(voice.cadence);
         self.cadence.beat(t)
+    }
+
+    /// The appointment the gate is holding — see [`Cadence::next_at`], which
+    /// owns the rule about when there is no appointment at all.
+    pub(crate) fn next_beat(&self) -> Option<f64> {
+        self.cadence.next_at()
     }
 
     /// Build one limb: a mesh instance drawn through the injected skin,

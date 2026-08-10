@@ -241,6 +241,10 @@ impl SoundSource for SoundRadio {
         &OIDS
     }
 
+    fn next_emit(&self) -> Option<f64> {
+        self.rig.next_beat()
+    }
+
     fn inject(&mut self, pulses: Gd<RefCounted>, skin: Gd<Material>) {
         self.pulses = Some(pulses);
         self.data_mat = Some(skin);

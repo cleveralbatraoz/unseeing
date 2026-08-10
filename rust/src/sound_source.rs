@@ -250,6 +250,24 @@ impl Cadence {
         self.every
     }
 
+    /// When the next wave is due, on the same clock [`Self::beat`] is
+    /// driven with — the appointment itself, so "the fan has gone quiet"
+    /// can be diagnosed without waiting to see whether it stays quiet.
+    ///
+    /// `None` when no appointment is being kept: a gate whose interval is
+    /// non-positive or non-finite never fires whatever the booked time
+    /// says, and a gate built from a poisoned interval carries that poison
+    /// in the appointment until a beat repairs it. Both would otherwise
+    /// hand back a stale or non-finite number that reads as a real date —
+    /// and a plausible wrong date is worse than an admitted absence.
+    #[must_use]
+    pub fn next_at(self) -> Option<f64> {
+        if self.every <= 0.0 || !self.every.is_finite() || !self.next.is_finite() {
+            return None;
+        }
+        Some(self.next)
+    }
+
     /// Adopt a new interval mid-flight, so a cadence knob is as live as
     /// every other knob on a source — `volume`, `speed` and the cone width
     /// are all re-read on each beat, and a cadence frozen at build time
@@ -509,6 +527,36 @@ mod tests {
             assert_eq!(gate.beat(1.69), None);
             assert_eq!(gate.beat(1.7), Some(1.7));
             assert_eq!(gate.beat(2.4), Some(2.4)); // ...and keeps the rhythm
+        }
+    }
+
+    /// The appointment is readable, so "why has the fan gone quiet?" can be
+    /// answered without waiting to see whether it does. A gate that CANNOT
+    /// fire reports `None` rather than the stale number it is holding: a
+    /// silenced source sits on an appointment it will never keep, and
+    /// reporting 0.4 for a gate retuned to zero would be a plausible wrong
+    /// answer — the worst kind.
+    #[test]
+    fn the_next_appointment_is_readable_and_absent_when_none_is_kept() {
+        let mut gate = Cadence::every(0.4);
+        assert_eq!(gate.next_at(), Some(0.4));
+        assert_eq!(gate.beat(0.4), Some(0.4));
+        assert_eq!(gate.next_at(), Some(0.8));
+        gate.retune(0.0);
+        assert_eq!(gate.next_at(), None);
+        for silent in [Cadence::default(), Cadence::every(-1.0)] {
+            assert_eq!(silent.next_at(), None);
+        }
+    }
+
+    /// A gate built from a poisoned interval holds a poisoned appointment
+    /// until its next beat repairs it. Reporting `at_t = NaN` or `inf` would
+    /// serialise as JSON `null` and read as a missing field; the whole
+    /// non-finite case is one answer — no appointment is being kept.
+    #[test]
+    fn a_poisoned_appointment_reads_as_no_appointment() {
+        for poison in [f64::INFINITY, f64::NAN, f64::NEG_INFINITY] {
+            assert_eq!(Cadence::every(poison).next_at(), None, "{poison}");
         }
     }
 

@@ -307,6 +307,10 @@ impl SoundSource for SoundFan {
         f64::from(GUARD_R) * fan_wave::PIVOT_RANGE.sin().abs()
     }
 
+    fn next_emit(&self) -> Option<f64> {
+        self.rig.next_beat()
+    }
+
     fn inject(&mut self, pulses: Gd<RefCounted>, skin: Gd<Material>) {
         self.pulses = Some(pulses);
         self.data_mat = Some(skin);

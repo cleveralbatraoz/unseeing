@@ -30,6 +30,14 @@ pub struct SourceObservation {
     pub position: Vector3,
     pub volume: f64,
     pub reach: f64,
+    /// Seconds between waves — the interval the cadence gate books by, read
+    /// live off the designer's knob.
+    pub cadence: f64,
+    /// When the next wave is due, on the simulated clock. [`f64::NAN`] when
+    /// no appointment is being kept — a source that never built, or one
+    /// whose cadence cannot fire — so the boundary names it in `unknown`
+    /// rather than reporting a date that will never arrive.
+    pub next_emit: f64,
     /// Walls between the eye and this source's hub.
     pub walls_to_eye: u32,
     /// The standing image floor after muffling — the `u_source_floor`
