@@ -66,16 +66,26 @@ func test_uninjected_explainers_refuse_too() -> void:
 
 
 ## An eye is not optional equipment for a snapshot: how many walls stand
-## between the hero and a source, and how muffled its standing image is, are
-## measured FROM the camera. An observer with no camera would have to invent
-## one at the origin, and a plausible wrong number is worse than a refusal —
-## so it refuses, while the eye-free explainers keep working.
+## between the hero and a source, and where the eye itself looks, are measured
+## FROM the camera. An observer with no camera would have to invent one at the
+## origin, and a plausible wrong number is worse than a refusal — so it
+## refuses, while the eye-free explainers keep working.
+##
+## The REASON is held to being true, not merely present. A refusal that blamed
+## `source_floor` would send a reader looking for a quantity the eye has
+## nothing to do with: the standing image is read straight back off the
+## source's own limbs, and would be reportable with no camera in the scene at
+## all. A debugging layer that misnames its own limits teaches the wrong
+## lesson faster than no layer at all.
 func test_a_snapshot_without_an_eye_refuses_rather_than_guessing_one() -> void:
 	var level := _shipped_level(Pulses.new())
 	var obs := _observer()
 	obs.inject(level, null)
 	var snap: Dictionary = obs.snapshot(0.0)
 	assert_int(snap.size()).is_equal(1)
+	var reason: String = snap["unavailable"]
+	assert_str(reason).contains("walls_to_eye")
+	assert_str(reason).not_contains("source_floor")
 	assert_bool(obs.explain_oids().has("unavailable")).is_false()
 
 

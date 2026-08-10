@@ -13,10 +13,16 @@
 //!
 //! The camera is not optional equipment for a snapshot, and that is the
 //! same rule rather than an exception to it: how many walls stand between
-//! the hero and a source, and how muffled that source's standing image is,
-//! are measured FROM the eye. Without one the observer would have to
-//! invent an eye at the origin, and a plausible wrong number is the most
-//! dangerous answer of all. The eye-free explainers keep working.
+//! the hero and a source, and where the eye itself stands and looks, are
+//! measured FROM the eye. Without one the observer would have to invent an
+//! eye at the origin, and a plausible wrong number is the most dangerous
+//! answer of all. The eye-free explainers keep working.
+//!
+//! The standing image is NOT one of those quantities, and the refusal must
+//! not claim it is: `source_floor` is read straight back off a source's own
+//! limbs by [`standing_image`] and would be reportable with no camera in
+//! the scene at all. It is refused along with the rest only because a
+//! snapshot is all-or-nothing by design.
 
 use godot::classes::{
     Camera3D, INode, Material, MeshInstance3D, PhysicsDirectSpaceState3D, ShaderMaterial, node,
@@ -42,7 +48,11 @@ use crate::ray_fan;
 const NO_LEVEL: &str = "observer was never injected a level";
 
 /// No camera: every eye-relative quantity in a snapshot would be a guess.
-const NO_CAMERA: &str = "observer was never injected a camera — walls_to_eye and source_floor are measured from the eye";
+/// The two that genuinely are eye-relative are named, and nothing else —
+/// a refusal that blamed `source_floor` (read back off the source's own
+/// limbs, camera or no camera) would send a reader hunting the wrong system.
+const NO_CAMERA: &str = "observer was never injected a camera — walls_to_eye and the camera group are measured \
+     from the eye";
 
 /// A level whose wave pool never arrived, or arrived as something that is
 /// not a pool at all.
