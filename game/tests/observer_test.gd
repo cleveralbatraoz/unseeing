@@ -264,6 +264,9 @@ func test_the_composition_root_injects_the_observer() -> void:
 	assert_bool(snap.has("unavailable")).is_false()
 	assert_int((snap["slots"] as Array).size()).is_equal(64)
 	assert_vector(snap["camera"]["position"]).is_equal(main.player.camera.global_position)
+	# the eye's own projection, read off the live camera: without it a
+	# reader cannot turn a world position into a screen position at all
+	assert_float(snap["camera"]["fov"]).is_equal_approx(main.player.camera.fov, 0.0001)
 	assert_int((snap["sources"] as Array).size()).is_equal(2)
 
 

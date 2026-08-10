@@ -35,7 +35,7 @@ use crate::observe::reflect::{
     self, Answer, ClusteredPoint, Collected, ExplanationLedger, ReflectionExplanation,
     ReflectionRequest,
 };
-use crate::observe::{FrameObservation, SourceObservation, frame};
+use crate::observe::{EyeObservation, FrameObservation, SourceObservation, frame};
 use crate::ray_fan;
 
 /// No level: the observer was never handed the world to read.
@@ -160,8 +160,11 @@ impl WaveObserver {
             flick.unwrap_or(f64::NAN),
             sources(&level, eye, &rects),
             rects,
-            eye,
-            camera.get_global_transform().basis,
+            EyeObservation {
+                position: eye,
+                basis: camera.get_global_transform().basis,
+                fov: f64::from(camera.get_fov()),
+            },
         );
         frame_dict(&observation, flick.is_some())
     }
@@ -468,7 +471,7 @@ fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionar
         &PackedVector4Array::from(&observation.wall_rects[..]),
     );
     state.set("wall_truncated", observation.wall_truncated);
-    state.set("camera", &camera_dict(observation));
+    state.set("camera", &camera_dict(&observation.eye));
     state.set("unknown", &unknown);
     state
 }
@@ -517,12 +520,15 @@ fn source_dict(source: &SourceObservation) -> VarDictionary {
     entry
 }
 
-/// Where the eye stands and where it looks. A Godot camera looks down its
-/// own -Z, so the heading is the negated third basis column.
-fn camera_dict(observation: &FrameObservation) -> VarDictionary {
+/// Where the eye stands, where it looks, and how wide. A Godot camera
+/// looks down its own -Z, so the heading is the negated third basis column;
+/// `fov` is the vertical angle in degrees, without which a reader cannot
+/// work out what should be on screen at all.
+fn camera_dict(eye: &EyeObservation) -> VarDictionary {
     let mut entry = VarDictionary::new();
-    entry.set("position", observation.camera);
-    entry.set("forward", -observation.camera_basis.col_c());
+    entry.set("position", eye.position);
+    entry.set("forward", -eye.basis.col_c());
+    entry.set("fov", eye.fov);
     entry
 }
 

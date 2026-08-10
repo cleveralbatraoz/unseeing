@@ -37,6 +37,23 @@ pub struct SourceObservation {
     pub slot_pressure: f64,
 }
 
+/// Where the eye stands, where it looks, and how wide it sees.
+///
+/// The three travel together because they answer one question together: a
+/// reader working out whether a wall should be ON SCREEN needs the field of
+/// view as much as the transform, and a snapshot that carried only the
+/// transform would leave it guessing the projection.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EyeObservation {
+    pub position: Vector3,
+    /// The camera's world basis. A Godot camera looks down its own -Z, so
+    /// the heading is the NEGATED third column.
+    pub basis: Basis,
+    /// Vertical field of view, degrees — `Camera3D::get_fov()` as the
+    /// engine holds it.
+    pub fov: f64,
+}
+
 /// The whole state vector for one frame.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameObservation {
@@ -61,8 +78,7 @@ pub struct FrameObservation {
     /// True when the table has reached the shader's ceiling, so walls may
     /// have been dropped. Loud by construction.
     pub wall_truncated: bool,
-    pub camera: Vector3,
-    pub camera_basis: Basis,
+    pub eye: EyeObservation,
 }
 
 /// Compose one frame's observation from parts the boundary supplies.
@@ -76,8 +92,7 @@ pub fn frame(
     flick: f64,
     sources: Vec<SourceObservation>,
     wall_rects: Vec<Vector4>,
-    camera: Vector3,
-    camera_basis: Basis,
+    eye: EyeObservation,
 ) -> FrameObservation {
     let slots = slots(pool, now);
     let live_slots = slots
@@ -94,8 +109,7 @@ pub fn frame(
         sources,
         wall_truncated: wall_rects.len() >= MAXW,
         wall_rects,
-        camera,
-        camera_basis,
+        eye,
     }
 }
 
@@ -107,16 +121,21 @@ mod tests {
     use crate::pulse_pool::PulsePool;
     use godot::builtin::{Basis, Vector3, Vector4};
 
+    /// An eye with a field of view nothing else in these tests produces,
+    /// so a snapshot that invented one instead of carrying this through
+    /// would be obvious.
+    const TEST_FOV: f64 = 61.0;
+
+    fn test_eye() -> EyeObservation {
+        EyeObservation {
+            position: Vector3::ZERO,
+            basis: Basis::IDENTITY,
+            fov: TEST_FOV,
+        }
+    }
+
     fn empty_frame(pool: &PulsePool, now: f64) -> FrameObservation {
-        frame(
-            pool,
-            now,
-            1.0,
-            Vec::new(),
-            Vec::new(),
-            Vector3::ZERO,
-            Basis::IDENTITY,
-        )
+        frame(pool, now, 1.0, Vec::new(), Vec::new(), test_eye())
     }
 
     /// The composer carries the pieces through without recomputing them:
@@ -172,24 +191,8 @@ mod tests {
     fn a_full_wall_table_is_flagged_as_truncated() {
         let pool = PulsePool::new();
         let rect = Vector4::new(0.0, 0.0, 1.0, 1.0);
-        let short = frame(
-            &pool,
-            0.0,
-            1.0,
-            Vec::new(),
-            vec![rect; 31],
-            Vector3::ZERO,
-            Basis::IDENTITY,
-        );
-        let full = frame(
-            &pool,
-            0.0,
-            1.0,
-            Vec::new(),
-            vec![rect; 32],
-            Vector3::ZERO,
-            Basis::IDENTITY,
-        );
+        let short = frame(&pool, 0.0, 1.0, Vec::new(), vec![rect; 31], test_eye());
+        let full = frame(&pool, 0.0, 1.0, Vec::new(), vec![rect; 32], test_eye());
         assert!(!short.wall_truncated);
         assert!(full.wall_truncated);
     }
@@ -200,5 +203,15 @@ mod tests {
     fn a_silent_level_is_legal() {
         let pool = PulsePool::new();
         assert!(empty_frame(&pool, 0.0).sources.is_empty());
+    }
+
+    /// The eye is one thing — where it stands, where it looks, and how
+    /// wide it sees. The field of view is what turns a world position into
+    /// a screen position, so a reader reasoning about what should be ON
+    /// SCREEN cannot do it from the transform alone.
+    #[test]
+    fn the_eye_carries_its_field_of_view() {
+        let pool = PulsePool::new();
+        assert_eq!(empty_frame(&pool, 0.0).eye.fov, TEST_FOV);
     }
 }
