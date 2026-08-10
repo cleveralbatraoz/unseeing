@@ -1011,7 +1011,12 @@ mod tests {
     /// the same seam. Three mutually touching boxes give three pairs.
     #[test]
     fn each_seam_is_reported_once() {
-        let boxes = [unit_at(0.0), unit_at(0.9), unit_at(1.8)];
+        // Spacing 0.4 keeps every pair — including the two-hop 0-2 pair —
+        // inside the unit boxes' 1.0-wide touch range, so all three are
+        // genuinely mutually touching. A 0.9 spacing does NOT: box0 spans
+        // [-0.5, 0.5] and box2 spans [1.3, 2.3], and `touches` would need
+        // 1.29 <= 0.5. The assertion below cannot pass at 0.9.
+        let boxes = [unit_at(0.0), unit_at(0.4), unit_at(0.8)];
         let e = explain_oids(&boxes, &[0.0, 0.16, 0.32]);
         let ids: Vec<(usize, usize)> = e.pairs.iter().map(|p| (p.a, p.b)).collect();
         assert_eq!(ids, vec![(0, 1), (0, 2), (1, 2)]);
