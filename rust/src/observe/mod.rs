@@ -12,6 +12,7 @@ pub mod evict;
 pub mod oids;
 pub mod pool;
 pub mod ray;
+pub mod reflect;
 
 use godot::builtin::{Basis, Vector3, Vector4};
 
