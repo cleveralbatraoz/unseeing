@@ -4,7 +4,7 @@
 
 **Goal:** Give agents a structured, queryable view of the wave engine's state so debugging stops depending on screenshots.
 
-**Architecture:** Four pure Rust modules under `rust/src/observe/` compute observations and explanations from data they are handed; one registered node, `WaveObserver` in `rust/src/nodes/observer.rs`, is injected by `main.gd` with the systems to read and exposes everything as `#[func]` methods returning `VarDictionary`. Three transports consume that one surface: godot-mcp live in-session, gdUnit4 in the headless gate, and (in Plan 2) a windowed dump scene.
+**Architecture:** Pure Rust modules under `rust/src/observe/` compute observations and explanations from data they are handed; one registered node, `WaveObserver` in `rust/src/nodes/observer.rs`, is injected by `main.gd` with the systems to read and exposes everything as `#[func]` methods returning `VarDictionary`. Three transports consume that one surface: godot-mcp live in-session, gdUnit4 in the headless gate, and (in Plan 2) a windowed dump scene.
 
 **Tech Stack:** Rust (gdext 0.5.4, stable channel per `rust/rust-toolchain.toml`), Godot 4.7, typed GDScript, gdUnit4, godot-mcp (Node.js 20+, dev-only).
 
@@ -36,12 +36,16 @@ These apply to every task. Copied from `CLAUDE.md` and the spec.
 | File | Responsibility |
 |---|---|
 | `rust/src/observe/mod.rs` | Observation types, the `frame()` composer, module re-exports |
-| `rust/src/observe/pool.rs` | Pulse-slot observation and the eviction rule, from the public lanes |
+| `rust/src/observe/pool.rs` | Pulse-slot observation, from the public lanes |
+| `rust/src/observe/evict.rs` | `explain_eviction` — the next slot and the rule that claims it |
 | `rust/src/observe/ray.rs` | `explain_ray` — per-wall occlusion detail and transmission |
 | `rust/src/observe/oids.rs` | `explain_oids` — touch graph, colouring, separation violations |
+| `rust/src/observe/reflect.rs` | `explain_clustering` + the request/answer ledger for the reflection fan |
 | `rust/src/nodes/observer.rs` | `WaveObserver` — the one registered class (boundary only) |
 | `game/tests/observer_test.gd` | gdUnit4 suite driving `WaveObserver` against a built level |
 | `docs/superpowers/mcp/godot-mcp-loop.md` | The live debugging loop, written for a fresh agent |
+
+**Six modules shipped, not four.** The plan drafted `pool.rs` as "slot observation *and* the eviction rule" and gave the reflection explainer no file at all. Both split during execution and both splits are kept: eviction is a re-derivation of `emit`'s selection loop that must never call `emit`, which is a different job from decoding lanes, and `reflect.rs` carries a request/answer ledger that pool observation has no business knowing about. Task 2 and Task 7 name the files they actually create; this table is the corrected record.
 
 **Modified:**
 
@@ -55,7 +59,7 @@ These apply to every task. Copied from `CLAUDE.md` and the spec.
 | `test/repo_hygiene.sh` | Assert the godot-mcp addon is never committed |
 | `CLAUDE.md` | Document the debugging loop in the tooling section |
 
-**Why this split:** `pool.rs`, `ray.rs` and `oids.rs` each answer one question class and are independently testable; `mod.rs` only composes them. None exceeds a few hundred lines, matching the crate's existing file sizes.
+**Why this split:** each module answers one question class and is independently testable; `mod.rs` only composes them. None exceeds a few hundred lines, matching the crate's existing file sizes.
 
 ---
 
@@ -2027,6 +2031,10 @@ Per `CLAUDE.md`, persist what changes future work: that `WaveObserver` exists an
 ## Self-Review
 
 **Spec coverage.** Snapshot → Tasks 1, 5, 6. Diff → no code by design, per the spec. Explain → Tasks 2, 3, 4, 7. Digest → Plan 2, out of scope. Three transports → Task 6 (live + gdUnit4), Plan 2 (dump scene). Refusal contract → Task 6. Non-mutation → Task 7. Oracle contract → Task 8. Addon policy → Task 9. Wiki → Task 10. **One gap found and accepted:** the spec's `--fixed-fps` determinism requirement has no task here, because nothing in Plan 1 writes a trace file — it belongs to Plan 2's dump scene and Task 10 documents it as pending.
+
+**Snapshot groups: what shipped, and the one thing deliberately left out.** The final whole-branch review found four of the spec's snapshot groups missing with the omission recorded nowhere — which breaks this layer's own contract, since `unknown` promises that anything unobservable is *named*. Three were added rather than argued away: the whole **`echoes`** group (every pending appointment with the seconds until it fires), **`sources.cadence`** and **`sources.next_emit`**, **`view.fov`**, and **`spawn`** position and yaw. The spec's `level.oid per solid` lives in `explain_oids()` — `names` and `oids`, parallel and complete — rather than in the snapshot, because it is a table no frame changes and duplicating it per snapshot would invite the two copies to disagree.
+
+**Deliberately not in the snapshot: `breath`.** `u_breath` (`game/scripts/main.gd`) is pushed to the hearing-pass material alone, which the observer is not injected with, and it is a pure function of `now` that scales the mood vignette. It changes no wave, no geometry, no occlusion and no timing, so no bug this layer exists to diagnose can be caused by it or hidden from it — where `flick`, which IS carried, gates reveal intensity and can drop to zero for a frame. Adding it would mean injecting a third material into the observer to report a number an agent can compute from `now`. Recorded here and in the wiki's snapshot section so the next session finds a decision rather than a hole.
 
 **Placeholder scan.** The two `todo!()` calls in Task 6 are flagged in prose as the implementer's work with the worked example beside them, not as unstated requirements. Task 8's test bodies are specified by their assertions rather than transcribed, because they must follow the existing suite's comparison style, which the implementer reads in Step 1. Everything else carries its code.
 
