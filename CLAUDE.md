@@ -165,10 +165,15 @@ or unexpected behaviour before proposing a fix;
   finishing-a-development-branch stands at the back: merge, PR or keep is
   the user's choice, presented as that skill's menu, never assumed. Between
   those two gates autonomy is unchanged and total: install anything, run
-  anything, spawn agents, use the server, deploy. **Deploying is not the
-  integration decision** and does not wait on it — the web build ships
-  continuously from a green branch; merging that branch is a separate
-  question, asked at the end.
+  anything, spawn agents, use the server. **Deploying is the exception,
+  and it always was** — it *follows* the integration decision rather than
+  running inside the autonomous stretch, because `deploy.sh` ships
+  `git push production main` and refuses to run from any other branch or a
+  dirty tree (`deploy.sh:16-26`): a core built from a feature branch would
+  not be the core that ships, and no gate downstream could tell. So the
+  order is merge first, then deploy — and since `main` can be checked out
+  in only one worktree, that deploy runs in the shared checkout too, the
+  second sanctioned action there after the merge itself.
 - **Questions come one at a time now, not all upfront.** The old rule was
   to surface every open question before implementation and keep asking until
   none remained. Brainstorming's is the opposite — one question per message,
@@ -270,11 +275,14 @@ means here.
   a wrong design, and the fourth attempt will not find it.
 - **Arbitrary waits are a defect** (`condition-based-waiting.md`): poll for
   the condition, never guess the duration. A `sleep` inside the deploy gate
-  either blocks a good deploy or waves a bad one through. **Standing debt:**
-  `test/web_smoke.sh` sleeps 3 s waiting for Chrome's DevTools port, and
-  `test/web_probe.py` sleeps twice more before its probes. They predate the
-  rule and violate it; the fix is to poll `/json/version` under a bound.
-  Until then this is tracked debt, not a licence for new ones.
+  either blocks a good deploy or waves a bad one through. **Standing debt,
+  and exactly two lines of it:** `test/web_smoke.sh:33` sleeps 3 s for
+  Chrome's DevTools port — redundantly, since `web_probe.py:20-30` already
+  polls `/json/list` thirty times for that very target — and
+  `test/web_probe.py:92` sleeps `SMOKE_WAIT` (22 s by default) before
+  evaluating, with no condition behind it. Those two are the debt. The 1 s
+  inside the probe's polling loop is condition-based waiting and is correct;
+  the 1 s in the smoke script's EXIT trap is cleanup, not a gate wait.
 - **The skill's exceptions are declined here.** test-driven-development
   permits skipping TDD for throwaway prototypes, generated code and config
   files after asking. This project doesn't: prototypes get thrown away and
@@ -525,8 +533,8 @@ attention rather than by CI.
   project-specific skill we author (a deploy skill, a probe skill), and
   baseline an agent *without* the doc before writing it.
 
-Two consequences worth stating outright, because they touch rules elsewhere
-in this file:
+Three consequences worth stating outright, because they touch rules
+elsewhere in this file:
 
 - **brainstorming may offer a browser "visual companion"** — a local Node
   HTTP server for mockups and diagrams. That is outside the deliberately
