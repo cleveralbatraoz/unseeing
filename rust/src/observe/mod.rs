@@ -8,4 +8,5 @@
 //! Everything here is pure and engine-free. The boundary that hands these
 //! results to Godot is `crate::nodes::observer`.
 
+pub mod evict;
 pub mod pool;
