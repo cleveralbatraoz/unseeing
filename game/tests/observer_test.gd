@@ -353,6 +353,25 @@ func test_a_silenced_source_reports_no_next_emit() -> void:
 	assert_array(snap["unknown"]).contains(["sources[0].next_emit"])
 
 
+## Every censused box reports the id it carries, touching something or not.
+## The pairs only carry the ids of boxes that MEET, so a solid standing alone
+## in a room had a name in the report and no id anywhere — and "which id did
+## this thing actually get?" is the first question after "which seams are
+## broken". Hand-derived: the floor slab's dedicated OID_FLOOR is 0.15
+## (rust/src/nodes/level.rs) and the cat's CAT_OID is 0.7
+## (rust/src/nodes/cat.rs).
+func test_the_oid_census_reports_the_id_of_every_box() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _observer()
+	obs.inject(level, _eye())
+	var e: Dictionary = obs.explain_oids()
+	var names: Array = e["names"]
+	var oids: PackedFloat64Array = e["oids"]
+	assert_int(oids.size()).is_equal(names.size())
+	assert_float(oids[names.find("Floor")]).is_equal_approx(0.15, 0.0001)
+	assert_float(oids[names.find("Cat")]).is_equal_approx(0.7, 0.0001)
+
+
 ## The creatures are IN the report. WaveCat and the hero's body occupy the
 ## 0.7+ id band on purpose — a cat walking in front of a wall must not melt
 ## into it — and a census that stopped at the walls, props and sources would

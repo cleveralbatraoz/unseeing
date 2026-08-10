@@ -225,7 +225,7 @@ impl WaveObserver {
             // check that found no violations is a vacuous pass
             return unavailable("the level's painted boxes and their ids do not line up");
         };
-        oid_dict(&explanation, &names)
+        oid_dict(&explanation, &names, &ids)
     }
 
     /// Which slot the next sound would claim, and by which rule. Eviction
@@ -671,7 +671,13 @@ fn wall_name(names: &[String], index: usize) -> String {
         .unwrap_or_else(|| format!("<unnamed wall {index}>"))
 }
 
-fn oid_dict(explanation: &OidExplanation, names: &[&str]) -> VarDictionary {
+/// The touch graph, plus the census it was built over.
+///
+/// `names` and `oids` are parallel and complete, because the pairs alone are
+/// not a census: a solid standing clear of everything appears in no pair at
+/// all, and "which id did this thing actually get?" is the question that
+/// follows "which seams are broken" — often about exactly that solid.
+fn oid_dict(explanation: &OidExplanation, names: &[&str], oids: &[f64]) -> VarDictionary {
     let pairs: Array<VarDictionary> = explanation
         .pairs
         .iter()
@@ -696,6 +702,7 @@ fn oid_dict(explanation: &OidExplanation, names: &[&str]) -> VarDictionary {
         .collect();
     let mut entry = VarDictionary::new();
     entry.set("names", &census);
+    entry.set("oids", &PackedFloat64Array::from(oids));
     entry.set("pairs", &pairs);
     entry.set("violations", &violations);
     entry.set("min_sep", explanation.min_sep);
