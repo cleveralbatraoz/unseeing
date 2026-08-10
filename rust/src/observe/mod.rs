@@ -10,3 +10,4 @@
 
 pub mod evict;
 pub mod pool;
+pub mod ray;
