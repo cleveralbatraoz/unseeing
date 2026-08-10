@@ -19,6 +19,7 @@ mod fan;
 mod hero;
 mod level;
 mod limbs;
+mod observer;
 mod player;
 mod props;
 mod radio;

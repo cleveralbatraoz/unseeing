@@ -1,0 +1,385 @@
+//! The debug observability boundary — `WaveObserver`.
+//!
+//! Adds no law. It holds references to the systems it was injected with,
+//! calls the pure functions in [`crate::observe`], and converts the results
+//! to `VarDictionary` so GDScript's `JSON.stringify` can encode them. That
+//! is the whole job.
+//!
+//! Every entry point refuses loudly when it cannot reach something it must
+//! read: a snapshot of nothing and a snapshot of an empty world must never
+//! serialise the same. The refusal carries ONE key — an agent that reads
+//! `live_count == 0` from an observer that never had a pool will spend an
+//! hour debugging silence that was never there.
+//!
+//! The camera is not optional equipment for a snapshot, and that is the
+//! same rule rather than an exception to it: how many walls stand between
+//! the hero and a source, and how muffled that source's standing image is,
+//! are measured FROM the eye. Without one the observer would have to
+//! invent an eye at the origin, and a plausible wrong number is the most
+//! dangerous answer of all. The eye-free explainers keep working.
+
+use godot::classes::{Camera3D, Material, ShaderMaterial};
+use godot::prelude::*;
+
+use super::level::WaveLevel;
+use crate::ffi::WaveCore;
+use crate::level_plan;
+use crate::observe::evict::{EvictionPlan, EvictionRule, explain_eviction};
+use crate::observe::oids::{OidExplanation, explain_oids_checked};
+use crate::observe::pool::{SlotObservation, SlotState};
+use crate::observe::ray::{self, RayExplanation};
+use crate::observe::{FrameObservation, SourceObservation, frame};
+
+/// No level: the observer was never handed the world to read.
+const NO_LEVEL: &str = "observer was never injected a level";
+
+/// No camera: every eye-relative quantity in a snapshot would be a guess.
+const NO_CAMERA: &str = "observer was never injected a camera — walls_to_eye and source_floor are measured from the eye";
+
+/// A level whose wave pool never arrived, or arrived as something that is
+/// not a pool at all.
+const NO_POOL: &str = "the injected level carries no readable wave pool";
+
+/// The agent's window into the running wave engine: it reads every system
+/// and drives none.
+#[derive(GodotClass)]
+#[class(init, base=Node)]
+pub struct WaveObserver {
+    level: Option<Gd<WaveLevel>>,
+    camera: Option<Gd<Camera3D>>,
+    base: Base<Node>,
+}
+
+#[godot_api]
+impl WaveObserver {
+    /// Hand the observer the systems to read. Called once by the
+    /// composition root; nothing is owned, only borrowed. The wave pool is
+    /// not passed separately — the level was already injected with it, and
+    /// two references to one pool could disagree.
+    #[func]
+    fn inject(&mut self, level: Option<Gd<WaveLevel>>, camera: Option<Gd<Camera3D>>) {
+        self.level = level;
+        self.camera = camera;
+    }
+
+    /// The whole state vector as of `now`: the pool slot by slot, the next
+    /// eviction, every sound source as an agent reads it, the wall table,
+    /// and where the eye stands.
+    ///
+    /// Anything that could not be observed is named in `unknown` and its
+    /// key is ABSENT — never present and zero.
+    #[func]
+    fn snapshot(&self, now: f64) -> VarDictionary {
+        let Some(level) = self.level.as_ref() else {
+            return unavailable(NO_LEVEL);
+        };
+        let Some(camera) = self.camera.as_ref() else {
+            return unavailable(NO_CAMERA);
+        };
+        let level = level.bind();
+        let Some(core) = pulse_core(&level) else {
+            return unavailable(NO_POOL);
+        };
+        let eye = camera.get_global_position();
+        let rects: Vec<Vector4> = level.wall_rects().as_slice().to_vec();
+        let flick = shader_flick(level.data_material());
+        let observation = frame(
+            core.bind().pool(),
+            now,
+            // NaN, never zero: it is only read back below when the material
+            // actually answered, and a leak would be loud rather than
+            // mistaken for a world rendered at flicker zero.
+            flick.unwrap_or(f64::NAN),
+            sources(&level, eye, &rects),
+            rects,
+            eye,
+            camera.get_global_transform().basis,
+        );
+        frame_dict(&observation, flick.is_some())
+    }
+
+    /// What the walls do to one sight line — the occlusion oracle, keyed to
+    /// both occluders (the eye's, which counts every wall, and the source's,
+    /// which skips the wall a sound was born inside).
+    #[func]
+    fn explain_ray(&self, from: Vector3, to: Vector3) -> VarDictionary {
+        let Some(level) = self.level.as_ref() else {
+            return unavailable(NO_LEVEL);
+        };
+        let level = level.bind();
+        let rects: Vec<Vector4> = level.wall_rects().as_slice().to_vec();
+        let explanation = ray::explain_ray(from, to, &rects, level_plan::WALL_H as f32);
+        ray_dict(&explanation, &level.wall_names())
+    }
+
+    /// The touch graph and its colouring, over every painted box in the
+    /// level: which seams the flat object ids actually draw.
+    #[func]
+    fn explain_oids(&self) -> VarDictionary {
+        let Some(level) = self.level.as_ref() else {
+            return unavailable(NO_LEVEL);
+        };
+        let painted = level.bind().oid_census();
+        let boxes: Vec<_> = painted.iter().map(|solid| solid.area).collect();
+        let ids: Vec<f64> = painted.iter().map(|solid| solid.oid).collect();
+        let names: Vec<&str> = painted.iter().map(|solid| solid.name.as_str()).collect();
+        let Some(explanation) = explain_oids_checked(&boxes, &ids) else {
+            // unreachable by construction (the census carries one id per
+            // box), and still refused rather than reported: a truncated
+            // check that found no violations is a vacuous pass
+            return unavailable("the level's painted boxes and their ids do not line up");
+        };
+        oid_dict(&explanation, &names)
+    }
+
+    /// Which slot the next sound would claim, and by which rule. Eviction
+    /// happens between frames and overwrites its own evidence, so this is
+    /// re-derived rather than observed — and never by calling `emit`,
+    /// which would answer the question by changing it.
+    #[func]
+    fn explain_eviction(&self, now: f64) -> VarDictionary {
+        let Some(level) = self.level.as_ref() else {
+            return unavailable(NO_LEVEL);
+        };
+        let Some(core) = pulse_core(&level.bind()) else {
+            return unavailable(NO_POOL);
+        };
+        let plan = explain_eviction(core.bind().pool(), now);
+        eviction_dict(&plan)
+    }
+}
+
+/// The one refusal shape. A dictionary carrying only this key is how an
+/// agent learns it asked a question that could not be answered — as
+/// opposed to one whose answer happens to be empty.
+fn unavailable(reason: &str) -> VarDictionary {
+    let mut refusal = VarDictionary::new();
+    refusal.set("unavailable", reason);
+    refusal
+}
+
+/// The Rust wave core behind whatever the level was injected with: the
+/// core itself in a suite that hands one over directly, or the GDScript
+/// `Pulses` shim's own, reached through its public `core()` accessor.
+fn pulse_core(level: &WaveLevel) -> Option<Gd<WaveCore>> {
+    let handle = level.pulse_handle()?;
+    if let Ok(core) = handle.clone().try_cast::<WaveCore>() {
+        return Some(core);
+    }
+    let mut shim = handle;
+    if !shim.has_method("core") {
+        return None;
+    }
+    shim.call("core", &[]).try_to::<Gd<WaveCore>>().ok()
+}
+
+/// The flicker the shaders are actually holding, read back off the world
+/// skin. `None` when the material cannot answer — an unbound skin, or a
+/// level no frame has ever run over — because a flicker of zero is a mood
+/// the game can genuinely be in and must not be invented.
+fn shader_flick(material: Option<Gd<Material>>) -> Option<f64> {
+    material?
+        .try_cast::<ShaderMaterial>()
+        .ok()?
+        .get_shader_parameter("u_flick")
+        .try_to::<f64>()
+        .ok()
+}
+
+/// Every sound source as an agent reads it. The eye-relative pair is taken
+/// from the SAME occlusion oracle the shaders' law is pinned against:
+/// `walls_to_eye` is the camera occluder's count, and the standing image
+/// is the source's own volume dimmed by that occluder's transmission —
+/// the composition `WaveLevel::tick_sources` pushes to the limbs each
+/// frame.
+fn sources(level: &WaveLevel, eye: Vector3, rects: &[Vector4]) -> Vec<SourceObservation> {
+    level
+        .source_handles()
+        .iter()
+        .map(|source| {
+            let name = source.clone().into_gd().get_name().to_string();
+            let bound = source.dyn_bind();
+            let voice = bound.voice();
+            let position = bound.hub();
+            let line = ray::explain_ray(eye, position, rects, level_plan::WALL_H as f32);
+            SourceObservation {
+                name,
+                position,
+                volume: voice.volume.amplitude(),
+                reach: voice.volume.reach(),
+                walls_to_eye: line.camera_crossings,
+                source_floor: voice.volume.image() * line.source_transmission,
+                slot_pressure: voice.slot_pressure(),
+            }
+        })
+        .collect()
+}
+
+fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionary {
+    let mut unknown: Array<GString> = Array::new();
+    let mut state = VarDictionary::new();
+    state.set("now", observation.now);
+    if flick_known {
+        state.set("flick", observation.flick);
+    } else {
+        unknown.push("flick");
+    }
+    state.set("live_count", observation.live_count as i64);
+    let slots: Array<VarDictionary> = observation.slots.iter().map(slot_dict).collect();
+    state.set("slots", &slots);
+    state.set("next_eviction", &eviction_dict(&observation.next_eviction));
+    let sources: Array<VarDictionary> = observation.sources.iter().map(source_dict).collect();
+    state.set("sources", &sources);
+    state.set(
+        "wall_rects",
+        &PackedVector4Array::from(&observation.wall_rects[..]),
+    );
+    state.set("wall_truncated", observation.wall_truncated);
+    state.set("camera", &camera_dict(observation));
+    state.set("unknown", &unknown);
+    state
+}
+
+fn slot_dict(slot: &SlotObservation) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("index", slot.index as i64);
+    entry.set("state", state_name(slot.state));
+    entry.set("kind", i64::from(slot.kind));
+    entry.set("origin", slot.origin);
+    entry.set("birth", slot.birth);
+    entry.set("max_r", slot.max_r);
+    entry.set("speed", slot.speed);
+    entry.set("gain", slot.gain);
+    entry.set("beam", slot.beam);
+    entry.set("cos_half", slot.cos_half);
+    entry.set("ring_radius", slot.ring_radius);
+    entry.set("age", slot.age);
+    entry.set("remaining", slot.remaining);
+    entry.set("end", slot.end);
+    entry
+}
+
+fn eviction_dict(plan: &EvictionPlan) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("slot", plan.slot as i64);
+    entry.set("rule", rule_name(plan.rule));
+    entry.set("victim_kind", i64::from(plan.victim_kind));
+    entry
+}
+
+fn source_dict(source: &SourceObservation) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("name", source.name.as_str());
+    entry.set("position", source.position);
+    entry.set("volume", source.volume);
+    entry.set("reach", source.reach);
+    entry.set("walls_to_eye", i64::from(source.walls_to_eye));
+    entry.set("source_floor", source.source_floor);
+    entry.set("slot_pressure", source.slot_pressure);
+    entry
+}
+
+/// Where the eye stands and where it looks. A Godot camera looks down its
+/// own -Z, so the heading is the negated third basis column.
+fn camera_dict(observation: &FrameObservation) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("position", observation.camera);
+    entry.set("forward", -observation.camera_basis.col_c());
+    entry
+}
+
+fn ray_dict(explanation: &RayExplanation, names: &[String]) -> VarDictionary {
+    let walls: Array<VarDictionary> = explanation
+        .walls
+        .iter()
+        .map(|wall| {
+            let mut entry = VarDictionary::new();
+            entry.set("index", wall.index as i64);
+            entry.set("name", wall_name(names, wall.index).as_str());
+            entry.set("rect", wall.rect);
+            entry.set("crossed", wall.crossed);
+            entry.set("contains_origin", wall.contains_origin);
+            entry
+        })
+        .collect();
+    let mut entry = VarDictionary::new();
+    entry.set("from", explanation.from);
+    entry.set("to", explanation.to);
+    entry.set("wall_top", f64::from(explanation.wall_top));
+    entry.set("camera_crossings", i64::from(explanation.camera_crossings));
+    entry.set("source_crossings", i64::from(explanation.source_crossings));
+    entry.set("hum_transmission", explanation.hum_transmission);
+    entry.set("source_transmission", explanation.source_transmission);
+    entry.set("walls", &walls);
+    entry
+}
+
+/// The name of the wall in table slot `index`. Total: a table longer than
+/// the census that produced the names still answers, and says so.
+fn wall_name(names: &[String], index: usize) -> String {
+    names
+        .get(index)
+        .cloned()
+        .unwrap_or_else(|| format!("<unnamed wall {index}>"))
+}
+
+fn oid_dict(explanation: &OidExplanation, names: &[&str]) -> VarDictionary {
+    let pairs: Array<VarDictionary> = explanation
+        .pairs
+        .iter()
+        .map(|pair| {
+            let mut entry = VarDictionary::new();
+            entry.set("a", pair.a as i64);
+            entry.set("b", pair.b as i64);
+            entry.set("name_a", &box_name(names, pair.a));
+            entry.set("name_b", &box_name(names, pair.b));
+            entry.set("oid_a", pair.oid_a);
+            entry.set("oid_b", pair.oid_b);
+            entry.set("delta", pair.delta);
+            entry.set("draws", pair.draws);
+            entry
+        })
+        .collect();
+    let census: Array<GString> = names.iter().map(|&name| GString::from(name)).collect();
+    let violations: Array<i64> = explanation
+        .violations
+        .iter()
+        .map(|&index| index as i64)
+        .collect();
+    let mut entry = VarDictionary::new();
+    entry.set("names", &census);
+    entry.set("pairs", &pairs);
+    entry.set("violations", &violations);
+    entry.set("min_sep", explanation.min_sep);
+    entry
+}
+
+/// The name of painted box `index`. Total, for the same reason as
+/// [`wall_name`].
+fn box_name(names: &[&str], index: usize) -> GString {
+    names.get(index).map_or_else(
+        || GString::from(&format!("<unnamed box {index}>")),
+        |&name| GString::from(name),
+    )
+}
+
+/// The wire name of a slot's state. Spelled out rather than derived from
+/// `Debug`, because an agent's parser is a contract and a rename of the
+/// enum must not silently break it.
+fn state_name(state: SlotState) -> &'static str {
+    match state {
+        SlotState::Never => "Never",
+        SlotState::Expired => "Expired",
+        SlotState::Live => "Live",
+    }
+}
+
+/// The wire name of an eviction rule, spelled out for the same reason.
+fn rule_name(rule: EvictionRule) -> &'static str {
+    match rule {
+        EvictionRule::Expired => "Expired",
+        EvictionRule::OldestRecurring => "OldestRecurring",
+        EvictionRule::OldestOverall => "OldestOverall",
+        EvictionRule::Fallback => "Fallback",
+    }
+}

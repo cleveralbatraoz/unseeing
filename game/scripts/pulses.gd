@@ -118,6 +118,15 @@ func pending_echoes() -> Array[Echo]:
 	return out
 
 
+## The Rust core this shim carries values to — handed out so the debug
+## observer can READ the pool it already owns (slot by slot, and the
+## eviction it would next make) without a second reference to the same pool
+## being injected anywhere. Nothing drives the wave system through here:
+## every mutating door is a method on this class.
+func core() -> WaveCore:
+	return _core
+
+
 ## Highest live slot + 1 — lets the shaders break out of dead loop iterations.
 func live_count(now: float) -> int:
 	return _core.live_count(now)

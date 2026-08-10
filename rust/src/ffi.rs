@@ -203,6 +203,14 @@ impl WaveCore {
 }
 
 impl WaveCore {
+    /// The pool itself, for READING only — the debug observer decodes it
+    /// into an agent-facing snapshot. Deliberately not a `#[func]`: the
+    /// GDScript surface stays the shim's mirrored methods, and nothing
+    /// outside this crate can reach the slots at all.
+    pub(crate) fn pool(&self) -> &PulsePool {
+        &self.pool
+    }
+
     /// The one door into the pool: forwards to the pure emit and maps its
     /// refusal value onto the exact `push_error` the GDScript pool raised,
     /// so the observable refusal (loud message, no slot taken) survives

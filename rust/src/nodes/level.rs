@@ -35,7 +35,7 @@ use godot::obj::DynGd;
 use godot::prelude::*;
 
 use super::cat::WaveCat;
-use super::solid::{WaveSolid, build_box};
+use super::solid::{OID_PARAM, WaveSolid, build_box};
 use super::source::SoundSource;
 use super::wall::WaveWall;
 use crate::level_plan;
@@ -235,7 +235,7 @@ impl WaveLevel {
     /// data-writing skins, exposed so the composition root can hand it to
     /// the hearing pass too, which cuts player-sound shells by these walls.
     #[func]
-    fn wall_rects(&self) -> PackedVector4Array {
+    pub(super) fn wall_rects(&self) -> PackedVector4Array {
         PackedVector4Array::from(&self.occluders[..])
     }
 
@@ -475,6 +475,114 @@ impl WaveLevel {
         collect(&self.base().clone().upcast::<Node>(), &mut census);
         census
     }
+}
+
+/// One painted box as the object-id colouring sees it: what it is called,
+/// the world box it fills, and the flat id it actually carries.
+pub(super) struct PaintedSolid {
+    pub(super) name: String,
+    pub(super) area: oid_palette::Box3,
+    pub(super) oid: f64,
+}
+
+/// What the debug observer ([`super::observer`]) reads back off a level.
+///
+/// None of it is `#[func]`: the designer-facing API does not grow for a
+/// debugging tool. Nothing here is stored either — every accessor
+/// re-derives from the scene as it stands, so the observer reports the
+/// world the renderer will actually draw rather than a mirrored copy that
+/// can drift away from it.
+impl WaveLevel {
+    /// The wave pool the composition root injected, exactly as it was
+    /// handed over — the GDScript `Pulses` shim in the game, possibly a
+    /// bare core in a suite. Resolving it is the observer's job.
+    pub(super) fn pulse_handle(&self) -> Option<Gd<RefCounted>> {
+        self.pulses.clone()
+    }
+
+    /// The world skin, whose shader parameters carry the per-frame globals
+    /// (`u_time`, `u_flick`) the composition root pushes every frame.
+    pub(super) fn data_material(&self) -> Option<Gd<Material>> {
+        self.data_mat.clone()
+    }
+
+    /// Every sound source in scene order, still TYPED — [`Self::sources`]
+    /// hands out plain nodes, which can no longer answer `hub()`.
+    pub(super) fn source_handles(&self) -> &[DynGd<Node, dyn SoundSource>] {
+        &self.source_children
+    }
+
+    /// The name of every wall in the occluder table, in table order, so a
+    /// crossing can be NAMED and not merely counted. Truncated exactly as
+    /// the table is: past the shader's last slot a wall does not occlude,
+    /// and naming it would describe an occlusion that never happens.
+    pub(super) fn wall_names(&self) -> Vec<String> {
+        self.census()
+            .walls
+            .iter()
+            .take(self.occluders.len())
+            .map(|wall| wall.get_name().to_string())
+            .collect()
+    }
+
+    /// Every painted box in the level with the id it ACTUALLY carries,
+    /// read back off the mesh instances rather than mirrored from the
+    /// colouring's own choice. The set is the one [`Self::assign_oids`]
+    /// reasons about: the solids it paints, plus the fixed anchors it
+    /// colours around — the two slabs everything stands on, and each
+    /// source's own ids. A wall melting into the floor, or a crate into
+    /// the fan's housing, is exactly what this has to be able to show.
+    pub(super) fn oid_census(&self) -> Vec<PaintedSolid> {
+        let census = self.census();
+        let mut painted = Vec::new();
+        for slab in &self.slabs {
+            let Some(area) = mesh_world_box(&slab.skin.clone().upcast()) else {
+                continue; // a slab that draws nothing can show no seam
+            };
+            painted.push(PaintedSolid {
+                name: if slab.lid { "Ceiling" } else { "Floor" }.to_string(),
+                area,
+                oid: read_oid(&slab.skin),
+            });
+        }
+        for solid in &census.solids {
+            let node = solid.clone().into_gd();
+            let Some(area) = mesh_world_box(&node) else {
+                continue;
+            };
+            painted.push(PaintedSolid {
+                name: node.get_name().to_string(),
+                area,
+                oid: solid.dyn_bind().oid(),
+            });
+        }
+        for source in &census.sources {
+            let node = source.clone().into_gd();
+            let Some(area) = mesh_world_box(&node) else {
+                continue;
+            };
+            let name = node.get_name().to_string();
+            // one entry per id a source paints its limbs with, all sharing
+            // the source's union box — the shape the colouring anchors on
+            for &oid in source.dyn_bind().oids() {
+                painted.push(PaintedSolid {
+                    name: format!("{name} @{oid}"),
+                    area,
+                    oid,
+                });
+            }
+        }
+        painted
+    }
+}
+
+/// The flat object id a mesh instance carries right now — the one source
+/// of truth, read straight back off the skin the data pass will write
+/// from. [`oid_palette::NO_OID`] when nothing has painted it.
+fn read_oid(skin: &Gd<MeshInstance3D>) -> f64 {
+    skin.get_instance_shader_parameter(OID_PARAM)
+        .try_to::<f64>()
+        .unwrap_or(oid_palette::NO_OID)
 }
 
 /// The recursive half of [`WaveLevel::census`]: depth-first, scene
