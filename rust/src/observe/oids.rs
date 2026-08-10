@@ -45,12 +45,19 @@ pub fn explain_oids_checked(boxes: &[Box3], oids: &[f64]) -> Option<OidExplanati
 
 /// Explain the colouring of a level whose ids are known to be complete.
 ///
+/// PRIVATE, and deliberately so: this is the half of the pair that panics,
+/// and the crate's doctrine is small TOTAL functions. Its only caller is
+/// [`explain_oids_checked`] two lines above, which has already established
+/// the invariant; leaving it `pub` published a panic to every consumer of
+/// `crate::observe` and gave the boundary a second door to walk through by
+/// mistake. The assert survives as the invariant's own statement — reached
+/// only if this file breaks it.
+///
 /// # Panics
 ///
-/// If `oids` is shorter than `boxes`. Callers crossing a boundary should
-/// use [`explain_oids_checked`].
+/// If `oids` is shorter than `boxes`.
 #[must_use]
-pub fn explain_oids(boxes: &[Box3], oids: &[f64]) -> OidExplanation {
+fn explain_oids(boxes: &[Box3], oids: &[f64]) -> OidExplanation {
     assert!(oids.len() >= boxes.len(), "one oid per box is required");
     let mut pairs = Vec::new();
     for a in 0..boxes.len() {
