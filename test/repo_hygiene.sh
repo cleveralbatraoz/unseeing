@@ -60,15 +60,23 @@ if git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then HAVE_INDEX=1; fi
 # engine's --windowed flag cannot beat a project setting). It is deleted on
 # the way out, but a killed run leaves it — and committed, it would silently
 # un-fullscreen the shipped game.
+#
+# .superpowers/ is the scratch workspace the subagent-driven-development skill
+# writes one directory per plan into: task briefs, implementer reports, review
+# packages, and the progress ledger that survives compaction. The skill drops a
+# self-ignoring `.gitignore` there, but only once its first script has run — so
+# between entering a plan and that first call the ledger is untracked and
+# unignored, exactly the window in which `git add -A` swallows it. The standing
+# rule belongs here, not in a directory the tool creates for itself.
 if [ "$HAVE_INDEX" = 0 ]; then
   skip "ignore rules (no git metadata — deploy work tree is a tar extract)"
 else
   for p in .claude/settings.json .claude/worktrees/some-task/README.md \
-           game/override.cfg; do
+           game/override.cfg .superpowers/sdd/a-plan/progress.md; do
     if git -C "$DIR" check-ignore -q "$p" 2>/dev/null; then
       ok "$p is ignored"
     else
-      bad "$p is NOT ignored (add .claude/ to .gitignore)"
+      bad "$p is NOT ignored (see .gitignore)"
     fi
   done
 fi
