@@ -166,6 +166,61 @@ func test_snapshot_separates_the_scan_bound_from_the_live_count() -> void:
 	assert_str(snap["slots"][1]["state"]).is_equal("Live")
 
 
+## The echo book, on the wire. An echo is an APPOINTMENT — scheduled the
+## moment the reflection fan finds a surface, fired when the primary
+## wavefront reaches it — so "the echo fired a frame late" and "the echo was
+## never scheduled" are different bugs that look identical in a single frame
+## of pixels. The snapshot carries every pending appointment with the
+## seconds left before it fires.
+##
+## An empty book is an empty LIST, asserted first: a level with nothing
+## scheduled and a level whose book could not be read must never serialise
+## the same way.
+func test_the_snapshot_carries_the_echo_book() -> void:
+	var pulses := Pulses.new()
+	var level := _shipped_level(pulses, _eye())
+	var obs := _observer()
+	obs.inject(level, _eye())
+	assert_array(obs.snapshot(0.0)["echoes"]).is_empty()
+	var points: Array[Vector3] = await _load_the_echo_book(pulses)
+	assert_int(points.size()).is_greater(0)
+	var echoes: Array = obs.snapshot(0.0)["echoes"]
+	assert_int(echoes.size()).is_equal(points.size())
+	for i in echoes.size():
+		var echo: Dictionary = echoes[i]
+		assert_vector(echo["pos"]).is_equal(points[i])
+		# the tap was born at t = 0 and every appointment it made is still
+		# ahead of it, so observed at t = 0 the wait IS the appointment
+		var at_t: float = echo["at_t"]
+		assert_float(echo["fires_in"]).is_greater(0.0)
+		assert_float(echo["fires_in"]).is_equal_approx(at_t, 0.0001)
+		assert_float(echo["gain"]).is_greater(0.0)
+
+
+## The same book read half a second late: the appointments have not moved,
+## and the wait on each has shortened by exactly that half second. An
+## appointment whose moment has passed reports a NEGATIVE wait rather than a
+## clamped zero — a late echo is the fault worth seeing, and a floor at zero
+## would hide how late it is.
+func test_the_echo_wait_counts_down_and_goes_negative_when_overdue() -> void:
+	var pulses := Pulses.new()
+	var level := _shipped_level(pulses, _eye())
+	var obs := _observer()
+	obs.inject(level, _eye())
+	var points: Array[Vector3] = await _load_the_echo_book(pulses)
+	assert_int(points.size()).is_greater(0)
+	var now: Dictionary = obs.snapshot(0.0)["echoes"][0]
+	var later: Dictionary = obs.snapshot(0.5)["echoes"][0]
+	var at_t: float = now["at_t"]
+	var fires_in: float = now["fires_in"]
+	assert_float(later["at_t"]).is_equal_approx(at_t, 0.0001)
+	assert_float(later["fires_in"]).is_equal_approx(fires_in - 0.5, 0.0001)
+	# the cane tap reaches 4.8 m at 5.5 m/s, so no appointment stands more
+	# than 0.88 s out: a clock 10 s on is past every one of them
+	var overdue: Dictionary = obs.snapshot(10.0)["echoes"][0]
+	assert_float(overdue["fires_in"]).is_less(0.0)
+
+
 ## What could not be observed is NAMED, and its key is absent rather than
 ## zero. On a level no frame has ever run over, the world skin carries no
 ## flicker and no source has been pushed its standing image — and a flicker

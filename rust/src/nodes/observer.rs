@@ -35,7 +35,7 @@ use crate::observe::reflect::{
     self, Answer, ClusteredPoint, Collected, ExplanationLedger, ReflectionExplanation,
     ReflectionRequest,
 };
-use crate::observe::{EyeObservation, FrameObservation, SourceObservation, frame};
+use crate::observe::{EchoObservation, EyeObservation, FrameObservation, SourceObservation, frame};
 use crate::ray_fan;
 
 /// No level: the observer was never handed the world to read.
@@ -151,8 +151,12 @@ impl WaveObserver {
         let eye = camera.get_global_position();
         let rects: Vec<Vector4> = level.wall_rects().as_slice().to_vec();
         let flick = shader_flick(level.data_material());
+        // one bind, so the pool and the echo book are read from the same
+        // core at the same instant rather than from two borrows of it
+        let core = core.bind();
         let observation = frame(
-            core.bind().pool(),
+            core.pool(),
+            core.echoes(),
             now,
             // NaN, never zero: it is only read back below when the material
             // actually answered, and a leak would be loud rather than
@@ -459,6 +463,8 @@ fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionar
     let slots: Array<VarDictionary> = observation.slots.iter().map(slot_dict).collect();
     state.set("slots", &slots);
     state.set("next_eviction", &eviction_dict(&observation.next_eviction));
+    let echoes: Array<VarDictionary> = observation.echoes.iter().map(echo_dict).collect();
+    state.set("echoes", &echoes);
     let sources: Array<VarDictionary> = observation.sources.iter().map(source_dict).collect();
     for (index, source) in observation.sources.iter().enumerate() {
         if source.source_floor.is_nan() {
@@ -492,6 +498,18 @@ fn slot_dict(slot: &SlotObservation) -> VarDictionary {
     entry.set("age", slot.age);
     entry.set("remaining", slot.remaining);
     entry.set("end", slot.end);
+    entry
+}
+
+/// One scheduled reflection. `fires_in` is the whole point of reporting the
+/// book rather than its length: an appointment sitting at a negative wait
+/// is an echo the drain owed the world and has not paid.
+fn echo_dict(echo: &EchoObservation) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("at_t", echo.at_t);
+    entry.set("pos", echo.pos);
+    entry.set("gain", echo.gain);
+    entry.set("fires_in", echo.fires_in);
     entry
 }
 

@@ -18,6 +18,7 @@ use godot::builtin::{Basis, Vector3, Vector4};
 
 use self::evict::{EvictionPlan, explain_eviction};
 use self::pool::{SlotObservation, SlotState, slots};
+use crate::echo_queue::EchoQueue;
 use crate::pulse_pool::PulsePool;
 use crate::sight::MAXW;
 
@@ -35,6 +36,27 @@ pub struct SourceObservation {
     /// instance uniform this source is pushed.
     pub source_floor: f64,
     pub slot_pressure: f64,
+}
+
+/// One reflection still waiting on its wavefront.
+///
+/// An echo is an APPOINTMENT, not an animation: it is scheduled the moment
+/// the fan finds a surface and fires when the primary wavefront reaches it.
+/// The whole book is reported, because "the echo fired late" and "the echo
+/// was never scheduled" are different bugs that look identical from a
+/// single frame of pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EchoObservation {
+    /// Absolute time the echo fires — the appointment itself.
+    pub at_t: f64,
+    /// The answering surface point, already nudged off its surface.
+    pub pos: Vector3,
+    /// Loudness after the distance falloff, as it will be emitted.
+    pub gain: f64,
+    /// Seconds until it fires. NEGATIVE once the moment has passed while
+    /// the drain has not run — a late echo is exactly the fault worth
+    /// seeing, and clamping at zero would hide how late it is.
+    pub fires_in: f64,
 }
 
 /// Where the eye stands, where it looks, and how wide it sees.
@@ -73,6 +95,9 @@ pub struct FrameObservation {
     pub live_slots: usize,
     pub slots: Vec<SlotObservation>,
     pub next_eviction: EvictionPlan,
+    /// Every reflection scheduled and not yet fired, in discovery order —
+    /// the order the drain itself walks.
+    pub echoes: Vec<EchoObservation>,
     pub sources: Vec<SourceObservation>,
     pub wall_rects: Vec<Vector4>,
     /// True when the table has reached the shader's ceiling, so walls may
@@ -88,6 +113,7 @@ pub struct FrameObservation {
 #[must_use]
 pub fn frame(
     pool: &PulsePool,
+    book: &EchoQueue,
     now: f64,
     flick: f64,
     sources: Vec<SourceObservation>,
@@ -106,6 +132,7 @@ pub fn frame(
         live_slots,
         slots,
         next_eviction: explain_eviction(pool, now),
+        echoes: echoes(book, now),
         sources,
         wall_truncated: wall_rects.len() >= MAXW,
         wall_rects,
@@ -113,11 +140,31 @@ pub fn frame(
     }
 }
 
+/// Decode the echo book as of `now`.
+///
+/// Pure and total: an empty book is an empty list, and an appointment
+/// already past its moment reports a negative wait rather than being
+/// dropped — the drain has simply not run yet, and that gap is the fault
+/// worth seeing.
+#[must_use]
+fn echoes(book: &EchoQueue, now: f64) -> Vec<EchoObservation> {
+    book.pending()
+        .iter()
+        .map(|echo| EchoObservation {
+            at_t: echo.at_t,
+            pos: echo.pos,
+            gain: echo.gain,
+            fires_in: echo.at_t - now,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::evict::EvictionRule;
     use super::pool::SlotState;
     use super::*;
+    use crate::echo_queue::EchoQueue;
     use crate::pulse_pool::PulsePool;
     use godot::builtin::{Basis, Vector3, Vector4};
 
@@ -135,7 +182,15 @@ mod tests {
     }
 
     fn empty_frame(pool: &PulsePool, now: f64) -> FrameObservation {
-        frame(pool, now, 1.0, Vec::new(), Vec::new(), test_eye())
+        frame(
+            pool,
+            &EchoQueue::new(),
+            now,
+            1.0,
+            Vec::new(),
+            Vec::new(),
+            test_eye(),
+        )
     }
 
     /// The composer carries the pieces through without recomputing them:
@@ -191,8 +246,25 @@ mod tests {
     fn a_full_wall_table_is_flagged_as_truncated() {
         let pool = PulsePool::new();
         let rect = Vector4::new(0.0, 0.0, 1.0, 1.0);
-        let short = frame(&pool, 0.0, 1.0, Vec::new(), vec![rect; 31], test_eye());
-        let full = frame(&pool, 0.0, 1.0, Vec::new(), vec![rect; 32], test_eye());
+        let book = EchoQueue::new();
+        let short = frame(
+            &pool,
+            &book,
+            0.0,
+            1.0,
+            Vec::new(),
+            vec![rect; 31],
+            test_eye(),
+        );
+        let full = frame(
+            &pool,
+            &book,
+            0.0,
+            1.0,
+            Vec::new(),
+            vec![rect; 32],
+            test_eye(),
+        );
         assert!(!short.wall_truncated);
         assert!(full.wall_truncated);
     }
@@ -203,6 +275,50 @@ mod tests {
     fn a_silent_level_is_legal() {
         let pool = PulsePool::new();
         assert!(empty_frame(&pool, 0.0).sources.is_empty());
+    }
+
+    /// The echo book, as an agent reads it: every appointment still
+    /// waiting, with the seconds left before it fires. Hand-derived from
+    /// the reflection contract (`rust/src/echo_queue.rs`): a hit 5.5 m
+    /// down a 5.5 m/s ray scheduled at t = 0 fires at t = 1, so at t =
+    /// 0.25 it is 0.75 s away, and its loudness is 1 x 0.55 / (1 + 0.4 x
+    /// 5.5) = 0.171875.
+    ///
+    /// "The echo fired a frame late" is a whole question class, and it
+    /// cannot be asked of a snapshot that does not carry the book.
+    #[test]
+    fn the_echo_book_reports_the_wait_on_every_appointment() {
+        let pool = PulsePool::new();
+        let mut book = EchoQueue::new();
+        book.schedule(0.0, 5.5, Vector3::new(1.0, 2.0, 3.0), 1.0, 5.5);
+        let f = frame(&pool, &book, 0.25, 1.0, Vec::new(), Vec::new(), test_eye());
+        assert_eq!(f.echoes.len(), 1);
+        assert!((f.echoes[0].at_t - 1.0).abs() < 1e-9);
+        assert!((f.echoes[0].fires_in - 0.75).abs() < 1e-9);
+        assert!((f.echoes[0].gain - 0.171_875).abs() < 1e-9);
+        assert_eq!(f.echoes[0].pos, Vector3::new(1.0, 2.0, 3.0));
+    }
+
+    /// An appointment whose moment has passed while the drain has not run
+    /// reports a NEGATIVE wait rather than a clamped zero. A late echo is
+    /// precisely the bug this group exists to make visible, and a floor at
+    /// zero would hide how late it is.
+    #[test]
+    fn an_overdue_appointment_reports_how_late_it_is() {
+        let pool = PulsePool::new();
+        let mut book = EchoQueue::new();
+        book.schedule(0.0, 5.5, Vector3::ZERO, 1.0, 5.5);
+        let f = frame(&pool, &book, 1.5, 1.0, Vec::new(), Vec::new(), test_eye());
+        assert!((f.echoes[0].fires_in + 0.5).abs() < 1e-9);
+    }
+
+    /// An empty book is an empty list, never a missing key: a level with
+    /// nothing scheduled and a level whose book could not be read must not
+    /// serialise the same.
+    #[test]
+    fn an_empty_echo_book_is_an_empty_list() {
+        let pool = PulsePool::new();
+        assert!(empty_frame(&pool, 0.0).echoes.is_empty());
     }
 
     /// The eye is one thing — where it stands, where it looks, and how

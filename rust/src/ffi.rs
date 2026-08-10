@@ -198,6 +198,15 @@ impl WaveCore {
         &self.pool
     }
 
+    /// The echo appointment book, for READING only, under the same rule as
+    /// [`Self::pool`]. `pending_echoes()` already copies it out one
+    /// dictionary at a time for the suites; the observer decodes the whole
+    /// book with the wait on each appointment, from the same source of
+    /// truth rather than a second one.
+    pub(crate) fn echoes(&self) -> &EchoQueue {
+        &self.echoes
+    }
+
     /// The one door into the pool: forwards to the pure emit and maps its
     /// refusal value onto the exact `push_error` the GDScript pool raised,
     /// so the observable refusal (loud message, no slot taken) survives
