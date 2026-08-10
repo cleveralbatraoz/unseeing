@@ -18,10 +18,11 @@
 //! invent an eye at the origin, and a plausible wrong number is the most
 //! dangerous answer of all. The eye-free explainers keep working.
 
-use godot::classes::{Camera3D, Material, ShaderMaterial};
+use godot::classes::{Camera3D, Material, MeshInstance3D, ShaderMaterial};
 use godot::prelude::*;
 
 use super::level::WaveLevel;
+use super::source;
 use crate::ffi::WaveCore;
 use crate::level_plan;
 use crate::observe::evict::{EvictionPlan, EvictionRule, explain_eviction};
@@ -39,6 +40,15 @@ const NO_CAMERA: &str = "observer was never injected a camera — walls_to_eye a
 /// A level whose wave pool never arrived, or arrived as something that is
 /// not a pool at all.
 const NO_POOL: &str = "the injected level carries no readable wave pool";
+
+/// The level was injected and has since been freed. A scene reload leaves
+/// the handle looking perfectly valid, and reading through it would take
+/// the game down with the observer — which is the worst thing a debugging
+/// tool can do to the run it exists to explain.
+const DEAD_LEVEL: &str = "the injected level has been freed";
+
+/// The camera was injected and has since been freed.
+const DEAD_CAMERA: &str = "the injected camera has been freed";
 
 /// The agent's window into the running wave engine: it reads every system
 /// and drives none.
@@ -70,11 +80,13 @@ impl WaveObserver {
     /// key is ABSENT — never present and zero.
     #[func]
     fn snapshot(&self, now: f64) -> VarDictionary {
-        let Some(level) = self.level.as_ref() else {
-            return unavailable(NO_LEVEL);
+        let level = match self.live_level() {
+            Ok(level) => level,
+            Err(reason) => return unavailable(reason),
         };
-        let Some(camera) = self.camera.as_ref() else {
-            return unavailable(NO_CAMERA);
+        let camera = match self.live_camera() {
+            Ok(camera) => camera,
+            Err(reason) => return unavailable(reason),
         };
         let level = level.bind();
         let Some(core) = pulse_core(&level) else {
@@ -103,8 +115,9 @@ impl WaveObserver {
     /// which skips the wall a sound was born inside).
     #[func]
     fn explain_ray(&self, from: Vector3, to: Vector3) -> VarDictionary {
-        let Some(level) = self.level.as_ref() else {
-            return unavailable(NO_LEVEL);
+        let level = match self.live_level() {
+            Ok(level) => level,
+            Err(reason) => return unavailable(reason),
         };
         let level = level.bind();
         let rects: Vec<Vector4> = level.wall_rects().as_slice().to_vec();
@@ -116,8 +129,9 @@ impl WaveObserver {
     /// level: which seams the flat object ids actually draw.
     #[func]
     fn explain_oids(&self) -> VarDictionary {
-        let Some(level) = self.level.as_ref() else {
-            return unavailable(NO_LEVEL);
+        let level = match self.live_level() {
+            Ok(level) => level,
+            Err(reason) => return unavailable(reason),
         };
         let painted = level.bind().oid_census();
         let boxes: Vec<_> = painted.iter().map(|solid| solid.area).collect();
@@ -138,14 +152,37 @@ impl WaveObserver {
     /// which would answer the question by changing it.
     #[func]
     fn explain_eviction(&self, now: f64) -> VarDictionary {
-        let Some(level) = self.level.as_ref() else {
-            return unavailable(NO_LEVEL);
+        let level = match self.live_level() {
+            Ok(level) => level,
+            Err(reason) => return unavailable(reason),
         };
         let Some(core) = pulse_core(&level.bind()) else {
             return unavailable(NO_POOL);
         };
         let plan = explain_eviction(core.bind().pool(), now);
         eviction_dict(&plan)
+    }
+}
+
+impl WaveObserver {
+    /// The level, if there is one and it still exists. A freed node leaves
+    /// its handle looking valid, so every entry point asks first: the
+    /// observer must refuse a torn-down scene, not read through it.
+    fn live_level(&self) -> Result<&Gd<WaveLevel>, &'static str> {
+        match self.level.as_ref() {
+            None => Err(NO_LEVEL),
+            Some(level) if !level.is_instance_valid() => Err(DEAD_LEVEL),
+            Some(level) => Ok(level),
+        }
+    }
+
+    /// The eye, under the same rule.
+    fn live_camera(&self) -> Result<&Gd<Camera3D>, &'static str> {
+        match self.camera.as_ref() {
+            None => Err(NO_CAMERA),
+            Some(camera) if !camera.is_instance_valid() => Err(DEAD_CAMERA),
+            Some(camera) => Ok(camera),
+        }
     }
 }
 
@@ -163,6 +200,9 @@ fn unavailable(reason: &str) -> VarDictionary {
 /// `Pulses` shim's own, reached through its public `core()` accessor.
 fn pulse_core(level: &WaveLevel) -> Option<Gd<WaveCore>> {
     let handle = level.pulse_handle()?;
+    if !handle.is_instance_valid() {
+        return None;
+    }
     if let Ok(core) = handle.clone().try_cast::<WaveCore>() {
         return Some(core);
     }
@@ -186,18 +226,25 @@ fn shader_flick(material: Option<Gd<Material>>) -> Option<f64> {
         .ok()
 }
 
-/// Every sound source as an agent reads it. The eye-relative pair is taken
-/// from the SAME occlusion oracle the shaders' law is pinned against:
-/// `walls_to_eye` is the camera occluder's count, and the standing image
-/// is the source's own volume dimmed by that occluder's transmission —
-/// the composition `WaveLevel::tick_sources` pushes to the limbs each
-/// frame.
+/// Every sound source as an agent reads it.
+///
+/// `walls_to_eye` is a QUESTION — the camera occluder's count, asked here
+/// against the same `sight` oracle the shaders transliterate. The standing
+/// image is not: it is state the level composed and PUSHED, so it is read
+/// straight back off a limb rather than recomposed. Recomputing it would
+/// put a rule (`volume x muffle`) in the boundary beside the one in
+/// `WaveLevel::tick_sources`, and the two would agree right up until the
+/// frame they mattered — a frozen world, a stalled `_process`, a term
+/// added to one of them — while the observer went on confidently
+/// reporting a number no shader was holding. Unobserved is reported as
+/// [`f64::NAN`] and lands in the snapshot's `unknown`, never as a guess.
 fn sources(level: &WaveLevel, eye: Vector3, rects: &[Vector4]) -> Vec<SourceObservation> {
     level
         .source_handles()
         .iter()
         .map(|source| {
-            let name = source.clone().into_gd().get_name().to_string();
+            let node = source.clone().into_gd();
+            let name = node.get_name().to_string();
             let bound = source.dyn_bind();
             let voice = bound.voice();
             let position = bound.hub();
@@ -208,11 +255,29 @@ fn sources(level: &WaveLevel, eye: Vector3, rects: &[Vector4]) -> Vec<SourceObse
                 volume: voice.volume.amplitude(),
                 reach: voice.volume.reach(),
                 walls_to_eye: line.camera_crossings,
-                source_floor: voice.volume.image() * line.source_transmission,
+                source_floor: standing_image(&node).unwrap_or(f64::NAN),
                 slot_pressure: voice.slot_pressure(),
             }
         })
         .collect()
+}
+
+/// The standing acoustic image a source's limbs are actually carrying —
+/// the `u_source_floor` instance uniform the level pushes each frame. Every
+/// limb of one source is pushed the same value, so the first that answers
+/// speaks for the source. `None` before any frame has driven it, which is a
+/// different fact from an image of zero (a source muffled to silence).
+fn standing_image(node: &Gd<Node>) -> Option<f64> {
+    if let Ok(limb) = node.clone().try_cast::<MeshInstance3D>()
+        && let Ok(image) = limb
+            .get_instance_shader_parameter(source::IMAGE_PARAM)
+            .try_to::<f64>()
+    {
+        return Some(image);
+    }
+    node.get_children()
+        .iter_shared()
+        .find_map(|child| standing_image(&child))
 }
 
 fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionary {
@@ -229,6 +294,11 @@ fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionar
     state.set("slots", &slots);
     state.set("next_eviction", &eviction_dict(&observation.next_eviction));
     let sources: Array<VarDictionary> = observation.sources.iter().map(source_dict).collect();
+    for (index, source) in observation.sources.iter().enumerate() {
+        if source.source_floor.is_nan() {
+            unknown.push(&format!("sources[{index}].source_floor"));
+        }
+    }
     state.set("sources", &sources);
     state.set(
         "wall_rects",
@@ -274,7 +344,12 @@ fn source_dict(source: &SourceObservation) -> VarDictionary {
     entry.set("volume", source.volume);
     entry.set("reach", source.reach);
     entry.set("walls_to_eye", i64::from(source.walls_to_eye));
-    entry.set("source_floor", source.source_floor);
+    // NaN is the "never pushed" marker set by `standing_image`, and the one
+    // value the uniform can never legitimately hold: the key is left out
+    // and named in the snapshot's `unknown` instead of reported as a guess.
+    if !source.source_floor.is_nan() {
+        entry.set("source_floor", source.source_floor);
+    }
     entry.set("slot_pressure", source.slot_pressure);
     entry
 }
