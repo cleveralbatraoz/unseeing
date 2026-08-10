@@ -9,5 +9,6 @@
 //! results to Godot is `crate::nodes::observer`.
 
 pub mod evict;
+pub mod oids;
 pub mod pool;
 pub mod ray;
