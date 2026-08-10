@@ -217,9 +217,11 @@ pub fn demo_tap(walls: &[Vector4], spawn: Vector3, fan: Vector3) -> Option<TapPl
 mod tests {
     use super::*;
 
-    /// The shipped map's wall centerlines — the validated design the
-    /// level scene mirrors, held here as the derivation fixtures.
-    fn shipped_walls() -> Vec<Vector4> {
+    /// A RETIRED 20×20/10-wall map — not the shipped 28×28/19-wall scene in
+    /// `game/scenes/level_01.tscn`. Kept as the derivation fixture for the
+    /// tap-plan tests below, which only ever touch DividerNorth and the
+    /// spawn corridor, byte-identical between the two maps.
+    fn retired_map_walls() -> Vec<Vector4> {
         vec![
             Vector4::new(0.6, 0.6, 19.4, 0.6),
             Vector4::new(19.4, 0.6, 19.4, 19.4),
@@ -301,7 +303,7 @@ mod tests {
     #[test]
     fn shipped_demo_tap_derives_to_the_validated_point() {
         let plan = demo_tap(
-            &shipped_walls(),
+            &retired_map_walls(),
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(8.6, 0.0, 4.4),
         )
@@ -319,12 +321,12 @@ mod tests {
     #[test]
     fn demo_tap_face_is_not_self_occluded() {
         let plan = demo_tap(
-            &shipped_walls(),
+            &retired_map_walls(),
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(8.6, 0.0, 4.4),
         )
         .expect("tap derives");
-        let rects: Vec<Vector4> = shipped_walls()
+        let rects: Vec<Vector4> = retired_map_walls()
             .iter()
             .map(|s| crate::sight::wall_rect(*s))
             .collect();
@@ -344,7 +346,7 @@ mod tests {
     #[test]
     fn demo_tap_clamps_into_the_wall_span() {
         let plan = demo_tap(
-            &shipped_walls(),
+            &retired_map_walls(),
             Vector3::new(3.0, 0.9, 9.0),
             Vector3::new(8.6, 0.0, 4.4),
         )
@@ -358,7 +360,7 @@ mod tests {
     fn same_room_spawn_and_fan_have_no_tap() {
         assert_eq!(
             demo_tap(
-                &shipped_walls(),
+                &retired_map_walls(),
                 Vector3::new(10.0, 0.9, 4.0),
                 Vector3::new(8.6, 0.0, 4.4),
             ),

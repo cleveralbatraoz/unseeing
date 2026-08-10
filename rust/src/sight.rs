@@ -188,14 +188,14 @@ mod tests {
     }
 
     /// The cheap refusal must be EXACT, not a heuristic. Over a dense sweep
-    /// of sight lines against the shipped walls — including vertical ones,
-    /// degenerate points, and lines that graze a corner — gating on [`near`]
-    /// answers identically to the bare slab test. A false negative here
-    /// would silently un-occlude a wall inside a fragment shader, where
-    /// nothing can be stepped through with a debugger.
+    /// of sight lines against this fixture's walls — including vertical
+    /// ones, degenerate points, and lines that graze a corner — gating on
+    /// [`near`] answers identically to the bare slab test. A false negative
+    /// here would silently un-occlude a wall inside a fragment shader,
+    /// where nothing can be stepped through with a debugger.
     #[test]
     fn the_cheap_refusal_never_changes_an_answer() {
-        let rects = shipped_rects();
+        let rects = retired_map_rects();
         let mut agreed = 0_u64;
         let mut ever_crossed = false;
         let step = 1.7_f32;
@@ -222,11 +222,11 @@ mod tests {
     }
 
     /// `near` is the necessary condition it claims to be: a wall whose rect
-    /// the segment's own bounding box misses can never be crossed, and the
-    /// shipped map has plenty of such pairs — that is where the saving is.
+    /// the segment's own bounding box misses can never be crossed, and this
+    /// fixture has plenty of such pairs — that is where the saving is.
     #[test]
     fn a_far_wall_is_refused_without_the_slab_test() {
-        let rects = shipped_rects();
+        let rects = retired_map_rects();
         let from = Vector3::new(1.0, 0.9, 1.0);
         let to = Vector3::new(2.0, 0.9, 2.0);
         let refused = rects.iter().filter(|r| !near(from, to, **r)).count();
@@ -236,9 +236,18 @@ mod tests {
         }
     }
 
-    /// The shipped map's wall centerlines — the same fixture level_plan's
-    /// suites derive from, inflated here into sight occluders.
-    fn shipped_rects() -> Vec<Vector4> {
+    /// A RETIRED 20×20/10-wall map — NOT the shipped 28×28/19-wall scene in
+    /// `game/scenes/level_01.tscn`. Kept as the derivation fixture because
+    /// DividerNorth and FanRoomSouth are byte-identical between the two
+    /// maps and every sight line this module tests stays inside their
+    /// shared bounding boxes; the other nine walls this fixture carries do
+    /// not exist in the shipped scene, and it is not extended when the
+    /// scene grows. A passing test here is not a claim about the shipped
+    /// map — `WaveLevel::wall_rects()` derives the real, current table, and
+    /// `game/tests/data_skins_test.gd`'s
+    /// `test_explain_ray_matches_the_pinned_crossing_counts` runs these same
+    /// lines against the REAL scene, through `WaveObserver`.
+    fn retired_map_rects() -> Vec<Vector4> {
         [
             Vector4::new(0.6, 0.6, 19.4, 0.6),
             Vector4::new(19.4, 0.6, 19.4, 19.4),
@@ -278,7 +287,7 @@ mod tests {
         let n = crossings(
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(8.6, 1.15, 4.4),
-            &shipped_rects(),
+            &retired_map_rects(),
             WALL_TOP,
         );
         assert_eq!(n, 1);
@@ -291,7 +300,7 @@ mod tests {
         let n = crossings(
             Vector3::new(8.0, 1.0, 4.0),
             Vector3::new(12.0, 1.5, 6.0),
-            &shipped_rects(),
+            &retired_map_rects(),
             WALL_TOP,
         );
         assert_eq!(n, 0);
@@ -305,7 +314,7 @@ mod tests {
         let n = crossings(
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 10.0),
-            &shipped_rects(),
+            &retired_map_rects(),
             WALL_TOP,
         );
         assert_eq!(n, 2);
@@ -320,7 +329,7 @@ mod tests {
         // 5 mm inside the wall's REAL east face at x = 6.55 — where world
         // reconstruction dust can land a fragment of a flush prop
         let grazed = Vector3::new(6.545, 1.2, 4.0);
-        assert_eq!(crossings(eye, grazed, &shipped_rects(), WALL_TOP), 0);
+        assert_eq!(crossings(eye, grazed, &retired_map_rects(), WALL_TOP), 0);
         let unshrunk = Vector4::new(6.25, 0.45, 6.55, 8.15);
         assert!(crosses(eye, grazed, unshrunk, WALL_TOP));
     }
@@ -332,7 +341,7 @@ mod tests {
         let n = crossings(
             Vector3::new(8.0, 1.0, 4.0),
             Vector3::new(7.0, 1.0, 4.4),
-            &shipped_rects(),
+            &retired_map_rects(),
             WALL_TOP,
         );
         assert_eq!(n, 0);
@@ -393,11 +402,21 @@ mod tests {
         let born_in_divider = Vector3::new(6.4, 0.9, 4.0);
         let open_fan_room = Vector3::new(10.0, 0.9, 4.0);
         assert_eq!(
-            crossings_from(born_in_divider, open_fan_room, &shipped_rects(), WALL_TOP),
+            crossings_from(
+                born_in_divider,
+                open_fan_room,
+                &retired_map_rects(),
+                WALL_TOP
+            ),
             0,
         );
         assert_eq!(
-            crossings(born_in_divider, open_fan_room, &shipped_rects(), WALL_TOP),
+            crossings(
+                born_in_divider,
+                open_fan_room,
+                &retired_map_rects(),
+                WALL_TOP
+            ),
             1,
         );
     }
@@ -411,7 +430,12 @@ mod tests {
         let born_in_divider = Vector3::new(6.4, 0.9, 4.0);
         let far_corridor = Vector3::new(10.0, 0.9, 10.0);
         assert_eq!(
-            crossings_from(born_in_divider, far_corridor, &shipped_rects(), WALL_TOP),
+            crossings_from(
+                born_in_divider,
+                far_corridor,
+                &retired_map_rects(),
+                WALL_TOP
+            ),
             1,
         );
     }
@@ -424,9 +448,12 @@ mod tests {
         let spawn = Vector3::new(3.0, 0.9, 4.0);
         let fan = Vector3::new(8.6, 1.15, 4.4);
         assert_eq!(
-            crossings_from(spawn, fan, &shipped_rects(), WALL_TOP),
-            crossings(spawn, fan, &shipped_rects(), WALL_TOP),
+            crossings_from(spawn, fan, &retired_map_rects(), WALL_TOP),
+            crossings(spawn, fan, &retired_map_rects(), WALL_TOP),
         );
-        assert_eq!(crossings_from(spawn, fan, &shipped_rects(), WALL_TOP), 1);
+        assert_eq!(
+            crossings_from(spawn, fan, &retired_map_rects(), WALL_TOP),
+            1
+        );
     }
 }
