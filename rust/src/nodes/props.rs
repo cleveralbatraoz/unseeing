@@ -19,8 +19,28 @@
 //! the floor — because a barrel or a ramp that is not resting on something
 //! is a mistake, and the common case should need no arithmetic from the
 //! designer.
+//!
+//! Standing is a law about the FLOOR, so it is read in the space the floor
+//! is in: the shape's LOWEST point in WORLD space rests at the node's own
+//! y, whatever turn its own transform and its ancestors' put on it. Upright
+//! that is half the height and existing content never moves; laid on its
+//! side a barrel rests on its RADIUS. The arithmetic is
+//! [`prop_shape::cylinder_lift`] / [`prop_shape::wedge_lift`], and it is
+//! re-read on every transform change — a designer turning a barrel in the
+//! viewport fires no knob setter at all, and would otherwise watch it sink.
+//!
+//! SIZE LAW: the knob is the one size a shape has, and it never lies. A
+//! minus sign folds to its magnitude ([`SignFold`]), and the node's SCALE
+//! is folded into the knob on entering the tree, the node coming back at 1
+//! ([`drop_scale`]). Absorbed silently — which is what happened before —
+//! the S key was a second size knob the Inspector could not see: a prop of
+//! 0.5 under scale (4, 1, 2) drew, collided and coloured as 2.0 x 0.5 x 1.0
+//! while the Inspector went on reporting 0.5. A wall discards its scale
+//! instead of folding it, because its length feeds an occluding centerline;
+//! a prop's extent is free, so it can hold what the scale meant.
 
 use godot::classes::mesh::{ArrayType, PrimitiveType};
+use godot::classes::notify::Node3DNotification;
 use godot::classes::{
     ArrayMesh, BoxMesh, BoxShape3D, CollisionShape3D, ConvexPolygonShape3D, CylinderMesh,
     CylinderShape3D, IStaticBody3D, Material, Mesh, Shape3D, StaticBody3D,
@@ -29,7 +49,7 @@ use godot::prelude::*;
 
 use godot::classes::MeshInstance3D;
 
-use super::solid::{Skin, WaveSolid, build_body, build_box};
+use super::solid::{LIMBS, SignFold, Skin, WaveSolid, build_body, build_box, clear_limbs};
 use crate::prop_shape;
 
 /// A free box obstacle — table top, chair leg, crate, shelf. The node sits
@@ -39,12 +59,14 @@ use crate::prop_shape;
 #[derive(GodotClass)]
 #[class(tool, init, base=StaticBody3D)]
 pub struct WaveProp {
-    /// Full box extent in meters.
+    /// Full box extent in meters — a magnitude: a negative reading folds to
+    /// its absolute value at the knob ([`SignFold`]).
     #[export]
     #[var(get = get_size, set = set_size)]
     #[init(val = Vector3::new(0.5, 0.5, 0.5))]
     size: Vector3,
     skin: Skin,
+    fold: SignFold,
     mesh: Option<Gd<BoxMesh>>,
     shape: Option<Gd<BoxShape3D>>,
     base: Base<StaticBody3D>,
@@ -53,6 +75,12 @@ pub struct WaveProp {
 #[godot_api]
 impl IStaticBody3D for WaveProp {
     fn ready(&mut self) {
+        clear_limbs(self, &LIMBS);
+        let scaled = scale_to_fold(&self.base());
+        if let Some(scale) = scaled {
+            self.size = prop_shape::fold_box_scale(self.size, scale);
+            drop_scale(&mut self.base_mut(), scale, "");
+        }
         let built = build_box(self.size, Vector3::ZERO, self.skin.material());
         let mut base = self.base_mut();
         base.add_child(&built.skin);
@@ -61,21 +89,28 @@ impl IStaticBody3D for WaveProp {
         self.skin.adopt(built.skin);
         self.mesh = Some(built.mesh);
         self.shape = Some(built.shape);
+        let name = self.base().get_name();
+        self.fold.say(Some(name));
     }
 }
 
 #[godot_api]
 impl WaveProp {
-    /// The size knob reshapes the prop live, mesh and collider together.
+    /// The size knob reshapes the prop live, mesh and collider together —
+    /// on the knob's magnitude, so a minus sign cannot leave the mesh
+    /// reshaped and the collider refusing to follow.
     #[func]
     fn set_size(&mut self, size: Vector3) {
-        self.size = size;
+        self.size = self.fold.vector("size", size);
+        let size = self.size;
         if let Some(mesh) = self.mesh.as_mut() {
             mesh.set_size(size);
         }
         if let Some(shape) = self.shape.as_mut() {
             shape.set_size(size);
         }
+        let named = self.base().is_inside_tree().then(|| self.base().get_name());
+        self.fold.say(named);
     }
 
     #[func]
@@ -114,17 +149,18 @@ impl WaveSolid for WaveProp {
 #[derive(GodotClass)]
 #[class(tool, init, base=StaticBody3D)]
 pub struct WaveColumn {
-    /// Radius in meters.
+    /// Radius in meters — a magnitude ([`SignFold`]).
     #[export]
     #[var(get = get_radius, set = set_radius)]
     #[init(val = 0.28)]
     radius: f64,
-    /// Height in meters, rising from the node.
+    /// Height in meters, rising from the node — a magnitude ([`SignFold`]).
     #[export]
     #[var(get = get_height, set = set_height)]
     #[init(val = 0.9)]
     height: f64,
     skin: Skin,
+    fold: SignFold,
     mesh: Option<Gd<CylinderMesh>>,
     shape: Option<Gd<CylinderShape3D>>,
     collider: Option<Gd<CollisionShape3D>>,
@@ -134,6 +170,21 @@ pub struct WaveColumn {
 #[godot_api]
 impl IStaticBody3D for WaveColumn {
     fn ready(&mut self) {
+        clear_limbs(self, &LIMBS);
+        let scaled = scale_to_fold(&self.base());
+        if let Some(scale) = scaled {
+            let knobs = prop_shape::fold_column_scale(self.radius, self.height, scale);
+            self.radius = knobs.radius;
+            self.height = knobs.height;
+            let lost = if knobs.round {
+                ""
+            } else {
+                " The cross-section was pulled unevenly across X and Z, which asks for \
+                 an elliptic cylinder this vocabulary does not own — the wider radius \
+                 was taken, so the shape contains what was drawn."
+            };
+            drop_scale(&mut self.base_mut(), scale, lost);
+        }
         let mut mesh = CylinderMesh::new_gd();
         // fewer segments than the engine default: a flat object id means the
         // facets never draw as creases, so the count buys nothing but
@@ -156,6 +207,19 @@ impl IStaticBody3D for WaveColumn {
         self.mesh = Some(mesh);
         self.shape = Some(shape);
         self.reshape();
+        self.base_mut().set_notify_transform(true);
+        let name = self.base().get_name();
+        self.fold.say(Some(name));
+    }
+
+    /// A turned node is a re-lift: the standing law is read off the
+    /// placement, and moving a node fires no knob setter. Cheap enough to
+    /// run on every transform change — it is a support and an inverse, and
+    /// a prop moves only when a designer drags it.
+    fn on_notification(&mut self, what: Node3DNotification) {
+        if matches!(what, Node3DNotification::TRANSFORM_CHANGED) {
+            self.relift();
+        }
     }
 }
 
@@ -163,8 +227,10 @@ impl IStaticBody3D for WaveColumn {
 impl WaveColumn {
     #[func]
     fn set_radius(&mut self, radius: f64) {
-        self.radius = radius;
+        self.radius = self.fold.scalar("radius", radius);
         self.reshape();
+        let named = self.base().is_inside_tree().then(|| self.base().get_name());
+        self.fold.say(named);
     }
 
     #[func]
@@ -174,8 +240,10 @@ impl WaveColumn {
 
     #[func]
     fn set_height(&mut self, height: f64) {
-        self.height = height;
+        self.height = self.fold.scalar("height", height);
         self.reshape();
+        let named = self.base().is_inside_tree().then(|| self.base().get_name());
+        self.fold.say(named);
     }
 
     #[func]
@@ -192,12 +260,13 @@ impl WaveColumn {
 
     /// Mesh, collider and lift together, so a knob dragged in the
     /// Inspector moves what the waves strike and not only what is drawn.
-    /// The lift is half the height, which is what puts the BASE on the
-    /// node — the engine's cylinder primitives are centred.
+    ///
+    /// Both knobs are magnitudes by the time they land in the fields (the
+    /// setters fold, [`SignFold`]), so nothing here has a sign to defend
+    /// against: `CylinderShape3D` would refuse a negative radius outright.
     fn reshape(&mut self) {
-        let radius = self.radius.abs() as f32;
-        let height = self.height.abs() as f32;
-        let lift = Vector3::new(0.0, height * 0.5, 0.0);
+        let radius = self.radius as f32;
+        let height = self.height as f32;
         if let Some(mesh) = self.mesh.as_mut() {
             mesh.set_top_radius(radius);
             mesh.set_bottom_radius(radius);
@@ -207,6 +276,16 @@ impl WaveColumn {
             shape.set_radius(radius);
             shape.set_height(height);
         }
+        self.relift();
+    }
+
+    /// Ride the limbs up onto the lift this placement asks for, so the
+    /// cylinder's lowest point rests on the node. Upright that is half the
+    /// height — the engine's cylinder primitives are centred — and turned
+    /// it is whatever [`prop_shape::cylinder_lift`] says.
+    fn relift(&mut self) {
+        let basis = placement_basis(&self.base());
+        let lift = prop_shape::cylinder_lift(basis, self.radius as f32, self.height as f32);
         lift_limbs(self.skin.limb(), self.collider.as_mut(), lift);
     }
 }
@@ -239,12 +318,14 @@ impl WaveSolid for WaveColumn {
 #[derive(GodotClass)]
 #[class(tool, init, base=StaticBody3D)]
 pub struct WaveWedge {
-    /// Full extent in meters: run along X, rise along Y, width along Z.
+    /// Full extent in meters: run along X, rise along Y, width along Z —
+    /// a magnitude ([`SignFold`]).
     #[export]
     #[var(get = get_size, set = set_size)]
     #[init(val = Vector3::new(1.2, 0.5, 0.8))]
     size: Vector3,
     skin: Skin,
+    fold: SignFold,
     mesh: Option<Gd<ArrayMesh>>,
     shape: Option<Gd<ConvexPolygonShape3D>>,
     collider: Option<Gd<CollisionShape3D>>,
@@ -254,6 +335,18 @@ pub struct WaveWedge {
 #[godot_api]
 impl IStaticBody3D for WaveWedge {
     fn ready(&mut self) {
+        clear_limbs(self, &LIMBS);
+        let scaled = scale_to_fold(&self.base());
+        if let Some(scale) = scaled {
+            self.size = prop_shape::fold_box_scale(self.size, scale);
+            let lost = if scale.x < 0.0 || scale.y < 0.0 || scale.z < 0.0 {
+                " A mirrored axis is a reflection, and no size expresses one — the \
+                 slope still rises toward +X; turn the node to aim it."
+            } else {
+                ""
+            };
+            drop_scale(&mut self.base_mut(), scale, lost);
+        }
         // the geometry is generated BEFORE the shape is attached: a
         // ConvexPolygonShape3D with no points cannot build a hull, and the
         // engine says so loudly the instant a collider is given one
@@ -263,7 +356,7 @@ impl IStaticBody3D for WaveWedge {
         let built = build_body(
             &mesh.clone().upcast::<Mesh>(),
             &shape.clone().upcast::<Shape3D>(),
-            lift_of(self.size),
+            Vector3::ZERO,
             self.skin.material(),
         );
         let mut base = self.base_mut();
@@ -274,6 +367,20 @@ impl IStaticBody3D for WaveWedge {
         self.collider = Some(built.collider);
         self.mesh = Some(mesh);
         self.shape = Some(shape);
+        self.relift();
+        self.base_mut().set_notify_transform(true);
+        let name = self.base().get_name();
+        self.fold.say(Some(name));
+    }
+
+    /// A turned node is a re-lift — see [`WaveColumn`]. Only the LIFT is
+    /// redone, never the geometry: a wedge regenerates 24 vertices and a
+    /// hull from scratch, and a designer dragging one across the viewport
+    /// sends a transform change per frame.
+    fn on_notification(&mut self, what: Node3DNotification) {
+        if matches!(what, Node3DNotification::TRANSFORM_CHANGED) {
+            self.relift();
+        }
     }
 }
 
@@ -281,8 +388,10 @@ impl IStaticBody3D for WaveWedge {
 impl WaveWedge {
     #[func]
     fn set_size(&mut self, size: Vector3) {
-        self.size = size;
+        self.size = self.fold.vector("size", size);
         self.reshape();
+        let named = self.base().is_inside_tree().then(|| self.base().get_name());
+        self.fold.say(named);
     }
 
     #[func]
@@ -307,7 +416,14 @@ impl WaveWedge {
             return; // knob dragged before _ready: the build will read it
         };
         cut_wedge(mesh, shape, size);
-        let lift = lift_of(size);
+        self.relift();
+    }
+
+    /// Ride the limbs up onto the lift this placement asks for, so the
+    /// prism's lowest corner rests on the node.
+    fn relift(&mut self) {
+        let basis = placement_basis(&self.base());
+        let lift = prop_shape::wedge_lift(basis, self.size);
         lift_limbs(self.skin.limb(), self.collider.as_mut(), lift);
     }
 }
@@ -327,10 +443,49 @@ impl WaveSolid for WaveWedge {
     }
 }
 
-/// Where a wedge's limbs sit above its node: half a height, which is what
-/// makes the shape STAND on the node rather than straddle it.
-fn lift_of(size: Vector3) -> Vector3 {
-    Vector3::new(0.0, size.y.abs() * 0.5, 0.0)
+/// The node's own scale, if there is anything worth folding into a size
+/// knob — read once, on entering the tree, exactly where the wall reads its
+/// own basis. `None` when the node is already at 1, which is every node in
+/// the shipped map.
+///
+/// It is deliberately the LOCAL scale and not the inherited one: a prefab
+/// scaled as a whole should carry its contents with it, and only a wall
+/// (whose centerline is physics, not decoration) refuses that.
+fn scale_to_fold(node: &Gd<StaticBody3D>) -> Option<Vector3> {
+    let scale = node.get_scale();
+    (!prop_shape::scale_is_neutral(scale)).then_some(scale)
+}
+
+/// Put the node back at scale 1 and say what was folded, naming the node.
+///
+/// The mirror of the wall's "use the length knob, never scale": there, the
+/// scale is discarded; here it is ABSORBED, because a prop's knob is a free
+/// extent and can hold it. Either way the S key stops being a second size
+/// knob that the Inspector cannot see — which is what lets a knob read as
+/// prefab documentation.
+fn drop_scale(node: &mut Gd<StaticBody3D>, scale: Vector3, lost: &str) {
+    let name = node.get_name();
+    node.set_scale(Vector3::ONE);
+    godot_warn!(
+        "'{name}': folded the node scale {scale} into the size knob and reset the \
+         scale to 1 — a shape's knob is its one size, so the Inspector reads what is \
+         actually drawn.{lost}"
+    );
+}
+
+/// The basis a shape is actually drawn under: its whole global placement
+/// when it is in the tree — the standing law is about the world floor, and
+/// a shape hangs under its ancestors' turn as much as its own — and its own
+/// local basis when it is not. A knob set during a scene load runs before
+/// the node has a parent, and asking for a global transform there is an
+/// engine error rather than a transform; `_ready` re-lifts on the real
+/// placement a moment later regardless.
+fn placement_basis(node: &Gd<StaticBody3D>) -> Basis {
+    if node.is_inside_tree() {
+        node.get_global_transform().basis
+    } else {
+        node.get_transform().basis
+    }
 }
 
 /// Cut a wedge of `size` into the given mesh and hull — the one place the

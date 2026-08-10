@@ -13,6 +13,13 @@
 //! node's scale is discarded with the same stroke: `length` is the one size
 //! knob. The free shapes with no such contract live in [`super::props`].
 //!
+//! Both the snap and the centerline it feeds are read in WORLD space, and
+//! that is not a detail: a wall is authored inside whatever room prefab
+//! carries it, so the transform it draws under is its ancestors' as much as
+//! its own. Snapping the local basis under a turned room would leave the
+//! box drawn down one axis and the occluder derived down the other — sound
+//! passing through a wall the eye is shown, and stopping at air it is not.
+//!
 //! The world skin arrives from the level root ([`super::level`]) — the
 //! single injection point — not per-node; a bare node in the editor simply
 //! shows its plain box.
@@ -20,7 +27,7 @@
 use godot::classes::{BoxMesh, BoxShape3D, IStaticBody3D, Material, StaticBody3D};
 use godot::prelude::*;
 
-use super::solid::{Skin, WaveSolid, build_box};
+use super::solid::{LIMBS, SignFold, Skin, WaveSolid, build_box, clear_limbs};
 use crate::level_plan;
 
 /// One wall segment: an axis-snapped box, `length` meters of centerline
@@ -30,15 +37,14 @@ use crate::level_plan;
 #[derive(GodotClass)]
 #[class(tool, init, base=StaticBody3D)]
 pub struct WaveWall {
-    /// Centerline length in meters — the designer's one size knob.
+    /// Centerline length in meters — the designer's one size knob, and a
+    /// magnitude: a negative reading folds at the knob ([`SignFold`]).
     #[export]
     #[var(get = get_length, set = set_length)]
     #[init(val = 4.0)]
     length: f64,
-    /// The snapped quarter turn, derived on entering the tree: even runs
-    /// along world X, odd along world Z.
-    quadrant: u8,
     skin: Skin,
+    fold: SignFold,
     mesh: Option<Gd<BoxMesh>>,
     shape: Option<Gd<BoxShape3D>>,
     base: Base<StaticBody3D>,
@@ -48,6 +54,9 @@ pub struct WaveWall {
 impl IStaticBody3D for WaveWall {
     fn ready(&mut self) {
         self.snap_to_axis();
+        // a duplicated wall arrives carrying the original's limbs; this
+        // build owns the pair, so the ghosts go first
+        clear_limbs(self, &LIMBS);
         let size = level_plan::wall_box(self.length);
         let lift = Vector3::new(0.0, (level_plan::WALL_H * 0.5) as f32, 0.0);
         let built = build_box(size, lift, self.skin.material());
@@ -58,23 +67,30 @@ impl IStaticBody3D for WaveWall {
         self.skin.adopt(built.skin);
         self.mesh = Some(built.mesh);
         self.shape = Some(built.shape);
+        let name = self.base().get_name();
+        self.fold.say(Some(name));
     }
 }
 
 #[godot_api]
 impl WaveWall {
     /// The length knob reshapes the wall live — in the editor and at
-    /// runtime alike, mesh and collider together.
+    /// runtime alike, mesh and collider together, on the knob's magnitude.
+    /// A wall is three things derived from this one number (a drawn box, a
+    /// collider, an occluding centerline) and they answer a minus sign
+    /// three different ways, so the sign never gets past here.
     #[func]
     fn set_length(&mut self, length: f64) {
-        self.length = length;
-        let size = level_plan::wall_box(length);
+        self.length = self.fold.scalar("length", length);
+        let size = level_plan::wall_box(self.length);
         if let Some(mesh) = self.mesh.as_mut() {
             mesh.set_size(size);
         }
         if let Some(shape) = self.shape.as_mut() {
             shape.set_size(size);
         }
+        let named = self.base().is_inside_tree().then(|| self.base().get_name());
+        self.fold.say(named);
     }
 
     #[func]
@@ -91,30 +107,39 @@ impl WaveWall {
     }
 
     /// This wall's centerline as the classic (x1, z1, x2, z2) segment —
-    /// the level root derives every contract from these. Tree-only: the
-    /// segment reads the global position `_ready` snapped.
+    /// the level root derives every contract from these. Tree-only, and
+    /// read WHOLE from one global transform: the same placement that puts
+    /// the box in front of the eye decides which axis the run goes down,
+    /// so the occluder can never end up perpendicular to the wall it
+    /// describes.
     pub(crate) fn segment(&self) -> Vector4 {
-        let at = self.base().get_global_position();
-        level_plan::wall_segment(at, self.length, self.quadrant)
+        let placed = self.base().get_global_transform();
+        let quadrant = level_plan::basis_quadrant(placed.basis);
+        level_plan::wall_segment(placed.origin, self.length, quadrant)
     }
 
-    /// The axis law: whatever free-hand rotation (or scale) the node
-    /// carries collapses onto the nearest exact quarter turn. Loud when
-    /// it actually moved something — the designer should learn the law,
-    /// not fight ghosts.
+    /// The axis law, enforced in WORLD space: whatever free-hand rotation
+    /// (or scale) reaches this node — its own, or inherited from any
+    /// ancestor above it — collapses onto the nearest exact quarter turn.
+    /// World space is the whole point: the centerline is derived there, so
+    /// snapping the LOCAL basis would leave a wall in a turned room drawing
+    /// down one axis and occluding down the other. A quadrant basis has
+    /// unit columns, so writing it globally discards inherited scale with
+    /// the same stroke — `length` stays the one size knob however deep a
+    /// room prefab nests the wall. Loud when it actually moved something —
+    /// the designer should learn the law, not fight ghosts.
     fn snap_to_axis(&mut self) {
-        let mut transform = self.base().get_transform();
-        self.quadrant = level_plan::yaw_quadrant(f64::from(self.base().get_rotation().y));
-        let snapped = level_plan::quadrant_basis(self.quadrant);
-        if !basis_close(transform.basis, snapped) {
+        let mut placed = self.base().get_global_transform();
+        let snapped = level_plan::quadrant_basis(level_plan::basis_quadrant(placed.basis));
+        if !basis_close(placed.basis, snapped) {
             godot_warn!(
                 "WaveWall '{}': snapped to the nearest quarter turn — walls are \
                  axis-aligned boxes by law (use the length knob, never scale)",
                 self.base().get_name(),
             );
         }
-        transform.basis = snapped;
-        self.base_mut().set_transform(transform);
+        placed.basis = snapped;
+        self.base_mut().set_global_transform(placed);
     }
 }
 

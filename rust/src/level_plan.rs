@@ -61,10 +61,15 @@ pub const AXIS_EPS: f32 = 0.001;
 /// The box a wall segment occupies: the centerline padded by a wall
 /// half-thickness on every side, floor to ceiling — so two walls whose
 /// centerlines meet share a clean corner instead of leaving a gap.
+///
+/// A length is a MAGNITUDE: a minus sign is folded away here rather than
+/// carried into the engine, where a negative extent means two different
+/// things to the two halves of one wall — a mesh draws it, a collider
+/// refuses it and keeps whatever size it had.
 #[must_use]
 pub fn wall_box(length: f64) -> Vector3 {
     Vector3::new(
-        (length + WALL_T * 2.0) as f32,
+        (length.abs() + WALL_T * 2.0) as f32,
         WALL_H as f32,
         (WALL_T * 2.0) as f32,
     )
@@ -80,6 +85,20 @@ pub fn yaw_quadrant(yaw: f64) -> u8 {
         return 0;
     }
     (steps.round() as i64).rem_euclid(4) as u8
+}
+
+/// The nearest quarter turn to whatever yaw a BASIS carries, read off its
+/// X column — the axis a wall's length runs down, and the only column that
+/// decides the answer. A scale stretches that column without turning an
+/// axis-aligned one, so a wall inheriting a scaled room still reads the
+/// axis it actually draws along. Total on any basis, a degenerate (zero)
+/// column included: that reads as quadrant 0 rather than poisoning the
+/// arithmetic.
+#[must_use]
+pub fn basis_quadrant(basis: Basis) -> u8 {
+    // a yaw of θ puts the X column at (cos θ, 0, −sin θ)
+    let x = basis.col_a();
+    yaw_quadrant(f64::from(-x.z).atan2(f64::from(x.x)))
 }
 
 /// The exact basis of a quarter turn about Y: unit columns of 0 and ±1,
@@ -99,9 +118,15 @@ pub fn quadrant_basis(quadrant: u8) -> Basis {
 /// A wall node's centerline as the classic segment quad (x1, z1, x2, z2):
 /// the node's floor position swept half the length each way along its
 /// snapped axis. Even quadrants run along world X, odd along world Z.
+///
+/// The sweep takes the length's MAGNITUDE, so the ends always come back in
+/// order. A negative half-sweep would hand the level a centerline running
+/// backwards, and the systems that read it disagree about that: the
+/// occluder rect normalises the ends, the tap planner normalises them, and
+/// anything new that trusts the quad's declared order would not.
 #[must_use]
 pub fn wall_segment(center: Vector3, length: f64, quadrant: u8) -> Vector4 {
-    let half = (length * 0.5) as f32;
+    let half = (length.abs() * 0.5) as f32;
     if quadrant.is_multiple_of(2) {
         Vector4::new(center.x - half, center.z, center.x + half, center.z)
     } else {
@@ -215,6 +240,8 @@ pub fn demo_tap(walls: &[Vector4], spawn: Vector3, fan: Vector3) -> Option<TapPl
 
 #[cfg(test)]
 mod tests {
+    use godot::builtin::EulerOrder;
+
     use super::*;
 
     /// A RETIRED 20×20/10-wall map — not the shipped 28×28/19-wall scene in
@@ -244,6 +271,25 @@ mod tests {
         assert_eq!(wall_box(18.8), Vector3::new(19.1, 3.0, 0.3));
     }
 
+    /// A designer's minus sign is a typo, not a wall pointing backwards.
+    /// Left raw it is three different bugs at once: a padded extent that
+    /// `BoxShape3D` refuses (leaving the collider at its default cube while
+    /// the mesh draws the wall), a shorter box than the number asked for
+    /// (`-4 + 0.3`), and a centerline swept backwards. All three are
+    /// answered here, where the arithmetic lives, so no caller can reach
+    /// the engine with one of them.
+    #[test]
+    fn a_negative_length_is_the_same_wall_as_its_magnitude() {
+        assert_eq!(wall_box(-7.4), wall_box(7.4));
+        assert_eq!(wall_box(-0.1), wall_box(0.1));
+        let center = Vector3::new(4.0, 0.0, 9.0);
+        for quadrant in 0..4 {
+            let back = wall_segment(center, -4.0, quadrant);
+            assert_eq!(back, wall_segment(center, 4.0, quadrant));
+            assert!(back.x <= back.z && back.y <= back.w, "ends out of order");
+        }
+    }
+
     /// Free-hand yaws round to the nearest quarter turn, whole windings
     /// and negative angles folded into 0..4.
     #[test]
@@ -256,6 +302,42 @@ mod tests {
         assert_eq!(yaw_quadrant(-3.3), 2);
         assert_eq!(yaw_quadrant(7.0), 0);
         assert_eq!(yaw_quadrant(f64::NAN), 0);
+    }
+
+    /// A basis reports the quarter turn it is nearest to, whatever it
+    /// carries besides the turn: every quadrant basis reads back as
+    /// itself, a free-hand yaw rounds, a TILT does not disturb the reading
+    /// (only the X column's ground shadow decides), and — the case a room
+    /// prefab makes routine — an inherited SCALE stretches the columns
+    /// without turning them, so the answer is unchanged.
+    #[test]
+    fn a_basis_reports_the_quarter_turn_it_is_nearest_to() {
+        for k in 0..4u8 {
+            assert_eq!(
+                basis_quadrant(quadrant_basis(k)),
+                k,
+                "quadrant {k} round trip"
+            );
+        }
+        let yawed =
+            |yaw: f64| Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.0, yaw as f32, 0.0));
+        assert_eq!(basis_quadrant(yawed(0.2)), 0);
+        assert_eq!(basis_quadrant(yawed(1.2)), 1);
+        assert_eq!(basis_quadrant(yawed(-1.2)), 3);
+        // tilted and rolled off every axis, the way a dragged gizmo leaves it
+        let tilted = Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.2, 1.2, -0.1));
+        assert_eq!(basis_quadrant(tilted), 1);
+        // a 2x room: same turn, twice the columns
+        assert_eq!(
+            basis_quadrant(quadrant_basis(1).scaled(Vector3::splat(2.0))),
+            1
+        );
+        assert_eq!(
+            basis_quadrant(quadrant_basis(3).scaled(Vector3::new(0.5, 3.0, 2.0))),
+            3,
+        );
+        // and a collapsed basis answers rather than diverging
+        assert_eq!(basis_quadrant(quadrant_basis(2).scaled(Vector3::ZERO)), 0);
     }
 
     /// Every quadrant basis is exact: unit columns of 0 and ±1, so a

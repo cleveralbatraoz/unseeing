@@ -51,6 +51,61 @@ func _box_shape(body: Node) -> BoxShape3D:
 	return null
 
 
+## The world box a solid actually draws — what the eye is shown, against
+## which every derived contract is held.
+func _world_box(body: Node) -> AABB:
+	var skin := _skin(body)
+	return skin.global_transform * skin.get_aabb()
+
+
+## The centerline the DRAWN box implies: its long horizontal axis pulled in
+## by a wall half-thickness at each end, laid down the middle of its short
+## one. A wall's occluder and its box are the same object seen twice, so
+## this is what wall_segments() has to say.
+func _drawn_centerline(box: AABB) -> Vector4:
+	const HALF_T := 0.15
+	var lo := box.position
+	var hi := box.position + box.size
+	if box.size.x >= box.size.z:
+		var z := (lo.z + hi.z) * 0.5
+		return Vector4(lo.x + HALF_T, z, hi.x - HALF_T, z)
+	var x := (lo.x + hi.x) * 0.5
+	return Vector4(x, lo.z + HALF_T, x, hi.z - HALF_T)
+
+
+## A room prefab, instanced the way the editor instances one: a plain
+## Node3D carrying the whole room's placement, with the wall authored at
+## the room's own origin, knowing nothing about where the room went.
+func _room(yaw: float, scale: float, wall: WaveWall) -> Node3D:
+	var room := Node3D.new()
+	room.position = Vector3(10, 0, 4)
+	room.rotation.y = yaw
+	room.scale = Vector3.ONE * scale
+	room.add_child(wall)
+	return room
+
+
+## A level holding one authored subtree, injected and entered the way main
+## does it — so wall_segments() is the real derived contract, not a plan.
+func _level_holding(node: Node3D) -> WaveLevel:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(node)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	return level
+
+
+## How many limbs a node has built for itself — one mesh and one collider
+## is a whole shape; anything more is a ghost of an earlier build.
+func _limbs(body: Node) -> int:
+	var n := 0
+	for child: Node in body.get_children():
+		if child is MeshInstance3D or child is CollisionShape3D:
+			n += 1
+	return n
+
+
 ## The floor/ceiling slabs the level built for itself — its own direct
 ## StaticBody3D children that are not authored walls or props.
 func _slabs(level: WaveLevel) -> Array[StaticBody3D]:
@@ -84,6 +139,76 @@ func test_wall_snaps_freehand_rotation_to_exact_axis() -> void:
 	assert_float(wall.rotation.y).is_equal_approx(PI * 0.5, 0.0001)
 
 
+## THE PREFAB LAW: a wall must not care what it hangs under. A room dropped
+## into a level at a quarter turn carries its walls around with it, and the
+## centerline the sight shaders occlude by is derived in WORLD space — so it
+## has to be SNAPPED in world space too. Snap the local basis instead and a
+## wall draws down one axis while occluding down the other, with nothing in
+## the game able to notice: sound passes through walls the eye is shown, and
+## stops at air it is not.
+func test_wall_in_a_rotated_room_occludes_where_it_draws() -> void:
+	var wall := _wall(4.0, Vector3(2, 0, 0), false)
+	var level := _level_holding(_room(PI * 0.5, 1.0, wall))
+	var box := _world_box(wall)
+	assert_int(level.wall_segments().size()).is_equal(1)
+	(
+		assert_vector(level.wall_segments()[0])
+		. append_failure_message("segment %s vs drawn box %s" % [level.wall_segments()[0], box])
+		. is_equal_approx(_drawn_centerline(box), Vector4.ONE * 0.001)
+	)
+	# the room's quarter turn turned the wall's length axis onto world Z:
+	# a 4 m run at x = 10, from z = 0 to z = 4
+	assert_vector(level.wall_segments()[0]).is_equal_approx(
+		Vector4(10, 0, 10, 4), Vector4.ONE * 0.001
+	)
+
+
+## Inherited SCALE is the same law seen from the other side: a wall in a 2x
+## room would draw 8.6 m of box and occlude 4.26 m of centerline. Writing
+## the snapped basis in world space annihilates it with the same stroke,
+## because a quadrant basis has unit columns — length stays the one size
+## knob however deep the prefab is nested, and the wall still runs floor to
+## ceiling.
+func test_a_scaled_room_cannot_stretch_a_wall_past_its_occluder() -> void:
+	var wall := _wall(4.0, Vector3(2, 0, 0), false)
+	var level := _level_holding(_room(PI * 0.5, 2.0, wall))
+	var box := _world_box(wall)
+	(
+		assert_vector(level.wall_segments()[0])
+		. append_failure_message("segment %s vs drawn box %s" % [level.wall_segments()[0], box])
+		. is_equal_approx(_drawn_centerline(box), Vector4.ONE * 0.001)
+	)
+	assert_vector(box.size).is_equal_approx(Vector3(0.3, 3, 4.3), Vector3.ONE * 0.001)
+	assert_float(box.position.y).is_equal_approx(0.0, 0.001)
+
+
+## CTRL+D IS THE AUTHORING TOOL — game/README.md tells a designer to build
+## a level by duplicating walls — and Ctrl+D is `Node.duplicate()`, which
+## copies the mesh and collider the ORIGINAL built for itself. Building a
+## second pair on top leaves a ghost the size knob cannot reach, drawn at
+## the old size forever; worse, `duplicate()` SHARES resources, so the ghost
+## carries the original's own BoxMesh and would resize with it. A builder
+## must therefore be idempotent: whatever limbs it finds, it owns exactly
+## one pair when it is done.
+func test_a_duplicated_wall_does_not_double_its_geometry() -> void:
+	var wall: WaveWall = auto_free(_wall(4.0, Vector3.ZERO, false))
+	add_child(wall)
+	var copy: WaveWall = auto_free(wall.duplicate() as WaveWall)
+	add_child(copy)
+	(
+		assert_int(_limbs(copy))
+		. append_failure_message("the duplicate readied onto the limbs it was copied with")
+		. is_equal(2)
+	)
+	copy.length = 9.0
+	(
+		assert_vector(_box(copy).size)
+		. append_failure_message("a ghost mesh is drawn ahead of the one the knob reshapes")
+		. is_equal(Vector3(9.3, 3, 0.3))
+	)
+	assert_vector(_box(wall).size).is_equal(Vector3(4.3, 3, 0.3))
+
+
 ## The length knob reshapes a placed wall live — mesh and collider
 ## together, the way a designer drags a number in the Inspector.
 func test_wall_length_knob_reshapes_live() -> void:
@@ -92,6 +217,29 @@ func test_wall_length_knob_reshapes_live() -> void:
 	wall.length = 9.0
 	assert_vector(_box(wall).size).is_equal(Vector3(9.3, 3, 0.3))
 	assert_vector(_box_shape(wall).size).is_equal(Vector3(9.3, 3, 0.3))
+
+
+## A wall's one knob answers a minus sign the way every prop knob does.
+## Left raw it splits the wall in three: BoxMesh draws 3.7 m, BoxShape3D
+## refuses the negative extent and keeps its default 1 m cube, and
+## wall_segment sweeps the half-length BACKWARDS, handing the level a
+## centerline whose ends are in the wrong order. The sign folds at the knob
+## instead, so the drawn box, the collider and the occluder are one wall.
+func test_a_negative_wall_length_folds_instead_of_inverting_the_wall() -> void:
+	var wall := _wall(-4.0, Vector3(2, 0, 0), false)
+	var level := _level_holding(wall)
+	assert_float(wall.length).is_equal_approx(4.0, 0.001)
+	assert_vector(_box(wall).size).is_equal(Vector3(4.3, 3, 0.3))
+	(
+		assert_vector(_box_shape(wall).size)
+		. append_failure_message("the collider kept its own size while the mesh was reshaped")
+		. is_equal(Vector3(4.3, 3, 0.3))
+	)
+	(
+		assert_vector(level.wall_segments()[0])
+		. append_failure_message("centerline ends out of order: %s" % level.wall_segments()[0])
+		. is_equal_approx(Vector4(0, 0, 4, 0), Vector4.ONE * 0.001)
+	)
 
 
 ## A prop is a free box: its size knob is the full extent, its node the
@@ -229,6 +377,31 @@ func test_extents_knob_resizes_slabs() -> void:
 		assert_vector(_box_shape(slab).size).is_equal(Vector3(8, 0.1, 6))
 	assert_vector(slabs[0].position).is_equal(Vector3(4, -0.05, 3))
 	assert_vector(slabs[1].position).is_equal(Vector3(4, 3.05, 3))
+
+
+## The same law on the level root, whose limbs are whole slab BODIES. A
+## `_ready` runs again whenever a node re-enters the tree after
+## `request_ready()` — which is what the editor does to a reloaded scene —
+## and an unconditional build would leave a second floor and a second
+## ceiling inside the first, invisible and uncollidable.
+func test_a_second_ready_does_not_double_the_slabs() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3.ZERO, 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_int(_slabs(level).size()).is_equal(2)
+	remove_child(level)
+	level.request_ready()
+	add_child(level)
+	(
+		assert_int(_slabs(level).size())
+		. append_failure_message("the second _ready built a second floor and ceiling")
+		. is_equal(2)
+	)
+	# and the extents knob still drives the slabs that are actually there
+	level.extents = Vector2(8, 6)
+	for slab: StaticBody3D in _slabs(level):
+		assert_vector(_box(slab).size).is_equal(Vector3(8, 0.1, 6))
 
 
 ## Injection is ordered, and the order is the contract: by the time the

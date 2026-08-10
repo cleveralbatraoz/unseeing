@@ -26,6 +26,7 @@
 use godot::classes::{
     BoxMesh, BoxShape3D, CollisionShape3D, Material, Mesh, MeshInstance3D, Shape3D,
 };
+use godot::obj::WithBaseField;
 use godot::prelude::*;
 
 use crate::oid_palette;
@@ -34,6 +35,64 @@ use crate::oid_palette;
 /// `data_core`'s `u_oid`, the G channel the outline pass diffs to find
 /// creases. Two touching solids sharing an id have NO line between them.
 pub(crate) const OID_PARAM: &str = "u_oid";
+
+/// The name the engine writes on every mesh limb it builds, and on every
+/// collider beside one. A designer never types these — they exist so that a
+/// builder entering the tree can recognise the limbs an EARLIER build left
+/// behind and take them over.
+///
+/// It has to be the name. `Node.duplicate()` — Ctrl+D, the way
+/// `game/README.md` tells a designer to author a level — copies the children
+/// a node built for itself, and the copy reaches `_ready` as a fresh Rust
+/// object whose own handles are all `None`: the ghosts exist only in the
+/// scene tree. A name survives the copy exactly, so it is the one handle
+/// left on them.
+pub(crate) const SKIN_NAME: &str = "WaveSkin";
+
+/// The collider's half of [`SKIN_NAME`].
+pub(crate) const COLLIDER_NAME: &str = "WaveCollider";
+
+/// The pair [`build_body`] makes — what a solid's `_ready` hands
+/// [`clear_limbs`] on the way in.
+pub(crate) const LIMBS: [&str; 2] = [SKIN_NAME, COLLIDER_NAME];
+
+/// Free whatever limbs an earlier build left under `node`, so that a builder
+/// may run twice — a duplicated node, a re-entered scene — and own exactly
+/// one set when it is done. Total: a freshly placed node carries none of
+/// these names and nothing happens.
+///
+/// The ghosts are FREED rather than adopted, and that is the load-bearing
+/// half. `duplicate()` copies a mesh by REFERENCE, so an adopted ghost would
+/// hold the original's own `BoxMesh` and resize with it every time the
+/// original's knob moved; a rebuilt limb holds a mesh of its own. They are
+/// freed immediately rather than queued, too: a limb still standing when the
+/// new one is added would be a second shape for a frame, and a test bench
+/// counts a queued node as an orphan.
+///
+/// The walk runs under a [`WithBaseField::base_mut`] guard for its whole
+/// length, and that is not tidiness: `remove_child` notifies the PARENT, and
+/// a shape that listens for its own transform ([`super::props::WaveColumn`],
+/// [`super::props::WaveWedge`]) is re-entered by that notification while its
+/// `_ready` still holds the borrow. Only the guard makes the re-entry legal
+/// — without it the engine aborts the process on a double borrow.
+pub(crate) fn clear_limbs<C>(node: &mut C, names: &[&str])
+where
+    C: WithBaseField,
+    C::Base: Inherits<Node>,
+{
+    let base = node.base_mut();
+    let mut owner: Gd<Node> = Gd::clone(&base).upcast();
+    let stale: Vec<Gd<Node>> = owner
+        .get_children()
+        .iter_shared()
+        .filter(|child| names.iter().any(|name| child.get_name() == *name))
+        .collect();
+    for limb in stale {
+        owner.remove_child(&limb);
+        limb.free();
+    }
+    drop(base);
+}
 
 /// What the level needs of any solid, whatever shape it is.
 pub trait WaveSolid {
@@ -113,6 +172,72 @@ impl Skin {
     }
 }
 
+/// A minus sign typed into a size knob, folded away and reported ONCE,
+/// naming the node — the other half of every solid that is identical.
+///
+/// The fold itself is not a nicety. A size is a magnitude to a mesh and a
+/// magnitude to a collider, but they disagree about how to say so:
+/// `BoxMesh`/`CylinderMesh` take a negative extent and draw its mirror,
+/// while `BoxShape3D`/`CylinderShape3D` REFUSE it and silently keep
+/// whatever they had — the default 1 m cube on a freshly built node. The
+/// drawn shape and the struck shape stop being the same object, and the
+/// only engine diagnostic ("BoxShape3D size cannot be negative") names no
+/// node for a designer to click.
+///
+/// The warning is REMEMBERED rather than printed on the spot, because the
+/// engine sets a scene's properties before the node is added to its parent
+/// — at that moment it is still `@StaticBody3D@7`, and a warning naming
+/// that helps nobody. A fold that lands off the tree waits for `_ready`; a
+/// fold that lands on a knob dragged in the Inspector, where the name is
+/// already final, is said immediately.
+#[derive(Default)]
+pub(crate) struct SignFold {
+    pending: Option<String>,
+}
+
+impl SignFold {
+    /// The magnitude of a vector knob, remembering the raw reading if a
+    /// sign had to be folded out of it.
+    pub(crate) fn vector(&mut self, knob: &str, raw: Vector3) -> Vector3 {
+        if raw.x < 0.0 || raw.y < 0.0 || raw.z < 0.0 {
+            self.remember(format!("{knob} {raw}"));
+        }
+        raw.abs()
+    }
+
+    /// The magnitude of a scalar knob, on the same terms.
+    pub(crate) fn scalar(&mut self, knob: &str, raw: f64) -> f64 {
+        if raw < 0.0 {
+            self.remember(format!("{knob} {raw}"));
+        }
+        raw.abs()
+    }
+
+    /// Say the pending fold, if there is one and the node can be named.
+    /// A nameless node keeps its fold pending for `_ready` to flush.
+    pub(crate) fn say(&mut self, name: Option<StringName>) {
+        let Some(name) = name else { return };
+        let Some(what) = self.pending.take() else {
+            return;
+        };
+        godot_warn!(
+            "'{name}': folded a negative knob to its magnitude ({what}). A collider \
+             refuses a negative extent where a mesh accepts one, so the shape \
+             drawn and the shape struck would stop being the same object."
+        );
+    }
+
+    /// Queue a reading to blame, joining it to whatever is already waiting:
+    /// a scene load sets every knob before the node is in the tree, so a
+    /// column with two negative knobs must not lose the first one.
+    fn remember(&mut self, what: String) {
+        self.pending = Some(match self.pending.take() {
+            Some(already) => format!("{already}, {what}"),
+            None => what,
+        });
+    }
+}
+
 /// One built body: the mesh limb for the data pass and the collider for
 /// cane rays, echo rays and the walking body.
 pub(crate) struct BuiltBody {
@@ -132,12 +257,14 @@ pub(crate) fn build_body(
     mat: Option<&Gd<Material>>,
 ) -> BuiltBody {
     let mut skin = MeshInstance3D::new_alloc();
+    skin.set_name(SKIN_NAME);
     skin.set_mesh(mesh);
     skin.set_position(lift);
     if let Some(mat) = mat {
         skin.set_material_override(mat);
     }
     let mut collider = CollisionShape3D::new_alloc();
+    collider.set_name(COLLIDER_NAME);
     collider.set_shape(shape);
     collider.set_position(lift);
     BuiltBody { skin, collider }
@@ -175,5 +302,59 @@ pub(crate) fn build_box(size: Vector3, lift: Vector3, mat: Option<&Gd<Material>>
         mesh,
         collider: built.collider,
         shape,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fold answers a magnitude on every sign, and remembers only when
+    /// there was actually something to fold — a positive knob must never
+    /// queue a warning for the next negative one to inherit.
+    #[test]
+    fn a_sign_folds_to_a_magnitude_and_is_remembered() {
+        let mut fold = SignFold::default();
+        assert_eq!(
+            fold.vector("size", Vector3::new(-0.8, 0.4, -0.6)),
+            Vector3::new(0.8, 0.4, 0.6)
+        );
+        assert!(fold.pending.is_some());
+        fold.pending = None;
+
+        assert_eq!(
+            fold.vector("size", Vector3::new(0.8, 0.4, 0.6)),
+            Vector3::new(0.8, 0.4, 0.6)
+        );
+        assert!(fold.pending.is_none(), "a clean knob queued a warning");
+
+        assert_eq!(fold.scalar("radius", -0.3), 0.3);
+        assert!(fold.pending.is_some());
+        fold.pending = None;
+        assert_eq!(fold.scalar("length", 4.0), 4.0);
+        assert!(fold.pending.is_none(), "a clean knob queued a warning");
+    }
+
+    /// A scene load sets every knob before the node is in the tree and can
+    /// be named, so the folds pile up before anything is said. All of them
+    /// must reach the one warning — a column whose radius AND height were
+    /// typed negative must not hear about the height alone.
+    #[test]
+    fn folds_waiting_for_a_name_all_reach_the_warning() {
+        let mut fold = SignFold::default();
+        fold.scalar("radius", -0.3);
+        fold.scalar("height", -0.9);
+        assert_eq!(fold.pending.as_deref(), Some("radius -0.3, height -0.9"));
+    }
+
+    /// Zero is not negative: a designer flattening a knob to nothing gets a
+    /// degenerate shape, which is their business, and no warning about a
+    /// sign that was never there.
+    #[test]
+    fn zero_is_not_a_folded_sign() {
+        let mut fold = SignFold::default();
+        assert_eq!(fold.vector("size", Vector3::ZERO), Vector3::ZERO);
+        assert_eq!(fold.scalar("height", 0.0), 0.0);
+        assert!(fold.pending.is_none());
     }
 }

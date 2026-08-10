@@ -35,7 +35,7 @@ use godot::obj::DynGd;
 use godot::prelude::*;
 
 use super::cat::WaveCat;
-use super::solid::{OID_PARAM, WaveSolid, build_box};
+use super::solid::{OID_PARAM, WaveSolid, build_box, clear_limbs};
 use super::source::SoundSource;
 use super::wall::WaveWall;
 use crate::level_plan;
@@ -61,6 +61,13 @@ const OID_CEIL: f64 = 0.9;
 /// assigned by colouring the touch graph, so a hundred walls reuse these
 /// five freely and only differ where they actually meet.
 const WORLD_OIDS: [f64; 5] = [0.25, 0.34, 0.43, 0.52, 0.61];
+
+/// The names the level writes on the two slab bodies it builds for itself —
+/// its own limbs, recognised on the way back in exactly as a solid
+/// recognises its mesh and collider (see [`clear_limbs`]). Without them a
+/// second `_ready` — a scene re-entered after `request_ready()` — would
+/// stack a second floor and ceiling inside the first.
+const SLAB_NAMES: [&str; 2] = ["WaveFloor", "WaveCeiling"];
 
 /// One floor or ceiling slab, its parts kept for live reshaping when the
 /// designer drags the extents knob.
@@ -452,7 +459,14 @@ impl WaveLevel {
 
     /// Floor and ceiling: thin slabs spanning the extents; only their
     /// inward faces are ever seen.
+    ///
+    /// Idempotent, because `_ready` is not once-only: a scene re-entering
+    /// the tree after `request_ready()` runs it again, and a duplicated
+    /// level arrives carrying copies of the slabs the original built. This
+    /// build owns the pair — whatever it finds under those names goes.
     fn build_slabs(&mut self) {
+        self.slabs.clear();
+        clear_limbs(self, &SLAB_NAMES);
         for lid in [false, true] {
             let built = build_box(
                 Vector3::new(self.extents.x, level_plan::SLAB_T as f32, self.extents.y),
@@ -460,6 +474,7 @@ impl WaveLevel {
                 self.data_mat.as_ref(),
             );
             let mut body = StaticBody3D::new_alloc();
+            body.set_name(SLAB_NAMES[usize::from(lid)]);
             body.set_position(slab_center(self.extents, lid));
             body.add_child(&built.skin);
             body.add_child(&built.collider);

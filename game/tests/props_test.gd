@@ -38,6 +38,13 @@ func _collider(body: Node) -> CollisionShape3D:
 	return null
 
 
+## The world box a shape actually draws — what the eye is shown, and the
+## only place the origin law can be read once a node is turned.
+func _world_box(body: Node) -> AABB:
+	var skin := _skin(body)
+	return skin.global_transform * skin.get_aabb()
+
+
 ## A column is a real cylinder to the eye AND to the rays: mesh and collider
 ## carry the same radius and height, and both follow the knobs live.
 func test_column_builds_a_cylinder_the_rays_can_strike() -> void:
@@ -82,6 +89,94 @@ func test_column_stands_on_its_node() -> void:
 	assert_vector(_collider(column).position).is_equal_approx(
 		Vector3(0, 1.5, 0), Vector3.ONE * LIFT_EPS
 	)
+
+
+## THE ORIGIN LAW, generalised — because "a column stands on its node" is a
+## law about the FLOOR, and the floor is a world thing. The lift that
+## implements it is a local offset of half the height, so the moment the
+## node is turned off vertical the lift points sideways and the barrel sinks:
+## laid on its side it went a full radius through the floor. Standing means
+## the shape's LOWEST point in world space rests at the node's own y —
+## which for a tipped cylinder is the RADIUS, not half the height.
+func test_a_tipped_column_still_stands_on_its_node() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.3
+	column.height = 0.9
+	column.rotation.z = PI * 0.5
+	add_child(column)
+	var box := _world_box(column)
+	(
+		assert_float(box.position.y)
+		. append_failure_message("the barrel sank to y = %.3f" % box.position.y)
+		. is_equal_approx(0.0, 0.001)
+	)
+	# lying down it is two radii tall and a height long, and it rests on
+	# the floor rather than hovering a half-height over it
+	assert_float(box.size.y).is_equal_approx(0.6, 0.001)
+	assert_float(box.size.x).is_equal_approx(0.9, 0.001)
+
+
+## The same law on the wedge, whose underside is a flat face rather than a
+## curve: tipped a quarter turn it stands on what used to be its tall end,
+## and its lowest point is still the node's own y.
+func test_a_tipped_wedge_still_stands_on_its_node() -> void:
+	var wedge: WaveWedge = auto_free(WaveWedge.new())
+	wedge.size = Vector3(1.2, 0.6, 0.8)
+	wedge.rotation.z = PI * 0.5
+	add_child(wedge)
+	var box := _world_box(wedge)
+	(
+		assert_float(box.position.y)
+		. append_failure_message("the ramp sank to y = %.3f" % box.position.y)
+		. is_equal_approx(0.0, 0.001)
+	)
+	assert_float(box.size.y).is_equal_approx(1.2, 0.001)
+
+
+## A shape hangs under whatever transform reaches it, its own and its
+## ancestors' alike, so the law has to be read in the space the floor is in.
+## A barrel dropped into a prefab that has been tipped over would otherwise
+## stand on the node only while the prefab was upright.
+func test_an_inherited_tip_sinks_nothing_either() -> void:
+	var room: Node3D = auto_free(Node3D.new())
+	room.position = Vector3(3, 0, 5)
+	room.rotation.z = PI * 0.5
+	var column := WaveColumn.new()
+	column.radius = 0.3
+	column.height = 0.9
+	room.add_child(column)
+	add_child(room)
+	var box := _world_box(column)
+	(
+		assert_float(box.position.y)
+		. append_failure_message("the barrel sank to y = %.3f" % box.position.y)
+		. is_equal_approx(0.0, 0.001)
+	)
+
+
+## Turning a node after it is built has to re-lift it, or the law holds
+## only for shapes a designer never touches again: rotating a barrel in the
+## viewport fires no knob setter, and the editor would show it sinking with
+## no way to get it back except reloading the scene.
+func test_turning_a_placed_column_re_lifts_it() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.3
+	column.height = 0.9
+	add_child(column)
+	assert_float(_world_box(column).position.y).is_equal_approx(0.0, 0.001)
+	column.rotation.z = PI * 0.5
+	# the engine accumulates transform changes and notifies once, so ask for
+	# the update the frame boundary would have brought
+	column.force_update_transform()
+	(
+		assert_float(_world_box(column).position.y)
+		. append_failure_message("a turned barrel kept the lift it was built with")
+		. is_equal_approx(0.0, 0.001)
+	)
+	column.rotation.z = 0.0
+	column.force_update_transform()
+	assert_float(_world_box(column).position.y).is_equal_approx(0.0, 0.001)
+	assert_float(_world_box(column).size.y).is_equal_approx(0.9, 0.001)
 
 
 ## A wedge is GENERATED — the engine ships neither a triangular prism mesh
@@ -131,6 +226,154 @@ func test_wedge_stands_on_its_node() -> void:
 	assert_vector(_skin(wedge).position).is_equal_approx(Vector3(0, 0.7, 0), Vector3.ONE * LIFT_EPS)
 
 
+## A minus sign in a size knob must never split what is DRAWN from what is
+## STRUCK. BoxMesh takes a negative extent happily; BoxShape3D REFUSES it
+## and silently keeps whatever it had — its default 1 x 1 x 1 — so the box
+## a designer sees and the box the waves and the cane hit are different
+## objects. The only engine diagnostic ("BoxShape3D size cannot be
+## negative") names no node, and the bad value survives a save. So the sign
+## folds away at the knob, and the Inspector reads back what was built.
+func test_a_negative_size_cannot_split_the_drawn_box_from_its_collider() -> void:
+	var prop: WaveProp = auto_free(WaveProp.new())
+	prop.size = Vector3(-0.8, 0.4, -0.6)
+	add_child(prop)
+	assert_vector(prop.size).is_equal(Vector3(0.8, 0.4, 0.6))
+	assert_vector((_skin(prop).mesh as BoxMesh).size).is_equal(Vector3(0.8, 0.4, 0.6))
+	(
+		assert_vector((_shape(prop) as BoxShape3D).size)
+		. append_failure_message("the collider kept its own size while the mesh was reshaped")
+		. is_equal(Vector3(0.8, 0.4, 0.6))
+	)
+	prop.size = Vector3(1.0, -2.0, 1.0)  # and live, on a dragged knob
+	assert_vector((_skin(prop).mesh as BoxMesh).size).is_equal(Vector3(1, 2, 1))
+	assert_vector((_shape(prop) as BoxShape3D).size).is_equal(Vector3(1, 2, 1))
+
+
+## The same law on the round and the sloped shape: one vocabulary, one
+## answer to a minus sign. CylinderShape3D refuses a negative radius or
+## height exactly as the box shape does, and a wedge's generated hull would
+## simply mirror itself — so every knob folds the sign away and reads back
+## the magnitude it built.
+func test_a_negative_knob_folds_on_every_shape() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = -0.3
+	column.height = -0.9
+	add_child(column)
+	assert_float(column.radius).is_equal_approx(0.3, LIFT_EPS)
+	assert_float(column.height).is_equal_approx(0.9, LIFT_EPS)
+	assert_float((_shape(column) as CylinderShape3D).radius).is_equal_approx(0.3, LIFT_EPS)
+	assert_float((_shape(column) as CylinderShape3D).height).is_equal_approx(0.9, LIFT_EPS)
+	var wedge: WaveWedge = auto_free(WaveWedge.new())
+	wedge.size = Vector3(-1.2, 0.6, -0.8)
+	add_child(wedge)
+	assert_vector(wedge.size).is_equal(Vector3(1.2, 0.6, 0.8))
+
+
+## THE S KEY, answered the same way twice. A wall discards its node scale
+## and says so; the three prop shapes ABSORBED it silently — a prop of
+## 0.5 under scale (4, 1, 2) drew, collided and coloured as 2.0 x 0.5 x 1.0,
+## which is self-consistent (the world was right) while the Inspector went
+## on reporting 0.5. Two halves of one vocabulary behaving oppositely on the
+## same key is the trap; a knob that lies is worse than either. So the scale
+## folds INTO the knob and the node comes back at 1: the geometry does not
+## move, and the number a designer reads is the number that was built.
+func test_a_scaled_prop_folds_the_scale_into_its_size_knob() -> void:
+	var prop: WaveProp = auto_free(WaveProp.new())
+	prop.size = Vector3(0.5, 0.5, 0.5)
+	prop.scale = Vector3(4, 1, 2)
+	add_child(prop)
+	assert_vector(prop.size).is_equal_approx(Vector3(2, 0.5, 1), Vector3.ONE * LIFT_EPS)
+	assert_vector(prop.scale).is_equal_approx(Vector3.ONE, Vector3.ONE * LIFT_EPS)
+	assert_vector((_skin(prop).mesh as BoxMesh).size).is_equal_approx(
+		Vector3(2, 0.5, 1), Vector3.ONE * LIFT_EPS
+	)
+	assert_vector((_shape(prop) as BoxShape3D).size).is_equal_approx(
+		Vector3(2, 0.5, 1), Vector3.ONE * LIFT_EPS
+	)
+	# the fold is a change of vocabulary, not of geometry: the world box is
+	# exactly the one the scaled node drew
+	assert_vector(_world_box(prop).size).is_equal_approx(Vector3(2, 0.5, 1), Vector3.ONE * 0.001)
+
+
+## A wedge's size is three components against a three-component scale, so
+## the fold is exact there too — every vertex it generates lies on its own
+## local axes.
+func test_a_scaled_wedge_folds_the_scale_into_its_size_knob() -> void:
+	var wedge: WaveWedge = auto_free(WaveWedge.new())
+	wedge.size = Vector3(1.2, 0.5, 0.8)
+	wedge.scale = Vector3(2, 1, 3)
+	add_child(wedge)
+	assert_vector(wedge.size).is_equal_approx(Vector3(2.4, 0.5, 2.4), Vector3.ONE * LIFT_EPS)
+	assert_vector(wedge.scale).is_equal_approx(Vector3.ONE, Vector3.ONE * LIFT_EPS)
+	assert_vector(_world_box(wedge).size).is_equal_approx(
+		Vector3(2.4, 0.5, 2.4), Vector3.ONE * 0.001
+	)
+	assert_float(_world_box(wedge).position.y).is_equal_approx(0.0, 0.001)
+
+
+## A column carries ONE radius and ONE height against a three-component
+## scale. Uniform, that is exactly representable and the fold loses nothing.
+func test_a_uniformly_scaled_column_folds_exactly() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.3
+	column.height = 0.9
+	column.scale = Vector3(2, 2, 2)
+	add_child(column)
+	assert_float(column.radius).is_equal_approx(0.6, LIFT_EPS)
+	assert_float(column.height).is_equal_approx(1.8, LIFT_EPS)
+	assert_vector(column.scale).is_equal_approx(Vector3.ONE, Vector3.ONE * LIFT_EPS)
+	assert_float(_world_box(column).size.y).is_equal_approx(1.8, 0.001)
+	assert_float(_world_box(column).position.y).is_equal_approx(0.0, 0.001)
+
+
+## Pulled by different amounts across X and Z, a cylinder is an ELLIPTIC
+## cylinder — a shape neither CylinderMesh nor CylinderShape3D can be, and
+## one this vocabulary deliberately does not own. The fold takes the LARGER
+## of the two, so the barrel a designer ends up with CONTAINS the one they
+## drew: erring inwards would leave drawn geometry outside the collider,
+## and refusing the scale outright would throw away the axial stretch they
+## can perfectly well have.
+func test_a_non_uniformly_scaled_column_grows_to_contain_what_was_drawn() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.3
+	column.height = 0.9
+	column.scale = Vector3(2, 3, 1)
+	add_child(column)
+	assert_float(column.height).is_equal_approx(2.7, LIFT_EPS)
+	assert_float(column.radius).is_equal_approx(0.6, LIFT_EPS)
+	assert_vector(column.scale).is_equal_approx(Vector3.ONE, Vector3.ONE * LIFT_EPS)
+	assert_float(_world_box(column).size.y).is_equal_approx(2.7, 0.001)
+
+
+## A mirrored axis is not a size, so only its magnitude survives the fold —
+## and the shape must not silently keep drawing at the scaled extent it had.
+func test_a_mirrored_scale_folds_to_its_magnitude() -> void:
+	var prop: WaveProp = auto_free(WaveProp.new())
+	prop.size = Vector3(0.5, 0.5, 0.5)
+	prop.scale = Vector3(-2, 1, 1)
+	add_child(prop)
+	assert_vector(prop.size).is_equal_approx(Vector3(1, 0.5, 0.5), Vector3.ONE * LIFT_EPS)
+	assert_vector(_world_box(prop).size).is_equal_approx(Vector3(1, 0.5, 0.5), Vector3.ONE * 0.001)
+
+
+## An unscaled node must come through untouched — the shipped map is 129
+## nodes of scale exactly 1, and a fold that fired on float dust would move
+## every one of them.
+func test_an_unscaled_shape_is_left_alone() -> void:
+	var prop: WaveProp = auto_free(WaveProp.new())
+	prop.size = Vector3(0.9, 0.05, 0.6)
+	prop.rotation.y = 0.3
+	add_child(prop)
+	assert_vector(prop.size).is_equal(Vector3(0.9, 0.05, 0.6))
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.28
+	column.height = 0.9
+	column.rotation.y = 2.1
+	add_child(column)
+	assert_float(column.radius).is_equal(0.28)
+	assert_float(column.height).is_equal(0.9)
+
+
 ## All three shapes reach the level through ONE door: the level hands out
 ## the world skin and the flat object id without knowing which shape it has
 ## — that is the whole point of the solid abstraction. A shape that answered
@@ -156,6 +399,38 @@ func test_every_shape_answers_the_same_solid_door() -> void:
 		assert_object(_skin(solid).material_override).is_same(world)
 		var oid: float = solid.call("oid")
 		assert_bool(oid >= 0.0).append_failure_message("%s took no id" % solid.name).is_true()
+
+
+## How many limbs a shape has built for itself — one mesh and one collider
+## is a whole shape; anything more is a ghost of an earlier build.
+func _limbs_of(body: Node) -> int:
+	var n := 0
+	for child: Node in body.get_children():
+		if child is MeshInstance3D or child is CollisionShape3D:
+			n += 1
+	return n
+
+
+## Furniture is authored by duplicating furniture (game/README.md), and
+## Ctrl+D is `Node.duplicate()`: the copy arrives already carrying the mesh
+## and collider the original built for itself. A builder that adds a pair
+## unconditionally therefore gives the copy TWO — the size knob reaches only
+## the newest, so the ghost is drawn at the size it was copied at, forever,
+## and its collider is struck there too. All three shapes answer alike,
+## because a designer duplicates all three alike.
+func test_a_duplicated_shape_does_not_double_its_geometry() -> void:
+	for shape: Node3D in [WaveProp.new(), WaveColumn.new(), WaveWedge.new()]:
+		var solid: Node3D = auto_free(shape)
+		add_child(solid)
+		var copy: Node3D = auto_free(solid.duplicate() as Node3D)
+		add_child(copy)
+		(
+			assert_int(_limbs_of(copy))
+			. append_failure_message(
+				"%s readied onto the limbs it was copied with" % copy.get_class()
+			)
+			. is_equal(2)
+		)
 
 
 ## A column and a wedge ride their own limbs up onto their lift — and ONLY
