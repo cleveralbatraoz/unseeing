@@ -19,22 +19,21 @@
 //! dangerous answer of all. The eye-free explainers keep working.
 
 use godot::classes::{
-    Camera3D, INode, Material, MeshInstance3D, PhysicsDirectSpaceState3D,
-    PhysicsRayQueryParameters3D, ShaderMaterial,
+    Camera3D, INode, Material, MeshInstance3D, PhysicsDirectSpaceState3D, ShaderMaterial,
 };
 use godot::prelude::*;
 
 use super::level::WaveLevel;
 use super::source;
-use crate::clustering::RayHit;
-use crate::ffi::WaveCore;
+use crate::ffi::{WaveCore, cast_reflection_fan};
 use crate::level_plan;
 use crate::observe::evict::{EvictionPlan, EvictionRule, explain_eviction};
 use crate::observe::oids::{OidExplanation, explain_oids_checked};
 use crate::observe::pool::{SlotObservation, SlotState};
 use crate::observe::ray::{self, RayExplanation};
 use crate::observe::reflect::{
-    Answer, ClusteredPoint, Collected, ExplanationLedger, ReflectionExplanation, ReflectionRequest,
+    self, Answer, ClusteredPoint, Collected, ExplanationLedger, ReflectionExplanation,
+    ReflectionRequest,
 };
 use crate::observe::{FrameObservation, SourceObservation, frame};
 use crate::ray_fan;
@@ -219,6 +218,7 @@ impl WaveObserver {
     /// game's. `normal` is the birth surface's, or `ZERO` for a sound born
     /// in the air; `now` is the clock the appointments are measured from,
     /// which is why it is asked for rather than invented.
+    ///
     #[func]
     fn request_explain_reflection(
         &mut self,
@@ -229,14 +229,15 @@ impl WaveObserver {
         max_echoes: i64,
         now: f64,
     ) -> i64 {
-        self.explanations.request(ReflectionRequest {
+        let request = ReflectionRequest {
             at,
             normal,
             max_r,
             speed,
             max_echoes,
             now,
-        })
+        };
+        self.explanations.request(request)
     }
 
     /// Collect a booked explanation: `{"pending": true}` until the physics
@@ -304,49 +305,18 @@ impl WaveObserver {
 
 /// Cast one reflection fan and explain it.
 ///
-/// The casting mirrors `WaveCore::emit_reflecting` exactly — same lifted
-/// origin, same clamped reach, same default query, same hemisphere cull —
-/// because an explanation that sampled the world differently from the
-/// engine would answer a question nobody asked. What it does NOT mirror is
-/// the tail: the hits go into a local vector and then into the pure
-/// explainer, and no echo is ever scheduled.
+/// The cast is not mirrored from the engine's — it IS the engine's. Both
+/// this and `WaveCore::emit_reflecting` call [`cast_reflection_fan`], so a
+/// collision mask, an exclusion, or a changed query added for the game
+/// cannot leave the explanation sampling a world the engine stopped
+/// sampling. What differs is only the tail: these hits go into a local
+/// vector and then into the pure explainer, and no echo is ever scheduled.
 fn cast_and_explain(
     request: &ReflectionRequest,
-    mut space: Gd<PhysicsDirectSpaceState3D>,
+    space: Gd<PhysicsDirectSpaceState3D>,
 ) -> ReflectionExplanation {
-    let origin = request.ray_origin();
-    // f64 reach, narrowed once where the ray vector is scaled — exactly
-    // where the engine's own emit path narrows it
-    let reach = request.reach() as f32;
-    let mut rays_cast = 0usize;
-    let mut hits: Vec<RayHit> = Vec::with_capacity(ray_fan::RAYS);
-    for dir in request.directions() {
-        let Some(query) = PhysicsRayQueryParameters3D::create(origin, origin + dir * reach) else {
-            // the physics server refused to build the query: this ray was
-            // never cast, so it is not counted as one — and a debugging
-            // tool that quietly lost a ray would be worse than useless
-            godot_error!("WaveObserver: the physics server refused a reflection query");
-            continue;
-        };
-        rays_cast += 1;
-        let struck = space.intersect_ray(&query);
-        let (Some(position), Some(normal)) = (
-            struck
-                .get("position")
-                .and_then(|v| v.try_to::<Vector3>().ok()),
-            struck
-                .get("normal")
-                .and_then(|v| v.try_to::<Vector3>().ok()),
-        ) else {
-            continue; // empty dictionary: the ray struck nothing, and that is REPORTED
-        };
-        hits.push(RayHit {
-            position,
-            normal,
-            dist: (position - origin).length(),
-        });
-    }
-    crate::observe::reflect::explain_clustering(request, rays_cast, &hits)
+    let (rays_cast, hits) = cast_reflection_fan(request, space);
+    reflect::explain_clustering(request, rays_cast, &hits)
 }
 
 /// The one refusal shape. A dictionary carrying only this key is how an

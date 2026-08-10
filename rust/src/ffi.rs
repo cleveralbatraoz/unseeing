@@ -10,6 +10,7 @@ use godot::prelude::*;
 
 use crate::clustering::{self, RayHit};
 use crate::echo_queue::{ECHO_KIND, ECHO_MAX_R, ECHO_SPEED, EchoQueue};
+use crate::observe::reflect::ReflectionRequest;
 use crate::pulse_pool::{PulsePool, REFUSAL_MESSAGE};
 use crate::ray_fan;
 
@@ -95,36 +96,22 @@ impl WaveCore {
         // The original emitted the primary first and sampled reflections
         // regardless of its outcome; the order is kept, refusal included.
         self.emit_or_refuse(kind, at, max_r, speed, gain, now, Vector3::ZERO, -2.0);
-        let Some(mut space) = space else {
+        let Some(space) = space else {
             return;
         };
-        let origin = at + origin_normal * clustering::RAY_ORIGIN_LIFT;
-        // f64 min like the GDScript minf; narrowed once, where the ray
-        // vector is scaled — exactly where the original narrowed.
-        let reach = clustering::ray_length(max_r) as f32;
-        let mut hits: Vec<RayHit> = Vec::with_capacity(ray_fan::RAYS);
-        for dir in ray_fan::fan_directions(origin_normal) {
-            let Some(query) = PhysicsRayQueryParameters3D::create(origin, origin + dir * reach)
-            else {
-                continue; // the engine refused to build a query: skip the ray
-            };
-            let struck = space.intersect_ray(&query);
-            let (Some(position), Some(normal)) = (
-                struck
-                    .get("position")
-                    .and_then(|v| v.try_to::<Vector3>().ok()),
-                struck
-                    .get("normal")
-                    .and_then(|v| v.try_to::<Vector3>().ok()),
-            ) else {
-                continue; // empty dictionary: the ray struck nothing
-            };
-            hits.push(RayHit {
-                position,
-                normal,
-                dist: (position - origin).length(),
-            });
-        }
+        // The same struct the debug explainer describes a fan with, and the
+        // same cast: one implementation, so the two can never sample the
+        // world differently. The ray count it also returns is the
+        // explainer's business, not the emitter's.
+        let request = ReflectionRequest {
+            at,
+            normal: origin_normal,
+            max_r,
+            speed,
+            max_echoes,
+            now,
+        };
+        let (_, hits) = cast_reflection_fan(&request, space);
         for hit in clustering::cluster_hits(hits, clustering::echo_budget(max_echoes)) {
             self.echoes.schedule(now, hit.dist, hit.point, gain, speed);
         }
@@ -238,4 +225,58 @@ impl WaveCore {
             godot_error!("{REFUSAL_MESSAGE}");
         }
     }
+}
+
+/// Cast one golden-angle reflection fan into `space`, and report how many
+/// rays were cast alongside what they struck.
+///
+/// THE ONLY reflection cast in the codebase, deliberately. The game's
+/// `emit_reflecting` and the debug observer's `explain_reflection` both
+/// come here, so a collision mask, an exclusion list, or any other change
+/// to how the fan samples the world lands on both at once. Two copies of
+/// this loop would drift silently and the explainer would start describing
+/// a fan the engine no longer casts — telling an agent a wall answered
+/// when it did not, which is the one failure this whole layer exists to
+/// prevent.
+///
+/// PHYSICS CONTEXT: a space state may only be touched inside the physics
+/// tick. Both callers guarantee it, by different means — the game's call
+/// sites run in `_physics_process`, and the observer answers from its own.
+///
+/// The count is the rays actually CAST, which is not `ray_fan::RAYS`: the
+/// fan is culled to the hemisphere in front of the birth normal, and a
+/// query the physics server refuses to build was never cast at all.
+pub(crate) fn cast_reflection_fan(
+    request: &ReflectionRequest,
+    mut space: Gd<PhysicsDirectSpaceState3D>,
+) -> (usize, Vec<RayHit>) {
+    let origin = request.ray_origin();
+    // f64 reach like the GDScript minf; narrowed once, where the ray
+    // vector is scaled — exactly where the original narrowed.
+    let reach = request.reach() as f32;
+    let mut rays_cast = 0usize;
+    let mut hits: Vec<RayHit> = Vec::with_capacity(ray_fan::RAYS);
+    for dir in request.directions() {
+        let Some(query) = PhysicsRayQueryParameters3D::create(origin, origin + dir * reach) else {
+            continue; // the engine refused to build a query: skip the ray
+        };
+        rays_cast += 1;
+        let struck = space.intersect_ray(&query);
+        let (Some(position), Some(normal)) = (
+            struck
+                .get("position")
+                .and_then(|v| v.try_to::<Vector3>().ok()),
+            struck
+                .get("normal")
+                .and_then(|v| v.try_to::<Vector3>().ok()),
+        ) else {
+            continue; // empty dictionary: the ray struck nothing
+        };
+        hits.push(RayHit {
+            position,
+            normal,
+            dist: (position - origin).length(),
+        });
+    }
+    (rays_cast, hits)
 }
