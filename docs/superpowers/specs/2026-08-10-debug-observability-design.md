@@ -253,6 +253,29 @@ Then the mutation check: flip `HUM_THROUGH`, flip the 0.08 threshold, flip
 the eviction order — each must fail at least one observable test. Anything
 nothing catches marks that behaviour as unobserved.
 
+## Delivery — two plans
+
+This spec is one coherent subsystem but too large for one plan. It splits on
+the line the architecture already draws: everything that runs without a GPU,
+then everything that needs one.
+
+**Plan 1 — the state layer.** `observe/mod.rs`, `observe/explain.rs`,
+`nodes/observer.rs`, the pure cargo tests, the gdUnit4 suites, the
+`explain_ray` oracle contract, and the godot-mcp live loop. Answers three of
+the four question classes — visibility, timing, placement — and runs
+entirely in the headless gate. This lands first and starts paying off on its
+own; nothing in it waits on the digest.
+
+**Plan 2 — the pixel layer.** `observe/digest.rs`, the viewport readback,
+the windowed dump scene, and `--fixed-fps` NDJSON capture. Answers the
+fourth class, "does it look right", and inherits the vocabulary Plan 1
+established — the digest is keyed by the object-id table Plan 1's snapshot
+already reports, so building it second is the cheaper order, not merely the
+safer one.
+
+The wiki page is owed by whichever plan lands last; Plan 1 creates it, Plan
+2 rewrites it to describe the whole shipped layer.
+
 ## Out of scope
 
 - A per-pixel CPU oracle replicating the renderer. `explain_ray` keeps the
