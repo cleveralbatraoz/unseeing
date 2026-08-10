@@ -61,10 +61,15 @@ pub const AXIS_EPS: f32 = 0.001;
 /// The box a wall segment occupies: the centerline padded by a wall
 /// half-thickness on every side, floor to ceiling — so two walls whose
 /// centerlines meet share a clean corner instead of leaving a gap.
+///
+/// A length is a MAGNITUDE: a minus sign is folded away here rather than
+/// carried into the engine, where a negative extent means two different
+/// things to the two halves of one wall — a mesh draws it, a collider
+/// refuses it and keeps whatever size it had.
 #[must_use]
 pub fn wall_box(length: f64) -> Vector3 {
     Vector3::new(
-        (length + WALL_T * 2.0) as f32,
+        (length.abs() + WALL_T * 2.0) as f32,
         WALL_H as f32,
         (WALL_T * 2.0) as f32,
     )
@@ -113,9 +118,15 @@ pub fn quadrant_basis(quadrant: u8) -> Basis {
 /// A wall node's centerline as the classic segment quad (x1, z1, x2, z2):
 /// the node's floor position swept half the length each way along its
 /// snapped axis. Even quadrants run along world X, odd along world Z.
+///
+/// The sweep takes the length's MAGNITUDE, so the ends always come back in
+/// order. A negative half-sweep would hand the level a centerline running
+/// backwards, and the systems that read it disagree about that: the
+/// occluder rect normalises the ends, the tap planner normalises them, and
+/// anything new that trusts the quad's declared order would not.
 #[must_use]
 pub fn wall_segment(center: Vector3, length: f64, quadrant: u8) -> Vector4 {
-    let half = (length * 0.5) as f32;
+    let half = (length.abs() * 0.5) as f32;
     if quadrant.is_multiple_of(2) {
         Vector4::new(center.x - half, center.z, center.x + half, center.z)
     } else {
@@ -256,6 +267,25 @@ mod tests {
     fn wall_box_pads_the_centerline() {
         assert_eq!(wall_box(7.4), Vector3::new(7.7, 3.0, 0.3));
         assert_eq!(wall_box(18.8), Vector3::new(19.1, 3.0, 0.3));
+    }
+
+    /// A designer's minus sign is a typo, not a wall pointing backwards.
+    /// Left raw it is three different bugs at once: a padded extent that
+    /// `BoxShape3D` refuses (leaving the collider at its default cube while
+    /// the mesh draws the wall), a shorter box than the number asked for
+    /// (`-4 + 0.3`), and a centerline swept backwards. All three are
+    /// answered here, where the arithmetic lives, so no caller can reach
+    /// the engine with one of them.
+    #[test]
+    fn a_negative_length_is_the_same_wall_as_its_magnitude() {
+        assert_eq!(wall_box(-7.4), wall_box(7.4));
+        assert_eq!(wall_box(-0.1), wall_box(0.1));
+        let center = Vector3::new(4.0, 0.0, 9.0);
+        for quadrant in 0..4 {
+            let back = wall_segment(center, -4.0, quadrant);
+            assert_eq!(back, wall_segment(center, 4.0, quadrant));
+            assert!(back.x <= back.z && back.y <= back.w, "ends out of order");
+        }
     }
 
     /// Free-hand yaws round to the nearest quarter turn, whole windings

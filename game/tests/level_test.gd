@@ -182,6 +182,29 @@ func test_wall_length_knob_reshapes_live() -> void:
 	assert_vector(_box_shape(wall).size).is_equal(Vector3(9.3, 3, 0.3))
 
 
+## A wall's one knob answers a minus sign the way every prop knob does.
+## Left raw it splits the wall in three: BoxMesh draws 3.7 m, BoxShape3D
+## refuses the negative extent and keeps its default 1 m cube, and
+## wall_segment sweeps the half-length BACKWARDS, handing the level a
+## centerline whose ends are in the wrong order. The sign folds at the knob
+## instead, so the drawn box, the collider and the occluder are one wall.
+func test_a_negative_wall_length_folds_instead_of_inverting_the_wall() -> void:
+	var wall := _wall(-4.0, Vector3(2, 0, 0), false)
+	var level := _level_holding(wall)
+	assert_float(wall.length).is_equal_approx(4.0, 0.001)
+	assert_vector(_box(wall).size).is_equal(Vector3(4.3, 3, 0.3))
+	(
+		assert_vector(_box_shape(wall).size)
+		. append_failure_message("the collider kept its own size while the mesh was reshaped")
+		. is_equal(Vector3(4.3, 3, 0.3))
+	)
+	(
+		assert_vector(level.wall_segments()[0])
+		. append_failure_message("centerline ends out of order: %s" % level.wall_segments()[0])
+		. is_equal_approx(Vector4(0, 0, 4, 0), Vector4.ONE * 0.001)
+	)
+
+
 ## A prop is a free box: its size knob is the full extent, its node the
 ## box center, and its rotation is NOT snapped — props carry no room
 ## contract, waves outline them from any angle.

@@ -27,7 +27,7 @@
 use godot::classes::{BoxMesh, BoxShape3D, IStaticBody3D, Material, StaticBody3D};
 use godot::prelude::*;
 
-use super::solid::{Skin, WaveSolid, build_box};
+use super::solid::{SignFold, Skin, WaveSolid, build_box};
 use crate::level_plan;
 
 /// One wall segment: an axis-snapped box, `length` meters of centerline
@@ -37,12 +37,14 @@ use crate::level_plan;
 #[derive(GodotClass)]
 #[class(tool, init, base=StaticBody3D)]
 pub struct WaveWall {
-    /// Centerline length in meters — the designer's one size knob.
+    /// Centerline length in meters — the designer's one size knob, and a
+    /// magnitude: a negative reading folds at the knob ([`SignFold`]).
     #[export]
     #[var(get = get_length, set = set_length)]
     #[init(val = 4.0)]
     length: f64,
     skin: Skin,
+    fold: SignFold,
     mesh: Option<Gd<BoxMesh>>,
     shape: Option<Gd<BoxShape3D>>,
     base: Base<StaticBody3D>,
@@ -62,23 +64,30 @@ impl IStaticBody3D for WaveWall {
         self.skin.adopt(built.skin);
         self.mesh = Some(built.mesh);
         self.shape = Some(built.shape);
+        let name = self.base().get_name();
+        self.fold.say(Some(name));
     }
 }
 
 #[godot_api]
 impl WaveWall {
     /// The length knob reshapes the wall live — in the editor and at
-    /// runtime alike, mesh and collider together.
+    /// runtime alike, mesh and collider together, on the knob's magnitude.
+    /// A wall is three things derived from this one number (a drawn box, a
+    /// collider, an occluding centerline) and they answer a minus sign
+    /// three different ways, so the sign never gets past here.
     #[func]
     fn set_length(&mut self, length: f64) {
-        self.length = length;
-        let size = level_plan::wall_box(length);
+        self.length = self.fold.scalar("length", length);
+        let size = level_plan::wall_box(self.length);
         if let Some(mesh) = self.mesh.as_mut() {
             mesh.set_size(size);
         }
         if let Some(shape) = self.shape.as_mut() {
             shape.set_size(size);
         }
+        let named = self.base().is_inside_tree().then(|| self.base().get_name());
+        self.fold.say(named);
     }
 
     #[func]

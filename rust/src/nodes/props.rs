@@ -29,7 +29,7 @@ use godot::prelude::*;
 
 use godot::classes::MeshInstance3D;
 
-use super::solid::{Skin, WaveSolid, build_body, build_box};
+use super::solid::{SignFold, Skin, WaveSolid, build_body, build_box};
 use crate::prop_shape;
 
 /// A free box obstacle — table top, chair leg, crate, shelf. The node sits
@@ -39,12 +39,14 @@ use crate::prop_shape;
 #[derive(GodotClass)]
 #[class(tool, init, base=StaticBody3D)]
 pub struct WaveProp {
-    /// Full box extent in meters.
+    /// Full box extent in meters — a magnitude: a negative reading folds to
+    /// its absolute value at the knob ([`SignFold`]).
     #[export]
     #[var(get = get_size, set = set_size)]
     #[init(val = Vector3::new(0.5, 0.5, 0.5))]
     size: Vector3,
     skin: Skin,
+    fold: SignFold,
     mesh: Option<Gd<BoxMesh>>,
     shape: Option<Gd<BoxShape3D>>,
     base: Base<StaticBody3D>,
@@ -61,21 +63,28 @@ impl IStaticBody3D for WaveProp {
         self.skin.adopt(built.skin);
         self.mesh = Some(built.mesh);
         self.shape = Some(built.shape);
+        let name = self.base().get_name();
+        self.fold.say(Some(name));
     }
 }
 
 #[godot_api]
 impl WaveProp {
-    /// The size knob reshapes the prop live, mesh and collider together.
+    /// The size knob reshapes the prop live, mesh and collider together —
+    /// on the knob's magnitude, so a minus sign cannot leave the mesh
+    /// reshaped and the collider refusing to follow.
     #[func]
     fn set_size(&mut self, size: Vector3) {
-        self.size = size;
+        self.size = self.fold.vector("size", size);
+        let size = self.size;
         if let Some(mesh) = self.mesh.as_mut() {
             mesh.set_size(size);
         }
         if let Some(shape) = self.shape.as_mut() {
             shape.set_size(size);
         }
+        let named = self.base().is_inside_tree().then(|| self.base().get_name());
+        self.fold.say(named);
     }
 
     #[func]
@@ -114,17 +123,18 @@ impl WaveSolid for WaveProp {
 #[derive(GodotClass)]
 #[class(tool, init, base=StaticBody3D)]
 pub struct WaveColumn {
-    /// Radius in meters.
+    /// Radius in meters — a magnitude ([`SignFold`]).
     #[export]
     #[var(get = get_radius, set = set_radius)]
     #[init(val = 0.28)]
     radius: f64,
-    /// Height in meters, rising from the node.
+    /// Height in meters, rising from the node — a magnitude ([`SignFold`]).
     #[export]
     #[var(get = get_height, set = set_height)]
     #[init(val = 0.9)]
     height: f64,
     skin: Skin,
+    fold: SignFold,
     mesh: Option<Gd<CylinderMesh>>,
     shape: Option<Gd<CylinderShape3D>>,
     collider: Option<Gd<CollisionShape3D>>,
@@ -156,6 +166,8 @@ impl IStaticBody3D for WaveColumn {
         self.mesh = Some(mesh);
         self.shape = Some(shape);
         self.reshape();
+        let name = self.base().get_name();
+        self.fold.say(Some(name));
     }
 }
 
@@ -163,8 +175,10 @@ impl IStaticBody3D for WaveColumn {
 impl WaveColumn {
     #[func]
     fn set_radius(&mut self, radius: f64) {
-        self.radius = radius;
+        self.radius = self.fold.scalar("radius", radius);
         self.reshape();
+        let named = self.base().is_inside_tree().then(|| self.base().get_name());
+        self.fold.say(named);
     }
 
     #[func]
@@ -174,8 +188,10 @@ impl WaveColumn {
 
     #[func]
     fn set_height(&mut self, height: f64) {
-        self.height = height;
+        self.height = self.fold.scalar("height", height);
         self.reshape();
+        let named = self.base().is_inside_tree().then(|| self.base().get_name());
+        self.fold.say(named);
     }
 
     #[func]
@@ -194,9 +210,13 @@ impl WaveColumn {
     /// Inspector moves what the waves strike and not only what is drawn.
     /// The lift is half the height, which is what puts the BASE on the
     /// node — the engine's cylinder primitives are centred.
+    ///
+    /// Both knobs are magnitudes by the time they land in the fields (the
+    /// setters fold, [`SignFold`]), so nothing here has a sign to defend
+    /// against: `CylinderShape3D` would refuse a negative radius outright.
     fn reshape(&mut self) {
-        let radius = self.radius.abs() as f32;
-        let height = self.height.abs() as f32;
+        let radius = self.radius as f32;
+        let height = self.height as f32;
         let lift = Vector3::new(0.0, height * 0.5, 0.0);
         if let Some(mesh) = self.mesh.as_mut() {
             mesh.set_top_radius(radius);
@@ -239,12 +259,14 @@ impl WaveSolid for WaveColumn {
 #[derive(GodotClass)]
 #[class(tool, init, base=StaticBody3D)]
 pub struct WaveWedge {
-    /// Full extent in meters: run along X, rise along Y, width along Z.
+    /// Full extent in meters: run along X, rise along Y, width along Z —
+    /// a magnitude ([`SignFold`]).
     #[export]
     #[var(get = get_size, set = set_size)]
     #[init(val = Vector3::new(1.2, 0.5, 0.8))]
     size: Vector3,
     skin: Skin,
+    fold: SignFold,
     mesh: Option<Gd<ArrayMesh>>,
     shape: Option<Gd<ConvexPolygonShape3D>>,
     collider: Option<Gd<CollisionShape3D>>,
@@ -274,6 +296,8 @@ impl IStaticBody3D for WaveWedge {
         self.collider = Some(built.collider);
         self.mesh = Some(mesh);
         self.shape = Some(shape);
+        let name = self.base().get_name();
+        self.fold.say(Some(name));
     }
 }
 
@@ -281,8 +305,10 @@ impl IStaticBody3D for WaveWedge {
 impl WaveWedge {
     #[func]
     fn set_size(&mut self, size: Vector3) {
-        self.size = size;
+        self.size = self.fold.vector("size", size);
         self.reshape();
+        let named = self.base().is_inside_tree().then(|| self.base().get_name());
+        self.fold.say(named);
     }
 
     #[func]

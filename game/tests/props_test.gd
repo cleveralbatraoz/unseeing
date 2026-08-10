@@ -131,6 +131,49 @@ func test_wedge_stands_on_its_node() -> void:
 	assert_vector(_skin(wedge).position).is_equal_approx(Vector3(0, 0.7, 0), Vector3.ONE * LIFT_EPS)
 
 
+## A minus sign in a size knob must never split what is DRAWN from what is
+## STRUCK. BoxMesh takes a negative extent happily; BoxShape3D REFUSES it
+## and silently keeps whatever it had — its default 1 x 1 x 1 — so the box
+## a designer sees and the box the waves and the cane hit are different
+## objects. The only engine diagnostic ("BoxShape3D size cannot be
+## negative") names no node, and the bad value survives a save. So the sign
+## folds away at the knob, and the Inspector reads back what was built.
+func test_a_negative_size_cannot_split_the_drawn_box_from_its_collider() -> void:
+	var prop: WaveProp = auto_free(WaveProp.new())
+	prop.size = Vector3(-0.8, 0.4, -0.6)
+	add_child(prop)
+	assert_vector(prop.size).is_equal(Vector3(0.8, 0.4, 0.6))
+	assert_vector((_skin(prop).mesh as BoxMesh).size).is_equal(Vector3(0.8, 0.4, 0.6))
+	(
+		assert_vector((_shape(prop) as BoxShape3D).size)
+		. append_failure_message("the collider kept its own size while the mesh was reshaped")
+		. is_equal(Vector3(0.8, 0.4, 0.6))
+	)
+	prop.size = Vector3(1.0, -2.0, 1.0)  # and live, on a dragged knob
+	assert_vector((_skin(prop).mesh as BoxMesh).size).is_equal(Vector3(1, 2, 1))
+	assert_vector((_shape(prop) as BoxShape3D).size).is_equal(Vector3(1, 2, 1))
+
+
+## The same law on the round and the sloped shape: one vocabulary, one
+## answer to a minus sign. CylinderShape3D refuses a negative radius or
+## height exactly as the box shape does, and a wedge's generated hull would
+## simply mirror itself — so every knob folds the sign away and reads back
+## the magnitude it built.
+func test_a_negative_knob_folds_on_every_shape() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = -0.3
+	column.height = -0.9
+	add_child(column)
+	assert_float(column.radius).is_equal_approx(0.3, LIFT_EPS)
+	assert_float(column.height).is_equal_approx(0.9, LIFT_EPS)
+	assert_float((_shape(column) as CylinderShape3D).radius).is_equal_approx(0.3, LIFT_EPS)
+	assert_float((_shape(column) as CylinderShape3D).height).is_equal_approx(0.9, LIFT_EPS)
+	var wedge: WaveWedge = auto_free(WaveWedge.new())
+	wedge.size = Vector3(-1.2, 0.6, -0.8)
+	add_child(wedge)
+	assert_vector(wedge.size).is_equal(Vector3(1.2, 0.6, 0.8))
+
+
 ## All three shapes reach the level through ONE door: the level hands out
 ## the world skin and the flat object id without knowing which shape it has
 ## — that is the whole point of the solid abstraction. A shape that answered
