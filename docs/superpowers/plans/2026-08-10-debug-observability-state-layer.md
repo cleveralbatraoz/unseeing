@@ -1870,6 +1870,34 @@ watched failing for the right reason.
 MSG
 ```
 
+**OPEN — residual gap, not closed by this task.** `explain_ray` calls into
+`sight.rs` only (`rust/src/nodes/observer.rs:173-182`); no gate in this
+repo executes GLSL. So no test anywhere — not Task 8's, not
+`test_pool_slab_test_mirrors_the_rust_reference`'s literal-text pin — can
+catch a shader-only edit that leaves `sight.rs` untouched. The text pin
+covers only what it names as a substring, which is structurally blind to
+*inserted* code; concretely, in `pulse_pool.gdshaderinc`, none of these are
+pinned:
+
+- the `for (int k = 0; k < 3; k++)` loop bound (narrowing it silently drops
+  an axis from every wall's slab test)
+- the `t0 > t1` early return
+- the `lo`/`hi` rect packing from `rect.xy`/`rect.zw`
+- the Z half of `wall_near` (only the X half is pinned)
+- the axis-parallel branch body (the `abs(d[k]) < 1e-6` case)
+- the `i >= u_wall_count` loop breaks
+
+Closing this needs either a rendered pixel probe (boot the real scene,
+render, and diff against what `explain_ray` predicts for the same camera
+ray — `game/tests/probe/occlusion_probe.gd` is the existing windowed-probe
+pattern to extend) or a checksum-shaped pin on the GLSL (hash the include's
+normalized source and pin the hash, so ANY edit — inserted, deleted, or
+reordered — forces a deliberate re-pin rather than a silent pass). Until
+one of those exists, `explain_ray` is an oracle for **what Rust believes**,
+never for **what the screen draws**, and an agent using it for shader
+debugging must be told that explicitly rather than left to infer it from a
+passing gate.
+
 ---
 
 ### Task 9: Install godot-mcp and document the loop
