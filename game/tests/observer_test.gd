@@ -239,18 +239,24 @@ func test_the_composition_root_injects_the_observer() -> void:
 ## echo book, the question would have answered itself by changing the thing
 ## it asked about. This test was watched failing against a deliberately
 ## mutating implementation before it was trusted.
+##
+## The book is LOADED first, with a real reflecting sound, so the assertion
+## is not 0 == 0: an explanation that scheduled echoes fails it, and so does
+## one that drained or reordered the appointments already standing.
 func test_explaining_a_reflection_schedules_no_echoes() -> void:
 	var pulses := Pulses.new()
 	var level := _shipped_level(pulses)
 	var obs := _tree_observer(level)
-	var before: int = pulses.pending_echo_count()
+	var before: Array[Vector3] = await _load_the_echo_book(pulses)
+	assert_int(before.size()).is_greater(0)
 	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 6, 0.0)
 	await _physics_answer()
 	var e: Dictionary = obs.take_explanation(id)
 	assert_bool(e.has("pending")).is_false()
 	assert_bool(e.has("unavailable")).is_false()
 	assert_int(e["clusters_kept"]).is_greater(0)
-	assert_int(pulses.pending_echo_count()).is_equal(before)
+	assert_int(pulses.pending_echo_count()).is_equal(before.size())
+	assert_array(_echo_points(pulses)).is_equal(before)
 
 
 ## A physics space may only be touched inside the physics tick, so the
@@ -353,6 +359,26 @@ func _tree_observer(level: WaveLevel) -> WaveObserver:
 func _physics_answer() -> void:
 	await get_tree().physics_frame
 	await get_tree().physics_frame
+
+
+## Put REAL appointments in the echo book, by emitting a reflecting sound
+## the way the game does. Returns the answering points, so a test can pin
+## that an explanation neither added to the book nor disturbed it — a
+## before of zero would be satisfied by an observer that drained it.
+func _load_the_echo_book(pulses: Pulses) -> Array[Vector3]:
+	await get_tree().physics_frame  # space queries are legal only in physics
+	var space := get_viewport().world_3d.direct_space_state
+	pulses.emit_reflecting(0, TAP_AT, TAP_MAX_R, TAP_SPEED, 1.0, 0.0, space, 6, Vector3.UP)
+	return _echo_points(pulses)
+
+
+## The scheduled reflections, as points — the book's contents in its own
+## discovery order.
+func _echo_points(pulses: Pulses) -> Array[Vector3]:
+	var points: Array[Vector3] = []
+	for echo: Pulses.Echo in pulses.pending_echoes():
+		points.append(echo.pos)
+	return points
 
 
 ## The shipped level, instanced the way main does: injected first, then
