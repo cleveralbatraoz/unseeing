@@ -49,7 +49,7 @@ use godot::prelude::*;
 
 use godot::classes::MeshInstance3D;
 
-use super::solid::{SignFold, Skin, WaveSolid, build_body, build_box};
+use super::solid::{LIMBS, SignFold, Skin, WaveSolid, build_body, build_box, clear_limbs};
 use crate::prop_shape;
 
 /// A free box obstacle — table top, chair leg, crate, shelf. The node sits
@@ -75,6 +75,7 @@ pub struct WaveProp {
 #[godot_api]
 impl IStaticBody3D for WaveProp {
     fn ready(&mut self) {
+        clear_limbs(self, &LIMBS);
         let scaled = scale_to_fold(&self.base());
         if let Some(scale) = scaled {
             self.size = prop_shape::fold_box_scale(self.size, scale);
@@ -169,6 +170,7 @@ pub struct WaveColumn {
 #[godot_api]
 impl IStaticBody3D for WaveColumn {
     fn ready(&mut self) {
+        clear_limbs(self, &LIMBS);
         let scaled = scale_to_fold(&self.base());
         if let Some(scale) = scaled {
             let knobs = prop_shape::fold_column_scale(self.radius, self.height, scale);
@@ -333,6 +335,7 @@ pub struct WaveWedge {
 #[godot_api]
 impl IStaticBody3D for WaveWedge {
     fn ready(&mut self) {
+        clear_limbs(self, &LIMBS);
         let scaled = scale_to_fold(&self.base());
         if let Some(scale) = scaled {
             self.size = prop_shape::fold_box_scale(self.size, scale);

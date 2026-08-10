@@ -27,7 +27,7 @@
 use godot::classes::{BoxMesh, BoxShape3D, IStaticBody3D, Material, StaticBody3D};
 use godot::prelude::*;
 
-use super::solid::{SignFold, Skin, WaveSolid, build_box};
+use super::solid::{LIMBS, SignFold, Skin, WaveSolid, build_box, clear_limbs};
 use crate::level_plan;
 
 /// One wall segment: an axis-snapped box, `length` meters of centerline
@@ -54,6 +54,9 @@ pub struct WaveWall {
 impl IStaticBody3D for WaveWall {
     fn ready(&mut self) {
         self.snap_to_axis();
+        // a duplicated wall arrives carrying the original's limbs; this
+        // build owns the pair, so the ghosts go first
+        clear_limbs(self, &LIMBS);
         let size = level_plan::wall_box(self.length);
         let lift = Vector3::new(0.0, (level_plan::WALL_H * 0.5) as f32, 0.0);
         let built = build_box(size, lift, self.skin.material());

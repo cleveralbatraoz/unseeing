@@ -96,6 +96,16 @@ func _level_holding(node: Node3D) -> WaveLevel:
 	return level
 
 
+## How many limbs a node has built for itself — one mesh and one collider
+## is a whole shape; anything more is a ghost of an earlier build.
+func _limbs(body: Node) -> int:
+	var n := 0
+	for child: Node in body.get_children():
+		if child is MeshInstance3D or child is CollisionShape3D:
+			n += 1
+	return n
+
+
 ## The floor/ceiling slabs the level built for itself — its own direct
 ## StaticBody3D children that are not authored walls or props.
 func _slabs(level: WaveLevel) -> Array[StaticBody3D]:
@@ -170,6 +180,33 @@ func test_a_scaled_room_cannot_stretch_a_wall_past_its_occluder() -> void:
 	)
 	assert_vector(box.size).is_equal_approx(Vector3(0.3, 3, 4.3), Vector3.ONE * 0.001)
 	assert_float(box.position.y).is_equal_approx(0.0, 0.001)
+
+
+## CTRL+D IS THE AUTHORING TOOL — game/README.md tells a designer to build
+## a level by duplicating walls — and Ctrl+D is `Node.duplicate()`, which
+## copies the mesh and collider the ORIGINAL built for itself. Building a
+## second pair on top leaves a ghost the size knob cannot reach, drawn at
+## the old size forever; worse, `duplicate()` SHARES resources, so the ghost
+## carries the original's own BoxMesh and would resize with it. A builder
+## must therefore be idempotent: whatever limbs it finds, it owns exactly
+## one pair when it is done.
+func test_a_duplicated_wall_does_not_double_its_geometry() -> void:
+	var wall: WaveWall = auto_free(_wall(4.0, Vector3.ZERO, false))
+	add_child(wall)
+	var copy: WaveWall = auto_free(wall.duplicate() as WaveWall)
+	add_child(copy)
+	(
+		assert_int(_limbs(copy))
+		. append_failure_message("the duplicate readied onto the limbs it was copied with")
+		. is_equal(2)
+	)
+	copy.length = 9.0
+	(
+		assert_vector(_box(copy).size)
+		. append_failure_message("a ghost mesh is drawn ahead of the one the knob reshapes")
+		. is_equal(Vector3(9.3, 3, 0.3))
+	)
+	assert_vector(_box(wall).size).is_equal(Vector3(4.3, 3, 0.3))
 
 
 ## The length knob reshapes a placed wall live — mesh and collider
@@ -340,6 +377,31 @@ func test_extents_knob_resizes_slabs() -> void:
 		assert_vector(_box_shape(slab).size).is_equal(Vector3(8, 0.1, 6))
 	assert_vector(slabs[0].position).is_equal(Vector3(4, -0.05, 3))
 	assert_vector(slabs[1].position).is_equal(Vector3(4, 3.05, 3))
+
+
+## The same law on the level root, whose limbs are whole slab BODIES. A
+## `_ready` runs again whenever a node re-enters the tree after
+## `request_ready()` — which is what the editor does to a reloaded scene —
+## and an unconditional build would leave a second floor and a second
+## ceiling inside the first, invisible and uncollidable.
+func test_a_second_ready_does_not_double_the_slabs() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3.ZERO, 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_int(_slabs(level).size()).is_equal(2)
+	remove_child(level)
+	level.request_ready()
+	add_child(level)
+	(
+		assert_int(_slabs(level).size())
+		. append_failure_message("the second _ready built a second floor and ceiling")
+		. is_equal(2)
+	)
+	# and the extents knob still drives the slabs that are actually there
+	level.extents = Vector2(8, 6)
+	for slab: StaticBody3D in _slabs(level):
+		assert_vector(_box(slab).size).is_equal(Vector3(8, 0.1, 6))
 
 
 ## Injection is ordered, and the order is the contract: by the time the

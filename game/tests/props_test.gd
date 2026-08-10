@@ -401,6 +401,38 @@ func test_every_shape_answers_the_same_solid_door() -> void:
 		assert_bool(oid >= 0.0).append_failure_message("%s took no id" % solid.name).is_true()
 
 
+## How many limbs a shape has built for itself — one mesh and one collider
+## is a whole shape; anything more is a ghost of an earlier build.
+func _limbs_of(body: Node) -> int:
+	var n := 0
+	for child: Node in body.get_children():
+		if child is MeshInstance3D or child is CollisionShape3D:
+			n += 1
+	return n
+
+
+## Furniture is authored by duplicating furniture (game/README.md), and
+## Ctrl+D is `Node.duplicate()`: the copy arrives already carrying the mesh
+## and collider the original built for itself. A builder that adds a pair
+## unconditionally therefore gives the copy TWO — the size knob reaches only
+## the newest, so the ghost is drawn at the size it was copied at, forever,
+## and its collider is struck there too. All three shapes answer alike,
+## because a designer duplicates all three alike.
+func test_a_duplicated_shape_does_not_double_its_geometry() -> void:
+	for shape: Node3D in [WaveProp.new(), WaveColumn.new(), WaveWedge.new()]:
+		var solid: Node3D = auto_free(shape)
+		add_child(solid)
+		var copy: Node3D = auto_free(solid.duplicate() as Node3D)
+		add_child(copy)
+		(
+			assert_int(_limbs_of(copy))
+			. append_failure_message(
+				"%s readied onto the limbs it was copied with" % copy.get_class()
+			)
+			. is_equal(2)
+		)
+
+
 ## A column and a wedge ride their own limbs up onto their lift — and ONLY
 ## their own. Walking the node's children instead would teleport whatever a
 ## designer nested under it, which is the natural way to group props in the

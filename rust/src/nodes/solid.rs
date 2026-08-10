@@ -26,6 +26,7 @@
 use godot::classes::{
     BoxMesh, BoxShape3D, CollisionShape3D, Material, Mesh, MeshInstance3D, Shape3D,
 };
+use godot::obj::WithBaseField;
 use godot::prelude::*;
 
 use crate::oid_palette;
@@ -34,6 +35,64 @@ use crate::oid_palette;
 /// `data_core`'s `u_oid`, the G channel the outline pass diffs to find
 /// creases. Two touching solids sharing an id have NO line between them.
 pub(crate) const OID_PARAM: &str = "u_oid";
+
+/// The name the engine writes on every mesh limb it builds, and on every
+/// collider beside one. A designer never types these — they exist so that a
+/// builder entering the tree can recognise the limbs an EARLIER build left
+/// behind and take them over.
+///
+/// It has to be the name. `Node.duplicate()` — Ctrl+D, the way
+/// `game/README.md` tells a designer to author a level — copies the children
+/// a node built for itself, and the copy reaches `_ready` as a fresh Rust
+/// object whose own handles are all `None`: the ghosts exist only in the
+/// scene tree. A name survives the copy exactly, so it is the one handle
+/// left on them.
+pub(crate) const SKIN_NAME: &str = "WaveSkin";
+
+/// The collider's half of [`SKIN_NAME`].
+pub(crate) const COLLIDER_NAME: &str = "WaveCollider";
+
+/// The pair [`build_body`] makes — what a solid's `_ready` hands
+/// [`clear_limbs`] on the way in.
+pub(crate) const LIMBS: [&str; 2] = [SKIN_NAME, COLLIDER_NAME];
+
+/// Free whatever limbs an earlier build left under `node`, so that a builder
+/// may run twice — a duplicated node, a re-entered scene — and own exactly
+/// one set when it is done. Total: a freshly placed node carries none of
+/// these names and nothing happens.
+///
+/// The ghosts are FREED rather than adopted, and that is the load-bearing
+/// half. `duplicate()` copies a mesh by REFERENCE, so an adopted ghost would
+/// hold the original's own `BoxMesh` and resize with it every time the
+/// original's knob moved; a rebuilt limb holds a mesh of its own. They are
+/// freed immediately rather than queued, too: a limb still standing when the
+/// new one is added would be a second shape for a frame, and a test bench
+/// counts a queued node as an orphan.
+///
+/// The walk runs under a [`WithBaseField::base_mut`] guard for its whole
+/// length, and that is not tidiness: `remove_child` notifies the PARENT, and
+/// a shape that listens for its own transform ([`super::props::WaveColumn`],
+/// [`super::props::WaveWedge`]) is re-entered by that notification while its
+/// `_ready` still holds the borrow. Only the guard makes the re-entry legal
+/// — without it the engine aborts the process on a double borrow.
+pub(crate) fn clear_limbs<C>(node: &mut C, names: &[&str])
+where
+    C: WithBaseField,
+    C::Base: Inherits<Node>,
+{
+    let base = node.base_mut();
+    let mut owner: Gd<Node> = Gd::clone(&base).upcast();
+    let stale: Vec<Gd<Node>> = owner
+        .get_children()
+        .iter_shared()
+        .filter(|child| names.iter().any(|name| child.get_name() == *name))
+        .collect();
+    for limb in stale {
+        owner.remove_child(&limb);
+        limb.free();
+    }
+    drop(base);
+}
 
 /// What the level needs of any solid, whatever shape it is.
 pub trait WaveSolid {
@@ -198,12 +257,14 @@ pub(crate) fn build_body(
     mat: Option<&Gd<Material>>,
 ) -> BuiltBody {
     let mut skin = MeshInstance3D::new_alloc();
+    skin.set_name(SKIN_NAME);
     skin.set_mesh(mesh);
     skin.set_position(lift);
     if let Some(mat) = mat {
         skin.set_material_override(mat);
     }
     let mut collider = CollisionShape3D::new_alloc();
+    collider.set_name(COLLIDER_NAME);
     collider.set_shape(shape);
     collider.set_position(lift);
     BuiltBody { skin, collider }
