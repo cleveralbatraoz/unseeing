@@ -133,6 +133,9 @@ echo "ci: unit tests (gdUnit4)"
 echo "ci: determinism probe (two seeded fixed-fps boots must agree)"
 GODOT="$GODOT" "$DIR/tools/determinism_probe.sh"
 
+echo "ci: restore probe (a restored world must live the same future)"
+GODOT="$GODOT" "$DIR/tools/restore_probe.sh"
+
 # The suite above is blind to one branch by construction: it runs in the
 # GAME, and Godot exposes no way to set Engine.is_editor_hint() from a
 # script. The probe launches a second engine with `-e` instead, which is the
