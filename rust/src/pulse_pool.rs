@@ -76,6 +76,21 @@ pub struct PulsePool {
     kind: [i32; MAXP],
 }
 
+/// One slot, all six lanes — the shader-facing f32 triplet AND the f64
+/// shadow eviction runs on. Verbatim copies both ways: decoding and
+/// re-encoding the packed lanes would lose gain precision (dat.w packs
+/// kind*10 + gain*9 as f32), and re-deriving the shadow from the lanes
+/// would narrow the very widths the shadow exists to keep.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlotCapture {
+    pub pos: Vector3,
+    pub dat: Vector4,
+    pub dir: Vector4,
+    pub t0: f64,
+    pub end: f64,
+    pub kind: i32,
+}
+
 impl Default for PulsePool {
     fn default() -> Self {
         Self::new()
@@ -116,6 +131,50 @@ impl PulsePool {
     #[must_use]
     pub fn dir(&self) -> &[Vector4; MAXP] {
         &self.dir
+    }
+
+    /// Every slot, verbatim — holes, expired lanes and virgin sentinels
+    /// included, because slot_scan_limit and future eviction read them.
+    #[must_use]
+    pub fn capture_slots(&self) -> Box<[SlotCapture; MAXP]> {
+        let mut slots = Box::new(
+            [SlotCapture {
+                pos: Vector3::ZERO,
+                dat: Vector4::ZERO,
+                dir: Vector4::ZERO,
+                t0: 0.0,
+                end: 0.0,
+                kind: 0,
+            }; MAXP],
+        );
+        for i in 0..MAXP {
+            slots[i] = SlotCapture {
+                pos: self.pos[i],
+                dat: self.dat[i],
+                dir: self.dir[i],
+                t0: self.t0[i],
+                end: self.end[i],
+                kind: self.kind[i],
+            };
+        }
+        slots
+    }
+
+    /// A pool rebuilt from a capture, bit-identical. Total: any slot
+    /// values are legal — the capture is trusted verbatim, and the hash
+    /// gate (reproduce/blob.rs) is where tampering shows.
+    #[must_use]
+    pub fn from_slots(slots: &[SlotCapture; MAXP]) -> Self {
+        let mut pool = Self::new();
+        for (i, slot) in slots.iter().enumerate() {
+            pool.pos[i] = slot.pos;
+            pool.dat[i] = slot.dat;
+            pool.dir[i] = slot.dir;
+            pool.t0[i] = slot.t0;
+            pool.end[i] = slot.end;
+            pool.kind[i] = slot.kind;
+        }
+        pool
     }
 
     /// Record a sound. Total at the door: gain is clamped to [0, 1] (a raw
@@ -440,5 +499,72 @@ mod tests {
         assert_eq!(Vector3::new(d0.x, d0.y, d0.z), beam);
         assert_eq!(d0.w, 0.85f32);
         assert_eq!(p.dir()[1].w, -2.0);
+    }
+
+    /// Round trip is BIT-identical on every lane — including the expired
+    /// slot's stale lanes (they feed slot_scan_limit) and the virgin
+    /// asymmetry (dat.x = -1 while t0 = 0.0). Literals from the pool
+    /// contract: a kind-2 wave with max_r 1.6, speed 4.0 born at t = 0
+    /// dies at 1.6/4.0 + 2.5 = 2.9.
+    #[test]
+    fn a_captured_pool_restores_bit_identical_holes_and_all() {
+        let mut pool = PulsePool::new();
+        pool.emit_omni(2, Vector3::new(1.0, 0.0, 2.0), 1.6, 4.0, 0.8, 0.0)
+            .unwrap();
+        pool.emit_omni(0, Vector3::ZERO, 6.0, 5.5, 1.0, 0.0)
+            .unwrap();
+        // t = 5.0: slot 0 expired (dead at 2.9), slot 1 live — a hole
+        let capture = pool.capture_slots();
+        let restored = PulsePool::from_slots(&capture);
+        assert_eq!(restored.dat(), pool.dat());
+        assert_eq!(restored.pos(), pool.pos());
+        assert_eq!(restored.dir(), pool.dir());
+        // the shadow survives at full width: the hole still spans
+        assert_eq!(restored.live_count(5.0), pool.live_count(5.0));
+        assert_eq!(restored.live_count(5.0), 2);
+        // virgin slot 2 keeps its asymmetric sentinel
+        assert_eq!(capture[2].dat.x, -1.0);
+        assert_eq!(capture[2].t0, 0.0);
+        assert_eq!(capture[2].end, -1.0);
+    }
+
+    /// The restored pool EVICTS like the original: the next emit claims
+    /// the same slot for the same reason. This is the f64-shadow property
+    /// a lanes-only capture (f32 dat.x) cannot guarantee.
+    #[test]
+    fn a_restored_pool_evicts_exactly_like_the_original() {
+        let mut pool = PulsePool::new();
+        // two live recurring waves whose f64 births differ by less than
+        // one f32 ULP at this magnitude — indistinguishable in dat.x
+        let base = 1000.0;
+        let tiny = 1e-5; // < f32 ULP at 1000 (~6.1e-5)
+        pool.emit_omni(2, Vector3::ZERO, 60.0, 4.0, 0.8, base + tiny)
+            .unwrap();
+        pool.emit_omni(2, Vector3::ZERO, 60.0, 4.0, 0.8, base)
+            .unwrap();
+        assert_eq!(pool.dat()[0].x, pool.dat()[1].x); // f32 cannot tell
+        let mut restored = PulsePool::from_slots(&pool.capture_slots());
+        // pool full of live waves? No — 62 virgin slots remain; fill
+        // rule (1) takes the first expired/virgin slot for both pools.
+        // The discriminating emit: claim every remaining slot first...
+        for i in 0..62 {
+            let t = base + 1.0 + f64::from(i) * 1e-6;
+            pool.emit_omni(0, Vector3::ZERO, 600.0, 4.0, 1.0, t)
+                .unwrap();
+            restored
+                .emit_omni(0, Vector3::ZERO, 600.0, 4.0, 1.0, t)
+                .unwrap();
+        }
+        // ...now eviction must choose the OLDER kind-2 wave: slot 1
+        // (born at base), not slot 0 (born tiny later). Only the f64
+        // shadow can make that call.
+        pool.emit_omni(2, Vector3::ZERO, 5.0, 4.0, 0.5, base + 2.0)
+            .unwrap();
+        restored
+            .emit_omni(2, Vector3::ZERO, 5.0, 4.0, 0.5, base + 2.0)
+            .unwrap();
+        assert_eq!(pool.dat()[1].y, 5.0); // victim was slot 1 in both
+        assert_eq!(restored.dat()[1].y, 5.0);
+        assert_eq!(restored.dat()[0].y, 60.0);
     }
 }
