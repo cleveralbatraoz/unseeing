@@ -12,8 +12,9 @@ the visible game.
 - `scenes/level_01.tscn` — the level, authored in the editor: `WaveWall`
   and `WaveProp` boxes, the `SoundFan`, the companion `WaveCat`, and a
   `SpawnPoint` marker under a `WaveLevel` root that derives the technical
-  contracts (wall centerlines, hum room, spawn, demo tap, and the object
-  ids that keep every seam drawable) from what the designer placed.
+  contracts (wall centerlines and the occluder table sound is muffled
+  through, spawn, demo tap, and the object ids that keep every seam
+  drawable) from what the designer placed.
 - `scripts/main.gd` — composition root: instances the level scene,
   injects the material and wave pool into it, wires the engine nodes
   together, owns the fullscreen hearing quad and the per-frame globals
@@ -52,33 +53,43 @@ library yourself is the only way in today.
    --release` in `../rust/` (needed after a fresh clone or an engine
    change). Skip this and the scene still opens, but every `WaveWall`,
    `WaveProp`, `SoundFan` and so on loads as a `MissingNode` placeholder:
-   no viewport geometry, and any method call on one fails (`Cannot call
-   GDExtension method bind ... on placeholder instance`). You cannot lay
-   out a level that way, but you cannot damage one either — closing and
-   reopening the scene after the real build round-trips every property
-   losslessly.
+   no viewport geometry, and any method call on one fails (`Invalid call.
+   Nonexistent function 'set_length (via call)' in base 'MissingNode'`).
+   You cannot lay out a level that way, but you cannot damage one either
+   — the placeholder keeps the original type and every property (a
+   wall's `length` reads back off it intact). Reopening the scene is not
+   how you get it back, though: a GDExtension that failed to load when
+   the editor started is never retried while that editor process keeps
+   running, so a build finished mid-session still shows `MissingNode`
+   rows until you quit and relaunch Godot — only then does the scene
+   come back exactly as it was.
 2. Open `game/project.godot` in Godot and double-click
    `scenes/level_01.tscn`.
 3. Walls: duplicate any `WaveWall` (Ctrl+D), drag it where you want,
    stretch it with its **Length** property. Walls must be axis-aligned:
-   rotate one and the engine snaps it to the nearest quarter turn and
-   drops any scale, warning in the Output panel when it does. That snap
-   only runs when the wall (re-)enters the scene tree — placed,
-   duplicated, or the scene reloaded — not while you're turning its
-   gizmo in the viewport, so a wall you just rotated can sit at a free
-   angle on screen for the rest of the session with no warning until the
-   next reload.
+   a wall's centerline is what the sight shaders count to decide what a
+   source may light and the hero may hear, so its geometry is physics,
+   not decoration — the engine holds that law itself. Rotate one and it
+   snaps to the nearest quarter turn and drops any scale, warning in the
+   Output panel when it does. That snap only runs when the wall
+   (re-)enters the scene tree — placed, duplicated, or the scene
+   reloaded — not while you're turning its gizmo in the viewport, so a
+   wall you just rotated can sit at a free angle on screen for the rest
+   of the session with no warning until the next reload.
 4. Furniture: duplicate a `WaveProp` and set its **Size**.
-5. Sound sources: the `SoundFan` node has its voice in the Inspector —
-   **Volume** (0 to 1, how loud and how far its waves reach), **Cadence**
-   (seconds between waves), **Wave Speed** (how fast a wavefront
-   travels, in m/s), and **Beam Cos**, the cosine of the sweeping wash's
-   half-angle (about 32° at the shipped default).
+5. Sound sources: `SoundFan` and `SoundRadio` both have their voice in
+   the Inspector — **Volume** (0 to 1, how loud and how far the waves
+   reach), **Cadence** (seconds between waves) and **Wave Speed** (how
+   fast a wavefront travels, in m/s) on both. The fan alone also has
+   **Beam Cos**, the cosine of its sweeping wash's half-angle (about 32°
+   at the shipped default) — the radio has no such knob, because it
+   radiates evenly in every direction instead of aiming one.
 6. The hero wakes at the `SpawnPoint` marker — move it to move the start.
 7. Press play. The `WaveLevel` root derives everything technical from what
-   you placed — wall centerlines, the hum room, the demo tap, and the flat
-   object id each box carries so its outline stays separate from whatever
-   it touches; the test suite gates the rest on every commit.
+   you placed — wall centerlines and the occluder table every source's
+   silhouette is muffled through, the demo tap, and the flat object id
+   each box carries so its outline stays separate from whatever it
+   touches; the test suite gates the rest on every commit.
 
 Nothing about those object ids needs setting by hand, and it is worth
 knowing why: the engine looks at which boxes actually MEET and gives
