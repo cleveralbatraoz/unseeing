@@ -107,6 +107,21 @@ impl EchoQueue {
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
+
+    /// The whole book, verbatim, in discovery order — the order the
+    /// pinned drain walks. Never sorted: slot assignment depends on it.
+    #[must_use]
+    pub fn capture(&self) -> Vec<PendingEcho> {
+        self.pending.clone()
+    }
+
+    /// A book rebuilt from a capture. The Vec is taken as-is — restoring
+    /// through schedule() would re-apply the falloff and re-narrow the
+    /// distance through f32, neither of which round-trips.
+    #[must_use]
+    pub fn from_pending(pending: Vec<PendingEcho>) -> Self {
+        Self { pending }
+    }
 }
 
 #[cfg(test)]
@@ -215,5 +230,23 @@ mod tests {
         let at_t = q.pending()[0].at_t;
         let d_back = (at_t - 10.0) * 5.5;
         assert!((d_back - f64::from(dist)).abs() < 1e-12);
+    }
+
+    /// A restored book drains in the ORIGINAL's order — the pinned
+    /// reverse-index walk over discovery order, which pool slot
+    /// assignment depends on. Appointments deliberately NOT in at_t
+    /// order, so an implementation that sorted would be caught.
+    #[test]
+    fn a_restored_book_drains_in_the_original_order() {
+        let mut book = EchoQueue::new();
+        book.schedule(0.0, 5.5, Vector3::new(1.0, 0.0, 0.0), 1.0, 5.5);
+        book.schedule(0.0, 2.2, Vector3::new(2.0, 0.0, 0.0), 1.0, 5.5);
+        book.schedule(0.0, 4.4, Vector3::new(3.0, 0.0, 0.0), 1.0, 5.5);
+        let mut restored = EchoQueue::from_pending(book.capture());
+        assert_eq!(restored.pending(), book.pending());
+        let fired_original = book.drain(2.0);
+        let fired_restored = restored.drain(2.0);
+        assert_eq!(fired_restored, fired_original);
+        assert_eq!(restored.pending(), book.pending()); // survivors too
     }
 }
