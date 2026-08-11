@@ -1317,7 +1317,7 @@ mod tests {
     fn a_t_junction_cap_never_fights_the_partners_flank() {
         let boxes = t_junction_boxes();
         assert_eq!(
-            crate::observe::oids::coplanar_fights_checked(&boxes, &[0.25, 0.34]),
+            crate::observe::oids::coplanar_fights_checked(&boxes, &[0.25, 0.34], 1.6),
             Some(vec![])
         );
     }
@@ -1396,7 +1396,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            crate::observe::oids::coplanar_fights_checked(&boxes, &[0.25, 0.34]),
+            crate::observe::oids::coplanar_fights_checked(&boxes, &[0.25, 0.34], 1.6),
             Some(vec![])
         );
     }

@@ -31,7 +31,7 @@ use godot::prelude::*;
 
 use super::hero::HeroBody;
 use super::level::WaveLevel;
-use super::player::UnseeingPlayer;
+use super::player::{EYE, UnseeingPlayer};
 use super::source;
 use crate::cat_body::{CatPose, TAIL_N};
 use crate::cat_brain::{BrainCapture, BrainState, RoamRect};
@@ -400,9 +400,11 @@ impl WaveObserver {
     /// every pair of same-facing coplanar faces sharing rasterised area,
     /// where the depth buffer picks a winner per pixel and speckles the
     /// packed id between the two wherever a wave reveals the patch. Each
-    /// entry names both solids, the shared plane's axis as the string "x"
-    /// or "z", the plane coordinate, and the id step that draws the
-    /// speckle. An empty `fights` always means "no fights": a census that
+    /// entry names both solids, the shared plane's axis as the string
+    /// "x", "y" or "z" (horizontal planes census only when the shipped
+    /// eye height can face them — see `observe::oids::Fight`), the plane
+    /// coordinate, and the id step that draws the speckle. An empty
+    /// `fights` always means "no fights": a census that
     /// could not run is refused with the one-key `unavailable` grammar,
     /// never reported empty.
     #[func]
@@ -421,7 +423,7 @@ impl WaveObserver {
             // check that found no violations is a vacuous pass
             return unavailable("the level's painted boxes and their ids do not line up");
         };
-        let Some(fights) = coplanar_fights_checked(&boxes, &ids) else {
+        let Some(fights) = coplanar_fights_checked(&boxes, &ids, EYE) else {
             // the same impossible misalignment, refused the same way: an
             // empty fights array must always mean "no fights", never
             // "could not check"
@@ -1158,12 +1160,12 @@ fn box_name(names: &[&str], index: usize) -> GString {
 /// The wire name of a fight's plane axis. Spelled out rather than shipped
 /// as the raw index, because an agent's parser is a contract and a
 /// renumbering must not silently move a fight onto another wall. Total,
-/// like [`box_name`]: the census only ever emits 0 and 2 (a horizontal
-/// fight is invisible to a standing eye), so any other value is named as
+/// like [`box_name`]: any value beyond the three world axes is named as
 /// the anomaly it is rather than mapped onto a real axis.
 fn axis_name(axis: usize) -> GString {
     match axis {
         0 => GString::from("x"),
+        1 => GString::from("y"),
         2 => GString::from("z"),
         other => GString::from(&format!("<axis {other}>")),
     }

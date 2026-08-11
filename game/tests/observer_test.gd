@@ -446,17 +446,18 @@ func test_the_oid_census_measures_a_source_by_what_it_sweeps() -> void:
 
 
 ## The coplanar-fight census, through the boundary. The shelf spans
-## x -1..1, z -0.5..0.5; the crate embedded in its front half spans
-## x -0.1..0.9, z -0.3..0.5 — so ONLY their front faces share a plane,
-## z = 0.5, under the same outward normal, with the crate's rectangle
-## inside the shelf's. (A crate the shelf's full depth would be flush at
-## the BACK plane too and census a second fight.) That patch rasterises
-## twice at one depth, and the census must call it: one fight, on the wire
-## as the string "z" — a spelled-out contract, like the slot states, so a
-## renumbered axis enum cannot silently move a fight to another wall. The
-## ids are the level's own colouring, which hands two touching solids ids
-## at least min_sep = 0.08 apart — over the 0.04 crease floor, so the
-## speckle this predicts actually draws.
+## x -1..1, y 0..1, z -0.5..0.5; the crate embedded in its front half
+## spans x -0.1..0.9, y 0..1, z -0.3..0.5 — so TWO patches rasterise
+## twice at one depth. Their front faces share the plane z = 0.5, and
+## their flush TOPS share y = 1, a metre under the shipped 1.6 m eye,
+## which looks down onto that tabletop speckle. (The bottoms share y = 0
+## too, but a downward pair fights only for an eye BELOW its plane, and
+## no eye stands underground — that pair must NOT census.) Both axes
+## cross the wire spelled out — "y" and "z", a contract like the slot
+## states, so a renumbered axis enum cannot silently move a fight to
+## another wall. The ids are the level's own colouring, which hands two
+## touching solids ids at least min_sep = 0.08 apart — over the 0.04
+## crease floor, so the speckles this predicts actually draw.
 func test_two_flush_props_report_their_fight() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_spawn_marker())
@@ -477,16 +478,22 @@ func test_two_flush_props_report_their_fight() -> void:
 	var e: Dictionary = obs.explain_oids()
 	assert_bool(e.has("fights")).is_true()
 	var fights: Array = e.get("fights", [])
-	assert_int(fights.size()).is_equal(1)
-	var fight: Dictionary = fights[0]
-	var seam: Array[String] = []
-	seam.append(fight["name_a"])
-	seam.append(fight["name_b"])
-	seam.sort()
-	assert_array(seam).is_equal(["Crate", "Shelf"])
-	assert_str(fight["axis"]).is_equal("z")
-	assert_float(fight["plane"]).is_equal_approx(0.5, 0.0001)
-	assert_float(fight["delta"]).is_greater_equal(0.08)
+	assert_int(fights.size()).is_equal(2)
+	var axes: Array[String] = []
+	for fight: Dictionary in fights:
+		var seam: Array[String] = []
+		seam.append(fight["name_a"])
+		seam.append(fight["name_b"])
+		seam.sort()
+		assert_array(seam).is_equal(["Crate", "Shelf"])
+		assert_float(fight["delta"]).is_greater_equal(0.08)
+		if fight["axis"] == "y":
+			assert_float(fight["plane"]).is_equal_approx(1.0, 0.0001)
+		else:
+			assert_float(fight["plane"]).is_equal_approx(0.5, 0.0001)
+		axes.append(fight["axis"])
+	axes.sort()
+	assert_array(axes).is_equal(["y", "z"])
 
 
 ## The shipped map answers the census too. The KEY is the contract here,
