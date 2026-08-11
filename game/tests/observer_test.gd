@@ -791,6 +791,32 @@ func test_a_heroless_snapshot_names_the_absence() -> void:
 	assert_bool((snap["unknown"] as Array).has("hero")).is_true()
 
 
+## A hero with no eye reports the SAME named absence a hero with no body
+## would — never a pitch invented at zero, which is exactly the
+## plausible-wrong-answer failure this whole layer exists to prevent.
+## `_ready` always builds the camera as its very first act, so the only
+## way `camera` is ever null past that point is to clear it by hand, the
+## same way the fixture clears `pulses` above.
+func test_a_cameraless_player_names_the_absence_rather_than_guessing_a_pitch() -> void:
+	var pulses := Pulses.new()
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), pulses)
+	add_child(level)
+	var camera: Camera3D = auto_free(Camera3D.new())
+	add_child(camera)
+	var player: UnseeingPlayer = auto_free(UnseeingPlayer.new())
+	player.pulses = pulses
+	add_child(player)
+	player.camera = null
+	var obs: WaveObserver = auto_free(WaveObserver.new())
+	obs.inject(level, camera)
+	obs.inject_hero(player)
+	add_child(obs)
+	var snap: Dictionary = obs.snapshot(0.0)
+	assert_bool(snap.has("hero")).is_false()
+	assert_bool((snap["unknown"] as Array).has("hero")).is_true()
+
+
 ## A freed hero must degrade to the SAME named absence — never a crash,
 ## and never data read through a dangling handle.
 func test_a_freed_hero_reports_unknown_rather_than_crashing() -> void:

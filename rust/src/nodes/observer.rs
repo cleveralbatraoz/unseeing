@@ -362,11 +362,11 @@ impl WaveObserver {
     /// invented for an eyeless hero would be a guess, and the group is
     /// all-or-nothing like the capture blob it will one day feed.
     ///
-    /// Validity is checked BEFORE the handle is cloned, the same order
-    /// `live_level`/`live_camera` use: cloning a `Gd<T>` for a freed
-    /// instance panics rather than returning a dead handle, so a freed
-    /// hero must be caught on the reference, never after taking ownership
-    /// of a copy.
+    /// Validity is checked on the borrowed reference and the handle is
+    /// never cloned at all, the same discipline `live_level`/`live_camera`
+    /// use: cloning a `Gd<T>` for a freed instance panics rather than
+    /// returning a dead handle, so a freed hero must be caught before any
+    /// clone could happen, not after taking ownership of a copy.
     fn hero_observation(&self) -> Option<HeroObservation> {
         let player = self.player.as_ref()?;
         if !player.is_instance_valid() {
