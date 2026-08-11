@@ -40,7 +40,7 @@ use crate::echo_queue::PendingEcho;
 use crate::ffi::{WaveCore, cast_reflection_fan};
 use crate::level_plan;
 use crate::observe::evict::{EvictionPlan, EvictionRule, explain_eviction};
-use crate::observe::oids::{OidExplanation, explain_oids_checked};
+use crate::observe::oids::{Fight, OidExplanation, coplanar_fights_checked, explain_oids_checked};
 use crate::observe::pool::{SlotObservation, SlotState};
 use crate::observe::ray::{self, RayExplanation};
 use crate::observe::reflect::{
@@ -395,7 +395,16 @@ impl WaveObserver {
     }
 
     /// The touch graph and its colouring, over every painted box in the
-    /// level: which seams the flat object ids actually draw.
+    /// level: which seams the flat object ids actually draw. `fights`
+    /// carries the coplanar-fight census over the same boxes and ids —
+    /// every pair of same-facing coplanar faces sharing rasterised area,
+    /// where the depth buffer picks a winner per pixel and speckles the
+    /// packed id between the two wherever a wave reveals the patch. Each
+    /// entry names both solids, the shared plane's axis as the string "x"
+    /// or "z", the plane coordinate, and the id step that draws the
+    /// speckle. An empty `fights` always means "no fights": a census that
+    /// could not run is refused with the one-key `unavailable` grammar,
+    /// never reported empty.
     #[func]
     fn explain_oids(&self) -> VarDictionary {
         let level = match self.live_level() {
@@ -412,7 +421,13 @@ impl WaveObserver {
             // check that found no violations is a vacuous pass
             return unavailable("the level's painted boxes and their ids do not line up");
         };
-        oid_dict(&explanation, &names, &ids)
+        let Some(fights) = coplanar_fights_checked(&boxes, &ids) else {
+            // the same impossible misalignment, refused the same way: an
+            // empty fights array must always mean "no fights", never
+            // "could not check"
+            return unavailable("the level's painted boxes and their ids do not line up");
+        };
+        oid_dict(&explanation, &fights, &names, &ids)
     }
 
     /// Which slot the next sound would claim, and by which rule. Eviction
@@ -1081,7 +1096,12 @@ fn wall_name(names: &[String], index: usize) -> String {
 /// not a census: a solid standing clear of everything appears in no pair at
 /// all, and "which id did this thing actually get?" is the question that
 /// follows "which seams are broken" — often about exactly that solid.
-fn oid_dict(explanation: &OidExplanation, names: &[&str], oids: &[f64]) -> VarDictionary {
+fn oid_dict(
+    explanation: &OidExplanation,
+    fights: &[Fight],
+    names: &[&str],
+    oids: &[f64],
+) -> VarDictionary {
     let pairs: Array<VarDictionary> = explanation
         .pairs
         .iter()
@@ -1098,6 +1118,18 @@ fn oid_dict(explanation: &OidExplanation, names: &[&str], oids: &[f64]) -> VarDi
             entry
         })
         .collect();
+    let fights: Array<VarDictionary> = fights
+        .iter()
+        .map(|fight| {
+            let mut entry = VarDictionary::new();
+            entry.set("name_a", &box_name(names, fight.a));
+            entry.set("name_b", &box_name(names, fight.b));
+            entry.set("axis", &axis_name(fight.axis));
+            entry.set("plane", fight.plane);
+            entry.set("delta", fight.delta);
+            entry
+        })
+        .collect();
     let census: Array<GString> = names.iter().map(|&name| GString::from(name)).collect();
     let violations: Array<i64> = explanation
         .violations
@@ -1109,6 +1141,7 @@ fn oid_dict(explanation: &OidExplanation, names: &[&str], oids: &[f64]) -> VarDi
     entry.set("oids", &PackedFloat64Array::from(oids));
     entry.set("pairs", &pairs);
     entry.set("violations", &violations);
+    entry.set("fights", &fights);
     entry.set("min_sep", explanation.min_sep);
     entry
 }
@@ -1120,6 +1153,20 @@ fn box_name(names: &[&str], index: usize) -> GString {
         || GString::from(&format!("<unnamed box {index}>")),
         |&name| GString::from(name),
     )
+}
+
+/// The wire name of a fight's plane axis. Spelled out rather than shipped
+/// as the raw index, because an agent's parser is a contract and a
+/// renumbering must not silently move a fight onto another wall. Total,
+/// like [`box_name`]: the census only ever emits 0 and 2 (a horizontal
+/// fight is invisible to a standing eye), so any other value is named as
+/// the anomaly it is rather than mapped onto a real axis.
+fn axis_name(axis: usize) -> GString {
+    match axis {
+        0 => GString::from("x"),
+        2 => GString::from("z"),
+        other => GString::from(&format!("<axis {other}>")),
+    }
 }
 
 /// The wire name of a slot's state. Spelled out rather than derived from

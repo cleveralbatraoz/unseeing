@@ -445,6 +445,65 @@ func test_the_oid_census_measures_a_source_by_what_it_sweeps() -> void:
 	assert_array(e["violations"]).is_empty()
 
 
+## The coplanar-fight census, through the boundary. The shelf spans
+## x -1..1, z -0.5..0.5; the crate embedded in its front half spans
+## x -0.1..0.9, z -0.3..0.5 — so ONLY their front faces share a plane,
+## z = 0.5, under the same outward normal, with the crate's rectangle
+## inside the shelf's. (A crate the shelf's full depth would be flush at
+## the BACK plane too and census a second fight.) That patch rasterises
+## twice at one depth, and the census must call it: one fight, on the wire
+## as the string "z" — a spelled-out contract, like the slot states, so a
+## renumbered axis enum cannot silently move a fight to another wall. The
+## ids are the level's own colouring, which hands two touching solids ids
+## at least min_sep = 0.08 apart — over the 0.04 crease floor, so the
+## speckle this predicts actually draws.
+func test_two_flush_props_report_their_fight() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var shelf := WaveProp.new()
+	shelf.name = "Shelf"
+	shelf.size = Vector3(2, 1, 1)
+	shelf.position = Vector3(0, 0.5, 0)
+	level.add_child(shelf)
+	var crate := WaveProp.new()
+	crate.name = "Crate"
+	crate.size = Vector3(1, 1, 0.8)
+	crate.position = Vector3(0.4, 0.5, 0.1)
+	level.add_child(crate)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var obs := _observer()
+	obs.inject(level, _eye())
+	var e: Dictionary = obs.explain_oids()
+	assert_bool(e.has("fights")).is_true()
+	var fights: Array = e.get("fights", [])
+	assert_int(fights.size()).is_equal(1)
+	var fight: Dictionary = fights[0]
+	var seam: Array[String] = []
+	seam.append(fight["name_a"])
+	seam.append(fight["name_b"])
+	seam.sort()
+	assert_array(seam).is_equal(["Crate", "Shelf"])
+	assert_str(fight["axis"]).is_equal("z")
+	assert_float(fight["plane"]).is_equal_approx(0.5, 0.0001)
+	assert_float(fight["delta"]).is_greater_equal(0.08)
+
+
+## The shipped map answers the census too. The KEY is the contract here,
+## never the count: the shipped level's remaining fights are the next
+## task's business, and a number pinned now would freeze a bug in. An
+## empty array must always mean "no fights" — a census that could not run
+## is a one-key refusal, which the uninjected and freed-level tests above
+## already hold explain_oids to.
+func test_the_shipped_level_reports_its_fights_key() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _observer()
+	obs.inject(level, _eye())
+	var e: Dictionary = obs.explain_oids()
+	assert_bool(e.has("fights")).is_true()
+	assert_bool(e.get("fights") is Array).is_true()
+
+
 ## Occlusion, answerable. Spawn to fan head crosses exactly one wall on the
 ## shipped map — DividerNorth, at x = 6.4 — so the fan's WAVE arrives at
 ## HUM_THROUGH (0.55) and its silhouette at SOURCE_THROUGH (0.3).
