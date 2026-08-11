@@ -454,6 +454,33 @@ pub fn wall_merge_warnings(
     warnings
 }
 
+/// Entry indices that own at least one class the labelling pass could not
+/// colour. `classes_of_entry` is the many-to-many ownership table built by
+/// the paint census: one solid can own several classes, and a merged class
+/// can belong to several solids. Walk entries, rather than starvation, so
+/// each affected entry is returned once in deterministic scene order even
+/// when several of its classes starved.
+///
+/// Unknown class indices are harmless: membership is tested as data, never
+/// used for unchecked indexing. An empty starvation set therefore yields
+/// an empty result without a special case.
+#[must_use]
+pub fn starved_entry_indices(
+    starved_classes: &[usize],
+    classes_of_entry: &[Vec<usize>],
+) -> Vec<usize> {
+    classes_of_entry
+        .iter()
+        .enumerate()
+        .filter_map(|(entry, owned)| {
+            owned
+                .iter()
+                .any(|class| starved_classes.contains(class))
+                .then_some(entry)
+        })
+        .collect()
+}
+
 /// Record `(a, b)` as a separated class pair, normalized to `(min, max)`
 /// and deduplicated — the identical rule [`superface`]'s own
 /// `add_separation` enforces, duplicated here on purpose rather than
@@ -821,6 +848,31 @@ mod tests {
         let is_wall = vec![true, false];
         let names = vec!["North".to_string()];
         assert!(wall_merge_warnings(&clusters, &is_wall, &names).is_empty());
+    }
+
+    // ---------------------------------------------------------------
+    // starved_entry_indices
+    // ---------------------------------------------------------------
+
+    /// A merged class can be owned by several entries, and one entry can
+    /// own several starved classes. Every affected owner is named once in
+    /// entry order — never once per class and never only the first owner.
+    #[test]
+    fn starved_classes_recover_every_owner_once() {
+        let classes_of_entry = vec![vec![1, 4], vec![4, 7], vec![8], vec![7, 9]];
+        assert_eq!(
+            starved_entry_indices(&[4, 7], &classes_of_entry),
+            vec![0, 1, 3]
+        );
+    }
+
+    /// No starvation means no owners, while an unknown class is simply not
+    /// owned. Both cases are total and need no caller-side bounds guard.
+    #[test]
+    fn empty_or_unknown_starvation_recovers_no_entries() {
+        let classes_of_entry = vec![vec![1, 4], vec![], vec![8]];
+        assert!(starved_entry_indices(&[], &classes_of_entry).is_empty());
+        assert!(starved_entry_indices(&[99], &classes_of_entry).is_empty());
     }
 
     // ---------------------------------------------------------------

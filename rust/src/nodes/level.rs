@@ -1058,13 +1058,12 @@ impl WaveLevel {
         // slabs have no separate scene node and remain represented by the
         // level-wide warning above.
         let root = self.base().clone().upcast::<Node>();
-        for (entry, owned_classes) in entries.iter().zip(&classes_of_entry) {
-            if !owned_classes
-                .iter()
-                .any(|class| out.starved_classes.contains(class))
-            {
-                continue;
-            }
+        for entry_index in
+            render::paint::starved_entry_indices(&out.starved_classes, &classes_of_entry)
+        {
+            let Some(entry) = entries.get(entry_index) else {
+                continue; // helper is total; retain that law at this boundary
+            };
             let Some(node) = entry.item.node() else {
                 continue;
             };
