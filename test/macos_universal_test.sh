@@ -124,6 +124,12 @@ fi
 # is there" is the one answer that must never read as "verified".
 probe "$CHECK" 1 "rejects a missing file" "$T/absent.dylib"
 names absent.dylib "missing-file rejection names the file"
+# ...and says it is ABSENT. `names absent.dylib` alone cannot pin that: delete
+# the [ -f ] guard and lipo rejects the missing file too, exit 1 and all, with
+# a message that interpolates the same path. The two verdicts want different
+# things from the reader — "build it" versus "something wrong is sitting at
+# this path" — so the distinguishing words are the assertion.
+names "does not exist" "missing-file rejection says it is absent, not that it is a broken Mach-O"
 
 # Something at the path that is not a Mach-O at all — a stale placeholder, a
 # half-written file from a killed build. lipo fails on it; the check must
@@ -178,6 +184,24 @@ names "libunseeing_core.dylib" "the thin-core rejection names the binary inside 
 bundle coreless none
 probe "$CHECK_EXPORT" 1 "rejects an export with no wave core in it" "$T/coreless.zip"
 names "libunseeing_core.dylib" "the coreless rejection names what is missing"
+
+# ...and the sharper version of that same claim, because the case above cannot
+# make it alone. Widen the match from `libunseeing_core.dylib)` to `*.dylib)`
+# and every other case stays green: no fixture until this one put a SECOND
+# dylib in a bundle, so nothing distinguished "the wave core is present" from
+# "some dylib is present" — which is the whole of what that guard asserts. It
+# fails closed today only because Godot's bundle happens to contain exactly one
+# dylib, and this is the check that has the last word on what ships.
+#
+# Everything here is universal and there are two Mach-O files, so neither the
+# vacuity guard nor the thin-binary count can answer. Only a core-SPECIFIC
+# guard rejects this bundle.
+mkdir -p "$T/decoy/unseeing.app/Contents/MacOS" "$T/decoy/unseeing.app/Contents/Frameworks"
+cp "$T/universal.dylib" "$T/decoy/unseeing.app/Contents/MacOS/unseeing"
+cp "$T/universal.dylib" "$T/decoy/unseeing.app/Contents/Frameworks/libsomething.dylib"
+(cd "$T/decoy" && zip -qr "$T/decoy.zip" unseeing.app)
+probe "$CHECK_EXPORT" 1 "rejects an export carrying some other dylib but no wave core" "$T/decoy.zip"
+names "libunseeing_core.dylib" "the decoy rejection names the core itself, not merely 'a dylib'"
 
 # Vacuity: nothing Mach-O anywhere. "I checked every binary and they were all
 # fine" is a lie when there were none, and this is the shape a wrong path
