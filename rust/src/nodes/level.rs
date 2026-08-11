@@ -231,8 +231,10 @@ impl WaveLevel {
     }
 
     /// Dev-demo tap: a fixed point on the wall between the spawn and the
-    /// level's first sound source. ZERO when they share a room (no wall to
-    /// strike) or the level is silent.
+    /// sound source NEAREST it ([`level_plan::nearest_source`], not the
+    /// first in scene order). ZERO when they share a room — which the level
+    /// says out loud, because the strike then fires at the world origin —
+    /// or when the level is silent, which is legal and says nothing.
     #[func]
     fn demo_tap(&self) -> Vector3 {
         self.tap_point
@@ -368,9 +370,32 @@ impl WaveLevel {
         }
     }
 
+    /// Where the input-less demo strikes. The DECISION is pure and lives in
+    /// [`level_plan::plan_demo_tap`] — which source, which wall, and what to
+    /// say when there is no wall at all; this end only reads each source's
+    /// hub and name off the live nodes.
+    fn derive_tap(&mut self) {
+        let aims: Vec<level_plan::SourceAim> = self
+            .source_children
+            .iter()
+            .map(|source| level_plan::SourceAim {
+                name: source.clone().into_gd().get_name().to_string(),
+                hub: source.dyn_bind().hub(),
+            })
+            .collect();
+        let verdict = level_plan::plan_demo_tap(&self.segments, self.spawn_at, &aims);
+        if let Some(plan) = verdict.plan {
+            self.tap_point = plan.point;
+            self.tap_normal = plan.normal;
+        }
+        if let Some(complaint) = verdict.complaint {
+            godot_error!("{}", complaint);
+        }
+    }
+
     /// Derive every technical contract from the children as they stand:
-    /// centerlines from the walls, the spawn from the marker, the demo tap
-    /// from the wall between the spawn and the first source. Loud about
+    /// centerlines from the walls, the spawn from its marker, the demo tap
+    /// from the wall between the spawn and the nearest source. Loud about
     /// whatever a designer left unplaceable.
     fn derive(&mut self) {
         let census = self.census();
@@ -381,14 +406,7 @@ impl WaveLevel {
         self.cat_children = census.cats;
         self.wall_children = census.walls;
         self.derive_spawn(&census.spawns);
-        let Some(source) = self.source_children.first() else {
-            return; // a silent level is legal: no source to strike toward
-        };
-        let hub = source.dyn_bind().hub();
-        if let Some(plan) = level_plan::demo_tap(&self.segments, self.spawn_at, hub) {
-            self.tap_point = plan.point;
-            self.tap_normal = plan.normal;
-        }
+        self.derive_tap();
     }
 
     /// Hand every solid in the world its flat object id (the data pass's

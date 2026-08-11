@@ -5,8 +5,9 @@ extends GdUnitTestSuite
 ## (The directive above must sit on line 1 — gdlint keys an ignore to the
 ## line its problem is reported on. A gdUnit4 suite is a list of cases, not
 ## a class with an API: every case is a public method, so the 20-method
-## ceiling counts coverage rather than surface. It is suppressed HERE and
-## nowhere else, so the rule keeps its teeth over `game/scripts/`.)
+## ceiling counts coverage rather than surface. Suppressed in the two
+## suites that outgrew it — this one and level_test.gd — and nowhere else,
+## so the rule keeps its teeth over `game/scripts/`.)
 ##
 ## These pin the CONTRACT the live debugging loop depends on: an observer
 ## missing any system it reads refuses loudly, and an injected one reports

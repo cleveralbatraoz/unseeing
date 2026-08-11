@@ -375,6 +375,99 @@ pub fn demo_tap(walls: &[Vector4], spawn: Vector3, fan: Vector3) -> Option<TapPl
     }
 }
 
+/// One sound source as the demo-tap planner sees it — everything the
+/// choice needs and nothing the engine layer would have to reach for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceAim {
+    /// The node's name: the tie-break, and what a complaint calls it.
+    pub name: String,
+    /// Where its waves are born, in world space.
+    pub hub: Vector3,
+}
+
+/// What the level should do about the dev demo tap: the strike when there
+/// is one, and the word a designer needs when there is not.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TapVerdict {
+    /// The planned strike, or `None` when no wall stands in the way.
+    pub plan: Option<TapPlan>,
+    /// What must be said out loud, or `None` when there is nothing to say
+    /// — a level with no source at all is a legal authored state.
+    pub complaint: Option<String>,
+}
+
+/// Which source the dev demo tap strikes toward: **the nearest hub to the
+/// spawn, measured in the XZ plane, ties broken by the node's name in
+/// ascending order**. `None` for a silent level.
+///
+/// Neither half of that rule is arbitrary.
+///
+/// SCENE ORDER IS NOT A CONTRACT. The target used to be whichever source
+/// the level walk reached first, so dragging a row in the Scene dock — an
+/// ordinary act in a 129-sibling tree — re-aimed the tap with no message.
+/// Distance to the spawn is a property of the authored WORLD, and moving a
+/// source is exactly the edit that should move the tap.
+///
+/// THE PLANE IS THE MEASURE. The tap is a wall crossing read in XZ, and the
+/// height a speaker cone hangs at is not distance the hero walks; a 3-D
+/// metric would push a radio mounted high on a near wall behind a fan
+/// standing further away on the floor.
+///
+/// THE TIE-BREAK IS THE NAME. A slice index is scene order wearing a
+/// different hat, and the determinism law forbids anything hashed; names
+/// compare by bytes, identically on x86_64, arm64 and wasm.
+#[must_use]
+pub fn nearest_source(sources: &[SourceAim], spawn: Vector3) -> Option<usize> {
+    sources
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| {
+            planar_reach(a.hub, spawn)
+                .total_cmp(&planar_reach(b.hub, spawn))
+                .then_with(|| a.name.cmp(&b.name))
+        })
+        .map(|(slot, _)| slot)
+}
+
+/// Squared distance between two points with their heights thrown away —
+/// squared because only the ORDER is ever asked for, and a square root
+/// would only add float dust to a comparison.
+#[must_use]
+fn planar_reach(a: Vector3, b: Vector3) -> f32 {
+    let (dx, dz) = (a.x - b.x, a.z - b.z);
+    dx * dx + dz * dz
+}
+
+/// The whole demo-tap decision, in one call: choose the source
+/// ([`nearest_source`]), plan the strike ([`demo_tap`]), and say what could
+/// not be planned.
+///
+/// The unplannable case is a SILENT WRONG RESULT without this: the caller
+/// keeps its zeroed tap and the opening strike of an input-less run fires
+/// at the world origin, which is under the floor in the corner of the map.
+/// A source standing in the spawn's own room reaches it in one drag.
+#[must_use]
+pub fn plan_demo_tap(walls: &[Vector4], spawn: Vector3, sources: &[SourceAim]) -> TapVerdict {
+    let Some(source) = nearest_source(sources, spawn).and_then(|slot| sources.get(slot)) else {
+        // a silent level is legal: nothing to strike toward, nothing to say
+        return TapVerdict {
+            plan: None,
+            complaint: None,
+        };
+    };
+    let plan = demo_tap(walls, spawn, source.hub);
+    let complaint = plan.is_none().then(|| {
+        format!(
+            "WaveLevel: no wall stands between the spawn at {spawn} and '{}', the sound source \
+             nearest it, at {} — the dev demo tap cannot be planned and stays at the world \
+             origin, where an input-less run (UNSEEING_DEMO=1, or ?demo in the URL) strikes \
+             instead of on a wall.",
+            source.name, source.hub,
+        )
+    });
+    TapVerdict { plan, complaint }
+}
+
 #[cfg(test)]
 mod tests {
     use godot::builtin::EulerOrder;
@@ -793,6 +886,156 @@ mod tests {
                 Vector3::new(3.0, 0.0, 3.0),
             ),
             None,
+        );
+    }
+
+    /// A source at a named place, the way the tap planner is handed one.
+    fn aim(name: &str, x: f32, y: f32, z: f32) -> SourceAim {
+        SourceAim {
+            name: name.to_string(),
+            hub: Vector3::new(x, y, z),
+        }
+    }
+
+    /// THE order-independence law: reordering the Scene dock used to
+    /// re-aim the demo tap in silence, because the target was whichever
+    /// source the walk reached first. The nearest hub wins instead, so the
+    /// same scene aims the same way however its 129 siblings are listed.
+    #[test]
+    fn the_nearest_source_wins_wherever_it_sits_in_the_dock() {
+        let spawn = Vector3::new(0.0, 0.9, 0.0);
+        let far = aim("Radio", 20.0, 1.0, 0.0);
+        let near = aim("Fan", 4.0, 1.0, 0.0);
+        assert_eq!(nearest_source(&[far.clone(), near.clone()], spawn), Some(1));
+        assert_eq!(nearest_source(&[near, far], spawn), Some(0));
+    }
+
+    /// Distance is measured in the XZ PLANE, and that is a decision rather
+    /// than a shortcut: the tap is a wall CROSSING read in that plane, and
+    /// the height a speaker cone hangs at is not distance the hero walks.
+    /// A radio mounted high three metres away is nearer than a fan on the
+    /// floor five metres away — a 3-D metric would pick the fan.
+    #[test]
+    fn height_does_not_decide_which_source_the_tap_aims_at() {
+        let spawn = Vector3::new(0.0, 0.9, 0.0);
+        let low_and_far = aim("Fan", 5.0, 0.1, 0.0);
+        let high_and_near = aim("Radio", 3.0, 9.0, 0.0);
+        assert_eq!(
+            nearest_source(&[low_and_far, high_and_near], spawn),
+            Some(1)
+        );
+    }
+
+    /// An exact tie is broken by the NAME, ascending — never by position
+    /// in the slice, which is the scene order this whole rule exists to
+    /// stop depending on, and never by anything hashed, which the
+    /// determinism law forbids outright. Two sources equidistant from the
+    /// spawn therefore aim the tap the same way in either dock order.
+    #[test]
+    fn an_exact_tie_is_broken_by_name_not_by_scene_order() {
+        let spawn = Vector3::new(0.0, 0.9, 0.0);
+        let alpha = aim("Alpha", 3.0, 1.0, 4.0); // 5 m out
+        let zulu = aim("Zulu", -3.0, 1.0, -4.0); // 5 m out the other way
+        assert_eq!(
+            nearest_source(&[zulu.clone(), alpha.clone()], spawn),
+            Some(1)
+        );
+        assert_eq!(nearest_source(&[alpha, zulu], spawn), Some(0));
+    }
+
+    /// A silent level has nothing to aim at, and that is legal.
+    #[test]
+    fn a_silent_level_aims_at_nothing() {
+        assert_eq!(nearest_source(&[], Vector3::ZERO), None);
+    }
+
+    /// The shipped map, measured: the fan's hub is 5.6 m from the spawn in
+    /// the XZ plane and the radio's is 18.5, so the nearest-hub rule aims
+    /// at the same fan the old first-in-scene-order rule did. That is the
+    /// whole reason this fix is invisible to `level_01.tscn` — and it stays
+    /// invisible with the dock listed the other way round.
+    #[test]
+    fn the_shipped_map_still_aims_the_tap_at_the_fan() {
+        let spawn = Vector3::new(3.0, 0.9, 4.0);
+        let fan = aim("Fan", 8.7, 1.15, 4.4);
+        let radio = aim("Radio", 21.5, 0.92, 3.29);
+        assert_eq!(
+            nearest_source(&[fan.clone(), radio.clone()], spawn),
+            Some(0)
+        );
+        assert_eq!(nearest_source(&[radio, fan], spawn), Some(1));
+    }
+
+    /// The whole tap decision in one call: pick the source, plan the
+    /// strike, say nothing when there is nothing to say.
+    #[test]
+    fn a_plannable_layout_yields_the_plan_and_no_complaint() {
+        let verdict = plan_demo_tap(
+            &retired_map_walls(),
+            Vector3::new(3.0, 0.9, 4.0),
+            &[aim("Fan", 8.6, 1.15, 4.4)],
+        );
+        assert_eq!(
+            verdict.plan.expect("tap plans").point,
+            Vector3::new(6.25, 0.8, 4.0)
+        );
+        assert_eq!(verdict.complaint, None);
+    }
+
+    /// The order-independence law all the way through the planner, not
+    /// only through the choice: the fan is listed FIRST and is the one the
+    /// retired rule struck the divider toward, but a radio three metres
+    /// west of the spawn is nearer — so the tap lands on the west border's
+    /// inward face instead, and the dock's order decided nothing.
+    #[test]
+    fn the_plan_follows_the_nearest_source_not_the_first_listed() {
+        let walls = retired_map_walls();
+        let spawn = Vector3::new(3.0, 0.9, 4.0);
+        let fan = aim("Fan", 8.6, 1.15, 4.4); // 5.6 m east, behind the divider
+        let radio = aim("WestRadio", 0.0, 1.0, 4.0); // 3.0 m west, behind the border
+        let plan = plan_demo_tap(&walls, spawn, &[fan.clone(), radio.clone()])
+            .plan
+            .expect("tap plans");
+        assert_eq!(plan.point, Vector3::new(0.75, 0.8, 4.0));
+        assert_eq!(plan.normal, Vector3::new(1.0, 0.0, 0.0));
+        // and the retired rule's answer, for contrast: the fan alone puts
+        // the strike on the divider's west face, five metres the other way
+        let fan_only = plan_demo_tap(&walls, spawn, &[fan])
+            .plan
+            .expect("tap plans");
+        assert_eq!(fan_only.point, Vector3::new(6.25, 0.8, 4.0));
+    }
+
+    /// A silent level plans nothing AND complains about nothing: a level
+    /// with no source is a legal authored state, not a mistake.
+    #[test]
+    fn a_silent_level_plans_no_tap_and_says_nothing() {
+        let verdict = plan_demo_tap(&retired_map_walls(), Vector3::new(3.0, 0.9, 4.0), &[]);
+        assert_eq!(verdict.plan, None);
+        assert_eq!(verdict.complaint, None);
+    }
+
+    /// The silent wrong result that issue #20 is really about: a source in
+    /// the spawn's own room leaves nothing to strike, the caller keeps its
+    /// zeroed tap, and the opening demo strike fires at the world origin.
+    /// The plan is still `None` — there IS no wall — but the level now says
+    /// which source it could not reach past and what happens instead.
+    #[test]
+    fn an_unplannable_layout_names_the_source_and_the_consequence() {
+        let verdict = plan_demo_tap(
+            &retired_map_walls(),
+            Vector3::new(10.0, 0.9, 4.0),
+            &[aim("Fan", 8.6, 1.15, 4.4)],
+        );
+        assert_eq!(verdict.plan, None);
+        assert_eq!(
+            verdict.complaint.as_deref(),
+            Some(
+                "WaveLevel: no wall stands between the spawn at (10, 0.9, 4) and 'Fan', the \
+                 sound source nearest it, at (8.6, 1.15, 4.4) — the dev demo tap cannot be \
+                 planned and stays at the world origin, where an input-less run \
+                 (UNSEEING_DEMO=1, or ?demo in the URL) strikes instead of on a wall."
+            )
         );
     }
 }

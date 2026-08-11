@@ -1,3 +1,4 @@
+# gdlint:ignore = max-public-methods
 extends GdUnitTestSuite
 ## The level-authoring engine nodes, held to their designer-safety laws:
 ## a wall builds its outline box and collider from nothing but transform
@@ -5,8 +6,15 @@ extends GdUnitTestSuite
 ## are axis-aligned by law, and the snapped basis carries no trig dust);
 ## props stay free; and the level root is the single injection point that
 ## deals the world and image skins out, then derives the spawn from its
-## marker and the demo tap from the wall between the spawn and the first
-## sound source.
+## marker and the demo tap from the wall between the spawn and the sound
+## source NEAREST it.
+##
+## (The directive above must sit on line 1 — gdlint keys an ignore to the
+## line its problem is reported on. A gdUnit4 suite is a list of cases, not
+## a class with an API: every case is a public method, so the 20-method
+## ceiling counts coverage rather than surface. Suppressed in the two
+## suites that outgrew it and nowhere else, so the rule keeps its teeth
+## over `game/scripts/`.)
 ##
 ## The SHIPPED scene's own invariants live next door, in map_test.gd.
 
@@ -264,7 +272,8 @@ func test_prop_builds_its_free_box() -> void:
 ## the pool to every sound source; entering the tree derives the spawn from
 ## its marker (lifted to capsule height). Here the fan and the spawn share
 ## one room, so the spawn→fan line crosses no wall and there is no demo tap
-## to plan.
+## to plan — which the level says out loud; the message itself is held next
+## door, in test_unplannable_demo_tap_reports.
 func test_level_distributes_and_derives() -> void:
 	var mat := ShaderMaterial.new()
 	var source_mat := ShaderMaterial.new()
@@ -392,7 +401,8 @@ func test_two_exact_spawn_markers_name_the_one_that_lost() -> void:
 ## An open-sided fan room is legal now: the fan's waves are stopped by the
 ## walls that ARE there (source→surface sight), not clipped to an enclosing
 ## rectangle — so derivation no longer refuses. The level enters the tree
-## and reads back its walls, fan and spawn.
+## and reads back its walls, fan and spawn. (The one wall does not stand
+## between the two, so the tap goes unplanned and the level says so.)
 func test_open_fan_room_is_legal() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_wall(4.0, Vector3(2, 0, 0), false))
@@ -408,13 +418,68 @@ func test_open_fan_room_is_legal() -> void:
 
 
 ## A fanless level is legal silence: no source to strike toward, so no
-## demo tap, and no error.
+## demo tap, and no error. Nothing was authored wrong here, so nothing is
+## said — a level that complained about its own quiet would teach a
+## designer to stop reading the log.
 func test_fanless_level_has_no_demo_tap() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_wall(4.0, Vector3(2, 0, 0), false))
 	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await assert_error(enter).is_success()
+	assert_vector(level.demo_tap()).is_equal(Vector3.ZERO)
+
+
+## Scene order is not a contract. The demo tap aims at the source whose hub
+## is NEAREST the spawn, so dragging a row in a 129-sibling Scene dock no
+## longer re-aims the opening strike in silence. Here the far source is
+## listed first and the near one second: the tap lands on the wall between
+## the spawn and the NEAR one, which is not the wall first-in-scene-order
+## would have struck.
+func test_demo_tap_aims_at_the_nearest_source_not_the_first() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_wall(4.0, Vector3(5, 0, 7), false))  # x-run, spans x 3..7
+	level.add_child(_wall(4.0, Vector3(9, 0, 5), true))  # z-run, spans z 3..7
+	var far := SoundFan.new()
+	far.name = "FarFan"
+	far.position = Vector3(13, 0, 5)
+	level.add_child(far)
+	var near := SoundFan.new()
+	near.name = "NearFan"
+	near.position = Vector3(5, 0, 9)
+	level.add_child(near)
+	level.add_child(_spawn_marker(Vector3(5, 0, 5), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
+	assert_vector(level.demo_tap()).is_equal_approx(Vector3(5, 0.8, 6.85), Vector3.ONE * 0.001)
+	assert_vector(level.demo_tap_normal()).is_equal(Vector3(0, 0, -1))
+
+
+## An unplannable tap used to be a silent wrong result: the `if let` simply
+## did not fire, tap_point kept its zeroed default, and main.gd fired the
+## opening strike at the world origin — under the floor in the corner of
+## the map. One drag of a source into the spawn's own room reaches that, so
+## the level now names the source it could not reach past and says what
+## happens instead.
+func test_unplannable_demo_tap_reports() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_wall(4.0, Vector3(2, 0, 0), false))
+	var fan := SoundFan.new()
+	fan.name = "Fan"
+	fan.position = Vector3(2, 0, 2.5)
+	level.add_child(fan)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: no wall stands between the spawn at (1, 0.9, 3) and 'Fan', the sound "
+			+ "source nearest it, at (2, 1.15, 2.4) — the dev demo tap cannot be planned and "
+			+ "stays at the world origin, where an input-less run (UNSEEING_DEMO=1, or ?demo "
+			+ "in the URL) strikes instead of on a wall."
+		)
+	))
 	assert_vector(level.demo_tap()).is_equal(Vector3.ZERO)
 
 
