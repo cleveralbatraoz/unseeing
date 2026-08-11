@@ -40,21 +40,40 @@ Renderer is `gl_compatibility` — mandatory for the Web (wasm) export.
 
 ## Authoring levels
 
-No programming needed — the level is an ordinary Godot scene:
+Placing walls, furniture and sound sources is ordinary scene editing — no
+programming. Getting the editor to recognise those engine node types in the
+first place does take one terminal step, though: nothing ships as a
+downloadable binary yet (that gap is issue #38), so building the Rust
+library yourself is the only way in today.
 
 1. Build the Rust library once so the editor knows the engine nodes:
-   `cargo build --release` in `../rust/` (only needed after a fresh
-   clone or an engine change — and never open scenes before this build,
-   or the editor will strip the engine node types from them).
+   install `rustup` — it will pick up the toolchain pinned in
+   `../rust/rust-toolchain.toml` automatically — and run `cargo build
+   --release` in `../rust/` (needed after a fresh clone or an engine
+   change). Skip this and the scene still opens, but every `WaveWall`,
+   `WaveProp`, `SoundFan` and so on loads as a `MissingNode` placeholder:
+   no viewport geometry, and any method call on one fails (`Cannot call
+   GDExtension method bind ... on placeholder instance`). You cannot lay
+   out a level that way, but you cannot damage one either — closing and
+   reopening the scene after the real build round-trips every property
+   losslessly.
 2. Open `game/project.godot` in Godot and double-click
    `scenes/level_01.tscn`.
-3. Walls: duplicate any `WaveWall`, drag it where you want, stretch it
-   with its **Length** property. Walls snap to right angles by
-   themselves — the perception physics needs axis-aligned walls, and the
-   engine enforces it quietly.
+3. Walls: duplicate any `WaveWall` (Ctrl+D), drag it where you want,
+   stretch it with its **Length** property. Walls must be axis-aligned:
+   rotate one and the engine snaps it to the nearest quarter turn and
+   drops any scale, warning in the Output panel when it does. That snap
+   only runs when the wall (re-)enters the scene tree — placed,
+   duplicated, or the scene reloaded — not while you're turning its
+   gizmo in the viewport, so a wall you just rotated can sit at a free
+   angle on screen for the rest of the session with no warning until the
+   next reload.
 4. Furniture: duplicate a `WaveProp` and set its **Size**.
 5. Sound sources: the `SoundFan` node has its voice in the Inspector —
-   whoosh cadence, hum range/speed/gain, beam cone.
+   **Volume** (0 to 1, how loud and how far its waves reach), **Cadence**
+   (seconds between waves), **Wave Speed** (how fast a wavefront
+   travels, in m/s), and **Beam Cos**, the cosine of the sweeping wash's
+   half-angle (about 32° at the shipped default).
 6. The hero wakes at the `SpawnPoint` marker — move it to move the start.
 7. Press play. The `WaveLevel` root derives everything technical from what
    you placed — wall centerlines, the hum room, the demo tap, and the flat
