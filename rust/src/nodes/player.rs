@@ -308,6 +308,16 @@ impl UnseeingPlayer {
         self.now = now_t;
     }
 
+    /// The cane speaks on command: the scripted twin of the left click,
+    /// riding the SAME queued-intent path — executed next physics tick,
+    /// in physics context, through the full aimed/rest/swish decision
+    /// tree and the [`TAP_COOLDOWN`]. `queue_wave` fakes a wave; this
+    /// taps the cane.
+    #[func]
+    pub fn tap(&mut self) {
+        self.tap_queued = true;
+    }
+
     /// The viewmodel's sweep asks for the cane rest to be computed at
     /// this yaw offset. One frame of latency BY DESIGN: requested during
     /// the render frame, honored on the next physics tick, read back
