@@ -16,7 +16,11 @@ extends GdUnitTestSuite
 ## suites that outgrew it and nowhere else, so the rule keeps its teeth
 ## over `game/scripts/`.)
 ##
-## The SHIPPED scene's own invariants live next door, in map_test.gd.
+## The SHIPPED scene's own invariants live next door, in map_test.gd. The
+## one shipped-scene case here is not an invariant of the MAP but of this
+## NODE — that a level inside every shader ceiling says nothing at all.
+
+const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
 
 ## One authored wall, the way the generator and a designer both place it:
@@ -554,6 +558,84 @@ func test_a_second_ready_does_not_double_the_slabs() -> void:
 	level.extents = Vector2(8, 6)
 	for slab: StaticBody3D in _slabs(level):
 		assert_vector(_box(slab).size).is_equal(Vector3(8, 0.1, 6))
+
+
+## A level of `count` z-run stub walls a metre apart, with a spawn marker so
+## the only thing it can ever have to say is about its wall budget. The
+## SPACING is load-bearing: a metre keeps the footprint's diagonal near
+## `count` metres and well under DIST_PACK_RANGE, so these cases exercise
+## the slot ceiling alone and never trip the map-size one as well.
+func _stub_walls(count: int) -> WaveLevel:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	for i: int in count:
+		level.add_child(_wall(2.0, Vector3(float(i), 0, 0), true))
+	level.add_child(_spawn_marker(Vector3.ZERO, 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	return level
+
+
+## The heads-up half of the wall budget, at the engine boundary. The words
+## are pinned in cargo (level_plan::wall_budget); what is pinned HERE is
+## that they are actually SAID — that push_wall_table still hands the
+## verdict to godot_warn!. Delete that one call and every cargo test and
+## every other suite stays green while a designer is never told anything.
+##
+## A heads-up, not an error: 29 walls of 32 still occlude, nothing is
+## truncated, and the level is merely one room short of the ceiling.
+func test_a_level_nearing_the_wall_slots_warns_with_its_headroom() -> void:
+	var level := _stub_walls(29)
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_warning(
+		(
+			"WaveLevel: 29 walls against the sight shaders' 32 slots — 3 segments left, short of "
+			+ "the 4 another room costs (three sides plus the doorway, which is the gap between "
+			+ "two segments and so costs a segment of its own). Every wall past the last slot "
+			+ "silently stops occluding. Raising MAXW (rust/src/sight.rs, mirrored in "
+			+ "game/shaders/pulse_pool.gdshaderinc) is a measured decision and not a free one: "
+			+ "every wall is another rect in the per-fragment sight loop, on every platform."
+		)
+	))
+	assert_int(level.wall_segments().size()).is_equal(29)
+
+
+## The other half, and the other VOLUME. Past the ceiling the drawn world no
+## longer matches the authored scene — the table keeps 32 rects and the rest
+## stop occluding, so waves walk through walls a designer placed — and that
+## is an error, not a heads-up. A single volume for both would have taught
+## the reader to scroll past the one that matters.
+func test_a_level_past_the_wall_slots_errors_and_counts_the_dropped_walls() -> void:
+	var level := _stub_walls(33)
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: 33 walls exceed the sight shaders' 32 slots — the table keeps the first "
+			+ "32 and drops 1, which stop occluding entirely: waves pass straight through them "
+			+ "and no sight line counts them. Delete or merge walls, or raise MAXW "
+			+ "(rust/src/sight.rs, mirrored in game/shaders/pulse_pool.gdshaderinc) — a measured "
+			+ "decision and not a free one: every wall is another rect in the per-fragment sight "
+			+ "loop, on every platform."
+		)
+	))
+	assert_int(level.wall_rects().size()).is_equal(32)  # truncated, as the message says
+
+
+## THE SILENCE GATE, and the most valuable of the three: the shipped map is
+## inside both shader ceilings — 19 walls against 32 slots, a 38.02 m
+## wall-centerline diagonal against a 40 m DIST_PACK_RANGE — so entering the
+## tree must produce NO engine output whatsoever.
+##
+## Silence is the hard half of a diagnostic to hold. A budget that shouted
+## on a healthy level would be worse than no budget at all: a designer who
+## sees a wall of text on every run stops reading it, and the message that
+## matters arrives inside noise they have already learned to skip. Nothing
+## else in the suite would notice a threshold nudged the wrong way; this is
+## the assertion that would.
+func test_the_shipped_level_says_nothing_about_either_shader_ceiling() -> void:
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await assert_error(enter).is_success()
+	assert_int(level.wall_segments().size()).is_equal(19)
 
 
 ## Injection is ordered, and the order is the contract: by the time the

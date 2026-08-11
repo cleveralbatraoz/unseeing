@@ -1263,12 +1263,19 @@ mod tests {
             .iter()
             .map(|s| Vector4::new(s.z, s.w, s.x, s.y))
             .collect();
+        // the literal twice over, never one measure against the other: an
+        // expectation computed by the function under test would hold on any
+        // footprint it happened to return, including a wrong one
         assert!(
             (map_diagonal(&forward) - 9.899_494_936_611_665).abs() < 1e-12,
             "{}",
             map_diagonal(&forward)
         );
-        assert_eq!(map_diagonal(&flipped), map_diagonal(&forward));
+        assert!(
+            (map_diagonal(&flipped) - 9.899_494_936_611_665).abs() < 1e-12,
+            "{}",
+            map_diagonal(&flipped)
+        );
     }
 
     /// One wall is a footprint too, and the height is never dropped: a 4 m
