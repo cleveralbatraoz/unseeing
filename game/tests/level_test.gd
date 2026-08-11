@@ -74,18 +74,19 @@ func _world_box(body: Node) -> AABB:
 
 
 ## The centerline the DRAWN box implies: its long horizontal axis pulled in
-## by a wall half-thickness at each end, laid down the middle of its short
-## one. A wall's occluder and its box are the same object seen twice, so
-## this is what wall_segments() has to say.
+## by the buried-cap run pad at each end — a half-thickness minus the 5 mm
+## cap inset that keeps a wall's end faces out of its neighbours' planes —
+## laid down the middle of its short one. A wall's occluder and its box are
+## the same object seen twice, so this is what wall_segments() has to say.
 func _drawn_centerline(box: AABB) -> Vector4:
-	const HALF_T := 0.15
+	const END_PAD := 0.145
 	var lo := box.position
 	var hi := box.position + box.size
 	if box.size.x >= box.size.z:
 		var z := (lo.z + hi.z) * 0.5
-		return Vector4(lo.x + HALF_T, z, hi.x - HALF_T, z)
+		return Vector4(lo.x + END_PAD, z, hi.x - END_PAD, z)
 	var x := (lo.x + hi.x) * 0.5
-	return Vector4(x, lo.z + HALF_T, x, hi.z - HALF_T)
+	return Vector4(x, lo.z + END_PAD, x, hi.z - END_PAD)
 
 
 ## A room prefab, instanced the way the editor instances one: a plain
@@ -131,13 +132,16 @@ func _slabs(level: WaveLevel) -> Array[StaticBody3D]:
 	return out
 
 
-## A wall is its centerline padded by a half-thickness each way, floor to
-## ceiling — mesh and collider the same box, risen from the floor node.
+## A wall is its centerline padded by a half-thickness on each flank and by
+## a half-thickness MINUS the 5 mm cap inset past each end — the end caps
+## sit buried inside their corner partners instead of flush in their
+## planes, so coplanar same-facing faces cannot z-fight — floor to ceiling,
+## mesh and collider the same box, risen from the floor node.
 func test_wall_builds_box_and_collider_from_length() -> void:
 	var wall: WaveWall = auto_free(_wall(7.4, Vector3(2, 0, 3), false))
 	add_child(wall)
-	assert_vector(_box(wall).size).is_equal(Vector3(7.7, 3, 0.3))
-	assert_vector(_box_shape(wall).size).is_equal(Vector3(7.7, 3, 0.3))
+	assert_vector(_box(wall).size).is_equal(Vector3(7.69, 3, 0.3))
+	assert_vector(_box_shape(wall).size).is_equal(Vector3(7.69, 3, 0.3))
 	assert_vector(_skin(wall).position).is_equal(Vector3(0, 1.5, 0))
 
 
@@ -179,8 +183,9 @@ func test_wall_in_a_rotated_room_occludes_where_it_draws() -> void:
 
 
 ## Inherited SCALE is the same law seen from the other side: a wall in a 2x
-## room would draw 8.6 m of box and occlude 4.26 m of centerline. Writing
-## the snapped basis in world space annihilates it with the same stroke,
+## room would draw 8.58 m of box over the 4 m centerline it occludes.
+## Writing the snapped basis in world space annihilates it with the same
+## stroke,
 ## because a quadrant basis has unit columns — length stays the one size
 ## knob however deep the prefab is nested, and the wall still runs floor to
 ## ceiling.
@@ -193,7 +198,7 @@ func test_a_scaled_room_cannot_stretch_a_wall_past_its_occluder() -> void:
 		. append_failure_message("segment %s vs drawn box %s" % [level.wall_segments()[0], box])
 		. is_equal_approx(_drawn_centerline(box), Vector4.ONE * 0.001)
 	)
-	assert_vector(box.size).is_equal_approx(Vector3(0.3, 3, 4.3), Vector3.ONE * 0.001)
+	assert_vector(box.size).is_equal_approx(Vector3(0.3, 3, 4.29), Vector3.ONE * 0.001)
 	assert_float(box.position.y).is_equal_approx(0.0, 0.001)
 
 
@@ -219,9 +224,9 @@ func test_a_duplicated_wall_does_not_double_its_geometry() -> void:
 	(
 		assert_vector(_box(copy).size)
 		. append_failure_message("a ghost mesh is drawn ahead of the one the knob reshapes")
-		. is_equal(Vector3(9.3, 3, 0.3))
+		. is_equal(Vector3(9.29, 3, 0.3))
 	)
-	assert_vector(_box(wall).size).is_equal(Vector3(4.3, 3, 0.3))
+	assert_vector(_box(wall).size).is_equal(Vector3(4.29, 3, 0.3))
 
 
 ## The length knob reshapes a placed wall live — mesh and collider
@@ -230,8 +235,8 @@ func test_wall_length_knob_reshapes_live() -> void:
 	var wall: WaveWall = auto_free(_wall(4.0, Vector3.ZERO, false))
 	add_child(wall)
 	wall.length = 9.0
-	assert_vector(_box(wall).size).is_equal(Vector3(9.3, 3, 0.3))
-	assert_vector(_box_shape(wall).size).is_equal(Vector3(9.3, 3, 0.3))
+	assert_vector(_box(wall).size).is_equal(Vector3(9.29, 3, 0.3))
+	assert_vector(_box_shape(wall).size).is_equal(Vector3(9.29, 3, 0.3))
 
 
 ## A wall's one knob answers a minus sign the way every prop knob does.
@@ -244,11 +249,11 @@ func test_a_negative_wall_length_folds_instead_of_inverting_the_wall() -> void:
 	var wall := _wall(-4.0, Vector3(3, 0, 1), false)
 	var level := _level_holding(wall)
 	assert_float(wall.length).is_equal_approx(4.0, 0.001)
-	assert_vector(_box(wall).size).is_equal(Vector3(4.3, 3, 0.3))
+	assert_vector(_box(wall).size).is_equal(Vector3(4.29, 3, 0.3))
 	(
 		assert_vector(_box_shape(wall).size)
 		. append_failure_message("the collider kept its own size while the mesh was reshaped")
-		. is_equal(Vector3(4.3, 3, 0.3))
+		. is_equal(Vector3(4.29, 3, 0.3))
 	)
 	(
 		assert_vector(level.wall_segments()[0])
