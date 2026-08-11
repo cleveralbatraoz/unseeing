@@ -475,13 +475,22 @@ impl WaveLevel {
     /// Derive time is RUN time: `ready` returns before `derive` under
     /// `Engine::is_editor_hint`, so none of this reaches a designer while
     /// they are dragging. Surfacing it in the editor is a separate job.
+    /// A level with no floor to measure against — nothing built to stand
+    /// on — has no verdict rather than an early return, so the counts are
+    /// rewritten on EVERY derivation. An early return would leave the last
+    /// build's numbers standing as this build's, which is the quietest kind
+    /// of wrong a report can be.
     fn report_placement(&mut self, census: &Census) {
-        let Some(floor) = self.floor_box() else {
-            return; // nothing built to stand on: nothing to measure against
+        let (strays, sunk) = match self.floor_box() {
+            Some(floor) => {
+                let placed = self.placed_solids(census);
+                (
+                    level_plan::unfloored(floor, &placed),
+                    level_plan::sunken(floor, &placed),
+                )
+            }
+            None => (Vec::new(), Vec::new()),
         };
-        let placed = self.placed_solids(census);
-        let strays = level_plan::unfloored(floor, &placed);
-        let sunk = level_plan::sunken(floor, &placed);
         self.unfloored = strays.len() as i64;
         self.sunken = sunk.len() as i64;
         for complaint in strays.iter().chain(sunk.iter()) {
