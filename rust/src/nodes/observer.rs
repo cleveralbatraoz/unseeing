@@ -407,6 +407,17 @@ impl WaveObserver {
     /// `fights` always means "no fights": a census that
     /// could not run is refused with the one-key `unavailable` grammar,
     /// never reported empty.
+    ///
+    /// The fight census reads only the boxes with drawn faces. A sound
+    /// source enters the census as a swept ENVELOPE — its limbs' union
+    /// grown by the sweep margin, once per id — whose planes rasterise
+    /// nothing, so feeding it to the fight census reported every source
+    /// z-fighting itself. The envelope stays in `pairs`, `violations`
+    /// and `names` exactly as before: the colouring anchors on it, and
+    /// the seam law is about reach, not rasterised faces. What a
+    /// source's real limbs do to each other is therefore OUTSIDE this
+    /// census — an accepted miss, like the hero's body, named here
+    /// rather than papered over.
     #[func]
     fn explain_oids(&self) -> VarDictionary {
         let level = match self.live_level() {
@@ -423,12 +434,28 @@ impl WaveObserver {
             // check that found no violations is a vacuous pass
             return unavailable("the level's painted boxes and their ids do not line up");
         };
-        let Some(fights) = coplanar_fights_checked(&boxes, &ids, EYE) else {
+        // only the boxes with drawn faces can z-fight; the swept source
+        // envelopes stay in the seam census above and out of this one
+        let drawn: Vec<usize> = painted
+            .iter()
+            .enumerate()
+            .filter(|(_, solid)| !solid.swept)
+            .map(|(index, _)| index)
+            .collect();
+        let drawn_boxes: Vec<_> = drawn.iter().map(|&index| boxes[index]).collect();
+        let drawn_ids: Vec<f64> = drawn.iter().map(|&index| ids[index]).collect();
+        let Some(mut fights) = coplanar_fights_checked(&drawn_boxes, &drawn_ids, EYE) else {
             // the same impossible misalignment, refused the same way: an
             // empty fights array must always mean "no fights", never
             // "could not check"
             return unavailable("the level's painted boxes and their ids do not line up");
         };
+        for fight in &mut fights {
+            // re-key onto the FULL census, so a fight names its solids
+            // off the same list `pairs` and `names` index into
+            fight.a = drawn[fight.a];
+            fight.b = drawn[fight.b];
+        }
         oid_dict(&explanation, &fights, &names, &ids)
     }
 

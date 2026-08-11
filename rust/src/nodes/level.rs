@@ -773,6 +773,16 @@ pub(super) struct PaintedSolid {
     pub(super) name: String,
     pub(super) area: oid_palette::Box3,
     pub(super) oid: f64,
+    /// True when `area` is a SWEPT ENVELOPE rather than drawn faces: a
+    /// sound source's census box is its limbs' union grown by
+    /// `sweep_margin`, entered once per id it paints. The seam/touch
+    /// census WANTS that box — the colouring anchors on it, so a crate
+    /// the fan's guard ring reaches on half of every cycle still needs a
+    /// clear id — but the fight census must not see it: an envelope's
+    /// planes rasterise nothing, and every per-id copy of one union box
+    /// is coplanar-same-facing with its siblings on all six faces, so a
+    /// census fed the envelope reports each source z-fighting itself.
+    pub(super) swept: bool,
 }
 
 /// What the debug observer ([`super::observer`]) reads back off a level.
@@ -888,6 +898,7 @@ impl WaveLevel {
                 name: if slab.lid { "Ceiling" } else { "Floor" }.to_string(),
                 area,
                 oid: read_oid(&slab.skin),
+                swept: false,
             });
         }
         for solid in &census.solids {
@@ -899,6 +910,7 @@ impl WaveLevel {
                 name: node.get_name().to_string(),
                 area,
                 oid: solid.dyn_bind().oid(),
+                swept: false,
             });
         }
         for source in &census.sources {
@@ -916,6 +928,7 @@ impl WaveLevel {
                     name: format!("{name} @{oid}"),
                     area,
                     oid,
+                    swept: true,
                 });
             }
         }
@@ -928,6 +941,7 @@ impl WaveLevel {
                 name: node.get_name().to_string(),
                 area,
                 oid,
+                swept: false,
             });
         }
         painted
