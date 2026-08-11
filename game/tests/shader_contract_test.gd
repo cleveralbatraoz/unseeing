@@ -69,6 +69,43 @@ func test_maxp_matches_the_pool() -> void:
 	assert_float(_shader_const("MAXP")).is_equal(float(Pulses.MAXP))
 
 
+## MAXW lives in two languages: rust/src/sight.rs owns it and the include
+## pins it for the two occluding skins' uniform arrays. The level now READS
+## the Rust copy and tells a designer how many free slots are left, so a
+## drift between the two would be a lie in the most expensive direction —
+## a level reporting room it does not have while the shaders have already
+## dropped its newest walls. Nothing else compares the two numbers:
+## data_skins_test pins the include's literal, and pins Rust's to nothing.
+func test_maxw_matches_the_rust_sight_reference() -> void:
+	assert_int(int(_shader_const("MAXW"))).is_equal(WaveLevel.wall_slots())
+
+
+## The wall budget as a law about HEADROOM, not a census. A level that
+## outgrows the sight shaders' slots is a level-breaking fault — every wall
+## past the last slot silently stops occluding — and until now the only
+## thing that noticed was map_test's frozen wall count, which fails at the
+## twentieth wall and reads like a bug in the census rather than a map that
+## outgrew a shader constant.
+##
+## So this asserts what is LEFT: a room costs about four segments (three
+## sides plus the doorway, which is the gap between two segments), and the
+## shipped 19-wall map keeps 13 of 32 slots free — about three more rooms.
+## It goes red one room short of the ceiling, at the same count where
+## WaveLevel itself starts warning, and its message names the constant.
+func test_the_shipped_map_leaves_room_for_more_walls() -> void:
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var slots := WaveLevel.wall_slots()
+	var walls := level.wall_segments().size()
+	var room := WaveLevel.room_segments()
+	var left := slots - walls
+	var told := "%d walls of %d slots: %d segments left, under the %d " % [walls, slots, left, room]
+	told += "another room costs. Past the last slot a wall silently stops occluding."
+	told += " Shrink the map, or raise MAXW (rust/src/sight.rs) — a measured decision."
+	assert_int(left).append_failure_message(told).is_greater_equal(room)
+
+
 ## emit() packs dat.w as type * 10 + gain * 9; the shaders must decode with
 ## exactly floor(w / 10) and mod(w, 10) / 9 — pinned as literal source text,
 ## so a "harmless" rewrite of either expression trips the contract.
@@ -78,11 +115,32 @@ func test_decode_expressions_are_literal() -> void:
 	assert_str(src).contains("mod(d.w, 10.0) / 9.0")
 
 
+## DIST_PACK_RANGE lives in the include, which is the copy that renders, and
+## now also in rust/src/level_plan.rs, because WaveLevel measures the map it
+## derived against it and says so out loud. A drift between the two would
+## make that report worthless in the quiet direction — a level checking
+## itself against 40 while the shaders pack against 30 calls a broken map
+## fine — and nothing else compares them.
+func test_dist_pack_range_matches_the_level_budget() -> void:
+	assert_float(_shader_const("DIST_PACK_RANGE")).is_equal(WaveLevel.pack_range())
+
+
 ## Camera distance is packed into one color channel divided by
-## DIST_PACK_RANGE; any visible point packing above 1.0 would alias. The
-## range must therefore exceed the longest sight line the map allows: the
-## full 3D diagonal of the wall-centerline extents, floor to ceiling —
+## DIST_PACK_RANGE, CLAMPED rather than wrapped (data_core.gdshaderinc:149),
+## so a point past the range does not alias — it saturates, and everything
+## out there reads a flat 1.0. That is worse than it sounds: the silhouette
+## outline is a Laplacian of that channel (hearing_post.gdshader:72) and the
+## Laplacian of a plateau is zero, so far geometry draws no outline at all,
+## and the hearing pass recovers scene depth as c_c.b * DIST_PACK_RANGE
+## (line 57), which pins at the range and cuts player-sound rings against a
+## world that is not there.
+##
+## The range must therefore exceed the longest sight line the map allows:
+## the full 3D diagonal of the wall-centerline extents, floor to ceiling —
 ## derived from the shipped level scene, the one map that ever renders.
+## Derived HERE independently of the level's own arithmetic, on purpose: an
+## expectation computed by the code under test would pass whatever that code
+## did, and WaveLevel now measures this same diagonal itself.
 func test_dist_pack_range_covers_the_map_diagonal() -> void:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
