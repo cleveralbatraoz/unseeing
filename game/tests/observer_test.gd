@@ -5,8 +5,9 @@ extends GdUnitTestSuite
 ## (The directive above must sit on line 1 — gdlint keys an ignore to the
 ## line its problem is reported on. A gdUnit4 suite is a list of cases, not
 ## a class with an API: every case is a public method, so the 20-method
-## ceiling counts coverage rather than surface. It is suppressed HERE and
-## nowhere else, so the rule keeps its teeth over `game/scripts/`.)
+## ceiling counts coverage rather than surface. Suppressed in the two
+## suites that outgrew it — this one and level_test.gd — and nowhere else,
+## so the rule keeps its teeth over `game/scripts/`.)
 ##
 ## These pin the CONTRACT the live debugging loop depends on: an observer
 ## missing any system it reads refuses loudly, and an injected one reports
@@ -408,23 +409,27 @@ func test_the_oid_census_includes_the_levels_creatures() -> void:
 ## would hand back "no such pair, no violations" for a prop the fan's guard
 ## ring reaches on half of every cycle.
 ##
-## Hand-derived from the fan's own build dimensions (rust/src/nodes/fan.rs):
-## the guard ring's outer radius is 0.44 m, so an unswept fan at the origin
-## reaches x = 0.44; the head swings PIVOT_RANGE = 0.85 rad each way
+## Hand-derived from the fan's own build dimensions (rust/src/nodes/fan.rs),
+## and measured from the FAN, so the pair may stand anywhere on the floor:
+## the guard ring's outer radius is 0.44 m, so an unswept fan reaches 0.44 m
+## along x; the head swings PIVOT_RANGE = 0.85 rad each way
 ## (rust/src/fan_wave.rs), so the sweep margin is 0.44 x sin(0.85) = 0.331 and
-## the swept fan reaches x = 0.771. A 0.2 m cube centred at x = 0.60 spans
-## 0.50 to 0.70: clear of the pose by 0.06 (six times Box3::TOUCH_EPS), and
-## well inside the sweep.
+## the swept fan reaches 0.771. A 0.2 m cube centred 0.60 m out spans 0.50 to
+## 0.70 from the fan: clear of the pose by 0.06 (six times Box3::TOUCH_EPS),
+## and well inside the sweep. The two are placed at (1, 0, 1) rather than at
+## the level's own corner, so the prop stands ON the floor slab the level
+## builds and the pair is not reported as hanging over its edge.
 func test_the_oid_census_measures_a_source_by_what_it_sweeps() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_spawn_marker())
 	var fan := SoundFan.new()
 	fan.name = "Fan"
+	fan.position = Vector3(1, 0, 1)
 	level.add_child(fan)
 	var neighbour := WaveProp.new()
 	neighbour.name = "SweptNeighbour"
 	neighbour.size = Vector3(0.2, 0.2, 0.2)
-	neighbour.position = Vector3(0.6, 1.15, 0.0)
+	neighbour.position = Vector3(1.6, 1.15, 1.0)
 	level.add_child(neighbour)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)

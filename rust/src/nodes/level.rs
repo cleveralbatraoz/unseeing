@@ -24,9 +24,35 @@
 //! retyping anything or tripping an enclosure law: the waves simply light
 //! what they can reach and stop at what they cannot.
 //!
-//! Spawn decision: a `Marker3D` child named `SpawnPoint`, standing ON
-//! the floor, facing where the hero should look — the designer drags and
-//! rotates a gizmo; the engine lifts it to capsule height.
+//! Spawn decision: a `Marker3D` child named exactly `SpawnPoint`, standing
+//! ON the floor, facing where the hero should look — the designer drags and
+//! rotates a gizmo; the engine lifts it to capsule height. Every OTHER
+//! marker whose name reads like a spawn is collected too — the `SpawnPoint2`
+//! Ctrl+D leaves behind, a second exact name under another parent — not to
+//! compete with it, but so the level can NAME what it ignored instead of
+//! letting a moved copy change nothing in silence.
+//!
+//! Placement decision: the level REPORTS a solid it cannot support and
+//! moves nothing. Its slabs span `0 .. extents` from its own origin, so
+//! geometry dragged past that has no floor under it and the hero who walks
+//! there falls — and until this, in silence. Growing the slabs to cover the
+//! stray would be the worse cure, because it changes the footprint of an
+//! authored map behind the designer's back. The same holds a metre lower:
+//! a box prop is CENTRED on its node, so dropping one on the floor plane
+//! buries half of it under the slab where nothing draws or sounds — and
+//! centring every shape instead would sink every shelf and beam meant to
+//! float. Both faults are reported and neither is repaired. See
+//! [`Self::report_placement`].
+//!
+//! Tap decision: the dev demo strike aims at the sound source whose HUB IS
+//! NEAREST THE SPAWN in the XZ plane, ties broken by the node's name in
+//! ascending order — never the first source in scene order, because a row
+//! dragged in the Scene dock is an authoring convenience and not a contract,
+//! and never a slice index or anything hashed, which the determinism law
+//! forbids. The plane is the measure because the tap IS a wall crossing read
+//! in it. If no wall stands between the two the strike cannot be planned and
+//! the level says so, since the alternative is a zeroed tap firing at the
+//! world origin; a level with NO source stays silent, which is legal.
 
 use godot::classes::{
     Engine, INode3D, Marker3D, Material, MeshInstance3D, Node3D, ShaderMaterial, StaticBody3D,
@@ -90,7 +116,12 @@ struct Census {
     walls: Vec<Gd<WaveWall>>,
     sources: Vec<DynGd<Node, dyn SoundSource>>,
     cats: Vec<Gd<WaveCat>>,
-    spawn: Option<Gd<Marker3D>>,
+    /// EVERY marker whose name reads as a spawn — the exact one and any
+    /// auto-numbered copy Ctrl+D left behind, in walk order. The winner is
+    /// still the first exact name, but a copy that was never collected
+    /// could never be reported either, which is the whole bug: the level
+    /// has to see what it refuses in order to say it refused it.
+    spawns: Vec<Gd<Marker3D>>,
 }
 
 /// The level root node. `inject` BEFORE adding it to the tree — children
@@ -123,6 +154,13 @@ pub struct WaveLevel {
     /// importantly, so the names cannot drift out of step with the table.
     /// See [`Self::wall_names`].
     wall_children: Vec<Gd<WaveWall>>,
+    /// How many solids the last derivation found standing where the floor
+    /// does not reach — one per line the level printed. Zero on a healthy
+    /// level; see [`Self::report_placement`].
+    unfloored: i64,
+    /// How many solids the last derivation found crossing or hiding under
+    /// the floor plane. Zero on a healthy level, same as above.
+    sunken: i64,
     base: Base<Node3D>,
 }
 
@@ -222,8 +260,10 @@ impl WaveLevel {
     }
 
     /// Dev-demo tap: a fixed point on the wall between the spawn and the
-    /// level's first sound source. ZERO when they share a room (no wall to
-    /// strike) or the level is silent.
+    /// sound source NEAREST it ([`level_plan::nearest_source`], not the
+    /// first in scene order). ZERO when they share a room — which the level
+    /// says out loud, because the strike then fires at the world origin —
+    /// or when the level is silent, which is legal and says nothing.
     #[func]
     fn demo_tap(&self) -> Vector3 {
         self.tap_point
@@ -233,6 +273,25 @@ impl WaveLevel {
     #[func]
     fn demo_tap_normal(&self) -> Vector3 {
         self.tap_normal
+    }
+
+    /// How many solids stand where the level's floor does not reach — zero
+    /// on a healthy level, and one per complaint the level printed while
+    /// deriving. Exposed as a number, not as the sentences, because the
+    /// sentences are for a person and this is for whatever has to DECIDE
+    /// something: a suite holding the shipped map silent today, and the
+    /// editor-side warning that has yet to be built.
+    #[func]
+    fn unfloored_solids(&self) -> i64 {
+        self.unfloored
+    }
+
+    /// How many solids cross the floor plane or hide under it — zero on a
+    /// healthy level, and read for the same reasons as
+    /// [`Self::unfloored_solids`].
+    #[func]
+    fn sunken_solids(&self) -> i64 {
+        self.sunken
     }
 
     /// Every wall's centerline as (x1, z1, x2, z2) — the derived table
@@ -317,35 +376,162 @@ impl WaveLevel {
         level_plan::SOURCE_THROUGH.powi(crossings as i32)
     }
 
+    /// Where the hero wakes, and every word a designer needs about the
+    /// markers that did not win. The DECISION is pure and lives in
+    /// [`level_plan::choose_spawn`]; this end only measures — the winner's
+    /// world position lifted to capsule height, the level's own origin as
+    /// the fallback, and each candidate's path under the level root, which
+    /// is the only thing that tells two markers named `SpawnPoint` apart.
+    fn derive_spawn(&mut self, markers: &[Gd<Marker3D>]) {
+        let lift = Vector3::new(0.0, level_plan::SPAWN_LIFT as f32, 0.0);
+        let fallback = self.base().get_global_position() + lift;
+        let root = self.base().clone().upcast::<Node>();
+        // the two lists are grown in ONE pass, so a verdict's index cannot
+        // slide off the marker it names — the walk already applied the same
+        // predicate, but a filter that ever disagreed with it would silently
+        // wake the hero at the wrong node
+        let mut kept: Vec<&Gd<Marker3D>> = Vec::new();
+        let mut candidates: Vec<level_plan::SpawnCandidate> = Vec::new();
+        for marker in markers {
+            let Some(kind) = level_plan::spawn_name(&marker.get_name().to_string()) else {
+                continue; // renamed since the walk: no longer a spawn marker
+            };
+            kept.push(marker);
+            candidates.push(level_plan::SpawnCandidate {
+                path: root.get_path_to(marker).to_string(),
+                kind,
+            });
+        }
+        let verdict = level_plan::choose_spawn(&candidates, fallback);
+        for complaint in &verdict.complaints {
+            godot_error!("{}", complaint);
+        }
+        match verdict.winner.and_then(|slot| kept.get(slot)) {
+            Some(marker) => {
+                self.spawn_at = marker.get_global_position() + lift;
+                self.spawn_heading = f64::from(marker.get_rotation().y);
+            }
+            None => {
+                self.spawn_at = fallback;
+                self.spawn_heading = 0.0;
+            }
+        }
+    }
+
+    /// Where the input-less demo strikes. The DECISION is pure and lives in
+    /// [`level_plan::plan_demo_tap`] — which source, which wall, and what to
+    /// say when there is no wall at all; this end only reads each source's
+    /// hub and name off the live nodes.
+    fn derive_tap(&mut self) {
+        let aims: Vec<level_plan::SourceAim> = self
+            .source_children
+            .iter()
+            .map(|source| level_plan::SourceAim {
+                name: source.clone().into_gd().get_name().to_string(),
+                hub: source.dyn_bind().hub(),
+            })
+            .collect();
+        let verdict = level_plan::plan_demo_tap(&self.segments, self.spawn_at, &aims);
+        if let Some(plan) = verdict.plan {
+            self.tap_point = plan.point;
+            self.tap_normal = plan.normal;
+        }
+        if let Some(complaint) = verdict.complaint {
+            godot_error!("{}", complaint);
+        }
+    }
+
     /// Derive every technical contract from the children as they stand:
-    /// centerlines from the walls, the spawn from the marker, the demo tap
-    /// from the wall between the spawn and the first source. Loud about
+    /// centerlines from the walls, the spawn from its marker, the demo tap
+    /// from the wall between the spawn and the nearest source. Loud about
     /// whatever a designer left unplaceable.
     fn derive(&mut self) {
         let census = self.census();
         self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
         self.push_wall_table();
         self.assign_oids(&census);
+        self.report_placement(&census);
         self.source_children = census.sources;
         self.cat_children = census.cats;
         self.wall_children = census.walls;
-        let lift = Vector3::new(0.0, level_plan::SPAWN_LIFT as f32, 0.0);
-        if let Some(marker) = census.spawn {
-            self.spawn_at = marker.get_global_position() + lift;
-            self.spawn_heading = f64::from(marker.get_rotation().y);
-        } else {
-            godot_error!("WaveLevel: no SpawnPoint marker — the hero has nowhere to wake");
-            self.spawn_at = self.base().get_global_position() + lift;
-            self.spawn_heading = 0.0;
-        }
-        let Some(source) = self.source_children.first() else {
-            return; // a silent level is legal: no source to strike toward
+        self.derive_spawn(&census.spawns);
+        self.derive_tap();
+    }
+
+    /// Say out loud what a designer has placed where the level cannot hold
+    /// it — off the floor's footprint ([`level_plan::unfloored`]) or
+    /// through its top ([`level_plan::sunken`]). Both DECISIONS are pure;
+    /// this end only measures — the floor slab where it actually stands,
+    /// and each painted solid's world box — and both read the same one
+    /// walk of the subtree, since the two faults are two questions about
+    /// one set of boxes.
+    ///
+    /// Nothing MOVES here, deliberately, and neither origin law bends.
+    /// Growing the slabs to cover stray geometry would silently change the
+    /// footprint of an authored map; centring every shape on its node
+    /// would sink every shelf and beam that is meant to float. Both cures
+    /// are worse than the faults, so the level reports and leaves it.
+    ///
+    /// Derive time is RUN time: `ready` returns before `derive` under
+    /// `Engine::is_editor_hint`, so none of this reaches a designer while
+    /// they are dragging. Surfacing it in the editor is a separate job.
+    /// A level with no floor to measure against — nothing built to stand
+    /// on — has no verdict rather than an early return, so the counts are
+    /// rewritten on EVERY derivation. An early return would leave the last
+    /// build's numbers standing as this build's, which is the quietest kind
+    /// of wrong a report can be.
+    fn report_placement(&mut self, census: &Census) {
+        let (strays, sunk) = match self.floor_box() {
+            Some(floor) => {
+                let placed = self.placed_solids(census);
+                (
+                    level_plan::unfloored(floor, &placed),
+                    level_plan::sunken(floor, &placed),
+                )
+            }
+            None => (Vec::new(), Vec::new()),
         };
-        let hub = source.dyn_bind().hub();
-        if let Some(plan) = level_plan::demo_tap(&self.segments, self.spawn_at, hub) {
-            self.tap_point = plan.point;
-            self.tap_normal = plan.normal;
+        self.unfloored = strays.len() as i64;
+        self.sunken = sunk.len() as i64;
+        for complaint in strays.iter().chain(sunk.iter()) {
+            godot_error!("{}", complaint);
         }
+    }
+
+    /// The world box of the floor slab — what "the floor" MEANS to every
+    /// placement law: the footprint that has a slab under it, and the
+    /// plane its top stands at. Read where the slab actually is rather
+    /// than from the extents knob, so a level dropped anywhere in the
+    /// world carries its own footprint with it. `None` before the slabs
+    /// are built, or for a floor that draws nothing.
+    fn floor_box(&self) -> Option<oid_palette::Box3> {
+        let floor = self.slabs.iter().find(|slab| !slab.lid)?;
+        mesh_world_box(&floor.skin.clone().upcast())
+    }
+
+    /// Every painted solid with the world box it fills and the path a
+    /// designer finds it at — the shape the placement laws read.
+    ///
+    /// A solid that draws nothing is left out: it occupies no space, so
+    /// there is nowhere for it to be misplaced. The box is
+    /// [`mesh_world_box`]'s, the same measure the object-id colouring and
+    /// the seam census take, so a complaint and a seam always describe the
+    /// same shape — including that measure's habit of unioning EVERY
+    /// descendant mesh, which makes a prop grouped under a crate part of
+    /// the crate's box and reports the parent for where the child sits.
+    fn placed_solids(&self, census: &Census) -> Vec<level_plan::PlacedSolid> {
+        let root = self.base().clone().upcast::<Node>();
+        census
+            .solids
+            .iter()
+            .filter_map(|solid| {
+                let node = solid.clone().into_gd();
+                mesh_world_box(&node).map(|area| level_plan::PlacedSolid {
+                    path: root.get_path_to(&node).to_string(),
+                    area,
+                })
+            })
+            .collect()
     }
 
     /// Hand every solid in the world its flat object id (the data pass's
@@ -710,9 +896,9 @@ fn collect(node: &Gd<Node>, census: &mut Census) {
         } else if let Ok(cat) = child.clone().try_cast::<WaveCat>() {
             census.cats.push(cat);
         } else if let Ok(marker) = child.clone().try_cast::<Marker3D>()
-            && marker.get_name() == "SpawnPoint"
+            && level_plan::spawn_name(&marker.get_name().to_string()).is_some()
         {
-            census.spawn.get_or_insert(marker);
+            census.spawns.push(marker);
         }
         collect(&child, census);
     }

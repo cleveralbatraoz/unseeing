@@ -1,3 +1,4 @@
+# gdlint:ignore = max-public-methods
 extends GdUnitTestSuite
 ## The level-authoring engine nodes, held to their designer-safety laws:
 ## a wall builds its outline box and collider from nothing but transform
@@ -5,10 +6,22 @@ extends GdUnitTestSuite
 ## are axis-aligned by law, and the snapped basis carries no trig dust);
 ## props stay free; and the level root is the single injection point that
 ## deals the world and image skins out, then derives the spawn from its
-## marker and the demo tap from the wall between the spawn and the first
-## sound source.
+## marker and the demo tap from the wall between the spawn and the sound
+## source NEAREST it.
 ##
-## The SHIPPED scene's own invariants live next door, in map_test.gd.
+## (The directive above must sit on line 1 — gdlint keys an ignore to the
+## line its problem is reported on. A gdUnit4 suite is a list of cases, not
+## a class with an API: every case is a public method, so the 20-method
+## ceiling counts coverage rather than surface. Suppressed in the two
+## suites that outgrew it and nowhere else, so the rule keeps its teeth
+## over `game/scripts/`.)
+##
+## The SHIPPED scene's own invariants live next door, in map_test.gd — with
+## one deliberate exception below: a placement law that can only be proved
+## harmless by running it against a real, fully furnished map, and so is
+## held here beside the law itself rather than a file away from it.
+
+const SHIPPED_LEVEL := preload("res://scenes/level_01.tscn")
 
 
 ## One authored wall, the way the generator and a designer both place it:
@@ -78,7 +91,7 @@ func _drawn_centerline(box: AABB) -> Vector4:
 ## the room's own origin, knowing nothing about where the room went.
 func _room(yaw: float, scale: float, wall: WaveWall) -> Node3D:
 	var room := Node3D.new()
-	room.position = Vector3(10, 0, 4)
+	room.position = Vector3(10, 0, 7)
 	room.rotation.y = yaw
 	room.scale = Vector3.ONE * scale
 	room.add_child(wall)
@@ -157,9 +170,9 @@ func test_wall_in_a_rotated_room_occludes_where_it_draws() -> void:
 		. is_equal_approx(_drawn_centerline(box), Vector4.ONE * 0.001)
 	)
 	# the room's quarter turn turned the wall's length axis onto world Z:
-	# a 4 m run at x = 10, from z = 0 to z = 4
+	# a 4 m run at x = 10, from z = 3 to z = 7
 	assert_vector(level.wall_segments()[0]).is_equal_approx(
-		Vector4(10, 0, 10, 4), Vector4.ONE * 0.001
+		Vector4(10, 3, 10, 7), Vector4.ONE * 0.001
 	)
 
 
@@ -226,7 +239,7 @@ func test_wall_length_knob_reshapes_live() -> void:
 ## centerline whose ends are in the wrong order. The sign folds at the knob
 ## instead, so the drawn box, the collider and the occluder are one wall.
 func test_a_negative_wall_length_folds_instead_of_inverting_the_wall() -> void:
-	var wall := _wall(-4.0, Vector3(2, 0, 0), false)
+	var wall := _wall(-4.0, Vector3(3, 0, 1), false)
 	var level := _level_holding(wall)
 	assert_float(wall.length).is_equal_approx(4.0, 0.001)
 	assert_vector(_box(wall).size).is_equal(Vector3(4.3, 3, 0.3))
@@ -238,7 +251,7 @@ func test_a_negative_wall_length_folds_instead_of_inverting_the_wall() -> void:
 	(
 		assert_vector(level.wall_segments()[0])
 		. append_failure_message("centerline ends out of order: %s" % level.wall_segments()[0])
-		. is_equal_approx(Vector4(0, 0, 4, 0), Vector4.ONE * 0.001)
+		. is_equal_approx(Vector4(1, 1, 5, 1), Vector4.ONE * 0.001)
 	)
 
 
@@ -264,31 +277,32 @@ func test_prop_builds_its_free_box() -> void:
 ## the pool to every sound source; entering the tree derives the spawn from
 ## its marker (lifted to capsule height). Here the fan and the spawn share
 ## one room, so the spawn→fan line crosses no wall and there is no demo tap
-## to plan.
+## to plan — which the level says out loud; the message itself is held next
+## door, in test_unplannable_demo_tap_reports.
 func test_level_distributes_and_derives() -> void:
 	var mat := ShaderMaterial.new()
 	var source_mat := ShaderMaterial.new()
 	var pulses := Pulses.new()
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	var walls: Array[WaveWall] = [
-		_wall(4.0, Vector3(2, 0, 0), false),
-		_wall(4.0, Vector3(2, 0, 4), false),
-		_wall(4.0, Vector3(0, 0, 2), true),
-		_wall(4.0, Vector3(4, 0, 2), true),
+		_wall(4.0, Vector3(3, 0, 1), false),
+		_wall(4.0, Vector3(3, 0, 5), false),
+		_wall(4.0, Vector3(1, 0, 3), true),
+		_wall(4.0, Vector3(5, 0, 3), true),
 	]
 	for wall: WaveWall in walls:
 		level.add_child(wall)
 	var prop := WaveProp.new()
 	prop.size = Vector3(0.9, 0.72, 0.6)
-	prop.position = Vector3(1.5, 0.36, 2)
+	prop.position = Vector3(2.5, 0.36, 3)
 	level.add_child(prop)
 	var fan := SoundFan.new()
-	fan.position = Vector3(3, 0, 1)
+	fan.position = Vector3(4, 0, 2)
 	level.add_child(fan)
-	level.add_child(_spawn_marker(Vector3(1, 0, 3), -0.6))
+	level.add_child(_spawn_marker(Vector3(2, 0, 4), -0.6))
 	level.inject(mat, source_mat, pulses)
 	add_child(level)
-	assert_vector(level.spawn_pos()).is_equal(Vector3(1, 0.9, 3))
+	assert_vector(level.spawn_pos()).is_equal(Vector3(2, 0.9, 4))
 	assert_float(level.spawn_yaw()).is_equal_approx(-0.6, 0.0001)
 	assert_vector(level.demo_tap()).is_equal(Vector3.ZERO)  # no wall between spawn and fan
 	assert_vector(level.demo_tap_normal()).is_equal(Vector3.UP)  # default, no tap planned
@@ -320,25 +334,83 @@ func test_uninjected_level_reports() -> void:
 	))
 
 
-## A level without a SpawnPoint marker has nowhere to wake the hero —
-## loud, with the level origin as the fallback.
+## A level without a SpawnPoint marker has nowhere to wake the hero, and
+## the fallback is worse than "somewhere else": the level's own origin is
+## the corner outside the border walls, so the hero wakes sealed into the
+## sliver there. The message says where it was put and that it is very
+## likely unreachable — "nowhere to wake" alone never did.
 func test_missing_spawn_reports() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	var enter := func() -> void: add_child(level)
 	await (assert_error(enter).is_push_error(
-		"WaveLevel: no SpawnPoint marker — the hero has nowhere to wake"
+		(
+			"WaveLevel: no Marker3D named exactly 'SpawnPoint' under the level — the hero has "
+			+ "nowhere to wake, so it wakes at the level's own origin, (0, 0.9, 0). That is the "
+			+ "corner of the map, outside the border walls: the hero is very likely sealed into "
+			+ "the sliver there and cannot reach the level at all. Add a Marker3D named "
+			+ "'SpawnPoint', standing on the floor, facing where the hero should look."
+		)
 	))
 	assert_vector(level.spawn_pos()).is_equal(Vector3(0, 0.9, 0))
+
+
+## THE Ctrl+D case, the one issue #19 is named for: duplicating the marker
+## in the editor leaves 'SpawnPoint2', which the exact-name test never
+## matched — so the copy was not even collected, a designer who dragged it
+## across the map moved nothing, and the hero woke at the original without
+## a word. The winner is unchanged; the silence is not.
+func test_auto_numbered_spawn_copy_is_reported_and_never_promoted() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	var copy := _spawn_marker(Vector3(9, 0, 9), 1.0)
+	copy.name = "SpawnPoint2"
+	level.add_child(copy)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: auto-numbered spawn copies IGNORED: 'SpawnPoint2'. Only a Marker3D "
+			+ "named exactly 'SpawnPoint' wakes the hero, and Ctrl+D renames the copy — so "
+			+ "moving the copy moves nothing. Rename the one you want to 'SpawnPoint' and "
+			+ "delete the rest."
+		)
+	))
+	assert_vector(level.spawn_pos()).is_equal(Vector3(1, 0.9, 3))
+
+
+## Two markers named EXACTLY 'SpawnPoint' is legal in Godot under two
+## different parents, and used to be settled in silence by whichever the
+## walk reached first. The first still wins — nothing that is valid today
+## moves — and the loser is named by its PATH, the only thing that
+## separates two nodes carrying one name.
+func test_two_exact_spawn_markers_name_the_one_that_lost() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	var room := Node3D.new()
+	room.name = "Rooms"
+	room.add_child(_spawn_marker(Vector3(9, 0, 9), 1.0))
+	level.add_child(room)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: 2 markers are named exactly 'SpawnPoint' — the hero wakes at the first "
+			+ "the level walk reaches, 'SpawnPoint', and ignores 'Rooms/SpawnPoint'. Delete or "
+			+ "rename every spawn marker but one."
+		)
+	))
+	assert_vector(level.spawn_pos()).is_equal(Vector3(1, 0.9, 3))
 
 
 ## An open-sided fan room is legal now: the fan's waves are stopped by the
 ## walls that ARE there (source→surface sight), not clipped to an enclosing
 ## rectangle — so derivation no longer refuses. The level enters the tree
-## and reads back its walls, fan and spawn.
+## and reads back its walls, fan and spawn. (The one wall does not stand
+## between the two, so the tap goes unplanned and the level says so.)
 func test_open_fan_room_is_legal() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
-	level.add_child(_wall(4.0, Vector3(2, 0, 0), false))
+	level.add_child(_wall(4.0, Vector3(3, 0, 1), false))
 	var fan := SoundFan.new()
 	fan.position = Vector3(2, 0, 2)
 	level.add_child(fan)
@@ -351,13 +423,73 @@ func test_open_fan_room_is_legal() -> void:
 
 
 ## A fanless level is legal silence: no source to strike toward, so no
-## demo tap, and no error.
+## demo tap, and no error. Nothing was authored wrong here, so nothing is
+## said — a level that complained about its own quiet would teach a
+## designer to stop reading the log.
+##
+## The one wall stands clear of the floor's edge on purpose. A wall laid ON
+## the boundary hangs its padded box a half-thickness over the void, which
+## IS a fault and is now reported as one — so a fixture that meant "a level
+## with nothing wrong with it" has to be a level with nothing wrong with it.
 func test_fanless_level_has_no_demo_tap() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
-	level.add_child(_wall(4.0, Vector3(2, 0, 0), false))
+	level.add_child(_wall(4.0, Vector3(3, 0, 1), false))
 	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await assert_error(enter).is_success()
+	assert_vector(level.demo_tap()).is_equal(Vector3.ZERO)
+
+
+## Scene order is not a contract. The demo tap aims at the source whose hub
+## is NEAREST the spawn, so dragging a row in a 129-sibling Scene dock no
+## longer re-aims the opening strike in silence. Here the far source is
+## listed first and the near one second: the tap lands on the wall between
+## the spawn and the NEAR one, which is not the wall first-in-scene-order
+## would have struck.
+func test_demo_tap_aims_at_the_nearest_source_not_the_first() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_wall(4.0, Vector3(5, 0, 7), false))  # x-run, spans x 3..7
+	level.add_child(_wall(4.0, Vector3(9, 0, 5), true))  # z-run, spans z 3..7
+	var far := SoundFan.new()
+	far.name = "FarFan"
+	far.position = Vector3(13, 0, 5)
+	level.add_child(far)
+	var near := SoundFan.new()
+	near.name = "NearFan"
+	near.position = Vector3(5, 0, 9)
+	level.add_child(near)
+	level.add_child(_spawn_marker(Vector3(5, 0, 5), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
+	assert_vector(level.demo_tap()).is_equal_approx(Vector3(5, 0.8, 6.85), Vector3.ONE * 0.001)
+	assert_vector(level.demo_tap_normal()).is_equal(Vector3(0, 0, -1))
+
+
+## An unplannable tap used to be a silent wrong result: the `if let` simply
+## did not fire, tap_point kept its zeroed default, and main.gd fired the
+## opening strike at the world origin — under the floor in the corner of
+## the map. One drag of a source into the spawn's own room reaches that, so
+## the level now names the source it could not reach past and says what
+## happens instead.
+func test_unplannable_demo_tap_reports() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_wall(4.0, Vector3(3, 0, 1), false))
+	var fan := SoundFan.new()
+	fan.name = "Fan"
+	fan.position = Vector3(2, 0, 2.5)
+	level.add_child(fan)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: no wall stands between the spawn at (1, 0.9, 3) and 'Fan', the sound "
+			+ "source nearest it, at (2, 1.15, 2.4) — the dev demo tap cannot be planned and "
+			+ "stays at the world origin, where an input-less run (UNSEEING_DEMO=1, or ?demo "
+			+ "in the URL) strikes instead of on a wall."
+		)
+	))
 	assert_vector(level.demo_tap()).is_equal(Vector3.ZERO)
 
 
@@ -452,3 +584,112 @@ func test_late_injection_reports_rather_than_limping() -> void:
 			+ "object-id colouring were already derived without it. Inject BEFORE add_child()."
 		)
 	))
+
+
+## A crate a designer dragged to a negative coordinate. The level's slabs
+## span 0..extents from its own origin and NEVER grow to meet stray
+## geometry, so there is no floor under it: the box still draws, the waves
+## still outline it, and the hero who walks there falls with gravity and
+## nothing underfoot. Before this the level said not one word about it.
+func test_a_solid_outside_the_extents_reports() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = Vector2(20, 20)
+	var crate := WaveProp.new()
+	crate.name = "StrayCrate"
+	crate.size = Vector3.ONE
+	crate.position = Vector3(-10, 0.5, -10)
+	level.add_child(crate)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: 'StrayCrate' stands off the floor entirely — its footprint is x "
+			+ "-10.50..-9.50, z -10.50..-9.50, and the floor covers x 0.00..20.00, z "
+			+ "0.00..20.00. There is no slab under any of it: it draws where nothing holds it "
+			+ "up, and the hero who walks there falls out of the world. Move it inside the "
+			+ "extents, or grow the level's extents to cover it — the slabs span 0..extents "
+			+ "from the level's own origin and never move to meet stray geometry."
+		)
+	))
+	assert_int(level.unfloored_solids()).is_equal(1)
+
+
+## The milder half of the same fault, and the one an authored map actually
+## reaches: a crate pushed past the last centimetre of the extents. Most of
+## it is supported, so it is not told the hero falls through it — but the
+## overhang has no slab, and the count sees it.
+func test_a_solid_hanging_over_the_floor_edge_reports() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = Vector2(20, 20)
+	var crate := WaveProp.new()
+	crate.name = "LedgeCrate"
+	crate.size = Vector3.ONE
+	crate.position = Vector3(20, 0.5, 4.5)
+	level.add_child(crate)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: 'LedgeCrate' hangs over the edge of the floor — its footprint is x "
+			+ "19.50..20.50, z 4.00..5.00, and the floor covers x 0.00..20.00, z 0.00..20.00. "
+			+ "The part outside has no slab under it. Move it inside the extents, or grow the "
+			+ "level's extents to cover it — the slabs span 0..extents from the level's own "
+			+ "origin and never move to meet stray geometry."
+		)
+	))
+	assert_int(level.unfloored_solids()).is_equal(1)
+
+
+## The other half of a diagnostic, and the half that decides whether anyone
+## keeps reading it: the SHIPPED map says nothing. 125 authored solids, 19
+## of them walls whose padded boxes reach 0.45 m of the extents' edge, and
+## not one of them trips the law. A footprint test that fired here would be
+## noise from the first run.
+func test_the_shipped_map_stands_on_its_own_floor() -> void:
+	var level: WaveLevel = auto_free(SHIPPED_LEVEL.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_int(level.unfloored_solids()).is_equal(0)
+
+
+## THE authoring gesture: drag a WaveProp onto the floor plane, which is
+## where the editor's grid puts it. A box prop is CENTRED on its node — the
+## origin law is right, since a shelf or a beam floats as often as it stands
+## — so exactly half the crate ends up under the slab, where nothing draws,
+## nothing sounds and nothing can be walked into. Until now the only thing
+## that noticed was a CI assertion in the shipped map's own suite.
+func test_a_prop_dropped_on_the_floor_plane_reports() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = Vector2(20, 20)
+	var crate := WaveProp.new()
+	crate.name = "DesignerCrate"
+	crate.size = Vector3(0.5, 0.5, 0.5)
+	crate.position = Vector3(4, 0, 4)
+	level.add_child(crate)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: 'DesignerCrate' is sunk through the floor — its box spans y "
+			+ "-0.25..0.25, and the floor's top is at y 0.00. What is under the slab never "
+			+ "draws, never sounds and cannot be walked into. A WaveProp is CENTRED on its "
+			+ "node, so dropping one on the floor plane buries exactly half of it, while a "
+			+ "wall, a column and a wedge STAND on theirs. Lift the node until the whole "
+			+ "shape clears y 0.00."
+		)
+	))
+	assert_int(level.sunken_solids()).is_equal(1)
+
+
+## And the half that keeps the law readable: the SHIPPED map says nothing.
+## Every one of its 125 solids stands on the floor or above it — the walls
+## resting their undersides exactly on y = 0, which is the boundary case a
+## sloppy predicate would report as sunk on every wall in the level.
+func test_the_shipped_map_keeps_every_solid_above_its_floor() -> void:
+	var level: WaveLevel = auto_free(SHIPPED_LEVEL.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_int(level.sunken_solids()).is_equal(0)
