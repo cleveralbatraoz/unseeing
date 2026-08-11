@@ -19,12 +19,13 @@
 //! root will advance `tick(now)` like it does the player's.
 
 use godot::classes::{
-    ArrayMesh, CapsuleShape3D, CharacterBody3D, CollisionShape3D, ICharacterBody3D, Material,
-    MeshInstance3D,
+    ArrayMesh, CapsuleShape3D, CharacterBody3D, CollisionShape3D, Engine, ICharacterBody3D,
+    Material, MeshInstance3D,
 };
 use godot::prelude::*;
 
 use super::limbs::{LimbBuf, sphere, sphere_lod, tube, tube_res};
+use super::solid::clear_limbs;
 use crate::cat_body::{self, CatPose, Tail};
 use crate::cat_brain::{CatBrain, RoamRect};
 use crate::cat_gait::{self, CatGait};
@@ -42,11 +43,17 @@ const COL_HEIGHT: f32 = 0.34;
 /// The sit blend's ease rate, 1/s — a cat settles, it does not snap.
 const SIT_EASE: f64 = 3.0;
 
+/// The two built limbs, named so a rebuilding ready() can free the ghosts a
+/// Ctrl+D duplicate carries in (names are the only handle — a duplicate
+/// reaches _ready as a fresh Rust object). Both the editor blueprint build
+/// and the runtime build use these same two names.
+const LIMBS: [&str; 2] = ["CatCollider", "CatSkin"];
+
 /// The companion cat. Inject `pulses` and `data_mat` before adding to
 /// the tree (children run `_ready` first, and the cat refuses to build
 /// uninjected); the seed and roam size are designer knobs.
 #[derive(GodotClass)]
-#[class(init, base=CharacterBody3D)]
+#[class(tool, init, base=CharacterBody3D)]
 pub struct WaveCat {
     /// The wave pool every sound enters — the GDScript `Pulses` shim
     /// today, a direct `WaveCore` tomorrow; the cat only asks it to
@@ -99,6 +106,19 @@ pub struct WaveCat {
 #[godot_api]
 impl ICharacterBody3D for WaveCat {
     fn ready(&mut self) {
+        clear_limbs(self, &LIMBS);
+        if Engine::singleton().is_editor_hint() {
+            // blueprint mode: one standing pose, frozen. The mesh is built
+            // in LOCAL space (pose seeded at the origin) so the silhouette
+            // rides the node when the designer drags it; the runtime mesh
+            // stays world-space + top_level as before. No brain, no clock:
+            // an editor-ticking cat would walk the viewport and Ctrl+S
+            // would save its drift into the scene.
+            self.base_mut().set_physics_process(false);
+            self.base_mut().set_process(false);
+            self.build_editor_pose();
+            return;
+        }
         // no silent nulls: without the pool and the data-pass material
         // the cat can neither sound nor be seen — refuse to build
         // instead of crashing later
@@ -109,6 +129,7 @@ impl ICharacterBody3D for WaveCat {
             return;
         }
         let mut col = CollisionShape3D::new_alloc();
+        col.set_name("CatCollider");
         let mut capsule = CapsuleShape3D::new_gd();
         capsule.set_radius(COL_RADIUS);
         capsule.set_height(COL_HEIGHT);
@@ -117,6 +138,7 @@ impl ICharacterBody3D for WaveCat {
         self.base_mut().add_child(&col);
 
         let mut mi = MeshInstance3D::new_alloc();
+        mi.set_name("CatSkin");
         mi.set_mesh(&self.mesh.clone());
         mi.set_material_override(self.data_mat.as_ref());
         // one flat label for the whole cat: the outline post-pass draws it
@@ -392,6 +414,45 @@ impl WaveCat {
                 (-2.0_f64).to_variant(),
             ],
         );
+    }
+
+    /// Blueprint mode: build the same two limbs the runtime path does, but
+    /// in LOCAL space around the origin (no material, no top-level, no
+    /// cull margin), then write one frozen standing pose into the mesh.
+    /// The brain, gait, tail and pose are thrown away the moment the mesh
+    /// is written — the persistent `Option` fields stay `None`, exactly as
+    /// they are for any node whose `_ready` refused to build, and nothing
+    /// reads them because processing is disabled before this runs.
+    fn build_editor_pose(&mut self) {
+        let mut col = CollisionShape3D::new_alloc();
+        col.set_name("CatCollider");
+        let mut capsule = CapsuleShape3D::new_gd();
+        capsule.set_radius(COL_RADIUS);
+        capsule.set_height(COL_HEIGHT);
+        col.set_shape(&capsule);
+        col.set_position(Vector3::new(0.0, COL_HEIGHT * 0.5 + 0.02, 0.0));
+        self.base_mut().add_child(&col);
+
+        let mut mi = MeshInstance3D::new_alloc();
+        mi.set_name("CatSkin");
+        mi.set_mesh(&self.mesh.clone());
+        mi.set_instance_shader_parameter("u_oid", &CAT_OID.to_variant());
+        self.base_mut().add_child(&mi);
+
+        let pos = Vector3::ZERO;
+        let yaw = 0.0_f64;
+        let rect = RoamRect::around(
+            pos,
+            f64::from(self.roam_size.x),
+            f64::from(self.roam_size.y),
+        );
+        let _ = CatBrain::new(self.seed as u64, rect, yaw); // throwaway: nothing ticks here
+        let mut gait = CatGait::new(pos, yaw);
+        let frame = gait.advance(0.0, pos, yaw, 0.0);
+        let pose = CatPose::from_gait(pos, yaw, &frame, 0.0);
+        let sk = cat_body::skeleton(&pose);
+        let tail = Tail::new(sk.tail_root, sk.tail_back, rightward(yaw));
+        self.build_mesh(&pose, &tail);
     }
 
     /// The whole silhouette, rebuilt for this frame's skeleton: torso
