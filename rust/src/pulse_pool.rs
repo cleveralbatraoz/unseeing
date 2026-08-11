@@ -161,8 +161,16 @@ impl PulsePool {
     }
 
     /// A pool rebuilt from a capture, bit-identical. Total: any slot
-    /// values are legal — the capture is trusted verbatim, and the hash
-    /// gate (reproduce/blob.rs) is where tampering shows.
+    /// values are legal — the capture is trusted verbatim.
+    ///
+    /// Which means a TAMPERED slot cannot show up here, or anywhere
+    /// downstream of here: it is copied in exactly, copied back out
+    /// exactly, and so the restored world honestly agrees with the file it
+    /// came from. [`crate::reproduce::first_divergence`] compares the world
+    /// against the blob's fields and is right to see nothing. What knows
+    /// the difference is the blob's own stored hash, and the one place that
+    /// is compared is `main.gd::restore_blob`, after the transaction
+    /// succeeds — see the note there.
     #[must_use]
     pub fn from_slots(slots: &[SlotCapture; MAXP]) -> Self {
         let mut pool = Self::new();

@@ -251,18 +251,38 @@ func apply_env(env: Dictionary) -> void:
 ## map, a scene that does not match the blob) would otherwise still leave
 ## this script holding the blob's clock and the blob's flicker: a world
 ## dated at an instant nothing else in it has ever been at.
+##
+## The last check is the artifact's own: a blob carries the hash of the
+## state it was taken from, and NOTHING in the transaction reads it — the
+## restorer proves the world against the blob's FIELDS, deliberately, so
+## that a disagreement can be named at the field instead of shrugged at as
+## a number. That leaves one gap, and it is this line: a file edited or
+## damaged in transit still parses, still restores, and still proves
+## itself, because the world faithfully becomes whatever the file now says.
+## Only the stored hash knows the difference, so it is compared here, where
+## the file is. This is a POST-WRITE refusal — the world really was
+## restored, and it is internally consistent; it is simply not the instant
+## the artifact claims to hold, so the env is NOT rolled back under it.
 func restore_blob(blob: Dictionary) -> Dictionary:
+	var was_paused := get_tree().paused
 	get_tree().paused = true
 	var env: Dictionary = observer.env_of(blob)
 	if env.has("unavailable"):
-		get_tree().paused = false
+		get_tree().paused = was_paused
 		return env
 	var previous := capture_env()
 	apply_env(env)
 	var verdict: Dictionary = restorer.restore(blob, capture_env())
 	if verdict.has("unavailable"):
 		apply_env(previous)
-	get_tree().paused = false
+	elif str(blob.get("hash", "")) != str(verdict["hash"]):
+		var stored: String = str(blob.get("hash", "<missing>"))
+		var disagreement := (
+			"the blob's stored hash disagrees with the restored world: stored %s, restored %s"
+			% [stored, verdict["hash"]]
+		)
+		verdict = {"unavailable": disagreement + " — the artifact was edited or corrupted"}
+	get_tree().paused = was_paused
 	return verdict
 
 

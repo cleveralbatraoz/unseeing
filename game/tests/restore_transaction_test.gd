@@ -44,6 +44,15 @@ func _boot_ticked() -> UnseeingMain:
 ## reason: the cane is voiced on the physics tick off the clock the hero was
 ## last handed, so a tap queued before the jump is dated before it, and its
 ## reflections are all overdue and drained by the time the blob is taken.
+##
+## The queued wave is LAST, with no frame after it, and that is the only
+## moment it can be caught: the out-tray is emptied by every physics tick, so
+## a wave asked for one frame earlier is a wave already in the pool. Nothing
+## the hero does by itself in a headless run leaves one there — footsteps
+## need a walker and the demo tap needs its env switch — so a blob taken
+## without this carries an empty queue, and the restore's replay of it would
+## be covered by nothing at all. The three float arguments are deliberately
+## unequal, so a transposed pair cannot restore to the same numbers.
 func _lively(main: UnseeingMain) -> void:
 	main.now += 1.0
 	await _one_frame()
@@ -51,6 +60,13 @@ func _lively(main: UnseeingMain) -> void:
 	main.player.tap()
 	for _i in 2:
 		await _one_frame()
+	_queue_one(main, Vector3(2.5, 0.5, 3.25))
+
+
+## One wave asked for and not yet emitted — a sound that WILL happen, which
+## is why a blob carries the out-tray at all. Distinct values in every lane.
+func _queue_one(main: UnseeingMain, at: Vector3) -> void:
+	main.player.queue_wave(2, at, 6.25, 5.5, 0.75, 3, Vector3.UP)
 
 
 ## One process frame and one physics frame — the pair every clock in the
@@ -82,6 +98,7 @@ func test_round_trip_capture_restore_capture_is_exact() -> void:
 	# air, reflections still owed, and a cat with a life behind it
 	assert_int(main.observer.snapshot(main.now)["live_slots"]).is_greater(0)
 	assert_int((blob["echoes"] as Array).size()).is_greater(0)
+	assert_int((blob["hero"]["queued_waves"] as Array).size()).is_greater(0)
 	for _i in 30:
 		await _one_frame()
 	var verdict: Dictionary = main.restore_blob(blob)
@@ -127,10 +144,45 @@ func test_a_wrong_version_refuses_before_touching_anything() -> void:
 	var clock: float = main.now
 	var verdict: Dictionary = main.restore_blob(blob)
 	assert_bool(verdict.has("unavailable")).is_true()
-	assert_str(verdict["unavailable"]).contains("999")
+	# the version, named as a version — "999" alone would also match the env
+	# field this test moves, and would pass for a refusal about the clock
+	assert_str(verdict["unavailable"]).contains("capture format 999")
 	assert_float(main.now).is_equal(clock)
 	var after: Dictionary = main.observer.snapshot(main.now)
 	assert_int(after["live_slots"]).is_equal(before["live_slots"])
+
+
+## The other header fact: a blob restores into the map it was taken from and
+## no other. Both sides are named — "wrong level" without the two paths
+## leaves the reader to work out which of them is the one they have.
+func test_a_blob_from_another_map_names_both_scenes() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var here: String = blob["level_scene"]
+	blob["level_scene"] = "res://scenes/somewhere_else.tscn"
+	var verdict: Dictionary = main.restore_blob(blob)
+	assert_bool(verdict.has("unavailable")).is_true()
+	assert_str(verdict["unavailable"]).contains("res://scenes/somewhere_else.tscn")
+	assert_str(verdict["unavailable"]).contains(here)
+
+
+## The one thing the transaction deliberately does not read: the blob's own
+## stored hash. The restorer proves the world against the blob's FIELDS, so a
+## file edited in transit restores faithfully into whatever it now says and
+## proves itself — every field agrees, because the world became the file. The
+## artifact's own claim about itself is checked by the caller, where the file
+## is, and a blob that lies about its hash is refused naming both numbers.
+func test_a_blob_that_lies_about_its_own_hash_is_refused() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var honest: String = blob["hash"]
+	blob["hash"] = "0000000000000000"
+	var verdict: Dictionary = main.restore_blob(blob)
+	assert_bool(verdict.has("unavailable")).is_true()
+	assert_str(verdict["unavailable"]).contains("stored 0000000000000000")
+	assert_str(verdict["unavailable"]).contains("restored %s" % honest)
 
 
 ## A restore that cannot prove itself refuses, and names the field it failed
@@ -153,17 +205,26 @@ func test_a_tampered_blob_is_named_at_its_divergent_field() -> void:
 	assert_str(verdict["unavailable"]).contains("hero.pitch")
 
 
-## The cane's out-tray is state like any other, and it travels BOTH ways. A
-## tap queued after the capture must be gone once that capture is restored —
-## `tap()` can only ever set the flag, so a restore that used it as its one
-## door could never clear one, and would refuse itself at `hero.tap_queued`
-## over a difference it was perfectly able to fix.
-func test_a_queued_tap_the_blob_never_held_is_cleared() -> void:
+## The hero's two out-trays are state like any other, and both travel BOTH
+## ways — a restore has to be able to REMOVE intent, not only add it.
+##
+## A tap and a wave are asked for after the capture is taken, so the live
+## world holds more than the blob does. `tap()` can only ever set the flag,
+## so a restore using it as its one door could never clear one and would
+## refuse itself at `hero.tap_queued`; and a wave queue rebuilt by appending
+## would end up holding the stale request AND the captured one, which the
+## proof reads as a queue of the wrong length.
+func test_the_heros_out_trays_lose_what_the_blob_never_held() -> void:
 	var main := await _boot_ticked()
 	await _lively(main)
 	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
 	assert_bool(blob["hero"]["tap_queued"]).is_false()
+	var carried: int = (blob["hero"]["queued_waves"] as Array).size()
+	assert_int(carried).is_greater(0)
 	main.player.tap()
+	_queue_one(main, Vector3(9.5, 0.25, 8.75))
+	assert_int(main.player.queued_waves().size()).is_equal(carried + 1)
 	var verdict: Dictionary = main.restore_blob(blob)
 	assert_str(str(verdict.get("unavailable", ""))).is_empty()
 	assert_str(verdict["hash"]).is_equal(blob["hash"])
+	assert_int(main.player.queued_waves().size()).is_equal(carried)
