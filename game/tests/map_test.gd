@@ -421,6 +421,65 @@ func test_shipped_level_reuses_ids_between_distant_boxes() -> void:
 	assert_int(distinct.size()).is_less(boxes.size())
 
 
+## The seam law's evil twin. Two same-facing faces sharing one plane AND
+## rasterised area sit at the SAME depth, so the GPU picks a winner per
+## pixel per frame — and where their object ids differ, the crease shader
+## honours whichever id won, speckling the shared patch into a jagged band
+## (issue #14). The walls bury their end caps by CAP_INSET for exactly this
+## reason; the furniture has to be authored clear of it, so the shipped
+## scene is held to the observer's coplanar-fight census coming back EMPTY.
+##
+## Empty of pairs between DISTINCT solids, precisely — see
+## _one_source_against_itself for the census artifact excluded here.
+func test_shipped_level_has_no_coplanar_face_fights() -> void:
+	var level := _shipped_level()
+	var obs: WaveObserver = auto_free(WaveObserver.new())
+	obs.inject(level, null)
+	var e: Dictionary = obs.explain_oids()
+	assert_bool(e.has("fights")).append_failure_message("the census refused: %s" % e).is_true()
+	var fights: Array[String] = []
+	for fight: Dictionary in e.get("fights", []):
+		if _one_source_against_itself(fight):
+			continue
+		fights.append(
+			(
+				"%s vs %s share the %s = %.3f plane"
+				% [fight["name_a"], fight["name_b"], fight["axis"], fight["plane"]]
+			)
+		)
+	(
+		assert_array(fights)
+		. append_failure_message(
+			(
+				(
+					"same-facing coplanar faces z-fight into speckled bands: %s. A flush "
+					+ "same-facing panel must be tucked a few millimetres behind its "
+					+ "neighbour's plane — on a 40 mm back panel a 5 mm tuck breaks the "
+					+ "plane and still leaves the pair deeply touching."
+				)
+				% str(fights)
+			)
+		)
+		. is_empty()
+	)
+
+
+## The census measures a multi-id source as ONE swept union box, entered
+## once per id it carries ("Fan @0.33", "Fan @0.63" — level.rs::oid_census),
+## so it inescapably reports every such source fighting ITSELF on each
+## eye-visible face of that one box. A box cannot z-fight itself, and
+## whatever a source's real limbs do to each other is invisible to a census
+## that only ever sees their union — so the self-pair is an artifact of the
+## representation, excluded here until the census stops emitting it. Every
+## fight between distinct solids still pins.
+func _one_source_against_itself(fight: Dictionary) -> bool:
+	var a: String = fight["name_a"]
+	var b: String = fight["name_b"]
+	if not (a.contains(" @") and b.contains(" @")):
+		return false
+	return a.get_slice(" @", 0) == b.get_slice(" @", 0)
+
+
 ## Every disagreement between a level's derived wall centerlines and the
 ## occluder table its skin was actually handed, as sentences.
 ##
