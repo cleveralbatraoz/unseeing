@@ -144,9 +144,9 @@ func test_one_tick_drives_every_source_on_its_own_voice() -> void:
 ## same number and this test could not be written at all.
 func test_each_source_dims_by_its_own_walls_not_the_others() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
-	var wall := WaveWall.new()  # a z-run wall at x = 4, spanning z 0..8
+	var wall := WaveWall.new()  # a z-run wall at x = 4, spanning z 0.5..8.5
 	wall.length = 8.0
-	wall.position = Vector3(4, 0, 4)
+	wall.position = Vector3(4, 0, 4.5)
 	wall.rotation.y = PI * 0.5
 	level.add_child(wall)
 	var fan := SoundFan.new()
@@ -177,7 +177,7 @@ func test_the_volume_ladder_survives_a_wall() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	var wall := WaveWall.new()
 	wall.length = 8.0
-	wall.position = Vector3(4, 0, 4)
+	wall.position = Vector3(4, 0, 4.5)
 	wall.rotation.y = PI * 0.5
 	level.add_child(wall)
 	var fan := SoundFan.new()

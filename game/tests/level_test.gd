@@ -91,7 +91,7 @@ func _drawn_centerline(box: AABB) -> Vector4:
 ## the room's own origin, knowing nothing about where the room went.
 func _room(yaw: float, scale: float, wall: WaveWall) -> Node3D:
 	var room := Node3D.new()
-	room.position = Vector3(10, 0, 4)
+	room.position = Vector3(10, 0, 7)
 	room.rotation.y = yaw
 	room.scale = Vector3.ONE * scale
 	room.add_child(wall)
@@ -170,9 +170,9 @@ func test_wall_in_a_rotated_room_occludes_where_it_draws() -> void:
 		. is_equal_approx(_drawn_centerline(box), Vector4.ONE * 0.001)
 	)
 	# the room's quarter turn turned the wall's length axis onto world Z:
-	# a 4 m run at x = 10, from z = 0 to z = 4
+	# a 4 m run at x = 10, from z = 3 to z = 7
 	assert_vector(level.wall_segments()[0]).is_equal_approx(
-		Vector4(10, 0, 10, 4), Vector4.ONE * 0.001
+		Vector4(10, 3, 10, 7), Vector4.ONE * 0.001
 	)
 
 
@@ -239,7 +239,7 @@ func test_wall_length_knob_reshapes_live() -> void:
 ## centerline whose ends are in the wrong order. The sign folds at the knob
 ## instead, so the drawn box, the collider and the occluder are one wall.
 func test_a_negative_wall_length_folds_instead_of_inverting_the_wall() -> void:
-	var wall := _wall(-4.0, Vector3(2, 0, 0), false)
+	var wall := _wall(-4.0, Vector3(3, 0, 1), false)
 	var level := _level_holding(wall)
 	assert_float(wall.length).is_equal_approx(4.0, 0.001)
 	assert_vector(_box(wall).size).is_equal(Vector3(4.3, 3, 0.3))
@@ -251,7 +251,7 @@ func test_a_negative_wall_length_folds_instead_of_inverting_the_wall() -> void:
 	(
 		assert_vector(level.wall_segments()[0])
 		. append_failure_message("centerline ends out of order: %s" % level.wall_segments()[0])
-		. is_equal_approx(Vector4(0, 0, 4, 0), Vector4.ONE * 0.001)
+		. is_equal_approx(Vector4(1, 1, 5, 1), Vector4.ONE * 0.001)
 	)
 
 
@@ -285,24 +285,24 @@ func test_level_distributes_and_derives() -> void:
 	var pulses := Pulses.new()
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	var walls: Array[WaveWall] = [
-		_wall(4.0, Vector3(2, 0, 0), false),
-		_wall(4.0, Vector3(2, 0, 4), false),
-		_wall(4.0, Vector3(0, 0, 2), true),
-		_wall(4.0, Vector3(4, 0, 2), true),
+		_wall(4.0, Vector3(3, 0, 1), false),
+		_wall(4.0, Vector3(3, 0, 5), false),
+		_wall(4.0, Vector3(1, 0, 3), true),
+		_wall(4.0, Vector3(5, 0, 3), true),
 	]
 	for wall: WaveWall in walls:
 		level.add_child(wall)
 	var prop := WaveProp.new()
 	prop.size = Vector3(0.9, 0.72, 0.6)
-	prop.position = Vector3(1.5, 0.36, 2)
+	prop.position = Vector3(2.5, 0.36, 3)
 	level.add_child(prop)
 	var fan := SoundFan.new()
-	fan.position = Vector3(3, 0, 1)
+	fan.position = Vector3(4, 0, 2)
 	level.add_child(fan)
-	level.add_child(_spawn_marker(Vector3(1, 0, 3), -0.6))
+	level.add_child(_spawn_marker(Vector3(2, 0, 4), -0.6))
 	level.inject(mat, source_mat, pulses)
 	add_child(level)
-	assert_vector(level.spawn_pos()).is_equal(Vector3(1, 0.9, 3))
+	assert_vector(level.spawn_pos()).is_equal(Vector3(2, 0.9, 4))
 	assert_float(level.spawn_yaw()).is_equal_approx(-0.6, 0.0001)
 	assert_vector(level.demo_tap()).is_equal(Vector3.ZERO)  # no wall between spawn and fan
 	assert_vector(level.demo_tap_normal()).is_equal(Vector3.UP)  # default, no tap planned
@@ -410,7 +410,7 @@ func test_two_exact_spawn_markers_name_the_one_that_lost() -> void:
 ## between the two, so the tap goes unplanned and the level says so.)
 func test_open_fan_room_is_legal() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
-	level.add_child(_wall(4.0, Vector3(2, 0, 0), false))
+	level.add_child(_wall(4.0, Vector3(3, 0, 1), false))
 	var fan := SoundFan.new()
 	fan.position = Vector3(2, 0, 2)
 	level.add_child(fan)
@@ -474,7 +474,7 @@ func test_demo_tap_aims_at_the_nearest_source_not_the_first() -> void:
 ## happens instead.
 func test_unplannable_demo_tap_reports() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
-	level.add_child(_wall(4.0, Vector3(2, 0, 0), false))
+	level.add_child(_wall(4.0, Vector3(3, 0, 1), false))
 	var fan := SoundFan.new()
 	fan.name = "Fan"
 	fan.position = Vector3(2, 0, 2.5)
