@@ -397,11 +397,14 @@ func test_shipped_level_reuses_ids_between_distant_boxes() -> void:
 ## The walk stops at the SHORTER of the two, because a length mismatch is
 ## the very fault this check exists to catch: the table is truncated at the
 ## sight shaders' slots (MAXW, rust/src/sight.rs:32) and every wall past
-## them stops occluding. Indexing the table by the segments' index instead
-## reads off the end of it — "Out of bounds get index '32'", once per
-## overflow wall — and buries the one sentence that says what went wrong.
-## So the mismatch is NAMED first and the prefix walk is only the rest of
-## the story.
+## them stops occluding. Indexing the table by the SEGMENTS' index instead
+## reads off its end, and Godot unwinds the whole case at that first read —
+## measured on a 33-wall level: one "Out of bounds get index '32'", and the
+## second skin never reached at all. The count mismatch does still report,
+## because it is asserted before the walk; everything after it is lost.
+## Stopping at the shorter length is what keeps the case alive to its end,
+## and the fault sentence carries what the truncation COSTS — the rest stop
+## occluding — rather than a bare pair of numbers to interpret.
 func _table_faults(level: WaveLevel, mat: ShaderMaterial) -> Array[String]:
 	var segs := level.wall_segments()
 	var rects: PackedVector4Array = mat.get_shader_parameter("u_walls")
@@ -451,8 +454,10 @@ func test_wall_table_reaches_the_occluding_skins() -> void:
 ## into. `wall_rects()` truncates at MAXW (rust/src/sight.rs:32) and the
 ## walls past it silently stop occluding — a level-breaking fault, and the
 ## one this check exists to name. Walking the table by the SEGMENTS' index
-## instead dies on "Out of bounds get index '32'" first, so the reader is
-## handed a Godot runtime error and a stack trace where a count belonged.
+## instead reads off its end and Godot unwinds the case there: the count
+## mismatch does still report, since it is asserted first, but every
+## assertion after that one overflow index is lost — the second skin, the
+## wall count, the wall top, none of them reached.
 func test_a_level_past_the_shader_slots_reports_the_truncation() -> void:
 	var data_mat := ShaderMaterial.new()
 	var level: WaveLevel = auto_free(WaveLevel.new())
