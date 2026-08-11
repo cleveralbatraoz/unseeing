@@ -170,6 +170,18 @@ pub struct CatGait {
     moving: bool,
 }
 
+/// Everything a CatGait is, as data — the planted paws included, or the
+/// restored cat's stride starts by sliding into place.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GaitCapture {
+    pub phase: f64,
+    pub amp: f64,
+    pub planted: [Vector3; LEGS],
+    pub aim: [Vector3; LEGS],
+    pub in_swing: [bool; LEGS],
+    pub moving: bool,
+}
+
 impl CatGait {
     /// A fresh gait standing at `pos` facing `yaw`: every paw planted at
     /// its neutral anchor, phase zeroed, standing still.
@@ -186,6 +198,34 @@ impl CatGait {
             aim: planted,
             in_swing: [false; LEGS],
             moving: false,
+        }
+    }
+
+    /// The whole gait as data — every planted paw and swing aim, or the
+    /// restored cat's stride starts by sliding into place.
+    #[must_use]
+    pub fn capture(&self) -> GaitCapture {
+        GaitCapture {
+            phase: self.phase,
+            amp: self.amp,
+            planted: self.planted,
+            aim: self.aim,
+            in_swing: self.in_swing,
+            moving: self.moving,
+        }
+    }
+
+    /// A gait rebuilt mid-stride — the one thing `new` cannot express (it
+    /// hard-codes every paw planted at its neutral anchor).
+    #[must_use]
+    pub fn restore(capture: GaitCapture) -> Self {
+        Self {
+            phase: capture.phase,
+            amp: capture.amp,
+            planted: capture.planted,
+            aim: capture.aim,
+            in_swing: capture.in_swing,
+            moving: capture.moving,
         }
     }
 
@@ -592,6 +632,27 @@ mod tests {
         }
         assert!(peak <= 8, "cat flooded the pool: peak {peak}");
         assert!(peak >= 4, "budget probe too weak: peak only {peak}");
+    }
+
+    /// The restored gait walks the SAME stride: drive to mid-stride,
+    /// capture, then advance both original and restored with identical
+    /// inputs — every GaitFrame must match, planted paws included.
+    #[test]
+    fn a_restored_gait_walks_the_same_stride() {
+        let mut pos = Vector3::ZERO;
+        let mut original = CatGait::new(pos, 0.0);
+        for _ in 0..40 {
+            pos += Vector3::new(0.02, 0.0, 0.0);
+            let _ = original.advance(0.05, pos, 0.0, 0.4);
+        }
+        let mut restored = CatGait::restore(original.capture());
+        assert_eq!(restored, original);
+        for _ in 0..100 {
+            pos += Vector3::new(0.02, 0.0, 0.0);
+            let a = original.advance(0.05, pos, 0.0, 0.4);
+            let b = restored.advance(0.05, pos, 0.0, 0.4);
+            assert_eq!(a, b);
+        }
     }
 
     /// The FULL voice against the real pool: a cat walking flat out AND

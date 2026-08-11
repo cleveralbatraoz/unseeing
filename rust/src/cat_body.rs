@@ -305,6 +305,13 @@ impl Tail {
         &self.nodes
     }
 
+    /// A chain rebuilt at an exact curve. `new` settles toward rest by
+    /// iterating — correct for a spawn, wrong for a restore.
+    #[must_use]
+    pub fn restore(nodes: [Vector3; TAIL_N]) -> Self {
+        Self { nodes }
+    }
+
     /// One tick: `back` is the direction away from the body, `rv` the
     /// cat's right, `sit` the sit blend (the tail curls around the
     /// haunches), `sway` a signed lateral weight the node drives with
@@ -599,6 +606,27 @@ mod tests {
             f64::from((tip - root).dot(rv)).abs() > 0.1,
             "a seated tail must curl sideways"
         );
+    }
+
+    /// A mid-sway tail restores verbatim — Tail::new SETTLES (120
+    /// iterations toward rest), so a restore door must bypass it.
+    #[test]
+    fn a_restored_tail_holds_its_exact_curve() {
+        let rv = Vector3::new(1.0, 0.0, 0.0);
+        let mut tail = Tail::new(Vector3::ZERO, Vector3::new(0.0, 0.1, -0.2), rv);
+        for i in 0..30 {
+            let root = Vector3::new(f32::from(i as u8) * 0.01, 0.0, 0.0);
+            tail.advance(
+                0.05,
+                root,
+                root + Vector3::new(0.0, 0.1, -0.2),
+                rv,
+                0.2,
+                0.1,
+            );
+        }
+        let restored = Tail::restore(*tail.nodes());
+        assert_eq!(restored.nodes(), tail.nodes());
     }
 
     /// The follow-chain never coils into a loop: at every joint, in a

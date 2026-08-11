@@ -26,9 +26,9 @@ use godot::classes::{
 use godot::prelude::*;
 
 use super::limbs::{sphere, sphere_lod, tube, tube_res};
-use crate::cat_body::{self, CatPose, Tail};
-use crate::cat_brain::{CatBrain, RoamRect};
-use crate::cat_gait::{self, CatGait};
+use crate::cat_body::{self, CatPose, TAIL_N, Tail};
+use crate::cat_brain::{BrainCapture, CatBrain, RoamRect};
+use crate::cat_gait::{self, CatGait, GaitCapture};
 use crate::sound_source::Cadence;
 
 /// Collider radius — small enough to slip between furniture legs.
@@ -91,6 +91,42 @@ pub struct WaveCat {
     /// not once per rendered frame — no wasted rebuilds above 60 Hz.
     mesh_dirty: bool,
     base: Base<CharacterBody3D>,
+}
+
+/// The cat as data — a whole life in one value, so a whim mid-stride
+/// moves whole or not at all.
+#[expect(
+    dead_code,
+    reason = "the door this task builds; the blob module (a later task) is \
+              its first caller"
+)]
+pub(crate) struct CatCapture {
+    /// The body's transform and momentum — world position, world-space
+    /// yaw, and the CharacterBody3D velocity move_and_slide reads next.
+    pub position: Vector3,
+    pub yaw: f64,
+    pub velocity: Vector3,
+    /// The mind's whole state — RNG words included, or the restored cat
+    /// diverges at its first whim.
+    pub brain: BrainCapture,
+    /// The stride's whole state — every planted paw and swing aim.
+    pub gait: GaitCapture,
+    /// The tail's exact curve — a settled cat and a mid-sway cat are
+    /// different tails, and only the exact one is the truth.
+    pub tail: [Vector3; TAIL_N],
+    /// The last-built skeleton pose — carried verbatim so `paw_positions`
+    /// and `mood` answer correctly between the restore and the first tick.
+    pub pose: CatPose,
+    /// The idle-presence cadence's next appointment, or NaN when the cat
+    /// never beat (see the comment on `restore_state` below).
+    pub presence_next: f64,
+    /// The eased sit blend and the elapsed sim clock the tail's idle
+    /// breath rides.
+    pub sit: f64,
+    pub sim_t: f64,
+    /// The body position at the start of the last physics tick — the
+    /// brain's honest-progress feed depends on this exact value.
+    pub last_pos: Vector3,
 }
 
 #[godot_api]
@@ -311,6 +347,62 @@ impl WaveCat {
     #[func]
     fn cat_mesh(&self) -> Gd<ImmediateMesh> {
         self.mesh.clone()
+    }
+
+    /// The cat as data — None when _ready refused (uninjected) and the
+    /// brain never existed, which the blob reports as a refusal, never
+    /// as a default cat.
+    #[expect(
+        dead_code,
+        reason = "the door this task builds; the blob module (a later task) \
+                  is its first caller"
+    )]
+    pub(crate) fn capture_state(&self) -> Option<CatCapture> {
+        let brain = self.brain.as_ref()?;
+        let gait = self.gait.as_ref()?;
+        let tail = self.tail.as_ref()?;
+        let pose = self.pose.as_ref()?;
+        Some(CatCapture {
+            position: self.base().get_global_position(),
+            yaw: f64::from(self.base().get_global_rotation().y),
+            velocity: self.base().get_velocity(),
+            brain: brain.capture(),
+            gait: gait.capture(),
+            tail: *tail.nodes(),
+            pose: *pose,
+            presence_next: self.presence.next_at().unwrap_or(f64::NAN),
+            sit: self.sit,
+            sim_t: self.sim_t,
+            last_pos: self.last_pos,
+        })
+    }
+
+    /// Place a built cat into a captured mid-life state. Callers hold the
+    /// tree frozen; the next physics tick resumes the captured life.
+    #[expect(
+        dead_code,
+        reason = "the door this task builds; the restorer module (a later \
+                  task) is its first caller"
+    )]
+    pub(crate) fn restore_state(&mut self, capture: &CatCapture) {
+        self.base_mut().set_global_position(capture.position);
+        let mut rot = self.base().get_global_rotation();
+        rot.y = capture.yaw as f32;
+        self.base_mut().set_global_rotation(rot);
+        self.base_mut().set_velocity(capture.velocity);
+        self.brain = Some(CatBrain::restore(capture.brain));
+        self.gait = Some(CatGait::restore(capture.gait));
+        self.tail = Some(Tail::restore(capture.tail));
+        self.pose = Some(capture.pose);
+        // presence_next NaN — a cat that never beat — round-trips through
+        // Cadence::restore(interval, NaN), whose next_at() returns None
+        // again: the poison repair in beat() re-books it exactly as it
+        // would have.
+        self.presence = Cadence::restore(cat_gait::PRESENCE_EVERY, capture.presence_next);
+        self.sit = capture.sit;
+        self.sim_t = capture.sim_t;
+        self.last_pos = capture.last_pos;
+        self.mesh_dirty = true;
     }
 
     /// One of the cat's own waves into the pool: kind 2 (footstep — the

@@ -176,6 +176,29 @@ enum State {
     Sit { left: f64 },
 }
 
+/// The private state machine's public mirror, for capture. One variant
+/// per State, payloads included — the Pause/Sit countdown is exactly the
+/// state a restored cat resumes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BrainState {
+    Roam { tx: f64, tz: f64 },
+    Pause { left: f64 },
+    Sit { left: f64 },
+}
+
+/// Everything a CatBrain is, as data. Same-build, same-platform contract
+/// as the brain itself (the module's determinism doc).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BrainCapture {
+    pub rng_state: u64,
+    pub rng_inc: u64,
+    pub rect: RoamRect,
+    pub state: BrainState,
+    pub yaw: f64,
+    pub speed: f64,
+    pub blocked: f64,
+}
+
 /// The wanderer. Advanced every physics tick with the body's position
 /// and actual progress; all whimsy comes from the seeded stream, drawn
 /// only at events.
@@ -301,6 +324,44 @@ impl CatBrain {
             State::Sit {
                 left: self.rng.range(SIT_SECS.0, SIT_SECS.1),
             }
+        }
+    }
+
+    /// The whole brain as data — the RNG words included, or the restored
+    /// cat diverges at its first whim.
+    #[must_use]
+    pub fn capture(&self) -> BrainCapture {
+        let (rng_state, rng_inc) = self.rng.capture();
+        BrainCapture {
+            rng_state,
+            rng_inc,
+            rect: self.rect,
+            state: match self.state {
+                State::Roam { tx, tz } => BrainState::Roam { tx, tz },
+                State::Pause { left } => BrainState::Pause { left },
+                State::Sit { left } => BrainState::Sit { left },
+            },
+            yaw: self.yaw,
+            speed: self.speed,
+            blocked: self.blocked,
+        }
+    }
+
+    /// A brain rebuilt mid-life — the one thing `new` cannot express (it
+    /// hard-codes the first pause and a fresh stream).
+    #[must_use]
+    pub fn restore(capture: BrainCapture) -> Self {
+        Self {
+            rng: Pcg32::restore(capture.rng_state, capture.rng_inc),
+            rect: capture.rect,
+            state: match capture.state {
+                BrainState::Roam { tx, tz } => State::Roam { tx, tz },
+                BrainState::Pause { left } => State::Pause { left },
+                BrainState::Sit { left } => State::Sit { left },
+            },
+            yaw: capture.yaw,
+            speed: capture.speed,
+            blocked: capture.blocked,
         }
     }
 
@@ -554,6 +615,31 @@ mod tests {
         if let Some((tx, tz)) = brain.target() {
             assert!((tx - 1.0).abs() < 1e-9);
             assert!((tz - 2.0).abs() < 1e-9);
+        }
+    }
+
+    /// The restored brain lives the SAME future: drive a brain to
+    /// mid-life, capture, then advance both original and restored with
+    /// identical inputs — every Drive must match. This is the
+    /// same-seed-same-life law, lifted to same-capture-same-future.
+    #[test]
+    fn a_restored_brain_lives_the_same_future() {
+        let rect = RoamRect::around(Vector3::ZERO, 6.0, 6.0);
+        let mut original = CatBrain::new(7, rect, 0.3);
+        let mut pos = Vector3::ZERO;
+        for _ in 0..120 {
+            let drive = original.advance(0.1, pos, 0.05);
+            pos += Vector3::new(0.05, 0.0, 0.02) * (drive.speed as f32);
+        }
+        let mut restored = CatBrain::restore(original.capture());
+        assert_eq!(restored, original); // PartialEq on the whole brain
+        for _ in 0..200 {
+            let a = original.advance(0.1, pos, 0.04);
+            let b = restored.advance(0.1, pos, 0.04);
+            assert_eq!(a.speed, b.speed);
+            assert_eq!(a.yaw, b.yaw);
+            assert_eq!(a.sitting, b.sitting);
+            pos += Vector3::new(0.03, 0.0, 0.01);
         }
     }
 }
