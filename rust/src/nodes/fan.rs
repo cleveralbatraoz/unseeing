@@ -25,7 +25,7 @@ use godot::prelude::*;
 
 use super::source::{SoundSource, SourceRig, sound};
 use crate::fan_wave;
-use crate::sound_source::{Spread, Voice, Volume};
+use crate::sound_source::{Cadence, Spread, Voice, Volume};
 
 /// Hub height in meters: within the cane's reach. A build dimension the
 /// pivot and the collider both hang from — not a tuning knob.
@@ -344,6 +344,11 @@ impl SoundSource for SoundFan {
 
     fn set_image(&mut self, image: f64) {
         self.rig.set_image(image);
+    }
+
+    fn restore_appointment(&mut self, next: f64) {
+        let interval = self.voice().cadence;
+        self.rig.restore_cadence(Cadence::restore(interval, next));
     }
 }
 

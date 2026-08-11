@@ -29,7 +29,7 @@ use godot::prelude::*;
 
 use super::source::{SoundSource, SourceRig, sound};
 use crate::radio_wave;
-use crate::sound_source::{Spread, Voice, Volume};
+use crate::sound_source::{Cadence, Spread, Voice, Volume};
 
 /// The case's full extent in meters: a set you could carry with one hand.
 const CASE: Vector3 = Vector3::new(0.44, 0.26, 0.20);
@@ -272,6 +272,11 @@ impl SoundSource for SoundRadio {
 
     fn set_image(&mut self, image: f64) {
         self.rig.set_image(image);
+    }
+
+    fn restore_appointment(&mut self, next: f64) {
+        let interval = self.voice().cadence;
+        self.rig.restore_cadence(Cadence::restore(interval, next));
     }
 }
 

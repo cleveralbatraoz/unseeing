@@ -244,6 +244,20 @@ impl Cadence {
         }
     }
 
+    /// A gate rebuilt mid-flight: the interval AND the standing
+    /// appointment, exactly as captured. `every` cannot express this (it
+    /// books one interval out) and `retune` deliberately keeps the old
+    /// date — this is the one door for a restored clock, and re-pinning
+    /// through it AFTER the clock lands is what keeps a jumped clock
+    /// from buying its one spurious beat per source.
+    #[must_use]
+    pub fn restore(interval: f64, next: f64) -> Self {
+        Self {
+            every: interval,
+            next,
+        }
+    }
+
     /// The interval this gate books by.
     #[must_use]
     pub fn interval(self) -> f64 {
@@ -574,5 +588,27 @@ mod tests {
         }
         let mut broken = Cadence::every(f64::NAN);
         assert_eq!(broken.beat(1e6), None);
+    }
+
+    /// A restored gate holds EXACTLY the captured appointment: nothing
+    /// fires before it, the appointment fires on time, and the next
+    /// rebooking runs on the restored interval. Literals hand-picked:
+    /// interval 4.0, appointment at 10.0, clock restored to 9.0.
+    #[test]
+    fn a_restored_appointment_stands_and_nothing_fires_early() {
+        let mut gate = Cadence::restore(4.0, 10.0);
+        assert_eq!(gate.next_at(), Some(10.0));
+        assert_eq!(gate.beat(9.0), None); // the restore instant: silence
+        assert_eq!(gate.beat(10.0), Some(10.0)); // fires on the dot
+        assert_eq!(gate.next_at(), Some(14.0)); // rebooks from t
+    }
+
+    /// An OVERDUE captured appointment stays overdue and fires on the
+    /// very next beat — exactly as it would have in the original run.
+    #[test]
+    fn an_overdue_restored_appointment_fires_at_once() {
+        let mut gate = Cadence::restore(4.0, 8.0);
+        assert_eq!(gate.beat(9.0), Some(9.0));
+        assert_eq!(gate.next_at(), Some(13.0));
     }
 }
