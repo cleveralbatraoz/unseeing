@@ -132,6 +132,9 @@ func _print_hash_and_quit() -> void:
 ## Copied verbatim from `determinism_probe.gd`, which owns this law: the two
 ## probes hash the same snapshot the same way, so a hash from either means
 ## the same thing. Change one and change the other.
+# canonicalize-mirror: BEGIN — kept byte-identical with determinism_probe.gd's
+# copy of the same two functions; test/repo_hygiene.sh diffs the two marked
+# blocks and fails loudly if they drift. Change one, change the other.
 static func canonicalize(value: Variant) -> Variant:
 	var kind := typeof(value)
 	match kind:
@@ -170,3 +173,4 @@ static func _canonicalize_sequence(sequence: Variant) -> Array:
 	for item: Variant in sequence:
 		out.append(canonicalize(item))
 	return out
+# canonicalize-mirror: END

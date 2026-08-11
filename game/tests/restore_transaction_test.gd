@@ -228,3 +228,22 @@ func test_the_heros_out_trays_lose_what_the_blob_never_held() -> void:
 	assert_str(str(verdict.get("unavailable", ""))).is_empty()
 	assert_str(verdict["hash"]).is_equal(blob["hash"])
 	assert_int(main.player.queued_waves().size()).is_equal(carried)
+
+
+## `restore_blob` forces the tree paused FOR the transaction and restores
+## whatever the tree's own pause state was before it — never unconditionally
+## unpausing on the way out. A restore run from the settings overlay (which
+## pauses the world to open) must not quietly resume gameplay underneath it.
+##
+## The save/restore pair has two sides; this pins the TRUE one — the tree
+## was already paused going in, and must still be paused coming out.
+func test_restore_preserves_the_trees_paused_state() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_bool(blob.has("unavailable")).is_false()
+	get_tree().paused = true
+	var verdict: Dictionary = main.restore_blob(blob)
+	assert_str(str(verdict.get("unavailable", ""))).is_empty()
+	assert_bool(get_tree().paused).is_true()
+	get_tree().paused = false

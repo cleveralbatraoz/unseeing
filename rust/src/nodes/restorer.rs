@@ -54,7 +54,7 @@ use godot::prelude::*;
 use super::cat::WaveCat;
 use super::hero::HeroBody;
 use super::level::WaveLevel;
-use super::observer::{WaveObserver, hex64, parse_blob, pulse_core, unavailable};
+use super::observer::{NO_POOL, WaveObserver, hex64, parse_blob, pulse_core, unavailable};
 use super::player::UnseeingPlayer;
 use super::source::SoundSource;
 use crate::echo_queue::EchoQueue;
@@ -87,10 +87,6 @@ const DEAD_BODY: &str = "the injected hero body has been freed";
 const NO_OBSERVER: &str = "restorer was never injected the observer — the proof is its capture";
 
 const DEAD_OBSERVER: &str = "the injected observer has been freed";
-
-/// A level whose wave pool never arrived, or arrived as something that is
-/// not a pool at all — the observer's own words for the same absence.
-const NO_POOL: &str = "the injected level carries no readable wave pool";
 
 /// The write side of [`WaveObserver`]: it applies a captured blob to the
 /// running game as one refuse-or-succeed transaction, and proves the fit

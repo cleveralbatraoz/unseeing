@@ -1,6 +1,7 @@
 extends GdUnitTestSuite
 ## The restore doors against the live scene. Each test freezes nothing —
-## it drives the clock by hand, exactly as observer_test does.
+## it awaits real process/physics frames and lets `main._process` drive
+## the clock, never a hand-stepped one.
 
 const MAIN_SCENE := preload("res://scenes/main.tscn")
 

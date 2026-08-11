@@ -46,6 +46,12 @@
 //!   generated triangular prism the engine ships no primitive for.
 //! - [`oid_palette`] — which flat object id each box in the world carries,
 //!   colouring the touch graph so every seam between two objects draws.
+//! - [`reproduce`] — one instant of the running world as a value: the
+//!   capture format, its hand-derived byte layout, the FNV-1a state hash,
+//!   and the field-naming diff a divergent restore is proved against.
+//! - [`observe`] — the wave engine described to an agent as data: pool,
+//!   eviction, occlusion, the object-id touch graph, the reflection fan —
+//!   snapshot and explain, never a rendered frame.
 //!
 //! Determinism is construction, not luck: no hashed iteration anywhere
 //! near an output (ordered containers only), no system time, no

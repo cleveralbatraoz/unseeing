@@ -9,7 +9,14 @@ GODOT="${GODOT:-godot}"
 # a full path template, not `mktemp -t`: GNU mktemp demands the X's at the
 # end of the template, and the droplet running this pipeline is Linux
 BLOB="$(mktemp "${TMPDIR:-/tmp}/unseeing-blob.XXXXXX")"
-trap 'rm -f "$BLOB"' EXIT
+# KEEP_BLOB=1 skips the cleanup trap and prints the path instead, so a
+# diverging CI run can be pulled back and post-mortemed instead of re-run
+# blind. Default behavior (delete on exit) is unchanged.
+if [ "${KEEP_BLOB:-0}" = 1 ]; then
+  trap 'echo "restore: KEEP_BLOB=1 — blob kept at $BLOB"' EXIT
+else
+  trap 'rm -f "$BLOB"' EXIT
+fi
 
 leg() {
   UNSEEING_SEED=1 UNSEEING_RESTORE_MODE="$1" UNSEEING_RESTORE_BLOB="$BLOB" \

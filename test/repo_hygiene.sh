@@ -111,6 +111,45 @@ else
   fi
 fi
 
+# --- canonicalize mirror -----------------------------------------------------
+# game/tests/probe/determinism_probe.gd and restore_probe.gd each carry their
+# own copy of `canonicalize`/`_canonicalize_sequence` — the JSON-safe walk
+# that decomposes every Vector2/3/4 and Basis lane into bare floats before
+# JSON.stringify, which is what makes the state hash both probes print
+# comparable at all. A gdUnit suite proving them byte-identical would need a
+# live Godot runtime; this is the cheap POSIX half of that guarantee, run on
+# every pipeline invocation. Marked with `# canonicalize-mirror: BEGIN/END`
+# comments in both files (deliberately around the CODE only, not the doc
+# comments above it, which are allowed to say different things).
+DET_PROBE="$DIR/game/tests/probe/determinism_probe.gd"
+RES_PROBE="$DIR/game/tests/probe/restore_probe.gd"
+canon_block() { # canon_block <file>
+  sed -n '/# canonicalize-mirror: BEGIN/,/# canonicalize-mirror: END/p' "$1" | sed '1d;$d'
+}
+# The tar-extract self-check further below copies only test/ and .githooks/
+# into its scratch tree, never game/ — a real deploy work tree (and every
+# other invocation of this script) has the full tree, so a missing probe
+# file means something different in each case. HYGIENE_NESTED is the same
+# signal the self-check section already uses to stop its own recursion.
+if [ "${HYGIENE_NESTED:-0}" = 1 ]; then
+  skip "canonicalize mirror (nested self-check scratch tree carries no game/)"
+elif [ ! -f "$DET_PROBE" ] || [ ! -f "$RES_PROBE" ]; then
+  bad "canonicalize mirror: probe file(s) missing ($DET_PROBE, $RES_PROBE)"
+else
+  CANON_TMP="$(mktemp -d)"
+  canon_block "$DET_PROBE" >"$CANON_TMP/det.txt"
+  canon_block "$RES_PROBE" >"$CANON_TMP/res.txt"
+  if [ ! -s "$CANON_TMP/det.txt" ] || [ ! -s "$CANON_TMP/res.txt" ]; then
+    bad "canonicalize mirror: BEGIN/END markers not found in $DET_PROBE and/or $RES_PROBE"
+  elif diff -q "$CANON_TMP/det.txt" "$CANON_TMP/res.txt" >/dev/null; then
+    ok "canonicalize mirror: $DET_PROBE and $RES_PROBE agree"
+  else
+    bad "canonicalize mirror DIVERGED between $DET_PROBE and $RES_PROBE:"
+    diff "$CANON_TMP/det.txt" "$CANON_TMP/res.txt" | sed 's/^/hygiene:      /'
+  fi
+  rm -rf "$CANON_TMP"
+fi
+
 # --- pre-commit size guard --------------------------------------------------
 # Exercised in a scratch repo, never here: the guard's whole job is to reject
 # a commit, and the only honest way to prove it does is to stage something it

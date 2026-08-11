@@ -76,6 +76,9 @@ func _on_frame() -> void:
 ## pretty-printer. Total over any Variant the snapshot can hand back —
 ## floats, ints, bools and Strings pass through unchanged, which is exactly
 ## what the old direct-stringify path already did right for those.
+# canonicalize-mirror: BEGIN — kept byte-identical with restore_probe.gd's
+# copy of the same two functions; test/repo_hygiene.sh diffs the two marked
+# blocks and fails loudly if they drift. Change one, change the other.
 static func canonicalize(value: Variant) -> Variant:
 	var kind := typeof(value)
 	match kind:
@@ -114,3 +117,4 @@ static func _canonicalize_sequence(sequence: Variant) -> Array:
 	for item: Variant in sequence:
 		out.append(canonicalize(item))
 	return out
+# canonicalize-mirror: END

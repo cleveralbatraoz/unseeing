@@ -819,6 +819,11 @@ fn diff_wave(a: &QueuedWave, b: &QueuedWave) -> Option<String> {
         echoes,
         normal,
     } = a;
+    // Named "kind" here, this struct's own field — but a reader chasing this
+    // divergence path into a blob file wants the WIRE key, which is "type"
+    // (`nodes::observer::queued_wave_capture_dict`). Two vocabularies for
+    // one field, deliberately: this path names the struct, the wire names
+    // the shipped `queued_waves` #[func]. Neither renames for the other.
     if *kind != b.kind {
         return Some("kind".to_string());
     }

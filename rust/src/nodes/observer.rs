@@ -70,8 +70,10 @@ const NO_CAMERA: &str = "observer was never injected a camera — walls_to_eye a
      from the eye";
 
 /// A level whose wave pool never arrived, or arrived as something that is
-/// not a pool at all.
-const NO_POOL: &str = "the injected level carries no readable wave pool";
+/// not a pool at all. `pub(super)`: [`super::restorer::WaveRestorer`] reuses
+/// this exact string for its own refusal rather than spelling it a second
+/// time, so the two absences read as one absence.
+pub(super) const NO_POOL: &str = "the injected level carries no readable wave pool";
 
 /// The level was injected and has since been freed. A scene reload leaves
 /// the handle looking perfectly valid, and reading through it would take
@@ -1409,6 +1411,12 @@ fn hero_capture_dict(hero: &HeroCapture) -> VarDictionary {
 /// `queued_waves` #[func] key it — "type", not "kind" — so one queue reads
 /// with one vocabulary wherever it surfaces. The encoding is the only
 /// difference, and it is the whole reason this is a second function.
+///
+/// This is the wire spelling. `reproduce::blob::diff_wave`'s divergence
+/// path names the same field by the `QueuedWave` struct's own field name,
+/// "kind" — a reader chasing `hero.queued_waves[i].kind` into a blob file
+/// wants this function's "type" key instead. Deliberate, not a typo either
+/// side; see the note at `diff_wave`.
 fn queued_wave_capture_dict(wave: &QueuedWave) -> VarDictionary {
     let QueuedWave {
         kind,
@@ -1683,6 +1691,7 @@ impl Group {
             Floats::Text => {
                 let text = string_of(value, path)?;
                 text.parse::<f32>()
+                    .map(canonical_nan_f32)
                     .map_err(|_| format!("{path}: expected a float as text, found {text:?}"))
             }
         }
@@ -1713,15 +1722,23 @@ impl Group {
         string_of(&self.raw(key)?, &self.path_of(key))
     }
 
-    /// A 64-bit word as 16 hex characters — see the wire note above.
+    /// A 64-bit word as EXACTLY 16 hex characters — see the wire note
+    /// above. `u64::from_str_radix` alone would also take 1-15 digits and a
+    /// leading `+`; the only producer is `format!("{word:016x}")`
+    /// ([`hex64`]), which never emits either, so both are refused rather
+    /// than silently zero-extended.
     fn u64_hex(&self, key: &str) -> Result<u64, String> {
         let text = self.string(key)?;
-        u64::from_str_radix(&text, 16).map_err(|_| {
+        let malformed = || {
             format!(
                 "{}: expected 16 hex characters, found {text:?}",
                 self.path_of(key)
             )
-        })
+        };
+        if text.len() != 16 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(malformed());
+        }
+        u64::from_str_radix(&text, 16).map_err(|_| malformed())
     }
 
     /// A 64-bit signed word as decimal text, for the same reason.
@@ -1802,6 +1819,14 @@ const SAFE_INT: f64 = 9_007_199_254_740_992.0;
 /// whichever quiet NaN the parser happened to build.
 fn canonical_nan(value: f64) -> f64 {
     if value.is_nan() { f64::NAN } else { value }
+}
+
+/// [`canonical_nan`]'s f32 sibling, for [`Group::lane_of`]. No vector lane
+/// can hold a NaN today — the round-trip test would name any field that
+/// ever did, loudly — but the scalar road canonicalizes on principle, and
+/// the lane road should not be the one place that silently didn't.
+fn canonical_nan_f32(value: f32) -> f32 {
+    if value.is_nan() { f32::NAN } else { value }
 }
 
 fn string_of(value: &Variant, path: &str) -> Result<String, String> {
