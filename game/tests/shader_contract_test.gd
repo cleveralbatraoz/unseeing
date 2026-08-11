@@ -115,11 +115,32 @@ func test_decode_expressions_are_literal() -> void:
 	assert_str(src).contains("mod(d.w, 10.0) / 9.0")
 
 
+## DIST_PACK_RANGE lives in the include, which is the copy that renders, and
+## now also in rust/src/level_plan.rs, because WaveLevel measures the map it
+## derived against it and says so out loud. A drift between the two would
+## make that report worthless in the quiet direction — a level checking
+## itself against 40 while the shaders pack against 30 calls a broken map
+## fine — and nothing else compares them.
+func test_dist_pack_range_matches_the_level_budget() -> void:
+	assert_float(_shader_const("DIST_PACK_RANGE")).is_equal(WaveLevel.pack_range())
+
+
 ## Camera distance is packed into one color channel divided by
-## DIST_PACK_RANGE; any visible point packing above 1.0 would alias. The
-## range must therefore exceed the longest sight line the map allows: the
-## full 3D diagonal of the wall-centerline extents, floor to ceiling —
+## DIST_PACK_RANGE, CLAMPED rather than wrapped (data_core.gdshaderinc:149),
+## so a point past the range does not alias — it saturates, and everything
+## out there reads a flat 1.0. That is worse than it sounds: the silhouette
+## outline is a Laplacian of that channel (hearing_post.gdshader:72) and the
+## Laplacian of a plateau is zero, so far geometry draws no outline at all,
+## and the hearing pass recovers scene depth as c_c.b * DIST_PACK_RANGE
+## (line 57), which pins at the range and cuts player-sound rings against a
+## world that is not there.
+##
+## The range must therefore exceed the longest sight line the map allows:
+## the full 3D diagonal of the wall-centerline extents, floor to ceiling —
 ## derived from the shipped level scene, the one map that ever renders.
+## Derived HERE independently of the level's own arithmetic, on purpose: an
+## expectation computed by the code under test would pass whatever that code
+## did, and WaveLevel now measures this same diagonal itself.
 func test_dist_pack_range_covers_the_map_diagonal() -> void:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())

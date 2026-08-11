@@ -323,6 +323,18 @@ impl WaveLevel {
         level_plan::ROOM_SEGMENTS as i64
     }
 
+    /// The range the sight shaders pack camera distance into
+    /// ([`level_plan::DIST_PACK_RANGE`]) — the ceiling on how big a map may
+    /// be, served so `game/tests/shader_contract_test.gd` can hold this
+    /// mirror against the include's own `DIST_PACK_RANGE`, which is the
+    /// copy that actually renders. Nothing else could catch that drift: a
+    /// level measuring itself against 40 while the shader packs against 30
+    /// would call a broken map fine.
+    #[func]
+    fn pack_range() -> f64 {
+        level_plan::DIST_PACK_RANGE
+    }
+
     /// Drive every sound source for one frame: advance its clockwork with
     /// the SIMULATED clock (so movie-maker runs and time scaling stay
     /// correct), then tell it how strongly its standing acoustic image is
@@ -437,6 +449,7 @@ impl WaveLevel {
         let census = self.census();
         self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
         self.push_wall_table();
+        self.report_pack_range();
         self.assign_oids(&census);
         self.source_children = census.sources;
         self.cat_children = census.cats;
@@ -531,6 +544,19 @@ impl WaveLevel {
         let count = rects.len() as i64;
         self.push_table_to(self.data_mat.clone(), &table, count);
         self.push_table_to(self.source_mat.clone(), &table, count);
+    }
+
+    /// Loud when the authored map has outgrown the range the sight shaders
+    /// pack camera distance into ([`level_plan::pack_range_budget`]) — a
+    /// ceiling on the map's SIZE rather than on its wall count, and one a
+    /// designer meets by widening a room rather than by adding geometry.
+    /// Measured off the derived centerlines, so it moves when a border wall
+    /// moves; the words and the verdict are pure, and cargo holds them.
+    fn report_pack_range(&self) {
+        say(level_plan::pack_range_budget(
+            level_plan::map_diagonal(&self.segments),
+            level_plan::DIST_PACK_RANGE,
+        ));
     }
 
     /// Push the wall table onto one data-writing material — loud when it is
