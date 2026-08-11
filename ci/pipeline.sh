@@ -120,6 +120,14 @@ echo "ci: unit tests (gdUnit4)"
   exit 1
 }
 
+# The suite above is blind to one branch by construction: it runs in the
+# GAME, and Godot exposes no way to set Engine.is_editor_hint() from a
+# script. The probe launches a second engine with `-e` instead, which is the
+# only way to reach the editor half of the slab law — and it is headless, so
+# it belongs here rather than with the windowed probes a human runs.
+echo "ci: editor-mode probe (the slab law's other half)"
+"$DIR/tools/probe_editor_slabs.sh" || { echo "ci: editor-mode probe FAILED"; exit 1; }
+
 if [ "${SKIP_EXPORT:-}" = "1" ]; then
   echo "ci: SKIP_EXPORT=1 — checks-only run"
   echo "ci: OK"

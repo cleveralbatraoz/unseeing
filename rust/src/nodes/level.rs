@@ -607,7 +607,11 @@ impl WaveLevel {
         let mut painted = Vec::new();
         for slab in &self.slabs {
             let Some(area) = mesh_world_box(&slab.skin.clone().upcast()) else {
-                continue; // a slab that draws nothing can show no seam
+                // a slab with NO MESH — not a hidden one. The census
+                // measures through the AABB and the transform, neither of
+                // which visibility touches, so the ceiling still reports
+                // itself in the editor, where it is built but not drawn.
+                continue;
             };
             painted.push(PaintedSolid {
                 name: if slab.lid { "Ceiling" } else { "Floor" }.to_string(),
