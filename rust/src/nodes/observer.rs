@@ -40,7 +40,9 @@ use crate::echo_queue::PendingEcho;
 use crate::ffi::{WaveCore, cast_reflection_fan};
 use crate::level_plan;
 use crate::observe::evict::{EvictionPlan, EvictionRule, explain_eviction};
-use crate::observe::oids::{Fight, OidExplanation, coplanar_fights_checked, explain_oids_checked};
+use crate::observe::oids::{
+    EyeBand, Fight, OidExplanation, coplanar_fights_checked, explain_oids_checked,
+};
 use crate::observe::pool::{SlotObservation, SlotState};
 use crate::observe::ray::{self, RayExplanation};
 use crate::observe::reflect::{
@@ -57,7 +59,7 @@ use crate::reproduce::{
     CaptureState, CatCapture, EnvCapture, FORMAT_VERSION, HeroCapture, SourceCapture,
     first_divergence, state_hash,
 };
-use crate::viewmodel::ViewmodelCapture;
+use crate::viewmodel::{BOB_AMP, ViewmodelCapture};
 
 /// No level: the observer was never handed the world to read.
 const NO_LEVEL: &str = "observer was never injected a level";
@@ -401,23 +403,28 @@ impl WaveObserver {
     /// where the depth buffer picks a winner per pixel and speckles the
     /// packed id between the two wherever a wave reveals the patch. Each
     /// entry names both solids, the shared plane's axis as the string
-    /// "x", "y" or "z" (horizontal planes census only when the shipped
-    /// eye height can face them — see `observe::oids::Fight`), the plane
-    /// coordinate, and the id step that draws the speckle. An empty
-    /// `fights` always means "no fights": a census that
-    /// could not run is refused with the one-key `unavailable` grammar,
-    /// never reported empty.
+    /// "x", "y" or "z" (horizontal planes census only where the walking
+    /// eye's band — `EYE ± BOB_AMP` — can face them; see
+    /// `observe::oids::Fight`), the plane coordinate, and the id step
+    /// that draws the speckle. An empty `fights` always means "no
+    /// fights": a census that could not run is refused with the one-key
+    /// `unavailable` grammar, never reported empty.
     ///
-    /// The fight census reads only the boxes with drawn faces. A sound
-    /// source enters the census as a swept ENVELOPE — its limbs' union
-    /// grown by the sweep margin, once per id — whose planes rasterise
-    /// nothing, so feeding it to the fight census reported every source
+    /// The fight census skips boxes without drawn faces IN PLACE. A
+    /// sound source enters the census as a swept ENVELOPE — its limbs'
+    /// union grown by the sweep margin, once per id — whose planes
+    /// rasterise nothing, so censusing it reported every source
     /// z-fighting itself. The envelope stays in `pairs`, `violations`
-    /// and `names` exactly as before: the colouring anchors on it, and
-    /// the seam law is about reach, not rasterised faces. What a
-    /// source's real limbs do to each other is therefore OUTSIDE this
-    /// census — an accepted miss, like the hero's body, named here
-    /// rather than papered over.
+    /// and `names` exactly as before (the colouring anchors on it; the
+    /// seam law is about reach, not rasterised faces), and its census
+    /// entry is skip-MARKED rather than removed, so a fight's indices
+    /// name solids off the same list `pairs` and `names` index into —
+    /// no re-keying anywhere. Two misses are accepted and NAMED rather
+    /// than papered over: what a source's real limbs do to each other
+    /// (outside the census, like the hero's body), and freely-rotated
+    /// flush assemblies — the census compares axis-aligned world-box
+    /// faces, so a rotated pair's oblique shared plane is invisible to
+    /// it.
     #[func]
     fn explain_oids(&self) -> VarDictionary {
         let level = match self.live_level() {
@@ -435,27 +442,19 @@ impl WaveObserver {
             return unavailable("the level's painted boxes and their ids do not line up");
         };
         // only the boxes with drawn faces can z-fight; the swept source
-        // envelopes stay in the seam census above and out of this one
-        let drawn: Vec<usize> = painted
-            .iter()
-            .enumerate()
-            .filter(|(_, solid)| !solid.swept)
-            .map(|(index, _)| index)
-            .collect();
-        let drawn_boxes: Vec<_> = drawn.iter().map(|&index| boxes[index]).collect();
-        let drawn_ids: Vec<f64> = drawn.iter().map(|&index| ids[index]).collect();
-        let Some(mut fights) = coplanar_fights_checked(&drawn_boxes, &drawn_ids, EYE) else {
+        // envelopes are skip-marked in place so every fight's indices
+        // stay indices into `names`
+        let swept: Vec<bool> = painted.iter().map(|solid| solid.swept).collect();
+        let band = EyeBand {
+            low: EYE - BOB_AMP,
+            high: EYE + BOB_AMP,
+        };
+        let Some(fights) = coplanar_fights_checked(&boxes, &ids, band, &swept) else {
             // the same impossible misalignment, refused the same way: an
             // empty fights array must always mean "no fights", never
             // "could not check"
             return unavailable("the level's painted boxes and their ids do not line up");
         };
-        for fight in &mut fights {
-            // re-key onto the FULL census, so a fight names its solids
-            // off the same list `pairs` and `names` index into
-            fight.a = drawn[fight.a];
-            fight.b = drawn[fight.b];
-        }
         oid_dict(&explanation, &fights, &names, &ids)
     }
 

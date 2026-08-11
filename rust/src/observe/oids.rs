@@ -88,14 +88,19 @@ fn explain_oids(boxes: &[Box3], oids: &[f64]) -> OidExplanation {
     }
 }
 
-/// Faces closer than this are coplanar to the renderer, INCLUSIVE: below
-/// a millimetre the compatibility renderer's 24-bit depth buffer cannot
-/// tell the two faces apart at the map's far range, so somewhere across
-/// the patch they tie and per-pixel interpolation noise picks the winner.
-/// The wall fix — [`crate::level_plan::CAP_INSET`], which buries every
-/// arriving wall cap 5 mm inside its junction partner — stands five of
+/// Faces whose planes sit within this of each other are coplanar to the
+/// renderer, INCLUSIVE. The derivation: one 24-bit depth code spans
+/// about 1.191e-6·w² metres at eye distance w (near 0.05, far 60 — the
+/// player's camera), so a same-facing pair can TIE somewhere only while
+/// its gap is under one code at a reachable distance. The shipped map's
+/// longest sightline is 34.0 m — a 1.38 mm tie band — and the
+/// [`crate::level_plan::DIST_PACK_RANGE`] ceiling (40 m) admits maps
+/// whose band reaches 1.9 mm, so the census draws its line at 2 mm:
+/// nothing above this gap can tie on any map the pack range admits. The
+/// wall fix — [`crate::level_plan::CAP_INSET`], which buries every
+/// arriving wall cap 5 mm inside its junction partner — stands 2.5 of
 /// these clear of the band.
-pub const COPLANAR_EPS: f64 = 1e-3;
+pub const COPLANAR_EPS: f64 = 2e-3;
 
 /// The crease floor: `smoothstep(0.04, 0.08, nrm)` in
 /// `game/shaders/hearing_post.gdshader:74`. A floor, and honestly a
@@ -121,10 +126,11 @@ pub struct Fight {
     pub a: usize,
     pub b: usize,
     /// The shared plane's axis: 0 = X, 1 = Y, 2 = Z. Vertical planes are
-    /// always eligible; a horizontal plane censuses only when the eye is
-    /// on the side its shared normal faces — an upward (max-max) pair
-    /// below the eye, a downward (min-min) pair above it — so
-    /// floor-flush bottoms and wall tops never census.
+    /// always eligible; a horizontal plane censuses only when the
+    /// walking eye's band reaches the side its shared normal faces — an
+    /// upward (max-max) pair below the bob crest, a downward (min-min)
+    /// pair above the bob trough — so floor-flush bottoms and wall tops
+    /// never census.
     pub axis: usize,
     /// The plane coordinate, as the lower-indexed box's face names it.
     pub plane: f64,
@@ -133,22 +139,52 @@ pub struct Fight {
     pub delta: f64,
 }
 
+/// The vertical band the walking eye sweeps: the standing height plus
+/// and minus the head-bob amplitude. The boundary hands in
+/// `player::EYE ± viewmodel::BOB_AMP`, so this pure module never
+/// imports the engine layer. The two edges gate independently and both
+/// are EXCLUSIVE — at exactly an edge the bob's extreme meets the plane
+/// edge-on, zero projected area — and a NaN edge gates its own side
+/// shut, refusing fights rather than inventing them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EyeBand {
+    /// The bob trough — the lowest height the walking eye reaches.
+    pub low: f64,
+    /// The bob crest — the highest.
+    pub high: f64,
+}
+
 /// Census the coplanar fights, or refuse.
 ///
-/// `eye` is the eye's world height, which gates horizontal planes only
-/// (see [`Fight::axis`]); the shipped constant is
-/// `crate::nodes::player::EYE`, handed in by the boundary so this module
-/// stays engine-free.
+/// `eye` is the band the walking eye sweeps, which gates horizontal
+/// planes only (see [`Fight::axis`]). `skip` marks entries that census
+/// no fight at all — the boundary marks swept source envelopes, whose
+/// planes rasterise nothing — and a returned fight's indices ALWAYS
+/// index the full input lists, skipped entries included, so the
+/// caller's parallel name list lines up with no re-keying.
 ///
-/// Returns `None` when `oids` is shorter than `boxes`: a truncated census
-/// that reported no fights would be a vacuous pass, and the caller could
-/// not tell it apart from a clean level.
+/// Returns `None` when `oids` OR `skip` is shorter than `boxes`: a
+/// truncated census that reported no fights would be a vacuous pass —
+/// and a skip tail padded with "not skipped" would quietly census
+/// envelope boxes the moment the boundary miscounts — so both
+/// shortfalls refuse, exactly as [`explain_oids_checked`] does.
+///
+/// KNOWN MISS, accepted and named: the census compares axis-aligned
+/// world-box faces, so a freely-rotated flush assembly (props rotate
+/// freely by design) fights on an OBLIQUE shared plane this law cannot
+/// represent. Outside the census — like the sources' real limbs and the
+/// hero's body — not silently covered.
 #[must_use]
-pub fn coplanar_fights_checked(boxes: &[Box3], oids: &[f64], eye: f64) -> Option<Vec<Fight>> {
-    if oids.len() < boxes.len() {
+pub fn coplanar_fights_checked(
+    boxes: &[Box3],
+    oids: &[f64],
+    eye: EyeBand,
+    skip: &[bool],
+) -> Option<Vec<Fight>> {
+    if oids.len() < boxes.len() || skip.len() < boxes.len() {
         return None;
     }
-    Some(coplanar_fights(boxes, oids, eye))
+    Some(coplanar_fights(boxes, oids, eye, skip))
 }
 
 /// Census the coplanar fights of a level whose ids are known complete.
@@ -157,23 +193,31 @@ pub fn coplanar_fights_checked(boxes: &[Box3], oids: &[f64], eye: f64) -> Option
 /// panics, its only caller has already established the invariant, and the
 /// assert survives as the invariant's own statement.
 ///
-/// A pair fights when min-face meets min-face or max-face meets max-face
-/// (SAME outward normal — min against max is an abutting interface buried
-/// between the solids), the plane is one an eye at height `eye` can see
-/// at all ([`eye_sees`]), the plane coordinates agree within
-/// [`COPLANAR_EPS`], the rectangles overlap by more than [`PATCH_EPS`] in
-/// both tangent axes, and the id step exceeds [`CREASE_FLOOR`] so the
-/// crease term actually draws the speckle.
+/// A pair fights when neither endpoint is skip-marked, min-face meets
+/// min-face or max-face meets max-face (SAME outward normal — min
+/// against max is an abutting interface buried between the solids), the
+/// plane is one the walking eye's band can face at all ([`eye_sees`]),
+/// the plane coordinates agree within [`COPLANAR_EPS`], the rectangles
+/// overlap by more than [`PATCH_EPS`] in both tangent axes, and the id
+/// step exceeds [`CREASE_FLOOR`] so the crease term actually draws the
+/// speckle.
 ///
 /// # Panics
 ///
-/// If `oids` is shorter than `boxes`.
+/// If `oids` or `skip` is shorter than `boxes`.
 #[must_use]
-fn coplanar_fights(boxes: &[Box3], oids: &[f64], eye: f64) -> Vec<Fight> {
+fn coplanar_fights(boxes: &[Box3], oids: &[f64], eye: EyeBand, skip: &[bool]) -> Vec<Fight> {
     assert!(oids.len() >= boxes.len(), "one oid per box is required");
+    assert!(
+        skip.len() >= boxes.len(),
+        "one skip flag per box is required"
+    );
     let mut fights = Vec::new();
     for a in 0..boxes.len() {
         for b in (a + 1)..boxes.len() {
+            if skip[a] || skip[b] {
+                continue;
+            }
             let delta = (oids[a] - oids[b]).abs();
             // Positive comparison on purpose: a NaN oid exceeds no floor
             // and censuses no fight.
@@ -207,19 +251,24 @@ fn coplanar_fights(boxes: &[Box3], oids: &[f64], eye: f64) -> Vec<Fight> {
     fights
 }
 
-/// Can an eye at height `eye` see a fighting patch on this plane at all?
-/// A vertical plane (X or Z) always shows somewhere on screen. A
-/// horizontal plane shows only the side its shared outward normal faces:
-/// an upward pair (max against max) needs the eye ABOVE the plane, a
-/// downward pair (min against min) needs it BELOW. Strict on purpose —
-/// at exactly plane height the plane is seen edge-on, zero projected
-/// area — and a NaN eye sees no horizontal plane at all, refusing fights
-/// rather than inventing them.
-fn eye_sees(axis: usize, is_max: bool, plane: f64, eye: f64) -> bool {
+/// Can the walking eye see a fighting patch on this plane at all? A
+/// vertical plane (X or Z) always shows somewhere on screen. A
+/// horizontal plane shows only the side its shared outward normal
+/// faces: an upward pair (max against max) needs some swept eye height
+/// ABOVE the plane — the bob crest — and a downward pair (min against
+/// min) needs one BELOW — the trough. Strict on purpose: at exactly a
+/// band edge the bob's extreme meets the plane edge-on, zero projected
+/// area, and a NaN edge sees no horizontal plane at all, refusing
+/// fights rather than inventing them.
+fn eye_sees(axis: usize, is_max: bool, plane: f64, eye: EyeBand) -> bool {
     if axis != 1 {
         return true;
     }
-    if is_max { plane < eye } else { plane > eye }
+    if is_max {
+        plane < eye.high
+    } else {
+        plane > eye.low
+    }
 }
 
 /// Do two boxes' face rectangles on `axis` share more than a patch's worth
@@ -301,6 +350,17 @@ mod tests {
         assert!(explain_oids_checked(&boxes, &[0.24, 0.32]).is_some());
     }
 
+    /// The band the walking eye sweeps, hand-derived from the shipped
+    /// constants: 1.6 ± 0.028 (player `EYE`, viewmodel `BOB_AMP`).
+    /// Spelled as literals so the law is held to numbers a reviewer can
+    /// re-derive, never to whatever the constants happen to be today.
+    fn standing() -> EyeBand {
+        EyeBand {
+            low: 1.572,
+            high: 1.628,
+        }
+    }
+
     /// The big box: min [0,0,0], max [2,2,2]. Its partner is embedded in
     /// its +X half with the SAME max-X plane at x = 2: min [1, 0.5, 0.5],
     /// max [2, 1.5, 1.5]. The shared faces both look down +X and overlap
@@ -320,7 +380,7 @@ mod tests {
     #[test]
     fn same_facing_overlapping_coplanar_x_faces_fight() {
         let boxes = flush_capped_pair();
-        let fights = coplanar_fights(&boxes, &[0.24, 0.33], 1.6);
+        let fights = coplanar_fights(&boxes, &[0.24, 0.33], standing(), &[false, false]);
         assert_eq!(fights.len(), 1);
         let f = fights[0];
         assert_eq!((f.a, f.b), (0, 1));
@@ -342,15 +402,16 @@ mod tests {
             Box3::from_center_size([1.0, 1.0, 1.0], [2.0, 2.0, 2.0]),
             Box3::from_center_size([2.5, 1.0, 1.0], [1.0, 1.0, 1.0]),
         ];
-        assert!(coplanar_fights(&boxes, &[0.24, 0.33], 1.6).is_empty());
+        assert!(coplanar_fights(&boxes, &[0.24, 0.33], standing(), &[false, false]).is_empty());
     }
 
     /// The exclusions the old blanket Y ban was really protecting, now
     /// earned honestly. Two crates standing on the same floor share
-    /// min-Y at 0 — a downward-facing pair only an UNDERGROUND eye could
-    /// see — and two interpenetrating walls share max-Y at 3, an upward
-    /// pair far overhead. Census either and every room floods with
-    /// fights no standing player can witness.
+    /// min-Y at 0 — a downward-facing pair even the bob trough (1.572)
+    /// stands far above — and two interpenetrating walls share max-Y at
+    /// 3, an upward pair the bob crest (1.628) never reaches. Census
+    /// either and every room floods with fights no walking player can
+    /// witness.
     #[test]
     fn wall_tops_and_floor_flush_bottoms_hide_from_a_standing_eye() {
         let crate_a = Box3 {
@@ -361,7 +422,15 @@ mod tests {
             min: [0.5, 0.0, 0.5],
             max: [1.5, 1.0, 1.5],
         };
-        assert!(coplanar_fights(&[crate_a, crate_b], &[0.24, 0.33], 1.6).is_empty());
+        assert!(
+            coplanar_fights(
+                &[crate_a, crate_b],
+                &[0.24, 0.33],
+                standing(),
+                &[false, false]
+            )
+            .is_empty()
+        );
         let wall_a = Box3 {
             min: [0.0, 0.0, 0.0],
             max: [2.0, 3.0, 0.4],
@@ -370,16 +439,25 @@ mod tests {
             min: [1.0, 0.0, 0.1],
             max: [3.0, 3.0, 0.3],
         };
-        assert!(coplanar_fights(&[wall_a, wall_b], &[0.24, 0.33], 1.6).is_empty());
+        assert!(
+            coplanar_fights(
+                &[wall_a, wall_b],
+                &[0.24, 0.33],
+                standing(),
+                &[false, false]
+            )
+            .is_empty()
+        );
     }
 
-    /// A table's top with a flush plate: both max-Y faces at y = 1, a
-    /// metre under a 1.6 m eye that looks DOWN onto the shared plane.
-    /// The old blanket Y exclusion called this invisible and was wrong —
-    /// a census that still skips it reports a clean tabletop that
-    /// flickers. Lower the eye to 0.5 m and the plane is overhead: an
-    /// upward face shows nothing from below. At exactly plane height the
-    /// eye sees the plane edge-on — zero projected area, no patch.
+    /// A table's top with a flush plate: both max-Y faces at y = 1, well
+    /// under the standing band — the eye looks DOWN onto the shared
+    /// plane and sees the speckle. The old blanket Y exclusion called
+    /// this invisible and was wrong. Crouch the band to [0.472, 0.528]
+    /// and the plane is overhead: an upward face shows nothing from
+    /// below. With the bob CREST exactly at plane height — band
+    /// [0.944, 1.0] — the crest meets the plane edge-on: zero projected
+    /// area, no patch, the gate is strict.
     #[test]
     fn an_upward_pair_below_the_eye_shows_its_fight() {
         let table = Box3::from_center_size([1.0, 0.5, 1.0], [2.0, 1.0, 2.0]);
@@ -388,18 +466,27 @@ mod tests {
             max: [1.5, 1.0, 1.5],
         };
         let boxes = [table, plate];
-        let fights = coplanar_fights(&boxes, &[0.24, 0.33], 1.6);
+        let fights = coplanar_fights(&boxes, &[0.24, 0.33], standing(), &[false, false]);
         assert_eq!(fights.len(), 1);
         assert_eq!(fights[0].axis, 1);
         assert_eq!(fights[0].plane, 1.0);
-        assert!(coplanar_fights(&boxes, &[0.24, 0.33], 0.5).is_empty());
-        assert!(coplanar_fights(&boxes, &[0.24, 0.33], 1.0).is_empty());
+        let crouched = EyeBand {
+            low: 0.472,
+            high: 0.528,
+        };
+        assert!(coplanar_fights(&boxes, &[0.24, 0.33], crouched, &[false, false]).is_empty());
+        let crest_on_plane = EyeBand {
+            low: 0.944,
+            high: 1.0,
+        };
+        assert!(coplanar_fights(&boxes, &[0.24, 0.33], crest_on_plane, &[false, false]).is_empty());
     }
 
     /// Two flush undersides overhead: both min-Y faces at y = 2.5, above
-    /// a 1.6 m eye that looks UP at the shared plane — a ceiling-mounted
-    /// pair fights in plain view. Raise the eye past the plane (2.7 m)
-    /// and the downward faces turn away; nothing shows.
+    /// the whole standing band — the eye looks UP at the shared plane and
+    /// a ceiling-mounted pair fights in plain view. Raise the band past
+    /// the plane ([2.672, 2.728]) and the downward faces turn away;
+    /// nothing shows.
     #[test]
     fn a_downward_pair_above_the_eye_shows_its_fight() {
         let slab = Box3 {
@@ -411,11 +498,84 @@ mod tests {
             max: [1.5, 2.8, 1.5],
         };
         let boxes = [slab, lamp];
-        let fights = coplanar_fights(&boxes, &[0.24, 0.33], 1.6);
+        let fights = coplanar_fights(&boxes, &[0.24, 0.33], standing(), &[false, false]);
         assert_eq!(fights.len(), 1);
         assert_eq!(fights[0].axis, 1);
         assert_eq!(fights[0].plane, 2.5);
-        assert!(coplanar_fights(&boxes, &[0.24, 0.33], 2.7).is_empty());
+        let raised = EyeBand {
+            low: 2.672,
+            high: 2.728,
+        };
+        assert!(coplanar_fights(&boxes, &[0.24, 0.33], raised, &[false, false]).is_empty());
+    }
+
+    /// The walk bob sweeps the eye through EYE ± BOB_AMP = [1.572,
+    /// 1.628] (player.rs, viewmodel.rs), so a gate reading the static
+    /// 1.6 leaves a 56 mm blind band. An upward pair at 1.61 — over the
+    /// static eye, under the bob crest — IS seen, from the crest of
+    /// every step. At exactly the band's top, 1.628, the crest meets the
+    /// plane edge-on and nothing shows: the edge is EXCLUSIVE.
+    #[test]
+    fn the_bob_crest_widens_the_upward_gaze() {
+        let counter = Box3 {
+            min: [0.0, 0.0, 0.0],
+            max: [2.0, 1.61, 2.0],
+        };
+        let board = Box3 {
+            min: [0.5, 1.0, 0.5],
+            max: [1.5, 1.61, 1.5],
+        };
+        let fights = coplanar_fights(
+            &[counter, board],
+            &[0.24, 0.33],
+            standing(),
+            &[false, false],
+        );
+        assert_eq!(fights.len(), 1);
+        assert_eq!((fights[0].axis, fights[0].plane), (1, 1.61));
+        let tall = Box3 {
+            min: [0.0, 0.0, 0.0],
+            max: [2.0, 1.628, 2.0],
+        };
+        let shelf = Box3 {
+            min: [0.5, 1.0, 0.5],
+            max: [1.5, 1.628, 1.5],
+        };
+        assert!(
+            coplanar_fights(&[tall, shelf], &[0.24, 0.33], standing(), &[false, false]).is_empty()
+        );
+    }
+
+    /// The bob trough: a downward pair at 1.59 sits under the static
+    /// 1.6 m eye but ABOVE the trough of the walk bob (1.572), so the
+    /// dipping eye passes below the plane and looks up at it — a
+    /// static-eye gate calls it invisible and is wrong. At exactly the
+    /// band's bottom the trough meets the plane edge-on: strict again,
+    /// so `>` quietly mutated to `>=` dies here.
+    #[test]
+    fn the_bob_trough_lowers_the_downward_gaze() {
+        let soffit = Box3 {
+            min: [0.0, 1.59, 0.0],
+            max: [2.0, 2.0, 2.0],
+        };
+        let vent = Box3 {
+            min: [0.5, 1.59, 0.5],
+            max: [1.5, 1.8, 1.5],
+        };
+        let fights = coplanar_fights(&[soffit, vent], &[0.24, 0.33], standing(), &[false, false]);
+        assert_eq!(fights.len(), 1);
+        assert_eq!((fights[0].axis, fights[0].plane), (1, 1.59));
+        let low = Box3 {
+            min: [0.0, 1.572, 0.0],
+            max: [2.0, 2.0, 2.0],
+        };
+        let cap = Box3 {
+            min: [0.5, 1.572, 0.5],
+            max: [1.5, 1.8, 1.5],
+        };
+        assert!(
+            coplanar_fights(&[low, cap], &[0.24, 0.33], standing(), &[false, false]).is_empty()
+        );
     }
 
     /// Two crates against the same wall line: both max-Z faces at z = 1,
@@ -428,7 +588,7 @@ mod tests {
             Box3::from_center_size([0.5, 0.5, 0.5], [1.0, 1.0, 1.0]),
             Box3::from_center_size([2.5, 0.5, 0.5], [1.0, 1.0, 1.0]),
         ];
-        assert!(coplanar_fights(&boxes, &[0.24, 0.33], 1.6).is_empty());
+        assert!(coplanar_fights(&boxes, &[0.24, 0.33], standing(), &[false, false]).is_empty());
     }
 
     /// The crease term is `smoothstep(0.04, 0.08, nrm)`: an id step at or
@@ -439,9 +599,52 @@ mod tests {
     #[test]
     fn ids_at_or_below_the_crease_floor_never_reach_the_screen() {
         let boxes = flush_capped_pair();
-        assert!(coplanar_fights(&boxes, &[0.24, 0.27], 1.6).is_empty());
-        assert_eq!(coplanar_fights(&boxes, &[0.24, 0.29], 1.6).len(), 1);
-        assert!(coplanar_fights(&boxes, &[0.0, 0.04], 1.6).is_empty());
+        assert!(coplanar_fights(&boxes, &[0.24, 0.27], standing(), &[false, false]).is_empty());
+        assert_eq!(
+            coplanar_fights(&boxes, &[0.24, 0.29], standing(), &[false, false]).len(),
+            1
+        );
+        assert!(coplanar_fights(&boxes, &[0.0, 0.04], standing(), &[false, false]).is_empty());
+    }
+
+    /// Totality is a contract, not a hope: a NaN oid exceeds no crease
+    /// floor and censuses NOTHING. Rewriting `delta > floor` as its
+    /// negation (`!(delta <= floor)`) silently inverts exactly this —
+    /// NaN would start fighting — so the contract is pinned, not
+    /// implied.
+    #[test]
+    fn a_nan_oid_censuses_nothing() {
+        let boxes = flush_capped_pair();
+        assert!(coplanar_fights(&boxes, &[0.24, f64::NAN], standing(), &[false, false]).is_empty());
+    }
+
+    /// A NaN eye band sees no horizontal plane — refusing fights rather
+    /// than inventing them — while vertical planes, which no eye height
+    /// gates, keep censusing. Negating either band comparison would flip
+    /// the NaN half of this contract silently, so both halves are pinned
+    /// together.
+    #[test]
+    fn a_nan_eye_censuses_no_horizontal_fight_but_keeps_vertical_ones() {
+        let nan_band = EyeBand {
+            low: f64::NAN,
+            high: f64::NAN,
+        };
+        let table = Box3::from_center_size([1.0, 0.5, 1.0], [2.0, 1.0, 2.0]);
+        let plate = Box3 {
+            min: [0.5, 0.2, 0.5],
+            max: [1.5, 1.0, 1.5],
+        };
+        assert!(
+            coplanar_fights(&[table, plate], &[0.24, 0.33], nan_band, &[false, false]).is_empty()
+        );
+        let vertical = coplanar_fights(
+            &flush_capped_pair(),
+            &[0.24, 0.33],
+            nan_band,
+            &[false, false],
+        );
+        assert_eq!(vertical.len(), 1);
+        assert_eq!(vertical[0].axis, 0);
     }
 
     /// The floor's honest caveat: `nrm` is a SUM of two opposite-tap
@@ -457,19 +660,21 @@ mod tests {
     fn a_sub_floor_speckle_is_already_a_broken_seam() {
         let boxes = flush_capped_pair();
         // 0.27 - 0.24 = 0.03: under the crease floor, no fight...
-        assert!(coplanar_fights(&boxes, &[0.24, 0.27], 1.6).is_empty());
+        assert!(coplanar_fights(&boxes, &[0.24, 0.27], standing(), &[false, false]).is_empty());
         // ...and under min_sep = 0.08, so the colouring already flags it.
         let e = explain_oids_checked(&boxes, &[0.24, 0.27]).expect("complete ids");
         assert_eq!(e.pairs.len(), 1);
         assert_eq!(e.violations, vec![0]);
     }
 
-    /// A cap five millimetres inside its partner is the wall fix working:
-    /// 0.005 apart, the 24-bit depth buffer tells the faces apart
-    /// everywhere and there is no tie. Half a millimetre — 0.0005 — is
-    /// inside the buffer's confusion range and must be flagged. An eps
-    /// read the wrong way round would bless the broken gap and condemn
-    /// the fixed one.
+    /// A cap five millimetres inside its partner is the wall fix
+    /// working: a 0.005 gap is two and a half coincidence bands wide —
+    /// more than one depth code apart at any distance the pack range
+    /// admits — so the buffer resolves it everywhere and nothing ties.
+    /// Half a millimetre — 0.0005 — ties beyond a ~20 m sightline (well
+    /// inside the shipped 34 m) and must be flagged. An eps read the
+    /// wrong way round would bless the broken gap and condemn the fixed
+    /// one.
     #[test]
     fn a_face_five_millimetres_inside_its_partner_is_not_coplanar() {
         let big = Box3::from_center_size([1.0, 1.0, 1.0], [2.0, 2.0, 2.0]);
@@ -477,36 +682,40 @@ mod tests {
             min: [1.0, 0.5, 0.5],
             max: [1.995, 1.5, 1.5],
         };
-        assert!(coplanar_fights(&[big, recessed], &[0.24, 0.33], 1.6).is_empty());
+        assert!(
+            coplanar_fights(&[big, recessed], &[0.24, 0.33], standing(), &[false, false])
+                .is_empty()
+        );
         let tied = Box3 {
             min: [1.0, 0.5, 0.5],
             max: [1.9995, 1.5, 1.5],
         };
-        let fights = coplanar_fights(&[big, tied], &[0.24, 0.33], 1.6);
+        let fights = coplanar_fights(&[big, tied], &[0.24, 0.33], standing(), &[false, false]);
         assert_eq!(fights.len(), 1);
         // The lower-indexed box names the plane.
         assert_eq!(fights[0].plane, 2.0);
     }
 
-    /// The coincidence band's own edge: a plane gap of exactly 1e-3 —
-    /// 0.001 - 0.0, COPLANAR_EPS to the bit — is still coplanar. The
-    /// band is INCLUSIVE: "within a millimetre" keeps its boundary, and
-    /// an eps quietly turned exclusive would wave through the widest tie
-    /// the depth buffer still cannot resolve.
+    /// The coincidence band's own edge: a plane gap of exactly 2e-3 —
+    /// 0.002 - 0.0, COPLANAR_EPS to the bit — is still coplanar,
+    /// INCLUSIVE. The band is sized to the 40 m pack-range ceiling (a
+    /// 1.9 mm tie band at one depth code — see the constant), so an eps
+    /// quietly turned exclusive, or quietly shrunk back to the old
+    /// millimetre, would wave through the widest tie a legal map can
+    /// still produce.
     #[test]
-    fn the_millimetre_of_coincidence_is_inclusive() {
+    fn two_millimetres_of_coincidence_is_inclusive() {
         let jamb = Box3 {
             min: [-1.0, 0.0, 0.0],
-            max: [0.001, 2.0, 2.0],
+            max: [0.002, 2.0, 2.0],
         };
         let panel = Box3 {
             min: [-0.5, 0.5, 0.5],
             max: [0.0, 1.5, 1.5],
         };
-        let fights = coplanar_fights(&[jamb, panel], &[0.24, 0.33], 1.6);
+        let fights = coplanar_fights(&[jamb, panel], &[0.24, 0.33], standing(), &[false, false]);
         assert_eq!(fights.len(), 1);
-        assert_eq!(fights[0].axis, 0);
-        assert_eq!(fights[0].plane, 0.001);
+        assert_eq!((fights[0].axis, fights[0].plane), (0, 0.002));
     }
 
     /// The patch threshold's own edge: rectangles sharing exactly 1e-3 m
@@ -526,14 +735,73 @@ mod tests {
             min: [0.0, 0.5, 3.5],
             max: [2.0, 1.5, 4.0],
         };
-        assert!(coplanar_fights(&[sliver, slab], &[0.24, 0.33], 1.6).is_empty());
+        assert!(
+            coplanar_fights(&[sliver, slab], &[0.24, 0.33], standing(), &[false, false]).is_empty()
+        );
         let wide = Box3 {
             min: [-1.0, 0.0, 3.0],
             max: [0.1, 2.0, 4.0],
         };
-        let fights = coplanar_fights(&[wide, slab], &[0.24, 0.33], 1.6);
+        let fights = coplanar_fights(&[wide, slab], &[0.24, 0.33], standing(), &[false, false]);
         assert_eq!(fights.len(), 1);
         assert_eq!(fights[0].axis, 2);
+    }
+
+    /// A skip-marked solid censuses no fight at all. The boundary marks
+    /// swept source envelopes — boxes whose planes rasterise nothing —
+    /// and a mask the law ignored would go back to reporting every
+    /// source z-fighting itself. Two IDENTICAL boxes are the loudest
+    /// possible fight (four vertical coincidences); either endpoint
+    /// being masked must silence all of them.
+    #[test]
+    fn a_skip_marked_solid_censuses_no_fight() {
+        let twin = Box3::from_center_size([1.0, 1.0, 1.0], [2.0, 2.0, 2.0]);
+        let boxes = [twin, twin];
+        let oids = [0.24, 0.33];
+        // Unmasked: X min+max and Z min+max coincide; the Y pair is eye-
+        // gated (0 below the trough's view, 2 above the crest's).
+        assert_eq!(
+            coplanar_fights(&boxes, &oids, standing(), &[false, false]).len(),
+            4
+        );
+        assert!(coplanar_fights(&boxes, &oids, standing(), &[true, false]).is_empty());
+        assert!(coplanar_fights(&boxes, &oids, standing(), &[false, true]).is_empty());
+    }
+
+    /// Skipping an entry must not shift anyone else's indices: a fight's
+    /// `a` and `b` always index the FULL input lists, so the boundary
+    /// can name solids with no re-keying. A census that compacted its
+    /// inputs would report this fight as (0, 1) and hang it on the
+    /// skipped envelope's name.
+    #[test]
+    fn skipped_entries_do_not_shift_the_survivors_indices() {
+        let [big, cap] = flush_capped_pair();
+        // The envelope at index 0 is the big box's twin: unmasked it
+        // would fight box 1 four ways and box 2 once.
+        let boxes = [big, big, cap];
+        let fights = coplanar_fights(
+            &boxes,
+            &[0.5, 0.24, 0.33],
+            standing(),
+            &[true, false, false],
+        );
+        assert_eq!(fights.len(), 1);
+        assert_eq!((fights[0].a, fights[0].b), (1, 2));
+        assert_eq!((fights[0].oid_a, fights[0].oid_b), (0.24, 0.33));
+    }
+
+    /// A short skip list refuses the census outright — the same
+    /// vacuous-pass doctrine as a short oid list. Padding the tail with
+    /// "not skipped" instead would quietly census envelope boxes the
+    /// moment the boundary miscounts, and a clean answer from an
+    /// unchecked mask is indistinguishable from a clean level.
+    #[test]
+    fn a_short_skip_list_refuses_the_census() {
+        let boxes = flush_capped_pair();
+        assert!(coplanar_fights_checked(&boxes, &[0.24, 0.33], standing(), &[false]).is_none());
+        assert!(
+            coplanar_fights_checked(&boxes, &[0.24, 0.33], standing(), &[false, false]).is_some()
+        );
     }
 
     /// A short oid list cannot be censused. Reporting zero fights from an
@@ -542,7 +810,9 @@ mod tests {
     #[test]
     fn a_short_oid_list_refuses_the_fight_census_too() {
         let boxes = flush_capped_pair();
-        assert!(coplanar_fights_checked(&boxes, &[0.24], 1.6).is_none());
-        assert!(coplanar_fights_checked(&boxes, &[0.24, 0.33], 1.6).is_some());
+        assert!(coplanar_fights_checked(&boxes, &[0.24], standing(), &[false, false]).is_none());
+        assert!(
+            coplanar_fights_checked(&boxes, &[0.24, 0.33], standing(), &[false, false]).is_some()
+        );
     }
 }
