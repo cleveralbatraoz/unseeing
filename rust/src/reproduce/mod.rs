@@ -24,7 +24,11 @@ pub use self::blob::{
 /// hashed as its first field.
 ///
 /// Bump it whenever the encoded byte layout changes — a field added,
-/// removed, reordered, retyped, or an enum discriminant renumbered. The
+/// removed, reordered, retyped, an enum discriminant renumbered, or a
+/// fixed ARITY changed: `pulse_pool::MAXP` (the 64 slots written with no
+/// length prefix), `cat_body::TAIL_N`, and `cat_gait::LEGS` are all part
+/// of the layout, and a blob written under a different one would decode
+/// its own fields at the wrong offsets. The
 /// hash of an old blob then cannot collide with the hash of a new one by
 /// construction, so a stale blob restored into a newer build fails as a
 /// version refusal instead of as a mystery divergence twenty fields

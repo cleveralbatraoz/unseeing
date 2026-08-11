@@ -25,6 +25,15 @@
 //! discriminant before every enum payload mean no boundary inside the
 //! stream can shift, so the same bytes can only have come from the same
 //! state.
+//!
+//! **Precondition on whoever fills this in: the lists must arrive in a
+//! stable order.** `sources`, `echoes`, `cats` and `queued_waves` are
+//! encoded and compared POSITIONALLY — entry *i* against entry *i* —
+//! because that is the only ordering the blob can see. Two captures of
+//! one unchanged world that walked the scene tree in different orders
+//! would hash differently and diverge at `sources[0].name`, and the
+//! restore gate would report a bug that is not there. Scene-tree order
+//! satisfies this; a hash map's iteration order does not.
 
 use godot::builtin::{Vector3, Vector4};
 
@@ -274,128 +283,240 @@ impl Enc {
 //
 // `encode` below and `first_divergence` under it are twin walks over the
 // SAME fields in the SAME order: one turns them into bytes, the other
-// names the first one that differs. They are kept adjacent because they
-// are one contract wearing two faces.
+// names the first one that differs. They are kept adjacent, one helper
+// pair per struct, because they are one contract wearing two faces.
 //
-// A field added to `CaptureState` must be added to BOTH walks. In the
-// encoder alone it would be hashed but never named, so a mismatch would
-// report the wrong field or none; in the divergence walk alone it would
-// be named but never hashed, so a restore that got it wrong would pass
-// the hash gate. `every_field_reaches_both_walks` is the net that makes
-// either omission a red test, with `identical_states_agree_completely`,
-// `one_ulp_in_one_slot_changes_the_hash`, and the deliberate-break test
-// in the restore gate behind it.
+// A field added to any capture struct must be added to BOTH walks. In
+// the encoder alone it would be hashed but never named, so a mismatch
+// would report the wrong field or none; in the divergence walk alone it
+// would be named but never hashed, so a restore that got it wrong would
+// pass the hash gate.
+//
+// THAT RULE IS ENFORCED BY THE COMPILER, not by this comment: every
+// helper below opens with an exhaustive destructure and there is no `..`
+// rest pattern anywhere in either walk. A new field is therefore E0027
+// ("pattern does not mention field") in both places, before any test
+// runs. The tests are the second line: `every_field_reaches_both_walks`
+// pins each field's dotted path, and `the_fixture_encodes_to_its_layout`
+// pins the byte count, which is what forces the new field's row into the
+// mutation table rather than letting it ride along unexercised.
 // ─────────────────────────────────────────────────────────────────────
 
 fn encode(state: &CaptureState, enc: &mut Enc) {
-    enc.u32(state.format_version);
-    enc.str(&state.level_scene);
-    encode_env(&state.env, enc);
+    let CaptureState {
+        format_version,
+        level_scene,
+        env,
+        slots,
+        echoes,
+        sources,
+        hero,
+        cats,
+    } = state;
+    enc.u32(*format_version);
+    enc.str(level_scene);
+    encode_env(env, enc);
     // fixed 64 by the pool's own contract, so no length prefix
-    for slot in state.slots.iter() {
+    for slot in slots.iter() {
         encode_slot(slot, enc);
     }
-    enc.len(state.echoes.len());
-    for echo in &state.echoes {
-        enc.f64(echo.at_t);
-        enc.v3(echo.pos);
-        enc.f64(echo.gain);
+    enc.len(echoes.len());
+    for echo in echoes {
+        encode_echo(echo, enc);
     }
-    enc.len(state.sources.len());
-    for source in &state.sources {
-        enc.str(&source.name);
-        enc.f64(source.next_emit);
+    enc.len(sources.len());
+    for source in sources {
+        encode_source(source, enc);
     }
-    encode_hero(&state.hero, enc);
-    enc.len(state.cats.len());
-    for cat in &state.cats {
+    encode_hero(hero, enc);
+    enc.len(cats.len());
+    for cat in cats {
         encode_cat(cat, enc);
     }
 }
 
 fn encode_env(env: &EnvCapture, enc: &mut Enc) {
-    enc.f64(env.now);
-    enc.bool(env.demo_checked);
-    enc.bool(env.demo_armed);
-    enc.f64(env.demo_next);
-    enc.f64(env.flicker_t);
-    enc.f64(env.flicker_level);
-    enc.f64(env.flicker_drop_until);
-    enc.f64(env.flicker_next_drop);
-    enc.i64(env.flicker_rng_state);
+    let EnvCapture {
+        now,
+        demo_checked,
+        demo_armed,
+        demo_next,
+        flicker_t,
+        flicker_level,
+        flicker_drop_until,
+        flicker_next_drop,
+        flicker_rng_state,
+    } = env;
+    enc.f64(*now);
+    enc.bool(*demo_checked);
+    enc.bool(*demo_armed);
+    enc.f64(*demo_next);
+    enc.f64(*flicker_t);
+    enc.f64(*flicker_level);
+    enc.f64(*flicker_drop_until);
+    enc.f64(*flicker_next_drop);
+    enc.i64(*flicker_rng_state);
 }
 
 fn encode_slot(slot: &SlotCapture, enc: &mut Enc) {
-    enc.v3(slot.pos);
-    enc.v4(slot.dat);
-    enc.v4(slot.dir);
-    enc.f64(slot.t0);
-    enc.f64(slot.end);
-    enc.i32(slot.kind);
+    let SlotCapture {
+        pos,
+        dat,
+        dir,
+        t0,
+        end,
+        kind,
+    } = slot;
+    enc.v3(*pos);
+    enc.v4(*dat);
+    enc.v4(*dir);
+    enc.f64(*t0);
+    enc.f64(*end);
+    enc.i32(*kind);
+}
+
+fn encode_echo(echo: &PendingEcho, enc: &mut Enc) {
+    let PendingEcho { at_t, pos, gain } = echo;
+    enc.f64(*at_t);
+    enc.v3(*pos);
+    enc.f64(*gain);
+}
+
+fn encode_source(source: &SourceCapture, enc: &mut Enc) {
+    let SourceCapture { name, next_emit } = source;
+    enc.str(name);
+    enc.f64(*next_emit);
 }
 
 fn encode_hero(hero: &HeroCapture, enc: &mut Enc) {
-    enc.v3(hero.position);
-    enc.v3(hero.velocity);
-    enc.f64(hero.yaw);
-    enc.f64(hero.pitch);
-    enc.f64(hero.last_tap);
-    enc.v3(hero.tap_target);
-    enc.bool(hero.tap_queued);
-    enc.len(hero.queued_waves.len());
-    for wave in &hero.queued_waves {
-        enc.i64(wave.kind);
-        enc.v3(wave.at);
-        enc.f64(wave.max_r);
-        enc.f64(wave.speed);
-        enc.f64(wave.gain);
-        enc.i64(wave.echoes);
-        enc.v3(wave.normal);
+    let HeroCapture {
+        position,
+        velocity,
+        yaw,
+        pitch,
+        last_tap,
+        tap_target,
+        tap_queued,
+        queued_waves,
+        viewmodel,
+    } = hero;
+    enc.v3(*position);
+    enc.v3(*velocity);
+    enc.f64(*yaw);
+    enc.f64(*pitch);
+    enc.f64(*last_tap);
+    enc.v3(*tap_target);
+    enc.bool(*tap_queued);
+    enc.len(queued_waves.len());
+    for wave in queued_waves {
+        encode_wave(wave, enc);
     }
-    let vm = &hero.viewmodel;
-    enc.f64(vm.walk_amp);
-    enc.f64(vm.leg_phase);
-    enc.f64(vm.swing_phase);
-    enc.f64(vm.cane_swing);
-    enc.f64(vm.sway_x);
-    enc.f64(vm.sway_y);
-    enc.f64(vm.last_yaw);
-    enc.f64(vm.last_pitch);
-    enc.f64(vm.step_t);
-    enc.i32(vm.step_side);
+    encode_viewmodel(viewmodel, enc);
+}
+
+fn encode_wave(wave: &QueuedWave, enc: &mut Enc) {
+    let QueuedWave {
+        kind,
+        at,
+        max_r,
+        speed,
+        gain,
+        echoes,
+        normal,
+    } = wave;
+    enc.i64(*kind);
+    enc.v3(*at);
+    enc.f64(*max_r);
+    enc.f64(*speed);
+    enc.f64(*gain);
+    enc.i64(*echoes);
+    enc.v3(*normal);
+}
+
+fn encode_viewmodel(viewmodel: &ViewmodelCapture, enc: &mut Enc) {
+    let ViewmodelCapture {
+        walk_amp,
+        leg_phase,
+        swing_phase,
+        cane_swing,
+        sway_x,
+        sway_y,
+        last_yaw,
+        last_pitch,
+        step_t,
+        step_side,
+    } = viewmodel;
+    enc.f64(*walk_amp);
+    enc.f64(*leg_phase);
+    enc.f64(*swing_phase);
+    enc.f64(*cane_swing);
+    enc.f64(*sway_x);
+    enc.f64(*sway_y);
+    enc.f64(*last_yaw);
+    enc.f64(*last_pitch);
+    enc.f64(*step_t);
+    enc.i32(*step_side);
 }
 
 fn encode_cat(cat: &CatCapture, enc: &mut Enc) {
-    enc.v3(cat.position);
-    enc.f64(cat.yaw);
-    enc.v3(cat.velocity);
-    encode_brain(&cat.brain, enc);
-    encode_gait(&cat.gait, enc);
-    for node in &cat.tail {
+    let CatCapture {
+        position,
+        yaw,
+        velocity,
+        brain,
+        gait,
+        tail,
+        pose,
+        presence_next,
+        sit,
+        sim_t,
+        last_pos,
+    } = cat;
+    enc.v3(*position);
+    enc.f64(*yaw);
+    enc.v3(*velocity);
+    encode_brain(brain, enc);
+    encode_gait(gait, enc);
+    for node in tail {
         enc.v3(*node);
     }
-    encode_pose(&cat.pose, enc);
-    enc.f64(cat.presence_next);
-    enc.f64(cat.sit);
-    enc.f64(cat.sim_t);
-    enc.v3(cat.last_pos);
+    encode_pose(pose, enc);
+    enc.f64(*presence_next);
+    enc.f64(*sit);
+    enc.f64(*sim_t);
+    enc.v3(*last_pos);
 }
 
 fn encode_brain(brain: &BrainCapture, enc: &mut Enc) {
-    enc.u64(brain.rng_state);
-    enc.u64(brain.rng_inc);
-    encode_rect(&brain.rect, enc);
-    encode_brain_state(brain.state, enc);
-    enc.f64(brain.yaw);
-    enc.f64(brain.speed);
-    enc.f64(brain.blocked);
+    let BrainCapture {
+        rng_state,
+        rng_inc,
+        rect,
+        state,
+        yaw,
+        speed,
+        blocked,
+    } = brain;
+    enc.u64(*rng_state);
+    enc.u64(*rng_inc);
+    encode_rect(rect, enc);
+    encode_brain_state(*state, enc);
+    enc.f64(*yaw);
+    enc.f64(*speed);
+    enc.f64(*blocked);
 }
 
 fn encode_rect(rect: &RoamRect, enc: &mut Enc) {
-    enc.f64(rect.min_x);
-    enc.f64(rect.min_z);
-    enc.f64(rect.max_x);
-    enc.f64(rect.max_z);
+    let RoamRect {
+        min_x,
+        min_z,
+        max_x,
+        max_z,
+    } = rect;
+    enc.f64(*min_x);
+    enc.f64(*min_z);
+    enc.f64(*max_x);
+    enc.f64(*max_z);
 }
 
 /// The brain's state machine as bytes: a u32 discriminant then that
@@ -425,29 +546,45 @@ fn encode_brain_state(state: BrainState, enc: &mut Enc) {
 }
 
 fn encode_gait(gait: &GaitCapture, enc: &mut Enc) {
-    enc.f64(gait.phase);
-    enc.f64(gait.amp);
-    for paw in &gait.planted {
+    let GaitCapture {
+        phase,
+        amp,
+        planted,
+        aim,
+        in_swing,
+        moving,
+    } = gait;
+    enc.f64(*phase);
+    enc.f64(*amp);
+    for paw in planted {
         enc.v3(*paw);
     }
-    for aim in &gait.aim {
-        enc.v3(*aim);
+    for target in aim {
+        enc.v3(*target);
     }
-    for swinging in &gait.in_swing {
+    for swinging in in_swing {
         enc.bool(*swinging);
     }
-    enc.bool(gait.moving);
+    enc.bool(*moving);
 }
 
 fn encode_pose(pose: &CatPose, enc: &mut Enc) {
-    enc.v3(pose.pos);
-    enc.f64(pose.yaw);
-    for paw in &pose.paws {
+    let CatPose {
+        pos,
+        yaw,
+        paws,
+        bob,
+        amp,
+        sit,
+    } = pose;
+    enc.v3(*pos);
+    enc.f64(*yaw);
+    for paw in paws {
         enc.v3(*paw);
     }
-    enc.f64(pose.bob);
-    enc.f64(pose.amp);
-    enc.f64(pose.sit);
+    enc.f64(*bob);
+    enc.f64(*amp);
+    enc.f64(*sit);
 }
 
 /// Where two states part, as a dotted field path — `"slots[12].t0"`,
@@ -459,52 +596,53 @@ fn encode_pose(pose: &CatPose, enc: &mut Enc) {
 /// report.
 #[must_use]
 pub fn first_divergence(a: &CaptureState, b: &CaptureState) -> Option<String> {
-    if a.format_version != b.format_version {
+    let CaptureState {
+        format_version,
+        level_scene,
+        env,
+        slots,
+        echoes,
+        sources,
+        hero,
+        cats,
+    } = a;
+    if *format_version != b.format_version {
         return Some("format_version".to_string());
     }
-    if a.level_scene != b.level_scene {
+    if *level_scene != b.level_scene {
         return Some("level_scene".to_string());
     }
-    if let Some(field) = diff_env(&a.env, &b.env) {
+    if let Some(field) = diff_env(env, &b.env) {
         return Some(format!("env.{field}"));
     }
-    for (i, (sa, sb)) in a.slots.iter().zip(b.slots.iter()).enumerate() {
+    for (i, (sa, sb)) in slots.iter().zip(b.slots.iter()).enumerate() {
         if let Some(field) = diff_slot(sa, sb) {
             return Some(format!("slots[{i}].{field}"));
         }
     }
-    if a.echoes.len() != b.echoes.len() {
+    if echoes.len() != b.echoes.len() {
         return Some("echoes.len".to_string());
     }
-    for (i, (ea, eb)) in a.echoes.iter().zip(&b.echoes).enumerate() {
-        if !same_f64(ea.at_t, eb.at_t) {
-            return Some(format!("echoes[{i}].at_t"));
-        }
-        if let Some(c) = diff_v3(ea.pos, eb.pos) {
-            return Some(format!("echoes[{i}].pos.{c}"));
-        }
-        if !same_f64(ea.gain, eb.gain) {
-            return Some(format!("echoes[{i}].gain"));
+    for (i, (ea, eb)) in echoes.iter().zip(&b.echoes).enumerate() {
+        if let Some(field) = diff_echo(ea, eb) {
+            return Some(format!("echoes[{i}].{field}"));
         }
     }
-    if a.sources.len() != b.sources.len() {
+    if sources.len() != b.sources.len() {
         return Some("sources.len".to_string());
     }
-    for (i, (sa, sb)) in a.sources.iter().zip(&b.sources).enumerate() {
-        if let Some(field) = first_mismatch(&[
-            ("name", sa.name == sb.name),
-            ("next_emit", same_f64(sa.next_emit, sb.next_emit)),
-        ]) {
+    for (i, (sa, sb)) in sources.iter().zip(&b.sources).enumerate() {
+        if let Some(field) = diff_source(sa, sb) {
             return Some(format!("sources[{i}].{field}"));
         }
     }
-    if let Some(field) = diff_hero(&a.hero, &b.hero) {
+    if let Some(field) = diff_hero(hero, &b.hero) {
         return Some(format!("hero.{field}"));
     }
-    if a.cats.len() != b.cats.len() {
+    if cats.len() != b.cats.len() {
         return Some("cats.len".to_string());
     }
-    for (i, (ca, cb)) in a.cats.iter().zip(&b.cats).enumerate() {
+    for (i, (ca, cb)) in cats.iter().zip(&b.cats).enumerate() {
         if let Some(field) = diff_cat(ca, cb) {
             return Some(format!("cats[{i}].{field}"));
         }
@@ -551,168 +689,270 @@ fn diff_v4(a: Vector4, b: Vector4) -> Option<&'static str> {
 }
 
 fn diff_env(a: &EnvCapture, b: &EnvCapture) -> Option<&'static str> {
+    let EnvCapture {
+        now,
+        demo_checked,
+        demo_armed,
+        demo_next,
+        flicker_t,
+        flicker_level,
+        flicker_drop_until,
+        flicker_next_drop,
+        flicker_rng_state,
+    } = a;
     first_mismatch(&[
-        ("now", same_f64(a.now, b.now)),
-        ("demo_checked", a.demo_checked == b.demo_checked),
-        ("demo_armed", a.demo_armed == b.demo_armed),
-        ("demo_next", same_f64(a.demo_next, b.demo_next)),
-        ("flicker_t", same_f64(a.flicker_t, b.flicker_t)),
-        ("flicker_level", same_f64(a.flicker_level, b.flicker_level)),
+        ("now", same_f64(*now, b.now)),
+        ("demo_checked", *demo_checked == b.demo_checked),
+        ("demo_armed", *demo_armed == b.demo_armed),
+        ("demo_next", same_f64(*demo_next, b.demo_next)),
+        ("flicker_t", same_f64(*flicker_t, b.flicker_t)),
+        ("flicker_level", same_f64(*flicker_level, b.flicker_level)),
         (
             "flicker_drop_until",
-            same_f64(a.flicker_drop_until, b.flicker_drop_until),
+            same_f64(*flicker_drop_until, b.flicker_drop_until),
         ),
         (
             "flicker_next_drop",
-            same_f64(a.flicker_next_drop, b.flicker_next_drop),
+            same_f64(*flicker_next_drop, b.flicker_next_drop),
         ),
         (
             "flicker_rng_state",
-            a.flicker_rng_state == b.flicker_rng_state,
+            *flicker_rng_state == b.flicker_rng_state,
         ),
     ])
 }
 
 fn diff_slot(a: &SlotCapture, b: &SlotCapture) -> Option<String> {
-    if let Some(c) = diff_v3(a.pos, b.pos) {
+    let SlotCapture {
+        pos,
+        dat,
+        dir,
+        t0,
+        end,
+        kind,
+    } = a;
+    if let Some(c) = diff_v3(*pos, b.pos) {
         return Some(format!("pos.{c}"));
     }
-    if let Some(c) = diff_v4(a.dat, b.dat) {
+    if let Some(c) = diff_v4(*dat, b.dat) {
         return Some(format!("dat.{c}"));
     }
-    if let Some(c) = diff_v4(a.dir, b.dir) {
+    if let Some(c) = diff_v4(*dir, b.dir) {
         return Some(format!("dir.{c}"));
     }
     first_mismatch(&[
-        ("t0", same_f64(a.t0, b.t0)),
-        ("end", same_f64(a.end, b.end)),
-        ("kind", a.kind == b.kind),
+        ("t0", same_f64(*t0, b.t0)),
+        ("end", same_f64(*end, b.end)),
+        ("kind", *kind == b.kind),
     ])
     .map(String::from)
 }
 
+fn diff_echo(a: &PendingEcho, b: &PendingEcho) -> Option<String> {
+    let PendingEcho { at_t, pos, gain } = a;
+    if !same_f64(*at_t, b.at_t) {
+        return Some("at_t".to_string());
+    }
+    if let Some(c) = diff_v3(*pos, b.pos) {
+        return Some(format!("pos.{c}"));
+    }
+    (!same_f64(*gain, b.gain)).then(|| "gain".to_string())
+}
+
+fn diff_source(a: &SourceCapture, b: &SourceCapture) -> Option<&'static str> {
+    let SourceCapture { name, next_emit } = a;
+    first_mismatch(&[
+        ("name", *name == b.name),
+        ("next_emit", same_f64(*next_emit, b.next_emit)),
+    ])
+}
+
 fn diff_hero(a: &HeroCapture, b: &HeroCapture) -> Option<String> {
-    if let Some(c) = diff_v3(a.position, b.position) {
+    let HeroCapture {
+        position,
+        velocity,
+        yaw,
+        pitch,
+        last_tap,
+        tap_target,
+        tap_queued,
+        queued_waves,
+        viewmodel,
+    } = a;
+    if let Some(c) = diff_v3(*position, b.position) {
         return Some(format!("position.{c}"));
     }
-    if let Some(c) = diff_v3(a.velocity, b.velocity) {
+    if let Some(c) = diff_v3(*velocity, b.velocity) {
         return Some(format!("velocity.{c}"));
     }
     if let Some(field) = first_mismatch(&[
-        ("yaw", same_f64(a.yaw, b.yaw)),
-        ("pitch", same_f64(a.pitch, b.pitch)),
-        ("last_tap", same_f64(a.last_tap, b.last_tap)),
+        ("yaw", same_f64(*yaw, b.yaw)),
+        ("pitch", same_f64(*pitch, b.pitch)),
+        ("last_tap", same_f64(*last_tap, b.last_tap)),
     ]) {
         return Some(field.to_string());
     }
-    if let Some(c) = diff_v3(a.tap_target, b.tap_target) {
+    if let Some(c) = diff_v3(*tap_target, b.tap_target) {
         return Some(format!("tap_target.{c}"));
     }
-    if a.tap_queued != b.tap_queued {
+    if *tap_queued != b.tap_queued {
         return Some("tap_queued".to_string());
     }
-    if a.queued_waves.len() != b.queued_waves.len() {
+    if queued_waves.len() != b.queued_waves.len() {
         return Some("queued_waves.len".to_string());
     }
-    for (i, (wa, wb)) in a.queued_waves.iter().zip(&b.queued_waves).enumerate() {
+    for (i, (wa, wb)) in queued_waves.iter().zip(&b.queued_waves).enumerate() {
         if let Some(field) = diff_wave(wa, wb) {
             return Some(format!("queued_waves[{i}].{field}"));
         }
     }
-    diff_viewmodel(&a.viewmodel, &b.viewmodel).map(|field| format!("viewmodel.{field}"))
+    diff_viewmodel(viewmodel, &b.viewmodel).map(|field| format!("viewmodel.{field}"))
 }
 
 fn diff_wave(a: &QueuedWave, b: &QueuedWave) -> Option<String> {
-    if a.kind != b.kind {
+    let QueuedWave {
+        kind,
+        at,
+        max_r,
+        speed,
+        gain,
+        echoes,
+        normal,
+    } = a;
+    if *kind != b.kind {
         return Some("kind".to_string());
     }
-    if let Some(c) = diff_v3(a.at, b.at) {
+    if let Some(c) = diff_v3(*at, b.at) {
         return Some(format!("at.{c}"));
     }
     if let Some(field) = first_mismatch(&[
-        ("max_r", same_f64(a.max_r, b.max_r)),
-        ("speed", same_f64(a.speed, b.speed)),
-        ("gain", same_f64(a.gain, b.gain)),
-        ("echoes", a.echoes == b.echoes),
+        ("max_r", same_f64(*max_r, b.max_r)),
+        ("speed", same_f64(*speed, b.speed)),
+        ("gain", same_f64(*gain, b.gain)),
+        ("echoes", *echoes == b.echoes),
     ]) {
         return Some(field.to_string());
     }
-    diff_v3(a.normal, b.normal).map(|c| format!("normal.{c}"))
+    diff_v3(*normal, b.normal).map(|c| format!("normal.{c}"))
 }
 
 fn diff_viewmodel(a: &ViewmodelCapture, b: &ViewmodelCapture) -> Option<&'static str> {
+    let ViewmodelCapture {
+        walk_amp,
+        leg_phase,
+        swing_phase,
+        cane_swing,
+        sway_x,
+        sway_y,
+        last_yaw,
+        last_pitch,
+        step_t,
+        step_side,
+    } = a;
     first_mismatch(&[
-        ("walk_amp", same_f64(a.walk_amp, b.walk_amp)),
-        ("leg_phase", same_f64(a.leg_phase, b.leg_phase)),
-        ("swing_phase", same_f64(a.swing_phase, b.swing_phase)),
-        ("cane_swing", same_f64(a.cane_swing, b.cane_swing)),
-        ("sway_x", same_f64(a.sway_x, b.sway_x)),
-        ("sway_y", same_f64(a.sway_y, b.sway_y)),
-        ("last_yaw", same_f64(a.last_yaw, b.last_yaw)),
-        ("last_pitch", same_f64(a.last_pitch, b.last_pitch)),
-        ("step_t", same_f64(a.step_t, b.step_t)),
-        ("step_side", a.step_side == b.step_side),
+        ("walk_amp", same_f64(*walk_amp, b.walk_amp)),
+        ("leg_phase", same_f64(*leg_phase, b.leg_phase)),
+        ("swing_phase", same_f64(*swing_phase, b.swing_phase)),
+        ("cane_swing", same_f64(*cane_swing, b.cane_swing)),
+        ("sway_x", same_f64(*sway_x, b.sway_x)),
+        ("sway_y", same_f64(*sway_y, b.sway_y)),
+        ("last_yaw", same_f64(*last_yaw, b.last_yaw)),
+        ("last_pitch", same_f64(*last_pitch, b.last_pitch)),
+        ("step_t", same_f64(*step_t, b.step_t)),
+        ("step_side", *step_side == b.step_side),
     ])
 }
 
 fn diff_cat(a: &CatCapture, b: &CatCapture) -> Option<String> {
-    if let Some(c) = diff_v3(a.position, b.position) {
+    let CatCapture {
+        position,
+        yaw,
+        velocity,
+        brain,
+        gait,
+        tail,
+        pose,
+        presence_next,
+        sit,
+        sim_t,
+        last_pos,
+    } = a;
+    if let Some(c) = diff_v3(*position, b.position) {
         return Some(format!("position.{c}"));
     }
-    if !same_f64(a.yaw, b.yaw) {
+    if !same_f64(*yaw, b.yaw) {
         return Some("yaw".to_string());
     }
-    if let Some(c) = diff_v3(a.velocity, b.velocity) {
+    if let Some(c) = diff_v3(*velocity, b.velocity) {
         return Some(format!("velocity.{c}"));
     }
-    if let Some(field) = diff_brain(&a.brain, &b.brain) {
+    if let Some(field) = diff_brain(brain, &b.brain) {
         return Some(format!("brain.{field}"));
     }
-    if let Some(field) = diff_gait(&a.gait, &b.gait) {
+    if let Some(field) = diff_gait(gait, &b.gait) {
         return Some(format!("gait.{field}"));
     }
-    for (i, (na, nb)) in a.tail.iter().zip(&b.tail).enumerate() {
+    for (i, (na, nb)) in tail.iter().zip(&b.tail).enumerate() {
         if let Some(c) = diff_v3(*na, *nb) {
             return Some(format!("tail[{i}].{c}"));
         }
     }
-    if let Some(field) = diff_pose(&a.pose, &b.pose) {
+    if let Some(field) = diff_pose(pose, &b.pose) {
         return Some(format!("pose.{field}"));
     }
     if let Some(field) = first_mismatch(&[
-        ("presence_next", same_f64(a.presence_next, b.presence_next)),
-        ("sit", same_f64(a.sit, b.sit)),
-        ("sim_t", same_f64(a.sim_t, b.sim_t)),
+        ("presence_next", same_f64(*presence_next, b.presence_next)),
+        ("sit", same_f64(*sit, b.sit)),
+        ("sim_t", same_f64(*sim_t, b.sim_t)),
     ]) {
         return Some(field.to_string());
     }
-    diff_v3(a.last_pos, b.last_pos).map(|c| format!("last_pos.{c}"))
+    diff_v3(*last_pos, b.last_pos).map(|c| format!("last_pos.{c}"))
 }
 
 fn diff_brain(a: &BrainCapture, b: &BrainCapture) -> Option<String> {
-    if a.rng_state != b.rng_state {
+    let BrainCapture {
+        rng_state,
+        rng_inc,
+        rect,
+        state,
+        yaw,
+        speed,
+        blocked,
+    } = a;
+    if *rng_state != b.rng_state {
         return Some("rng_state".to_string());
     }
-    if a.rng_inc != b.rng_inc {
+    if *rng_inc != b.rng_inc {
         return Some("rng_inc".to_string());
     }
-    if let Some(field) = first_mismatch(&[
-        ("min_x", same_f64(a.rect.min_x, b.rect.min_x)),
-        ("min_z", same_f64(a.rect.min_z, b.rect.min_z)),
-        ("max_x", same_f64(a.rect.max_x, b.rect.max_x)),
-        ("max_z", same_f64(a.rect.max_z, b.rect.max_z)),
-    ]) {
+    if let Some(field) = diff_rect(rect, &b.rect) {
         return Some(format!("rect.{field}"));
     }
-    if let Some(field) = diff_brain_state(a.state, b.state) {
+    if let Some(field) = diff_brain_state(*state, b.state) {
         return Some(field);
     }
     first_mismatch(&[
-        ("yaw", same_f64(a.yaw, b.yaw)),
-        ("speed", same_f64(a.speed, b.speed)),
-        ("blocked", same_f64(a.blocked, b.blocked)),
+        ("yaw", same_f64(*yaw, b.yaw)),
+        ("speed", same_f64(*speed, b.speed)),
+        ("blocked", same_f64(*blocked, b.blocked)),
     ])
     .map(String::from)
+}
+
+fn diff_rect(a: &RoamRect, b: &RoamRect) -> Option<&'static str> {
+    let RoamRect {
+        min_x,
+        min_z,
+        max_x,
+        max_z,
+    } = a;
+    first_mismatch(&[
+        ("min_x", same_f64(*min_x, b.min_x)),
+        ("min_z", same_f64(*min_z, b.min_z)),
+        ("max_x", same_f64(*max_x, b.max_x)),
+        ("max_z", same_f64(*max_z, b.max_z)),
+    ])
 }
 
 /// A different variant is named as the state itself (`"state"`); the
@@ -736,46 +976,62 @@ fn diff_brain_state(a: BrainState, b: BrainState) -> Option<String> {
 }
 
 fn diff_gait(a: &GaitCapture, b: &GaitCapture) -> Option<String> {
+    let GaitCapture {
+        phase,
+        amp,
+        planted,
+        aim,
+        in_swing,
+        moving,
+    } = a;
     if let Some(field) = first_mismatch(&[
-        ("phase", same_f64(a.phase, b.phase)),
-        ("amp", same_f64(a.amp, b.amp)),
+        ("phase", same_f64(*phase, b.phase)),
+        ("amp", same_f64(*amp, b.amp)),
     ]) {
         return Some(field.to_string());
     }
-    for (i, (pa, pb)) in a.planted.iter().zip(&b.planted).enumerate() {
+    for (i, (pa, pb)) in planted.iter().zip(&b.planted).enumerate() {
         if let Some(c) = diff_v3(*pa, *pb) {
             return Some(format!("planted[{i}].{c}"));
         }
     }
-    for (i, (pa, pb)) in a.aim.iter().zip(&b.aim).enumerate() {
-        if let Some(c) = diff_v3(*pa, *pb) {
+    for (i, (ta, tb)) in aim.iter().zip(&b.aim).enumerate() {
+        if let Some(c) = diff_v3(*ta, *tb) {
             return Some(format!("aim[{i}].{c}"));
         }
     }
-    for (i, (sa, sb)) in a.in_swing.iter().zip(&b.in_swing).enumerate() {
+    for (i, (sa, sb)) in in_swing.iter().zip(&b.in_swing).enumerate() {
         if sa != sb {
             return Some(format!("in_swing[{i}]"));
         }
     }
-    (a.moving != b.moving).then(|| "moving".to_string())
+    (*moving != b.moving).then(|| "moving".to_string())
 }
 
 fn diff_pose(a: &CatPose, b: &CatPose) -> Option<String> {
-    if let Some(c) = diff_v3(a.pos, b.pos) {
+    let CatPose {
+        pos,
+        yaw,
+        paws,
+        bob,
+        amp,
+        sit,
+    } = a;
+    if let Some(c) = diff_v3(*pos, b.pos) {
         return Some(format!("pos.{c}"));
     }
-    if !same_f64(a.yaw, b.yaw) {
+    if !same_f64(*yaw, b.yaw) {
         return Some("yaw".to_string());
     }
-    for (i, (pa, pb)) in a.paws.iter().zip(&b.paws).enumerate() {
+    for (i, (pa, pb)) in paws.iter().zip(&b.paws).enumerate() {
         if let Some(c) = diff_v3(*pa, *pb) {
             return Some(format!("paws[{i}].{c}"));
         }
     }
     first_mismatch(&[
-        ("bob", same_f64(a.bob, b.bob)),
-        ("amp", same_f64(a.amp, b.amp)),
-        ("sit", same_f64(a.sit, b.sit)),
+        ("bob", same_f64(*bob, b.bob)),
+        ("amp", same_f64(*amp, b.amp)),
+        ("sit", same_f64(*sit, b.sit)),
     ])
     .map(String::from)
 }
@@ -1209,6 +1465,37 @@ mod tests {
         assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
         assert_eq!(fnv1a64(b"foobar"), 0x8594_4171_f739_67e8);
+    }
+
+    /// The fixture's canonical size, hand-derived from the layout — the
+    /// only direct test of `canonical_bytes`, and the tripwire for a
+    /// format change that reached the two walks without reaching the
+    /// tests:
+    ///
+    /// ```text
+    ///     4  format_version
+    ///  4+26  level_scene ("res://levels/level_01.tscn")
+    ///    58  env    (8 + 1 + 1 + 5×8 + 8)
+    ///  4096  slots  (64 × (12 + 16 + 16 + 8 + 8 + 4))
+    ///    60  echoes (4 + 2 × 28)
+    ///    36  sources (4 + [4+3+8] + [4+5+8])
+    ///   269  hero   (61 + [4 + 2×64] queued waves + 76 viewmodel)
+    ///   854  cats   (4 + 429 + 421 — the second cat Pauses, a 12-byte
+    ///                state where the first cat's Roam takes 20)
+    ///  ————
+    ///  5407
+    /// ```
+    #[test]
+    fn the_fixture_encodes_to_its_layout() {
+        assert_eq!(
+            canonical_bytes(&test_state()).len(),
+            5407,
+            "the fixture's byte layout moved. A field added, removed, \
+             retyped or reordered — or an arity change to MAXP, TAIL_N \
+             or LEGS — changes this number: give the new field a row in \
+             mutations(), bump FORMAT_VERSION, then update this literal \
+             from the layout above."
+        );
     }
 
     /// One-ULP anywhere flips the hash — the property the determinism
