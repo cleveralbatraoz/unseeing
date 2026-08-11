@@ -63,9 +63,11 @@ var _demo_checked := false
 
 func _ready() -> void:
 	UnseeingPlayer.ensure_actions()
-	# deterministic flicker for offline frame-comparison runs
+	# deterministic flicker for offline frame-comparison runs — armed by
+	# ANY deterministic-run switch, not only the demo: seeding the one RNG
+	# must not cost a pool contaminated by a tap every four seconds
 	var rng := RandomNumberGenerator.new()
-	if not OS.get_environment("UNSEEING_DEMO").is_empty():
+	if _seed_armed():
 		rng.seed = 0x5EED
 	_flicker = Flicker.new(rng)
 	data_mat.shader = DATA_SHADER
@@ -165,6 +167,22 @@ func _demo_tap() -> void:
 			_demo.armed = _demo.armed or search.contains("demo")
 	if _demo.fire_due(now):
 		player.queue_wave(0, _demo.point, 6.0, 5.5, 1.0, 6, _demo.normal)
+
+
+## Deterministic runs arm the seed three ways: UNSEEING_SEED (seed alone,
+## no demo tap), UNSEEING_DEMO (a demo run must also be reproducible), or
+## ?seed / ?demo in a web URL. The demo TAP still arms only from
+## UNSEEING_DEMO / ?demo, in _demo_tap above — seed and demo are separate
+## switches, and this helper owns only the seed.
+func _seed_armed() -> bool:
+	if not OS.get_environment("UNSEEING_SEED").is_empty():
+		return true
+	if not OS.get_environment("UNSEEING_DEMO").is_empty():
+		return true
+	if OS.has_feature("web"):
+		var search := str(JavaScriptBridge.eval("window.location.search", true))
+		return search.contains("seed") or search.contains("demo")
+	return false
 
 
 ## The "hearing" pass: a fullscreen quad glued to the camera. It edge-detects
