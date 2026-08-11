@@ -197,6 +197,12 @@ impl SourceRig {
     pub(crate) fn is_built(&self) -> bool {
         !self.limbs.is_empty()
     }
+
+    /// Forget every limb handle. A rebuilding `ready()` frees the old
+    /// limbs by name first; the rig must not keep pointers into them.
+    pub(crate) fn clear(&mut self) {
+        self.limbs.clear();
+    }
 }
 
 /// Put one wave into the pool: a source's voice, born at `at`, aimed along

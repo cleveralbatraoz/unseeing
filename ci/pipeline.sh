@@ -152,6 +152,9 @@ GODOT="$GODOT" "$DIR/tools/restore_probe.sh"
 echo "ci: editor-mode probe (the slab law's other half)"
 GODOT="$GODOT" "$DIR/tools/probe_editor_slabs.sh" || { echo "ci: editor-mode probe FAILED"; exit 1; }
 
+echo "ci: editor-source probe (blueprint limbs vs the runtime guard)"
+GODOT="$GODOT" "$DIR/tools/probe_editor_sources.sh" || { echo "ci: editor-source probe FAILED"; exit 1; }
+
 if [ "${SKIP_EXPORT:-}" = "1" ]; then
   echo "ci: SKIP_EXPORT=1 — checks-only run"
   echo "ci: OK"

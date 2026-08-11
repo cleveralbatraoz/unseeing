@@ -18,11 +18,12 @@
 use std::f32::consts::PI;
 
 use godot::classes::{
-    AnimatableBody3D, ArrayMesh, CollisionShape3D, CylinderShape3D, INode3D, Material, Mesh,
-    Node3D, RefCounted, StaticBody3D,
+    AnimatableBody3D, ArrayMesh, CollisionShape3D, CylinderShape3D, Engine, INode3D, Material,
+    Mesh, Node3D, RefCounted, StaticBody3D,
 };
 use godot::prelude::*;
 
+use super::solid::clear_limbs;
 use super::source::{SoundSource, SourceRig, sound};
 use crate::fan_wave;
 use crate::render::{self, Role};
@@ -46,6 +47,11 @@ const OIDS: [f64; 2] = [
     render::role_label(Role::Moving),
 ];
 
+/// The two built subtrees, named so a rebuilding ready() can free the
+/// ghosts a Ctrl+D duplicate carries in (names are the only handle —
+/// a duplicate reaches _ready as a fresh Rust object).
+const LIMBS: [&str; 2] = ["FanPedestal", "FanPivot"];
+
 /// The pedestal fan node. Scene limbs are built in `_ready` from the
 /// injected acoustic-image skin; `update(t)` — driven by the level with the
 /// simulated clock, like every animated thing — rides the pure motion
@@ -53,7 +59,7 @@ const OIDS: [f64; 2] = [
 /// voice is a set of designer `#[export]` knobs defaulting to the shipped
 /// constants; the knobs are read when the fan enters the tree.
 #[derive(GodotClass)]
-#[class(init, base=Node3D)]
+#[class(tool, init, base=Node3D)]
 pub struct SoundFan {
     /// The wave pool every sound enters — today the GDScript `Pulses`
     /// shim, tomorrow the `WaveCore` itself; the fan only asks it to
@@ -94,6 +100,18 @@ pub struct SoundFan {
 #[godot_api]
 impl INode3D for SoundFan {
     fn ready(&mut self) {
+        clear_limbs(self, &LIMBS);
+        self.rig.clear();
+        if Engine::singleton().is_editor_hint() {
+            // blueprint mode: the same geometry the game outlines, skinless
+            // (SourceRig::limb skips the override while data_mat is None).
+            // Nothing ticks, emits, or registers here — advance() is only
+            // ever called by the level at run time.
+            self.build_pedestal();
+            self.build_head();
+            self.build_blades();
+            return;
+        }
         // no silent nulls: without the pool and the acoustic-image skin the
         // fan can neither sound nor be seen — refuse to build instead of
         // crashing later
@@ -167,6 +185,7 @@ impl SoundFan {
     /// Pedestal: base disc + pole, as static as the walls.
     fn build_pedestal(&mut self) {
         let mut pedestal = StaticBody3D::new_alloc();
+        pedestal.set_name("FanPedestal");
         self.base_mut().add_child(&pedestal);
         let mut body = pedestal.clone().upcast::<Node3D>();
         let skin = self.data_mat.clone();
@@ -198,6 +217,7 @@ impl SoundFan {
     /// along.
     fn build_head(&mut self) {
         let mut pivot = Node3D::new_alloc();
+        pivot.set_name("FanPivot");
         pivot.set_position(Vector3::new(0.0, HEAD_H, 0.0));
         self.base_mut().add_child(&pivot);
         let mut head = AnimatableBody3D::new_alloc();
