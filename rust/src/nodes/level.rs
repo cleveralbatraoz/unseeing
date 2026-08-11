@@ -802,6 +802,20 @@ impl WaveLevel {
         &self.source_children
     }
 
+    /// Every companion creature in scene order, still TYPED — [`Self::cats`]
+    /// hands the same handles to GDScript, which drives their clocks; this
+    /// is the in-crate door the capture reads each cat's whole private life
+    /// through (brain, gait, tail, pose), none of which is `#[func]`.
+    ///
+    /// Scene order is not a convenience here, it is the blob's own
+    /// precondition: the capture encodes and compares cats POSITIONALLY,
+    /// so two captures of one unchanged world that walked the tree in
+    /// different orders would diverge at `cats[0]` and blame a bug that is
+    /// not there.
+    pub(super) fn cat_handles(&self) -> &[Gd<WaveCat>] {
+        &self.cat_children
+    }
+
     /// The name of every wall in the occluder table, in table order, so a
     /// crossing can be NAMED and not merely counted. Truncated exactly as
     /// the table is: past the shader's last slot a wall does not occlude,

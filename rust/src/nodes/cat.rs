@@ -317,11 +317,6 @@ impl WaveCat {
     /// The cat as data — None when _ready refused (uninjected) and the
     /// brain never existed, which the blob reports as a refusal, never
     /// as a default cat.
-    #[expect(
-        dead_code,
-        reason = "the door this task builds; the blob module (a later task) \
-                  is its first caller"
-    )]
     pub(crate) fn capture_state(&self) -> Option<CatCapture> {
         let brain = self.brain.as_ref()?;
         let gait = self.gait.as_ref()?;

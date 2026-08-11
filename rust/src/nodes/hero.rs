@@ -281,11 +281,6 @@ impl HeroBody {
     /// The viewmodel as data — `None` when `_ready` refused (uninjected)
     /// and the viewmodel never existed, which the blob reports as a
     /// refusal, never as a default pose.
-    #[expect(
-        dead_code,
-        reason = "the door this task builds; the blob module (a later task) \
-                  is its first caller"
-    )]
     pub(crate) fn capture_vm(&self) -> Option<ViewmodelCapture> {
         self.vm.as_ref().map(Viewmodel::capture)
     }

@@ -126,6 +126,10 @@ func _ready() -> void:
 	observer = WaveObserver.new()
 	observer.inject(level, player.camera)
 	observer.inject_hero(player)
+	# the hero's BODY, injected separately from the hero: the viewmodel —
+	# footstep clock and all — lives here and on no other node, so a
+	# capture without it could not say when the next footfall lands
+	observer.inject_body(hero)
 	add_child(observer)
 	# the settings overlay, added LAST on purpose: unhandled input walks
 	# the tree bottom-up, so the overlay sees Escape before the world does
@@ -168,6 +172,38 @@ func _demo_tap() -> void:
 			_demo.armed = _demo.armed or search.contains("demo")
 	if _demo.fire_due(now):
 		player.queue_wave(0, _demo.point, 6.0, 5.5, 1.0, 6, _demo.normal)
+
+
+## The env group of a capture blob: everything about this instant that
+## lives in GDScript and in no Rust node, so no observer could ever read it.
+##
+## `now` is the simulated clock every appointment in the blob is dated
+## against — the capture is handed it separately and refuses if the two
+## disagree, because a blob dated at two instants restores into neither.
+## The two mood machines are here because both draw from their own stream
+## every single frame: a restored world whose flicker RNG sits one draw
+## behind diverges on the very next frame, silently and forever.
+##
+## The private reads are deliberate. GDScript privacy is conventional, and
+## these are the composition root's OWN helpers — nine accessors on two
+## RefCounted classes that exist for exactly one caller would be more
+## surface, not less coupling. `flicker_rng_state` stays a plain int here:
+## this dictionary is handed straight across the boundary, never through
+## JSON (the blob's own env group renders it as text, because
+## `JSON.parse_string` returns a float for every number and a float cannot
+## hold a 64-bit stream position).
+func capture_env() -> Dictionary:
+	return {
+		"now": now,
+		"demo_checked": _demo_checked,
+		"demo_armed": _demo.armed,
+		"demo_next": _demo._next,
+		"flicker_t": _flicker._t,
+		"flicker_level": _flicker._level,
+		"flicker_drop_until": _flicker._drop_until,
+		"flicker_next_drop": _flicker._next_drop,
+		"flicker_rng_state": _flicker._rng.state,
+	}
 
 
 ## Deterministic runs arm the seed three ways: UNSEEING_SEED (seed alone,

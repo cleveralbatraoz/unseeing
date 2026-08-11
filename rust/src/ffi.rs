@@ -9,9 +9,9 @@ use godot::classes::{PhysicsDirectSpaceState3D, PhysicsRayQueryParameters3D};
 use godot::prelude::*;
 
 use crate::clustering::{self, RayHit};
-use crate::echo_queue::{ECHO_KIND, ECHO_MAX_R, ECHO_SPEED, EchoQueue};
+use crate::echo_queue::{ECHO_KIND, ECHO_MAX_R, ECHO_SPEED, EchoQueue, PendingEcho};
 use crate::observe::reflect::ReflectionRequest;
-use crate::pulse_pool::{PulsePool, REFUSAL_MESSAGE};
+use crate::pulse_pool::{MAXP, PulsePool, REFUSAL_MESSAGE, SlotCapture};
 use crate::ray_fan;
 
 // gdext's entry-point API requires the `unsafe` keyword on this impl; the
@@ -205,6 +205,21 @@ impl WaveCore {
     /// truth rather than a second one.
     pub(crate) fn echoes(&self) -> &EchoQueue {
         &self.echoes
+    }
+
+    /// All 64 slots as data, for the capture blob — the f32 shader lanes
+    /// AND the f64 shadow eviction runs on, verbatim. Dead slots and
+    /// virgin sentinels included: a restore that left a stale pulse behind
+    /// must not hash the same as one that did not.
+    pub(crate) fn capture_pool(&self) -> Box<[SlotCapture; MAXP]> {
+        self.pool.capture_slots()
+    }
+
+    /// Every reflection still waiting for its appointment, for the capture
+    /// blob. Read through the same borrow as [`Self::capture_pool`] by the
+    /// observer, so the pool and the book leave one core at one instant.
+    pub(crate) fn capture_echoes(&self) -> Vec<PendingEcho> {
+        self.echoes.capture()
     }
 
     /// The one door into the pool: forwards to the pure emit and maps its

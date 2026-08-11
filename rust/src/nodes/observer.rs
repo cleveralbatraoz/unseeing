@@ -29,9 +29,14 @@ use godot::classes::{
 };
 use godot::prelude::*;
 
+use super::hero::HeroBody;
 use super::level::WaveLevel;
 use super::player::UnseeingPlayer;
 use super::source;
+use crate::cat_body::{CatPose, TAIL_N};
+use crate::cat_brain::{BrainCapture, BrainState, RoamRect};
+use crate::cat_gait::{GaitCapture, LEGS};
+use crate::echo_queue::PendingEcho;
 use crate::ffi::{WaveCore, cast_reflection_fan};
 use crate::level_plan;
 use crate::observe::evict::{EvictionPlan, EvictionRule, explain_eviction};
@@ -46,7 +51,13 @@ use crate::observe::{
     EchoObservation, EyeObservation, FrameObservation, HeroObservation, QueuedWave,
     SceneObservation, SourceObservation, SpawnObservation, frame,
 };
+use crate::pulse_pool::{MAXP, SlotCapture};
 use crate::ray_fan;
+use crate::reproduce::{
+    CaptureState, CatCapture, EnvCapture, FORMAT_VERSION, HeroCapture, SourceCapture,
+    first_divergence, state_hash,
+};
+use crate::viewmodel::ViewmodelCapture;
 
 /// No level: the observer was never handed the world to read.
 const NO_LEVEL: &str = "observer was never injected a level";
@@ -82,6 +93,46 @@ const NO_SUCH_REQUEST: &str =
 /// hits: a fan that struck nothing is a fact about the ROOM.
 const NO_SPACE: &str = "the observer stands in no physics world — reflection rays need one";
 
+/// No hero at all. A SNAPSHOT names this in `unknown` and reports the
+/// world around it; a CAPTURE cannot, because a blob is a world and a
+/// world without its hero restores as a different one.
+const NO_HERO: &str = "observer was never injected the hero — a blob carries the hero whole";
+
+/// The hero was injected and has since been freed.
+const DEAD_HERO: &str = "the injected hero has been freed";
+
+/// The hero exists but its eye has not been built, so there is no pitch to
+/// carry. A level gaze invented for an eyeless hero is exactly the
+/// plausible wrong number this whole layer refuses to produce.
+const NO_EYE: &str = "the hero never built its eye — the game is not running";
+
+/// The hero BODY was never injected. It is a separate handle from the
+/// hero because it is a separate node, and it is not optional equipment
+/// for a capture: the viewmodel — the footstep clock included — lives
+/// there and on no other node.
+const NO_BODY: &str = "observer was never injected the hero body — the viewmodel clocks live there";
+
+/// The hero body was injected and has since been freed.
+const DEAD_BODY: &str = "the injected hero body has been freed";
+
+/// The body exists but refused to build (uninjected), so there is no
+/// viewmodel state to read. A default pose here would restore a walker
+/// mid-stride as one standing still.
+const NO_VM: &str = "the hero body never built its viewmodel — the game is not running";
+
+/// A cat in the level never built its mind, gait, tail and pose. Refused
+/// rather than defaulted: a defaulted cat is a cat with a different life.
+const UNBUILT_CAT: &str = "a level cat was never built — capture refuses a defaulted cat";
+
+/// A source is keeping no beat appointment, so there is no date to carry.
+/// Restoring it would leave the gate to book a fresh one off the restored
+/// clock — the spurious beat the whole appointment capture exists to stop.
+const NO_APPOINTMENT: &str = "a source holds no beat appointment — the level has not ticked";
+
+/// The env group is the caller's own dictionary — the one group no type
+/// signature guards — so the refusal names the key rather than the group.
+const BAD_ENV: &str = "the env group is missing or malformed: ";
+
 /// The agent's window into the running wave engine: it reads every system
 /// and drives none.
 #[derive(GodotClass)]
@@ -93,6 +144,10 @@ pub struct WaveObserver {
     /// building a bare level has no hero, and that absence is REPORTED
     /// (in `unknown`) rather than refusing the whole snapshot.
     player: Option<Gd<UnseeingPlayer>>,
+    /// The hero's BODY, injected separately again: the viewmodel's whole
+    /// state machine lives there, `snapshot` has never been able to see
+    /// it, and `capture` cannot do without it.
+    body: Option<Gd<HeroBody>>,
     /// Reflection questions waiting on a physics frame, and the answers
     /// that frame produced.
     explanations: ExplanationLedger,
@@ -154,6 +209,15 @@ impl WaveObserver {
         self.player = player;
     }
 
+    /// Hand the observer the hero's BODY — a third injection, because the
+    /// viewmodel is a third node. Only [`Self::capture`] reads it; a
+    /// snapshot never has, so a suite that only snapshots may leave it
+    /// unset exactly as before.
+    #[func]
+    fn inject_body(&mut self, body: Option<Gd<HeroBody>>) {
+        self.body = body;
+    }
+
     /// The whole state vector as of `now`: the pool slot by slot, the next
     /// eviction, every sound source as an agent reads it, the wall table,
     /// and where the eye stands.
@@ -204,6 +268,105 @@ impl WaveObserver {
             },
         );
         frame_dict(&observation, flick.is_some())
+    }
+
+    /// The whole world at `now` as one restorable value — the blob.
+    ///
+    /// Strictly WIDER than [`Self::snapshot`]: the pool's f64 shadow, every
+    /// standing echo appointment, each cat's whole private life, the
+    /// viewmodel's clocks and the composition root's own `env` all reach a
+    /// blob, and not one of them reaches a snapshot.
+    ///
+    /// Strictly STRICTER too — there is no `unknown` array here. A snapshot
+    /// is a REPORT, and a report may admit a gap; a blob is a WORLD, and a
+    /// world with a group missing restores into a different world while
+    /// hashing like a valid one. So the first subsystem that cannot answer
+    /// refuses the whole capture, one key, exactly as an uninjected
+    /// snapshot does.
+    ///
+    /// `now` and `env.now` are the same instant said twice, and they are
+    /// checked against each other rather than one of them trusted: every
+    /// appointment in the blob is dated against this clock, and a blob
+    /// dated at two instants restores into neither.
+    ///
+    /// Reads only. Nothing here emits a pulse, schedules an echo, advances
+    /// a cadence, draws from a stream or moves a node — every handle is
+    /// bound immutably, and `&self` is the compiler's half of that promise.
+    #[func]
+    fn capture(&self, now: f64, env: VarDictionary) -> VarDictionary {
+        match self.capture_state(now, &env) {
+            Ok(state) => state_dict(&state),
+            Err(reason) => unavailable(&reason),
+        }
+    }
+
+    /// A blob's env group, spelled the way `main.gd::capture_env` spells
+    /// it — real floats, and the flicker's stream position as a plain int
+    /// — or a one-key refusal naming what was wrong with it.
+    ///
+    /// The composition root OWNS the env: `now`, the demo tap's schedule
+    /// and the flicker envelope are GDScript fields no Rust node can
+    /// write, so applying a captured env back is GDScript's job. But
+    /// GDScript cannot READ the blob's own spelling of a float. Measured
+    /// on this build: `String.to_float` is not correctly rounded (it reads
+    /// "0.016666666666666666" back one ULP away from 1/60), it drops the
+    /// sign of "-0", and it reads "NaN" as zero — the same three losses
+    /// that keep every float in the blob out of JSON's number syntax in
+    /// the first place. So the text-to-float step stays here, and the
+    /// restore's GDScript half is handed nine values it only has to
+    /// assign.
+    #[func]
+    fn env_of(&self, blob: VarDictionary) -> VarDictionary {
+        let root = Group::new(&blob, Floats::Text, String::new());
+        match root.group("env").and_then(|group| parse_env_group(&group)) {
+            Ok(env) => env_dict(&env, Floats::Native),
+            Err(reason) => unavailable(&reason),
+        }
+    }
+
+    /// Read a blob and the same blob after a journey, and say whether the
+    /// journey changed it: `""` when nothing moved, otherwise the dotted
+    /// path of the first field that did — or the parse error, on whichever
+    /// side failed to parse.
+    ///
+    /// A suite surface, and cheap on purpose. The blob's real destination
+    /// is a file, and the trip out through `JSON.stringify` and back
+    /// through `JSON.parse_string` is LOSSY for types this boundary must
+    /// therefore never emit: a Godot vector comes back a pretty-printed
+    /// String, every number comes back a float, and NaN has no spelling at
+    /// all. This is the one door a test can push both ends through, and it
+    /// names the field rather than the symptom — a hash that merely
+    /// disagrees would leave the reader to find which of five thousand
+    /// bytes moved.
+    ///
+    /// The blob's own `hash` key is checked here too, against the state it
+    /// claims to describe. Nothing else ever verifies it: the restorer
+    /// proves itself by re-capturing, not by trusting what a file says
+    /// about itself.
+    #[func]
+    fn blob_round_trip_ok(&self, before: VarDictionary, after: VarDictionary) -> GString {
+        let original = match parse_blob(&before) {
+            Ok(state) => state,
+            Err(reason) => return GString::from(&format!("before: {reason}")),
+        };
+        let returned = match parse_blob(&after) {
+            Ok(state) => state,
+            Err(reason) => return GString::from(&format!("after: {reason}")),
+        };
+        if let Some(field) = first_divergence(&original, &returned) {
+            return GString::from(&format!("the journey changed {field}"));
+        }
+        let Some(claimed) = before.get("hash").and_then(|v| v.try_to::<GString>().ok()) else {
+            return GString::from("before.hash: missing");
+        };
+        let actual = hex64(state_hash(&original));
+        if claimed.to_string() == actual {
+            GString::new()
+        } else {
+            GString::from(&format!(
+                "the blob claims hash {claimed}, its own state hashes {actual}"
+            ))
+        }
     }
 
     /// What the walls do to one sight line — the occlusion oracle, keyed to
@@ -356,28 +519,50 @@ impl WaveObserver {
         }
     }
 
+    /// The hero's body, under the same rule again. Only the capture asks:
+    /// a snapshot has never carried the viewmodel, so an observer that was
+    /// never handed a body still snapshots exactly as it always did.
+    fn live_body(&self) -> Result<&Gd<HeroBody>, &'static str> {
+        match self.body.as_ref() {
+            None => Err(NO_BODY),
+            Some(body) if !body.is_instance_valid() => Err(DEAD_BODY),
+            Some(body) => Ok(body),
+        }
+    }
+
     /// The hero group, if a live, fully-built hero was injected. `None` —
     /// which the snapshot names in `unknown` — covers never-injected,
     /// freed, and a player whose camera has not been built yet: a pitch
     /// invented for an eyeless hero would be a guess, and the group is
-    /// all-or-nothing like the capture blob it will one day feed.
+    /// all-or-nothing like the capture blob it feeds.
+    ///
+    /// The reason is DROPPED here and kept by [`Self::read_hero`], because
+    /// the two callers need different things from the same fetch: a
+    /// snapshot names the group in `unknown` and reports the world around
+    /// it, while a capture refuses the whole blob and must say which of
+    /// the three absences it hit. One fetch, so they can never drift.
+    fn hero_observation(&self) -> Option<HeroObservation> {
+        self.read_hero().ok()
+    }
+
+    /// The hero group or the reason there is none.
     ///
     /// Validity is checked on the borrowed reference and the handle is
     /// never cloned at all, the same discipline `live_level`/`live_camera`
     /// use: cloning a `Gd<T>` for a freed instance panics rather than
     /// returning a dead handle, so a freed hero must be caught before any
     /// clone could happen, not after taking ownership of a copy.
-    fn hero_observation(&self) -> Option<HeroObservation> {
-        let player = self.player.as_ref()?;
+    fn read_hero(&self) -> Result<HeroObservation, &'static str> {
+        let player = self.player.as_ref().ok_or(NO_HERO)?;
         if !player.is_instance_valid() {
-            return None;
+            return Err(DEAD_HERO);
         }
         let position = player.get_global_position();
         let velocity = player.get_velocity();
         let yaw = f64::from(player.get_rotation().y);
         let bound = player.bind();
-        let pitch = bound.eye_pitch()?;
-        Some(HeroObservation {
+        let pitch = bound.eye_pitch().ok_or(NO_EYE)?;
+        Ok(HeroObservation {
             position,
             velocity,
             yaw,
@@ -386,6 +571,76 @@ impl WaveObserver {
             tap_target: bound.tap_target,
             tap_queued: bound.tap_queued(),
             queued_waves: bound.wave_queue(),
+        })
+    }
+
+    /// Assemble the blob, refusing at the FIRST subsystem that cannot
+    /// answer. The order is cheapest-first and deliberate: the env group
+    /// is the caller's own dictionary and needs no node at all, the pool
+    /// and the echo book leave one borrow of one core, and the hero — the
+    /// group with three separate ways to be absent — is asked before the
+    /// cats, which are the only group whose length varies.
+    ///
+    /// THE CAMERA IS NOT FETCHED, and that is not an oversight. A snapshot
+    /// refuses without one because `walls_to_eye` and the camera group are
+    /// measured FROM the eye; a blob carries neither, and refusing for a
+    /// subsystem the artifact does not contain would be a refusal that
+    /// misnames its own limits.
+    fn capture_state(&self, now: f64, env: &VarDictionary) -> Result<CaptureState, String> {
+        let env = parse_env(env)?;
+        if env.now.to_bits() != now.to_bits() {
+            return Err(format!(
+                "{BAD_ENV}now — the capture is dated {now} and the env group says {}",
+                env.now
+            ));
+        }
+        let level = self.live_level()?;
+        // read through the handle before binding it: `scene_file_path` is
+        // a Node property, and the restore refuses a blob from another map
+        let level_scene = level.get_scene_file_path().to_string();
+        let level = level.bind();
+        let Some(core) = pulse_core(&level) else {
+            return Err(NO_POOL.to_string());
+        };
+        // one bind, so the pool and the echo book are read from the same
+        // core at the same instant rather than from two borrows of it
+        let (slots, echoes) = {
+            let core = core.bind();
+            (core.capture_pool(), core.capture_echoes())
+        };
+        let sources = capture_sources(&level)?;
+        let hero = self.capture_hero()?;
+        let cats = capture_cats(&level)?;
+        Ok(CaptureState {
+            format_version: FORMAT_VERSION,
+            level_scene,
+            env,
+            slots,
+            echoes,
+            sources,
+            hero,
+            cats,
+        })
+    }
+
+    /// The hero as the blob carries it: the snapshot's own hero fetch,
+    /// refusing rather than omitting, plus the viewmodel — which comes off
+    /// the BODY, and is the one fact in the whole blob that no snapshot has
+    /// ever been able to reach.
+    fn capture_hero(&self) -> Result<HeroCapture, &'static str> {
+        let body = self.live_body()?;
+        let viewmodel = body.bind().capture_vm().ok_or(NO_VM)?;
+        let hero = self.read_hero()?;
+        Ok(HeroCapture {
+            position: hero.position,
+            velocity: hero.velocity,
+            yaw: hero.yaw,
+            pitch: hero.pitch,
+            last_tap: hero.last_tap,
+            tap_target: hero.tap_target,
+            tap_queued: hero.tap_queued,
+            queued_waves: hero.queued_waves,
+            viewmodel,
         })
     }
 
@@ -430,7 +685,12 @@ fn unavailable(reason: &str) -> VarDictionary {
 /// The Rust wave core behind whatever the level was injected with: the
 /// core itself in a suite that hands one over directly, or the GDScript
 /// `Pulses` shim's own, reached through its public `core()` accessor.
-fn pulse_core(level: &WaveLevel) -> Option<Gd<WaveCore>> {
+///
+/// Visible to the whole `nodes` module because the RESTORER writes through
+/// the same handle the observer reads through: two ways of finding one
+/// pool is exactly how a restore ends up writing into a core nobody is
+/// rendering from.
+pub(super) fn pulse_core(level: &WaveLevel) -> Option<Gd<WaveCore>> {
     let handle = level.pulse_handle()?;
     if !handle.is_instance_valid() {
         return None;
@@ -492,6 +752,46 @@ fn sources(level: &WaveLevel, eye: Vector3, rects: &[Vector4]) -> Vec<SourceObse
                 source_floor: standing_image(&node).unwrap_or(f64::NAN),
                 slot_pressure: voice.slot_pressure(),
             }
+        })
+        .collect()
+}
+
+/// Every source's appointment book, in scene order — the only mutable
+/// state a source carries. Everything else about it is designer-authored
+/// and already in the scene, which is why the blob names sources rather
+/// than describing them: the restore finds them BY NAME, never by index.
+///
+/// A source with no appointment refuses the whole blob. It is not a
+/// harmless zero: restoring it would leave the gate to book a fresh date
+/// off the restored clock, and the level would sound one wave that the
+/// original never made.
+fn capture_sources(level: &WaveLevel) -> Result<Vec<SourceCapture>, String> {
+    level
+        .source_handles()
+        .iter()
+        .map(|source| {
+            let name = source.clone().into_gd().get_name().to_string();
+            let next_emit = source
+                .dyn_bind()
+                .next_emit()
+                .ok_or_else(|| format!("{NO_APPOINTMENT} ({name})"))?;
+            Ok(SourceCapture { name, next_emit })
+        })
+        .collect()
+}
+
+/// Every cat's whole life, in scene order — mind, stride, tail, pose and
+/// the two clocks — through the one door [`super::cat::WaveCat`] opens.
+/// The order is the blob's precondition, not a convenience: cats are
+/// encoded and compared positionally.
+fn capture_cats(level: &WaveLevel) -> Result<Vec<CatCapture>, String> {
+    level
+        .cat_handles()
+        .iter()
+        .map(|cat| {
+            cat.bind()
+                .capture_state()
+                .ok_or_else(|| format!("{UNBUILT_CAT} ({})", cat.get_name()))
         })
         .collect()
 }
@@ -818,4 +1118,975 @@ fn rule_name(rule: EvictionRule) -> &'static str {
         EvictionRule::OldestOverall => "OldestOverall",
         EvictionRule::Fallback => "Fallback",
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// THE BLOB, WALKED TWICE
+//
+// `state_dict` below and `parse_blob` under it are twin walks over the
+// SAME keys: one writes the dictionary GDScript hands to
+// `JSON.stringify`, the other reads it back into a `CaptureState`. They
+// are kept adjacent, one helper pair per group, because they are one wire
+// format wearing two faces — and the RESTORER reads the second half of
+// it, so a key written and never read is a field that restores as
+// whatever the scene happened to be holding.
+//
+// The writer's half is COMPILER-ENFORCED, exactly as `reproduce::blob`'s
+// encoder is: every helper opens with an exhaustive destructure and there
+// is no `..` rest pattern anywhere in it, so a field added to any capture
+// struct is an E0027 here before any test runs. The reader's half cannot
+// be — it names keys, and a key it forgets to name is a field it silently
+// drops — so the net under it is the round-trip test in
+// `game/tests/restore_test.gd`: capture, `JSON.stringify`,
+// `JSON.parse_string`, parse both ends, compare. A dropped field moves
+// the state and nothing else, which is precisely what that test compares.
+//
+// ── THE WIRE IS JSON, AND JSON CANNOT CARRY WHAT THIS BOUNDARY HOLDS ──
+//
+// The blob's destination is a FILE, and the hash that validates it
+// compares float BIT PATTERNS. Three losses were measured against this
+// exact Godot build, and each of them silently breaks that:
+//
+//   1. `JSON.stringify` renders `Vector3`, `Vector4` and the packed
+//      vector arrays through Godot's PRETTY-PRINTER — "(1.5, 2.5, 3.5)" —
+//      and they come back Strings.
+//   2. `JSON.parse_string` returns a FLOAT for every number, so a 64-bit
+//      integer past 2^53 comes back corrupted without a word.
+//   3. Godot's own float formatting is NOT round-trip exact even with
+//      `full_precision`: 1/60 is written `0.016666666666666666` and read
+//      back one ULP away, `-0.0` is written `0.0` and loses a sign the
+//      hash counts, and NaN has no JSON spelling at all (`stringify`
+//      substitutes null and warns).
+//
+// So the format's one rule is: **nothing that must survive exactly
+// crosses as a JSON number.**
+//
+//   - EVERY float — the f64 fields and the f32 vector lanes alike —
+//     crosses as decimal TEXT that Rust wrote and Rust reads. Rust's
+//     `Display` is the shortest decimal that round-trips and its parser
+//     is correctly rounded, so the pair is exact for every finite value,
+//     for both signed zeros, for the infinities, and for the NaN a cat
+//     that never beat carries. It also stays a number a human can read,
+//     which a hex bit pattern would not.
+//   - EVERY 64-bit integer crosses as text too: the cat's two PCG words
+//     as 16 hex characters, the flicker's stream position as decimal,
+//     the state hash as 16 hex characters.
+//   - Small integers — a format version, a pulse kind, a footstep side,
+//     an echo budget — stay JSON numbers. They are far inside 2^53 and
+//     exact there.
+//   - No Godot vector type appears anywhere. A vector is an array of
+//     float text, and a fixed run of vectors an array of those.
+//
+// The reader is generous about integer spelling and about nothing else:
+// an int field accepts an integral float (a blob may be hand-edited, and
+// GDScript will happily write `3.0`), and everything else — a missing
+// key, a wrong type, a fractional pulse kind, a short array, an
+// unparseable word — is an error naming its dotted path. There is no
+// default anywhere in it: a defaulted field is the vacuous pass this
+// whole plan exists to prevent.
+// ─────────────────────────────────────────────────────────────────────
+
+/// A 64-bit word as the 16 hex characters JSON carries losslessly.
+fn hex64(word: u64) -> String {
+    format!("{word:016x}")
+}
+
+/// A vector as bare float text. See the wire note: a `Vector3` left in
+/// this dictionary reaches a file as the string "(1.5, 2.5, 3.5)".
+fn v3_array(v: Vector3) -> VarArray {
+    lane_array(&[v.x, v.y, v.z])
+}
+
+fn v4_array(v: Vector4) -> VarArray {
+    lane_array(&[v.x, v.y, v.z, v.w])
+}
+
+/// Lanes are written and read at their REAL width — f32, the width
+/// `Vector3` actually holds and the width the hash actually compares.
+/// Widening to f64 on the way out would be a second representation to
+/// keep in step, and a needlessly long one: the shortest decimal that
+/// round-trips an f32 is much shorter than the one that round-trips the
+/// f64 it widened to.
+fn lane_array(lanes: &[f32]) -> VarArray {
+    let mut out = VarArray::new();
+    for &lane in lanes {
+        out.push(&lane.to_string().to_variant());
+    }
+    out
+}
+
+/// A run of vectors — a tail, a set of planted paws, a set of aims.
+fn v3_list(nodes: &[Vector3]) -> VarArray {
+    let mut out = VarArray::new();
+    for &node in nodes {
+        out.push(&v3_array(node).to_variant());
+    }
+    out
+}
+
+/// A run of dictionaries, as one UNTYPED array. Untyped on purpose: an
+/// `Array[Dictionary]` and the plain `Array` that comes back out of
+/// `JSON.parse_string` are different Godot types, and the parser has to
+/// accept the blob whichever road it arrived by.
+fn dict_list<T>(items: impl Iterator<Item = T>, one: impl Fn(T) -> VarDictionary) -> VarArray {
+    let mut out = VarArray::new();
+    for item in items {
+        out.push(&one(item).to_variant());
+    }
+    out
+}
+
+/// The whole blob, hash included. The hash is over the STATE, not over
+/// this dictionary: the bytes it is taken from are `reproduce::blob`'s
+/// canonical ones, so how a float happens to be spelled on the wire can
+/// never change whether two worlds are the same world.
+fn state_dict(state: &CaptureState) -> VarDictionary {
+    let CaptureState {
+        format_version,
+        level_scene,
+        env,
+        slots,
+        echoes,
+        sources,
+        hero,
+        cats,
+    } = state;
+    let mut blob = VarDictionary::new();
+    blob.set("format_version", i64::from(*format_version));
+    blob.set("level_scene", level_scene.as_str());
+    blob.set("hash", hex64(state_hash(state)).as_str());
+    blob.set("env", &env_dict(env, Floats::Text));
+    blob.set("slots", &dict_list(slots.iter(), slot_capture_dict));
+    blob.set("echoes", &dict_list(echoes.iter(), echo_capture_dict));
+    blob.set("sources", &dict_list(sources.iter(), source_capture_dict));
+    blob.set("hero", &hero_capture_dict(hero));
+    blob.set("cats", &dict_list(cats.iter(), cat_capture_dict));
+    blob
+}
+
+/// The env group, in either spelling — the one group that has two,
+/// because it is the one group GDScript both writes and reads. Inside the
+/// blob it is text like everything else; handed back to the composition
+/// root by [`WaveObserver::env_of`] it is native values that root can
+/// simply assign.
+fn env_dict(env: &EnvCapture, floats: Floats) -> VarDictionary {
+    let EnvCapture {
+        now,
+        demo_checked,
+        demo_armed,
+        demo_next,
+        flicker_t,
+        flicker_level,
+        flicker_drop_until,
+        flicker_next_drop,
+        flicker_rng_state,
+    } = env;
+    let mut entry = VarDictionary::new();
+    entry.set("now", &float_value(*now, floats));
+    entry.set("demo_checked", *demo_checked);
+    entry.set("demo_armed", *demo_armed);
+    entry.set("demo_next", &float_value(*demo_next, floats));
+    entry.set("flicker_t", &float_value(*flicker_t, floats));
+    entry.set("flicker_level", &float_value(*flicker_level, floats));
+    entry.set(
+        "flicker_drop_until",
+        &float_value(*flicker_drop_until, floats),
+    );
+    entry.set(
+        "flicker_next_drop",
+        &float_value(*flicker_next_drop, floats),
+    );
+    // a stream POSITION, and all 64 bits of it are the value: as a JSON
+    // number it would come back off a file as a float and lose its low
+    // bits, which is a flicker that replays a different envelope
+    entry.set(
+        "flicker_rng_state",
+        &match floats {
+            Floats::Text => flicker_rng_state.to_string().to_variant(),
+            Floats::Native => flicker_rng_state.to_variant(),
+        },
+    );
+    entry
+}
+
+/// A float spelled for the road its dictionary is taking.
+fn float_value(value: f64, floats: Floats) -> Variant {
+    match floats {
+        Floats::Native => value.to_variant(),
+        Floats::Text => value.to_string().to_variant(),
+    }
+}
+
+fn slot_capture_dict(slot: &SlotCapture) -> VarDictionary {
+    let SlotCapture {
+        pos,
+        dat,
+        dir,
+        t0,
+        end,
+        kind,
+    } = slot;
+    let mut entry = VarDictionary::new();
+    entry.set("pos", &v3_array(*pos));
+    entry.set("dat", &v4_array(*dat));
+    entry.set("dir", &v4_array(*dir));
+    entry.set("t0", t0.to_string().as_str());
+    entry.set("end", end.to_string().as_str());
+    entry.set("kind", i64::from(*kind));
+    entry
+}
+
+fn echo_capture_dict(echo: &PendingEcho) -> VarDictionary {
+    let PendingEcho { at_t, pos, gain } = echo;
+    let mut entry = VarDictionary::new();
+    entry.set("at_t", at_t.to_string().as_str());
+    entry.set("pos", &v3_array(*pos));
+    entry.set("gain", gain.to_string().as_str());
+    entry
+}
+
+fn source_capture_dict(source: &SourceCapture) -> VarDictionary {
+    let SourceCapture { name, next_emit } = source;
+    let mut entry = VarDictionary::new();
+    entry.set("name", name.as_str());
+    entry.set("next_emit", next_emit.to_string().as_str());
+    entry
+}
+
+fn hero_capture_dict(hero: &HeroCapture) -> VarDictionary {
+    let HeroCapture {
+        position,
+        velocity,
+        yaw,
+        pitch,
+        last_tap,
+        tap_target,
+        tap_queued,
+        queued_waves,
+        viewmodel,
+    } = hero;
+    let mut entry = VarDictionary::new();
+    entry.set("position", &v3_array(*position));
+    entry.set("velocity", &v3_array(*velocity));
+    entry.set("yaw", yaw.to_string().as_str());
+    entry.set("pitch", pitch.to_string().as_str());
+    entry.set("last_tap", last_tap.to_string().as_str());
+    entry.set("tap_target", &v3_array(*tap_target));
+    entry.set("tap_queued", *tap_queued);
+    entry.set(
+        "queued_waves",
+        &dict_list(queued_waves.iter(), queued_wave_capture_dict),
+    );
+    entry.set("viewmodel", &viewmodel_dict(viewmodel));
+    entry
+}
+
+/// Keyed exactly as [`queued_wave_dict`] and the player's own
+/// `queued_waves` #[func] key it — "type", not "kind" — so one queue reads
+/// with one vocabulary wherever it surfaces. The encoding is the only
+/// difference, and it is the whole reason this is a second function.
+fn queued_wave_capture_dict(wave: &QueuedWave) -> VarDictionary {
+    let QueuedWave {
+        kind,
+        at,
+        max_r,
+        speed,
+        gain,
+        echoes,
+        normal,
+    } = wave;
+    let mut entry = VarDictionary::new();
+    entry.set("type", *kind);
+    entry.set("at", &v3_array(*at));
+    entry.set("max_r", max_r.to_string().as_str());
+    entry.set("speed", speed.to_string().as_str());
+    entry.set("gain", gain.to_string().as_str());
+    entry.set("echoes", *echoes);
+    entry.set("normal", &v3_array(*normal));
+    entry
+}
+
+fn viewmodel_dict(viewmodel: &ViewmodelCapture) -> VarDictionary {
+    let ViewmodelCapture {
+        walk_amp,
+        leg_phase,
+        swing_phase,
+        cane_swing,
+        sway_x,
+        sway_y,
+        last_yaw,
+        last_pitch,
+        step_t,
+        step_side,
+    } = viewmodel;
+    let mut entry = VarDictionary::new();
+    entry.set("walk_amp", walk_amp.to_string().as_str());
+    entry.set("leg_phase", leg_phase.to_string().as_str());
+    entry.set("swing_phase", swing_phase.to_string().as_str());
+    entry.set("cane_swing", cane_swing.to_string().as_str());
+    entry.set("sway_x", sway_x.to_string().as_str());
+    entry.set("sway_y", sway_y.to_string().as_str());
+    entry.set("last_yaw", last_yaw.to_string().as_str());
+    entry.set("last_pitch", last_pitch.to_string().as_str());
+    entry.set("step_t", step_t.to_string().as_str());
+    entry.set("step_side", i64::from(*step_side));
+    entry
+}
+
+fn cat_capture_dict(cat: &CatCapture) -> VarDictionary {
+    let CatCapture {
+        position,
+        yaw,
+        velocity,
+        brain,
+        gait,
+        tail,
+        pose,
+        presence_next,
+        sit,
+        sim_t,
+        last_pos,
+    } = cat;
+    let mut entry = VarDictionary::new();
+    entry.set("position", &v3_array(*position));
+    entry.set("yaw", yaw.to_string().as_str());
+    entry.set("velocity", &v3_array(*velocity));
+    entry.set("brain", &brain_dict(brain));
+    entry.set("gait", &gait_dict(gait));
+    entry.set("tail", &v3_list(tail));
+    entry.set("pose", &pose_dict(pose));
+    // the cat that never beat carries NaN, which JSON cannot spell as a
+    // number at all — and needs no special case here, because every float
+    // in the blob is already text and Rust spells this one "NaN"
+    entry.set("presence_next", presence_next.to_string().as_str());
+    entry.set("sit", sit.to_string().as_str());
+    entry.set("sim_t", sim_t.to_string().as_str());
+    entry.set("last_pos", &v3_array(*last_pos));
+    entry
+}
+
+fn brain_dict(brain: &BrainCapture) -> VarDictionary {
+    let BrainCapture {
+        rng_state,
+        rng_inc,
+        rect,
+        state,
+        yaw,
+        speed,
+        blocked,
+    } = brain;
+    let mut entry = VarDictionary::new();
+    // the two PCG words: 64 bits each, and a restored cat whose stream is
+    // one bit off diverges at its very next whim
+    entry.set("rng_state", hex64(*rng_state).as_str());
+    entry.set("rng_inc", hex64(*rng_inc).as_str());
+    entry.set("rect", &rect_dict(rect));
+    entry.set("state", &brain_state_dict(*state));
+    entry.set("yaw", yaw.to_string().as_str());
+    entry.set("speed", speed.to_string().as_str());
+    entry.set("blocked", blocked.to_string().as_str());
+    entry
+}
+
+fn rect_dict(rect: &RoamRect) -> VarDictionary {
+    let RoamRect {
+        min_x,
+        min_z,
+        max_x,
+        max_z,
+    } = rect;
+    let mut entry = VarDictionary::new();
+    entry.set("min_x", min_x.to_string().as_str());
+    entry.set("min_z", min_z.to_string().as_str());
+    entry.set("max_x", max_x.to_string().as_str());
+    entry.set("max_z", max_z.to_string().as_str());
+    entry
+}
+
+/// The mind's state machine on the wire: a spelled-out `kind` and that
+/// variant's own payload. Spelled out rather than derived from `Debug`,
+/// for the same reason [`state_name`] is — a parser is a contract, and a
+/// rename of the enum must not silently break it. The names and the
+/// payload keys are part of the format; changing one is a
+/// [`crate::reproduce::FORMAT_VERSION`] bump.
+fn brain_state_dict(state: BrainState) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    match state {
+        BrainState::Roam { tx, tz } => {
+            entry.set("kind", "Roam");
+            entry.set("tx", tx.to_string().as_str());
+            entry.set("tz", tz.to_string().as_str());
+        }
+        BrainState::Pause { left } => {
+            entry.set("kind", "Pause");
+            entry.set("left", left.to_string().as_str());
+        }
+        BrainState::Sit { left } => {
+            entry.set("kind", "Sit");
+            entry.set("left", left.to_string().as_str());
+        }
+    }
+    entry
+}
+
+fn gait_dict(gait: &GaitCapture) -> VarDictionary {
+    let GaitCapture {
+        phase,
+        amp,
+        planted,
+        aim,
+        in_swing,
+        moving,
+    } = gait;
+    let mut entry = VarDictionary::new();
+    entry.set("phase", phase.to_string().as_str());
+    entry.set("amp", amp.to_string().as_str());
+    entry.set("planted", &v3_list(planted));
+    entry.set("aim", &v3_list(aim));
+    let mut swinging = VarArray::new();
+    for &leg in in_swing {
+        swinging.push(&leg.to_variant());
+    }
+    entry.set("in_swing", &swinging);
+    entry.set("moving", *moving);
+    entry
+}
+
+fn pose_dict(pose: &CatPose) -> VarDictionary {
+    let CatPose {
+        pos,
+        yaw,
+        paws,
+        bob,
+        amp,
+        sit,
+    } = pose;
+    let mut entry = VarDictionary::new();
+    entry.set("pos", &v3_array(*pos));
+    entry.set("yaw", yaw.to_string().as_str());
+    entry.set("paws", &v3_list(paws));
+    entry.set("bob", bob.to_string().as_str());
+    entry.set("amp", amp.to_string().as_str());
+    entry.set("sit", sit.to_string().as_str());
+    entry
+}
+
+/// How the dictionary being read spells its floats.
+///
+/// Two dictionaries reach this parser and only one of them has ever been
+/// near JSON. The blob has: it is written to a file, so every float in it
+/// is text (see the wire note). The env group `main.gd::capture_env`
+/// hands to [`WaveObserver::capture`] has NOT: it is passed straight
+/// across the boundary in the same process, so its floats are real Godot
+/// floats and rendering them as text in GDScript would be the very
+/// rounding this format exists to avoid.
+#[derive(Clone, Copy)]
+enum Floats {
+    /// Real Godot floats, exact because they never left the process.
+    Native,
+    /// Decimal text Rust wrote and Rust reads back.
+    Text,
+}
+
+/// One dictionary being read, how it spells its floats, and the dotted
+/// path it sits at.
+///
+/// Every reader below reports `"<path>.<key>: <what went wrong>"`, because
+/// a parser that only says "malformed" hands its reader a five-kilobyte
+/// file and a shrug. The dictionary is held by handle (Godot's own
+/// refcounted one), so nesting into a group costs nothing.
+struct Group {
+    dict: VarDictionary,
+    floats: Floats,
+    path: String,
+}
+
+impl Group {
+    fn new(dict: &VarDictionary, floats: Floats, path: String) -> Self {
+        Self {
+            dict: dict.clone(),
+            floats,
+            path,
+        }
+    }
+
+    fn path_of(&self, key: &str) -> String {
+        if self.path.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}.{key}", self.path)
+        }
+    }
+
+    fn raw(&self, key: &str) -> Result<Variant, String> {
+        self.dict
+            .get(key)
+            .ok_or_else(|| format!("{}: missing", self.path_of(key)))
+    }
+
+    fn bool(&self, key: &str) -> Result<bool, String> {
+        let value = self.raw(key)?;
+        if value.get_type() == VariantType::BOOL {
+            Ok(value.to::<bool>())
+        } else {
+            Err(format!("{}: expected a bool", self.path_of(key)))
+        }
+    }
+
+    fn f64(&self, key: &str) -> Result<f64, String> {
+        self.float_of(&self.raw(key)?, &self.path_of(key))
+    }
+
+    /// A float, however this dictionary spells them. NaN, both zeros and
+    /// the infinities all survive the text road exactly, which is why
+    /// there is no special case for the one field that can hold a NaN.
+    fn float_of(&self, value: &Variant, path: &str) -> Result<f64, String> {
+        match self.floats {
+            Floats::Native => number(value, path),
+            Floats::Text => {
+                let text = string_of(value, path)?;
+                text.parse::<f64>()
+                    .map(canonical_nan)
+                    .map_err(|_| format!("{path}: expected a float as text, found {text:?}"))
+            }
+        }
+    }
+
+    /// One vector lane, at its real f32 width.
+    fn lane_of(&self, value: &Variant, path: &str) -> Result<f32, String> {
+        match self.floats {
+            Floats::Native => Ok(number(value, path)? as f32),
+            Floats::Text => {
+                let text = string_of(value, path)?;
+                text.parse::<f32>()
+                    .map_err(|_| format!("{path}: expected a float as text, found {text:?}"))
+            }
+        }
+    }
+
+    /// An integer. A float is accepted iff it is EXACTLY integral — a
+    /// hand-edited blob or a GDScript caller may well write `3.0` — and
+    /// refused otherwise: a fractional pulse kind is a corrupt blob, not
+    /// a roundable one.
+    fn i64(&self, key: &str) -> Result<i64, String> {
+        let value = self.raw(key)?;
+        let path = self.path_of(key);
+        match value.get_type() {
+            VariantType::INT => Ok(value.to::<i64>()),
+            VariantType::FLOAT => {
+                let found = value.to::<f64>();
+                let whole = found.trunc();
+                if found != whole || !(-SAFE_INT..=SAFE_INT).contains(&whole) {
+                    return Err(format!("{path}: expected a whole number, found {found}"));
+                }
+                Ok(whole as i64)
+            }
+            _ => Err(format!("{path}: expected an integer")),
+        }
+    }
+
+    fn string(&self, key: &str) -> Result<String, String> {
+        string_of(&self.raw(key)?, &self.path_of(key))
+    }
+
+    /// A 64-bit word as 16 hex characters — see the wire note above.
+    fn u64_hex(&self, key: &str) -> Result<u64, String> {
+        let text = self.string(key)?;
+        u64::from_str_radix(&text, 16).map_err(|_| {
+            format!(
+                "{}: expected 16 hex characters, found {text:?}",
+                self.path_of(key)
+            )
+        })
+    }
+
+    /// A 64-bit signed word as decimal text, for the same reason.
+    fn i64_text(&self, key: &str) -> Result<i64, String> {
+        let text = self.string(key)?;
+        text.parse::<i64>().map_err(|_| {
+            format!(
+                "{}: expected a 64-bit integer as text, found {text:?}",
+                self.path_of(key)
+            )
+        })
+    }
+
+    fn group(&self, key: &str) -> Result<Group, String> {
+        group_of(&self.raw(key)?, self.floats, self.path_of(key))
+    }
+
+    /// The elements of an array, its length pinned when the format fixes
+    /// one. A short run is a truncated blob, never a smaller world.
+    fn array(&self, key: &str, expect: Option<usize>) -> Result<Vec<Variant>, String> {
+        elements(&self.raw(key)?, expect, &self.path_of(key))
+    }
+
+    fn v3(&self, key: &str) -> Result<Vector3, String> {
+        self.vector3(&self.raw(key)?, &self.path_of(key))
+    }
+
+    fn v4(&self, key: &str) -> Result<Vector4, String> {
+        let lanes = self.lanes(&self.raw(key)?, 4, &self.path_of(key))?;
+        Ok(Vector4::new(lanes[0], lanes[1], lanes[2], lanes[3]))
+    }
+
+    fn vector3(&self, value: &Variant, path: &str) -> Result<Vector3, String> {
+        let lanes = self.lanes(value, 3, path)?;
+        Ok(Vector3::new(lanes[0], lanes[1], lanes[2]))
+    }
+
+    fn lanes(&self, value: &Variant, count: usize, path: &str) -> Result<Vec<f32>, String> {
+        elements(value, Some(count), path)?
+            .iter()
+            .enumerate()
+            .map(|(index, lane)| self.lane_of(lane, &format!("{path}[{index}]")))
+            .collect()
+    }
+
+    /// A fixed-arity run of vectors: a tail, a set of paws, a set of aims.
+    fn v3_array<const N: usize>(&self, key: &str) -> Result<[Vector3; N], String> {
+        let items = self.array(key, Some(N))?;
+        let path = self.path_of(key);
+        let mut out = [Vector3::ZERO; N];
+        for (index, item) in items.iter().enumerate() {
+            out[index] = self.vector3(item, &format!("{path}[{index}]"))?;
+        }
+        Ok(out)
+    }
+
+    fn bool_array<const N: usize>(&self, key: &str) -> Result<[bool; N], String> {
+        let items = self.array(key, Some(N))?;
+        let path = self.path_of(key);
+        let mut out = [false; N];
+        for (index, item) in items.iter().enumerate() {
+            if item.get_type() != VariantType::BOOL {
+                return Err(format!("{path}[{index}]: expected a bool"));
+            }
+            out[index] = item.to::<bool>();
+        }
+        Ok(out)
+    }
+}
+
+/// The largest magnitude an f64 can hold every integer up to — the point
+/// past which "this float is a whole number" stops meaning "this float is
+/// that integer".
+const SAFE_INT: f64 = 9_007_199_254_740_992.0;
+
+/// Every NaN spells "NaN" and reads back as THE NaN, so the bit pattern
+/// the state hash compares is the one the capture carried rather than
+/// whichever quiet NaN the parser happened to build.
+fn canonical_nan(value: f64) -> f64 {
+    if value.is_nan() { f64::NAN } else { value }
+}
+
+fn string_of(value: &Variant, path: &str) -> Result<String, String> {
+    if value.get_type() == VariantType::STRING {
+        Ok(value.to::<GString>().to_string())
+    } else {
+        Err(format!("{path}: expected a string"))
+    }
+}
+
+fn group_of(value: &Variant, floats: Floats, path: String) -> Result<Group, String> {
+    if value.get_type() == VariantType::DICTIONARY {
+        Ok(Group {
+            dict: value.to::<VarDictionary>(),
+            floats,
+            path,
+        })
+    } else {
+        Err(format!("{path}: expected a dictionary"))
+    }
+}
+
+fn elements(value: &Variant, expect: Option<usize>, path: &str) -> Result<Vec<Variant>, String> {
+    if value.get_type() != VariantType::ARRAY {
+        return Err(format!("{path}: expected an array"));
+    }
+    let items: Vec<Variant> = value.to::<VarArray>().iter_shared().collect();
+    if let Some(count) = expect
+        && items.len() != count
+    {
+        return Err(format!(
+            "{path}: expected {count} entries, found {}",
+            items.len()
+        ));
+    }
+    Ok(items)
+}
+
+/// A number as a Godot Variant holds it. Only the env group the caller
+/// passes in reaches this: everything in the blob itself is text.
+fn number(value: &Variant, path: &str) -> Result<f64, String> {
+    match value.get_type() {
+        VariantType::FLOAT => Ok(value.to::<f64>()),
+        VariantType::INT => Ok(value.to::<i64>() as f64),
+        _ => Err(format!("{path}: expected a number")),
+    }
+}
+
+/// A blob back into a state, or the dotted path of the first thing wrong
+/// with it. Total, and defaulting NOTHING: the restorer writes every field
+/// this returns straight into the running world, so a field quietly
+/// defaulted here is a subsystem restored to whatever the scene happened
+/// to be holding — which would then pass the hash gate, because the
+/// re-capture would read back the same default.
+///
+/// The blob's own `hash` key is deliberately NOT checked here. It is
+/// metadata about the artifact, not a field of the state, and a parser
+/// that rejected a hash mismatch would turn a TAMPERED blob into "parse
+/// error" — where the restore proof turns it into the name of the exact
+/// field that disagreed, which is the difference between a shrug and a
+/// bug report.
+pub(super) fn parse_blob(dict: &VarDictionary) -> Result<CaptureState, String> {
+    let blob = Group::new(dict, Floats::Text, String::new());
+    let version = blob.i64("format_version")?;
+    let format_version = u32::try_from(version).map_err(|_| {
+        format!("format_version: expected a small positive integer, found {version}")
+    })?;
+    let level_scene = blob.string("level_scene")?;
+    let env = parse_env_group(&blob.group("env")?)?;
+    let slots = parse_slots(&blob)?;
+    let echoes = parse_run(&blob, "echoes", parse_echo)?;
+    let sources = parse_run(&blob, "sources", parse_source)?;
+    let hero = parse_hero(&blob.group("hero")?)?;
+    let cats = parse_run(&blob, "cats", parse_cat)?;
+    Ok(CaptureState {
+        format_version,
+        level_scene,
+        env,
+        slots,
+        echoes,
+        sources,
+        hero,
+        cats,
+    })
+}
+
+/// A variable-length run of groups, each parsed under its own indexed
+/// path — `"cats[1].brain.rng_state: missing"`.
+fn parse_run<T>(
+    blob: &Group,
+    key: &str,
+    one: impl Fn(&Group) -> Result<T, String>,
+) -> Result<Vec<T>, String> {
+    let items = blob.array(key, None)?;
+    let path = blob.path_of(key);
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| one(&group_of(item, blob.floats, format!("{path}[{index}]"))?))
+        .collect()
+}
+
+/// The env group as the BLOB carries it — the stream position as text.
+fn parse_env_group(group: &Group) -> Result<EnvCapture, String> {
+    let flicker_rng_state = group.i64_text("flicker_rng_state")?;
+    parse_env_fields(group, flicker_rng_state)
+}
+
+/// The env group as the CALLER hands it to [`WaveObserver::capture`]: the
+/// same nine fields, but composed in GDScript and passed straight across
+/// the boundary rather than through a file — so the floats are real
+/// floats, the stream position is still a plain int, and the refusal
+/// wears the [`BAD_ENV`] grammar rather than a dotted path, because the
+/// reader who has to fix it is looking at `main.gd::capture_env`.
+fn parse_env(env: &VarDictionary) -> Result<EnvCapture, String> {
+    let group = Group::new(env, Floats::Native, String::new());
+    let flicker_rng_state = group.i64("flicker_rng_state").map_err(bad_env)?;
+    parse_env_fields(&group, flicker_rng_state).map_err(bad_env)
+}
+
+fn bad_env(reason: String) -> String {
+    format!("{BAD_ENV}{reason}")
+}
+
+/// The eight fields both roads spell the same way. The ninth is passed
+/// in, because it is the one they do not.
+fn parse_env_fields(group: &Group, flicker_rng_state: i64) -> Result<EnvCapture, String> {
+    Ok(EnvCapture {
+        now: group.f64("now")?,
+        demo_checked: group.bool("demo_checked")?,
+        demo_armed: group.bool("demo_armed")?,
+        demo_next: group.f64("demo_next")?,
+        flicker_t: group.f64("flicker_t")?,
+        flicker_level: group.f64("flicker_level")?,
+        flicker_drop_until: group.f64("flicker_drop_until")?,
+        flicker_next_drop: group.f64("flicker_next_drop")?,
+        flicker_rng_state,
+    })
+}
+
+/// All 64 slots, the arity pinned by the pool's own contract. A blob with
+/// 63 is not a smaller pool, it is a truncated file.
+fn parse_slots(blob: &Group) -> Result<Box<[SlotCapture; MAXP]>, String> {
+    let items = blob.array("slots", Some(MAXP))?;
+    let mut slots = Box::new(
+        [SlotCapture {
+            pos: Vector3::ZERO,
+            dat: Vector4::ZERO,
+            dir: Vector4::ZERO,
+            t0: 0.0,
+            end: 0.0,
+            kind: 0,
+        }; MAXP],
+    );
+    for (index, item) in items.iter().enumerate() {
+        let group = group_of(item, blob.floats, format!("slots[{index}]"))?;
+        slots[index] = parse_slot(&group)?;
+    }
+    Ok(slots)
+}
+
+fn parse_slot(group: &Group) -> Result<SlotCapture, String> {
+    Ok(SlotCapture {
+        pos: group.v3("pos")?,
+        dat: group.v4("dat")?,
+        dir: group.v4("dir")?,
+        t0: group.f64("t0")?,
+        end: group.f64("end")?,
+        kind: i32::try_from(group.i64("kind")?)
+            .map_err(|_| format!("{}: out of range for a pulse kind", group.path_of("kind")))?,
+    })
+}
+
+fn parse_echo(group: &Group) -> Result<PendingEcho, String> {
+    Ok(PendingEcho {
+        at_t: group.f64("at_t")?,
+        pos: group.v3("pos")?,
+        gain: group.f64("gain")?,
+    })
+}
+
+fn parse_source(group: &Group) -> Result<SourceCapture, String> {
+    Ok(SourceCapture {
+        name: group.string("name")?,
+        next_emit: group.f64("next_emit")?,
+    })
+}
+
+fn parse_hero(group: &Group) -> Result<HeroCapture, String> {
+    Ok(HeroCapture {
+        position: group.v3("position")?,
+        velocity: group.v3("velocity")?,
+        yaw: group.f64("yaw")?,
+        pitch: group.f64("pitch")?,
+        last_tap: group.f64("last_tap")?,
+        tap_target: group.v3("tap_target")?,
+        tap_queued: group.bool("tap_queued")?,
+        queued_waves: parse_run(group, "queued_waves", parse_wave)?,
+        viewmodel: parse_viewmodel(&group.group("viewmodel")?)?,
+    })
+}
+
+fn parse_wave(group: &Group) -> Result<QueuedWave, String> {
+    Ok(QueuedWave {
+        kind: group.i64("type")?,
+        at: group.v3("at")?,
+        max_r: group.f64("max_r")?,
+        speed: group.f64("speed")?,
+        gain: group.f64("gain")?,
+        echoes: group.i64("echoes")?,
+        normal: group.v3("normal")?,
+    })
+}
+
+fn parse_viewmodel(group: &Group) -> Result<ViewmodelCapture, String> {
+    Ok(ViewmodelCapture {
+        walk_amp: group.f64("walk_amp")?,
+        leg_phase: group.f64("leg_phase")?,
+        swing_phase: group.f64("swing_phase")?,
+        cane_swing: group.f64("cane_swing")?,
+        sway_x: group.f64("sway_x")?,
+        sway_y: group.f64("sway_y")?,
+        last_yaw: group.f64("last_yaw")?,
+        last_pitch: group.f64("last_pitch")?,
+        step_t: group.f64("step_t")?,
+        step_side: i32::try_from(group.i64("step_side")?).map_err(|_| {
+            format!(
+                "{}: out of range for a footstep side",
+                group.path_of("step_side")
+            )
+        })?,
+    })
+}
+
+fn parse_cat(group: &Group) -> Result<CatCapture, String> {
+    Ok(CatCapture {
+        position: group.v3("position")?,
+        yaw: group.f64("yaw")?,
+        velocity: group.v3("velocity")?,
+        brain: parse_brain(&group.group("brain")?)?,
+        gait: parse_gait(&group.group("gait")?)?,
+        tail: group.v3_array::<TAIL_N>("tail")?,
+        pose: parse_pose(&group.group("pose")?)?,
+        presence_next: group.f64("presence_next")?,
+        sit: group.f64("sit")?,
+        sim_t: group.f64("sim_t")?,
+        last_pos: group.v3("last_pos")?,
+    })
+}
+
+fn parse_brain(group: &Group) -> Result<BrainCapture, String> {
+    Ok(BrainCapture {
+        rng_state: group.u64_hex("rng_state")?,
+        rng_inc: group.u64_hex("rng_inc")?,
+        rect: parse_rect(&group.group("rect")?)?,
+        state: parse_brain_state(&group.group("state")?)?,
+        yaw: group.f64("yaw")?,
+        speed: group.f64("speed")?,
+        blocked: group.f64("blocked")?,
+    })
+}
+
+fn parse_rect(group: &Group) -> Result<RoamRect, String> {
+    Ok(RoamRect {
+        min_x: group.f64("min_x")?,
+        min_z: group.f64("min_z")?,
+        max_x: group.f64("max_x")?,
+        max_z: group.f64("max_z")?,
+    })
+}
+
+fn parse_brain_state(group: &Group) -> Result<BrainState, String> {
+    let kind = group.string("kind")?;
+    match kind.as_str() {
+        "Roam" => Ok(BrainState::Roam {
+            tx: group.f64("tx")?,
+            tz: group.f64("tz")?,
+        }),
+        "Pause" => Ok(BrainState::Pause {
+            left: group.f64("left")?,
+        }),
+        "Sit" => Ok(BrainState::Sit {
+            left: group.f64("left")?,
+        }),
+        other => Err(format!(
+            "{}: unknown brain state {other:?}",
+            group.path_of("kind")
+        )),
+    }
+}
+
+fn parse_gait(group: &Group) -> Result<GaitCapture, String> {
+    Ok(GaitCapture {
+        phase: group.f64("phase")?,
+        amp: group.f64("amp")?,
+        planted: group.v3_array::<LEGS>("planted")?,
+        aim: group.v3_array::<LEGS>("aim")?,
+        in_swing: group.bool_array::<LEGS>("in_swing")?,
+        moving: group.bool("moving")?,
+    })
+}
+
+fn parse_pose(group: &Group) -> Result<CatPose, String> {
+    Ok(CatPose {
+        pos: group.v3("pos")?,
+        yaw: group.f64("yaw")?,
+        paws: group.v3_array::<LEGS>("paws")?,
+        bob: group.f64("bob")?,
+        amp: group.f64("amp")?,
+        sit: group.f64("sit")?,
+    })
 }
