@@ -40,11 +40,19 @@ else
 fi
 
 # --- prove exclusion: the vendored addon really is in the tree (gdUnit4),
-# so this is checked against real files, not a synthetic stand-in ---
-if [ -d "$DIR/game/addons" ] && printf '%s\n' "$FOUND" | grep -q '/game/addons/'; then
-  bad "game/addons/ is NOT excluded — the vendored addon would be linted"
+# so this is checked against real files, not a synthetic stand-in. Split
+# into an explicit if/else on directory presence, not `[ -d ... ] && grep`:
+# the combined form falls to the else branch and prints a vacuous OK when
+# the directory is simply absent, having asserted nothing — the exact
+# anti-pattern test/repo_hygiene.sh's own comments warn against. ---
+if [ -d "$DIR/game/addons" ]; then
+  if printf '%s\n' "$FOUND" | grep -q '/game/addons/'; then
+    bad "game/addons/ is NOT excluded — the vendored addon would be linted"
+  else
+    ok "game/addons/ is excluded"
+  fi
 else
-  ok "game/addons/ is excluded"
+  echo "gdscript-lint-scope: SKIP game/addons/ exclusion (directory not present)"
 fi
 
 # --- prove exclusion of the import cache: create a real probe .gd there
