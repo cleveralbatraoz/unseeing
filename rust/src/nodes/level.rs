@@ -203,7 +203,7 @@ pub(super) struct FaceCensusEntry {
 pub struct WaveLevel {
     /// Floor and ceiling extent in meters, spanning from the level's
     /// origin along +X/+Z — the map's ground plan.
-    #[export]
+    #[export(range = (4.0, 60.0, 1.0, or_greater, suffix = " m"))]
     #[var(get = get_extents, set = set_extents)]
     #[init(val = Vector2::new(20.0, 20.0))]
     extents: Vector2,

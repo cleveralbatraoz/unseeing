@@ -64,7 +64,7 @@ use crate::render;
 pub struct WaveProp {
     /// Full box extent in meters — a magnitude: a negative reading folds to
     /// its absolute value at the knob ([`SignFold`]).
-    #[export]
+    #[export(range = (0.05, 20.0, 0.05, or_greater, suffix = " m"))]
     #[var(get = get_size, set = set_size)]
     #[init(val = Vector3::new(0.5, 0.5, 0.5))]
     size: Vector3,
@@ -184,12 +184,12 @@ impl WaveSolid for WaveProp {
 #[class(tool, init, base=StaticBody3D)]
 pub struct WaveColumn {
     /// Radius in meters — a magnitude ([`SignFold`]).
-    #[export]
+    #[export(range = (0.05, 5.0, 0.05, or_greater, suffix = " m"))]
     #[var(get = get_radius, set = set_radius)]
     #[init(val = 0.28)]
     radius: f64,
     /// Height in meters, rising from the node — a magnitude ([`SignFold`]).
-    #[export]
+    #[export(range = (0.1, 10.0, 0.1, or_greater, suffix = " m"))]
     #[var(get = get_height, set = set_height)]
     #[init(val = 0.9)]
     height: f64,
@@ -398,7 +398,7 @@ impl WaveSolid for WaveColumn {
 pub struct WaveWedge {
     /// Full extent in meters: run along X, rise along Y, width along Z —
     /// a magnitude ([`SignFold`]).
-    #[export]
+    #[export(range = (0.05, 20.0, 0.05, or_greater, suffix = " m"))]
     #[var(get = get_size, set = set_size)]
     #[init(val = Vector3::new(1.2, 0.5, 0.8))]
     size: Vector3,

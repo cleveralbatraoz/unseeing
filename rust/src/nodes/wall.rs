@@ -43,7 +43,7 @@ use crate::render;
 pub struct WaveWall {
     /// Centerline length in meters — the designer's one size knob, and a
     /// magnitude: a negative reading folds at the knob ([`SignFold`]).
-    #[export]
+    #[export(range = (0.3, 30.0, 0.1, or_greater, suffix = " m"))]
     #[var(get = get_length, set = set_length)]
     #[init(val = 4.0)]
     length: f64,

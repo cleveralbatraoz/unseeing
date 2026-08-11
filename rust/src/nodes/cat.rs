@@ -65,12 +65,12 @@ pub struct WaveCat {
     #[var]
     data_mat: Option<Gd<Material>>,
     /// The whimsy seed: same seed, same life. Two cats want two seeds.
-    #[export]
+    #[export(range = (0.0, 999999.0))]
     #[init(val = 7)]
     seed: i64,
     /// Full extents of the floor rectangle the cat roams, centered on
     /// where it stands when it enters the tree.
-    #[export]
+    #[export(range = (1.0, 30.0, 0.5, suffix = " m"))]
     #[init(val = Vector2::new(6.0, 6.0))]
     roam_size: Vector2,
     #[init(val = ArrayMesh::new_gd())]
