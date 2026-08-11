@@ -32,6 +32,13 @@
 //! compete with it, but so the level can NAME what it ignored instead of
 //! letting a moved copy change nothing in silence.
 //!
+//! Placement decision: the level REPORTS a solid it cannot support and
+//! moves nothing. Its slabs span `0 .. extents` from its own origin, so
+//! geometry dragged past that has no floor under it and the hero who walks
+//! there falls — and until this, in silence. Growing the slabs to cover the
+//! stray would be the worse cure, because it changes the footprint of an
+//! authored map behind the designer's back. See [`Self::report_placement`].
+//!
 //! Tap decision: the dev demo strike aims at the sound source whose HUB IS
 //! NEAREST THE SPAWN in the XZ plane, ties broken by the node's name in
 //! ascending order — never the first source in scene order, because a row
@@ -142,6 +149,10 @@ pub struct WaveLevel {
     /// importantly, so the names cannot drift out of step with the table.
     /// See [`Self::wall_names`].
     wall_children: Vec<Gd<WaveWall>>,
+    /// How many solids the last derivation found standing where the floor
+    /// does not reach — one per line the level printed. Zero on a healthy
+    /// level; see [`Self::report_placement`].
+    unfloored: i64,
     base: Base<Node3D>,
 }
 
@@ -254,6 +265,17 @@ impl WaveLevel {
     #[func]
     fn demo_tap_normal(&self) -> Vector3 {
         self.tap_normal
+    }
+
+    /// How many solids stand where the level's floor does not reach — zero
+    /// on a healthy level, and one per complaint the level printed while
+    /// deriving. Exposed as a number, not as the sentences, because the
+    /// sentences are for a person and this is for whatever has to DECIDE
+    /// something: a suite holding the shipped map silent today, and the
+    /// editor-side warning that has yet to be built.
+    #[func]
+    fn unfloored_solids(&self) -> i64 {
+        self.unfloored
     }
 
     /// Every wall's centerline as (x1, z1, x2, z2) — the derived table
@@ -412,11 +434,72 @@ impl WaveLevel {
         self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
         self.push_wall_table();
         self.assign_oids(&census);
+        self.report_placement(&census);
         self.source_children = census.sources;
         self.cat_children = census.cats;
         self.wall_children = census.walls;
         self.derive_spawn(&census.spawns);
         self.derive_tap();
+    }
+
+    /// Say out loud what a designer has placed where the level cannot hold
+    /// it. The DECISION is pure and lives in [`level_plan::unfloored`];
+    /// this end only measures — the floor slab where it actually stands,
+    /// and each painted solid's world box.
+    ///
+    /// Nothing MOVES here, deliberately. Growing the slabs to cover stray
+    /// geometry would silently change the footprint of an authored map,
+    /// which is a worse failure than the one being reported.
+    ///
+    /// Derive time is RUN time: `ready` returns before `derive` under
+    /// `Engine::is_editor_hint`, so none of this reaches a designer while
+    /// they are dragging. Surfacing it in the editor is a separate job.
+    fn report_placement(&mut self, census: &Census) {
+        let Some(floor) = self.floor_box() else {
+            return; // nothing built to stand on: nothing to measure against
+        };
+        let placed = self.placed_solids(census);
+        let strays = level_plan::unfloored(floor, &placed);
+        self.unfloored = strays.len() as i64;
+        for complaint in &strays {
+            godot_error!("{}", complaint);
+        }
+    }
+
+    /// The world box of the floor slab — what "the floor" MEANS to every
+    /// placement law: the footprint that has a slab under it, and the
+    /// plane its top stands at. Read where the slab actually is rather
+    /// than from the extents knob, so a level dropped anywhere in the
+    /// world carries its own footprint with it. `None` before the slabs
+    /// are built, or for a floor that draws nothing.
+    fn floor_box(&self) -> Option<oid_palette::Box3> {
+        let floor = self.slabs.iter().find(|slab| !slab.lid)?;
+        mesh_world_box(&floor.skin.clone().upcast())
+    }
+
+    /// Every painted solid with the world box it fills and the path a
+    /// designer finds it at — the shape the placement laws read.
+    ///
+    /// A solid that draws nothing is left out: it occupies no space, so
+    /// there is nowhere for it to be misplaced. The box is
+    /// [`mesh_world_box`]'s, the same measure the object-id colouring and
+    /// the seam census take, so a complaint and a seam always describe the
+    /// same shape — including that measure's habit of unioning EVERY
+    /// descendant mesh, which makes a prop grouped under a crate part of
+    /// the crate's box and reports the parent for where the child sits.
+    fn placed_solids(&self, census: &Census) -> Vec<level_plan::PlacedSolid> {
+        let root = self.base().clone().upcast::<Node>();
+        census
+            .solids
+            .iter()
+            .filter_map(|solid| {
+                let node = solid.clone().into_gd();
+                mesh_world_box(&node).map(|area| level_plan::PlacedSolid {
+                    path: root.get_path_to(&node).to_string(),
+                    area,
+                })
+            })
+            .collect()
     }
 
     /// Hand every solid in the world its flat object id (the data pass's

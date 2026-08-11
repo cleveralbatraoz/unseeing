@@ -22,6 +22,8 @@ use std::f64::consts::FRAC_PI_2;
 
 use godot::builtin::{Basis, Vector3, Vector4};
 
+use crate::oid_palette::Box3;
+
 /// Wall height in meters — walls run floor to ceiling.
 pub const WALL_H: f64 = 3.0;
 
@@ -468,11 +470,265 @@ pub fn plan_demo_tap(walls: &[Vector4], spawn: Vector3, sources: &[SourceAim]) -
     TapVerdict { plan, complaint }
 }
 
+/// One solid as a PLACEMENT law sees it: where a designer finds the node,
+/// and the world box its drawn geometry actually fills.
+///
+/// The path does the job a name cannot — two crates called `Crate` under
+/// different parents are legal, and are exactly the pair a report has to
+/// tell apart — and it is the same handle [`SpawnCandidate`] quotes, so
+/// every complaint a level prints points at a node the same way.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacedSolid {
+    /// Where a designer can find the node: its path under the level root.
+    pub path: String,
+    /// The world box its drawn geometry occupies.
+    pub area: Box3,
+}
+
+/// Slack on a placement test, in meters. A shape resting exactly ON a
+/// boundary — a wall's underside on the floor's top, a prop's face flush
+/// with the last centimetre of the extents — has to read as on it and not
+/// through it: carrying a local AABB into world space costs a few ULPs, and
+/// a law that fired on float dust would be noise a designer learns to
+/// ignore. Far below anything a hand places.
+pub const PLACEMENT_EPS: f64 = 0.001;
+
+/// One box's span along one axis — the only reading either placement law
+/// takes off a [`Box3`], named so the arithmetic below says which axis it
+/// is talking about.
+#[must_use]
+fn span(area: Box3, axis: usize) -> (f64, f64) {
+    (area.min[axis % 3], area.max[axis % 3])
+}
+
+/// Does the span `a` lie inside the span `b`, float dust allowed?
+#[must_use]
+fn span_within(a: (f64, f64), b: (f64, f64)) -> bool {
+    a.0 >= b.0 - PLACEMENT_EPS && a.1 <= b.1 + PLACEMENT_EPS
+}
+
+/// Do the spans share more than float dust? Touching end to end is not
+/// overlapping: a crate whose face meets the floor's edge stands beside the
+/// floor, not on it.
+#[must_use]
+fn span_overlaps(a: (f64, f64), b: (f64, f64)) -> bool {
+    a.0 < b.1 - PLACEMENT_EPS && b.0 < a.1 - PLACEMENT_EPS
+}
+
+/// A box's ground footprint as a report quotes it.
+#[must_use]
+fn ground_span(area: Box3) -> String {
+    format!(
+        "x {:.2}..{:.2}, z {:.2}..{:.2}",
+        area.min[0], area.max[0], area.min[2], area.max[2]
+    )
+}
+
+/// Every solid the level's floor does not reach, said out loud — one line
+/// per node, in the order the level walk found them.
+///
+/// THE FLOOR NEVER MOVES TO MEET THE GEOMETRY. A level's slabs span
+/// `0 .. extents` from its own origin and nothing else, so a solid dragged
+/// to a negative coordinate — or left behind when the extents shrank — has
+/// no slab under it. Not one system notices: the box draws, the waves
+/// outline it, the colouring paints it, and the hero who walks there falls
+/// with gravity and nothing underfoot. Growing the slabs to fit would be
+/// the worse fix, because it silently changes the footprint of an authored
+/// map; the fix is to SAY SO.
+///
+/// Two degrees, because the consequences differ. A footprint that misses
+/// the floor entirely has nothing under any of it. One that only hangs over
+/// the edge is supported for most of its width and is one drag from
+/// correct — telling that designer the hero falls through their crate would
+/// be telling them something untrue.
+#[must_use]
+pub fn unfloored(floor: Box3, solids: &[PlacedSolid]) -> Vec<String> {
+    let (x, z) = (span(floor, 0), span(floor, 2));
+    let mut complaints = Vec::new();
+    for solid in solids {
+        let (their_x, their_z) = (span(solid.area, 0), span(solid.area, 2));
+        if span_within(their_x, x) && span_within(their_z, z) {
+            continue; // the whole footprint has a slab under it
+        }
+        let theirs = ground_span(solid.area);
+        let ours = ground_span(floor);
+        complaints.push(if span_overlaps(their_x, x) && span_overlaps(their_z, z) {
+            format!(
+                "WaveLevel: '{}' hangs over the edge of the floor — its footprint is {theirs}, \
+                 and the floor covers {ours}. The part outside has no slab under it. Move it \
+                 inside the extents, or grow the level's extents to cover it — the slabs span \
+                 0..extents from the level's own origin and never move to meet stray geometry.",
+                solid.path,
+            )
+        } else {
+            format!(
+                "WaveLevel: '{}' stands off the floor entirely — its footprint is {theirs}, and \
+                 the floor covers {ours}. There is no slab under any of it: it draws where \
+                 nothing holds it up, and the hero who walks there falls out of the world. Move \
+                 it inside the extents, or grow the level's extents to cover it — the slabs \
+                 span 0..extents from the level's own origin and never move to meet stray \
+                 geometry.",
+                solid.path,
+            )
+        });
+    }
+    complaints
+}
+
 #[cfg(test)]
 mod tests {
     use godot::builtin::EulerOrder;
 
     use super::*;
+
+    /// One solid at a named path filling one world box — the shape the
+    /// level hands a placement law after walking its subtree.
+    fn placed(path: &str, min: [f64; 3], max: [f64; 3]) -> PlacedSolid {
+        PlacedSolid {
+            path: path.to_string(),
+            area: Box3 { min, max },
+        }
+    }
+
+    /// The floor a 20 x 20 level builds for itself: spanning 0..extents
+    /// from the level's own origin, its TOP exactly at y = 0.
+    fn floor_20x20() -> Box3 {
+        Box3 {
+            min: [0.0, -0.1, 0.0],
+            max: [20.0, 0.0, 20.0],
+        }
+    }
+
+    /// The ordinary map: every solid inside the extents, and the level says
+    /// nothing at all. A law that complained here would train a designer to
+    /// ignore it. The second half is the one that catches a footprint
+    /// hardcoded to 0..extents: the floor is read WHERE IT STANDS, so a
+    /// level dropped at (100, 0, 100) carries its own footprint with it and
+    /// the crate beside it is home — while that same crate measured against
+    /// a level at the origin is a stray.
+    #[test]
+    fn a_solid_inside_the_extents_says_nothing() {
+        let inside = [
+            placed("Crate", [4.0, 0.0, 4.0], [5.0, 1.0, 5.0]),
+            placed("Rooms/Barrel", [0.0, 0.0, 0.0], [0.6, 0.9, 0.6]),
+            placed("EdgeWall", [19.7, 0.0, 4.0], [20.0, 3.0, 8.0]),
+        ];
+        let quiet = unfloored(floor_20x20(), &inside);
+        assert!(quiet.is_empty(), "{quiet:?}");
+        let moved = Box3 {
+            min: [100.0, -0.1, 100.0],
+            max: [120.0, 0.0, 120.0],
+        };
+        let there = [placed("Crate", [104.0, 0.0, 104.0], [105.0, 1.0, 105.0])];
+        let quiet = unfloored(moved, &there);
+        assert!(quiet.is_empty(), "{quiet:?}");
+        assert_eq!(unfloored(floor_20x20(), &there).len(), 1);
+    }
+
+    /// THE reproduce case: geometry authored at negative coordinates. The
+    /// slabs span 0..extents from the level's origin and never grow to meet
+    /// it, so there is no floor under any of it and the hero falls — and
+    /// before this, not one message was emitted. The complaint names the
+    /// node by path and quotes BOTH footprints, because "outside the
+    /// extents" without the two spans leaves a designer guessing which way
+    /// to drag.
+    #[test]
+    fn a_solid_at_negative_coordinates_is_named_with_the_floor_it_missed() {
+        let complaints = unfloored(
+            floor_20x20(),
+            &[placed("StrayCrate", [-10.5, 0.0, -10.5], [-9.5, 1.0, -9.5])],
+        );
+        assert_eq!(
+            complaints,
+            vec![
+                "WaveLevel: 'StrayCrate' stands off the floor entirely — its footprint is x \
+                 -10.50..-9.50, z -10.50..-9.50, and the floor covers x 0.00..20.00, z \
+                 0.00..20.00. There is no slab under any of it: it draws where nothing holds \
+                 it up, and the hero who walks there falls out of the world. Move it inside \
+                 the extents, or grow the level's extents to cover it — the slabs span \
+                 0..extents from the level's own origin and never move to meet stray geometry."
+            ]
+        );
+    }
+
+    /// The other end of the same fault, and the one a designer reaches by
+    /// shrinking the extents rather than by dragging a crate: a solid past
+    /// the far edge. It reads as the same degree — nothing under any of it
+    /// — so the two ends cannot diverge into two half-written laws.
+    #[test]
+    fn a_solid_beyond_the_extents_is_off_the_floor_too() {
+        let complaints = unfloored(
+            floor_20x20(),
+            &[placed("FarCrate", [24.0, 0.0, 24.0], [25.0, 1.0, 25.0])],
+        );
+        assert_eq!(complaints.len(), 1);
+        assert!(
+            complaints[0].starts_with(
+                "WaveLevel: 'FarCrate' stands off the floor entirely — its footprint is x \
+                 24.00..25.00, z 24.00..25.00, and the floor covers x 0.00..20.00, z \
+                 0.00..20.00."
+            ),
+            "{}",
+            complaints[0]
+        );
+    }
+
+    /// A solid HANGING over the edge is a milder fault than one standing
+    /// off the floor entirely — most of it is supported and one drag fixes
+    /// it — so it gets its own sentence. Collapsing the two would tell a
+    /// designer the hero falls through a crate that is 90% on the floor.
+    #[test]
+    fn a_solid_straddling_the_edge_reads_as_an_overhang() {
+        let complaints = unfloored(
+            floor_20x20(),
+            &[placed("LedgeCrate", [19.5, 0.0, 4.0], [20.5, 1.0, 5.0])],
+        );
+        assert_eq!(
+            complaints,
+            vec![
+                "WaveLevel: 'LedgeCrate' hangs over the edge of the floor — its footprint is x \
+                 19.50..20.50, z 4.00..5.00, and the floor covers x 0.00..20.00, z \
+                 0.00..20.00. The part outside has no slab under it. Move it inside the \
+                 extents, or grow the level's extents to cover it — the slabs span 0..extents \
+                 from the level's own origin and never move to meet stray geometry."
+            ]
+        );
+    }
+
+    /// Flush with the edge is ON the floor, not over it. Carrying a local
+    /// AABB into world space costs a few ULPs, and a law that fired on
+    /// float dust would be noise a designer learns to ignore — so a solid
+    /// standing a hair past the edge is silent, and one standing a
+    /// centimetre past it is not.
+    #[test]
+    fn float_dust_at_the_edge_is_not_an_overhang() {
+        let dust = [placed("Flush", [-0.0004, 0.0, 4.0], [20.0004, 3.0, 8.0])];
+        let quiet = unfloored(floor_20x20(), &dust);
+        assert!(quiet.is_empty(), "{quiet:?}");
+        let real = [placed("Proud", [-0.01, 0.0, 4.0], [20.0, 3.0, 8.0])];
+        assert_eq!(unfloored(floor_20x20(), &real).len(), 1);
+    }
+
+    /// Every stray is reported, in the order the level walk found them —
+    /// scene order, the deterministic order every other derivation leans
+    /// on. A report that stopped at the first would send a designer around
+    /// the loop once per misplaced crate.
+    #[test]
+    fn every_stray_is_reported_in_walk_order() {
+        let complaints = unfloored(
+            floor_20x20(),
+            &[
+                placed("Home", [4.0, 0.0, 4.0], [5.0, 1.0, 5.0]),
+                placed("Second", [-3.0, 0.0, 4.0], [-2.0, 1.0, 5.0]),
+                placed("Third", [19.5, 0.0, 4.0], [20.5, 1.0, 5.0]),
+                placed("Fourth", [4.0, 0.0, 30.0], [5.0, 1.0, 31.0]),
+            ],
+        );
+        assert_eq!(complaints.len(), 3);
+        assert!(complaints[0].contains("'Second'"), "{}", complaints[0]);
+        assert!(complaints[1].contains("'Third'"), "{}", complaints[1]);
+        assert!(complaints[2].contains("'Fourth'"), "{}", complaints[2]);
+    }
 
     /// A marker a designer named by hand, on purpose.
     fn exact(path: &str) -> SpawnCandidate {

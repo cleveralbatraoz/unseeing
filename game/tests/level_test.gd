@@ -16,7 +16,12 @@ extends GdUnitTestSuite
 ## suites that outgrew it and nowhere else, so the rule keeps its teeth
 ## over `game/scripts/`.)
 ##
-## The SHIPPED scene's own invariants live next door, in map_test.gd.
+## The SHIPPED scene's own invariants live next door, in map_test.gd — with
+## one deliberate exception below: a placement law that can only be proved
+## harmless by running it against a real, fully furnished map, and so is
+## held here beside the law itself rather than a file away from it.
+
+const SHIPPED_LEVEL := preload("res://scenes/level_01.tscn")
 
 
 ## One authored wall, the way the generator and a designer both place it:
@@ -421,9 +426,14 @@ func test_open_fan_room_is_legal() -> void:
 ## demo tap, and no error. Nothing was authored wrong here, so nothing is
 ## said — a level that complained about its own quiet would teach a
 ## designer to stop reading the log.
+##
+## The one wall stands clear of the floor's edge on purpose. A wall laid ON
+## the boundary hangs its padded box a half-thickness over the void, which
+## IS a fault and is now reported as one — so a fixture that meant "a level
+## with nothing wrong with it" has to be a level with nothing wrong with it.
 func test_fanless_level_has_no_demo_tap() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
-	level.add_child(_wall(4.0, Vector3(2, 0, 0), false))
+	level.add_child(_wall(4.0, Vector3(3, 0, 1), false))
 	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	var enter := func() -> void: add_child(level)
@@ -574,3 +584,71 @@ func test_late_injection_reports_rather_than_limping() -> void:
 			+ "object-id colouring were already derived without it. Inject BEFORE add_child()."
 		)
 	))
+
+
+## A crate a designer dragged to a negative coordinate. The level's slabs
+## span 0..extents from its own origin and NEVER grow to meet stray
+## geometry, so there is no floor under it: the box still draws, the waves
+## still outline it, and the hero who walks there falls with gravity and
+## nothing underfoot. Before this the level said not one word about it.
+func test_a_solid_outside_the_extents_reports() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = Vector2(20, 20)
+	var crate := WaveProp.new()
+	crate.name = "StrayCrate"
+	crate.size = Vector3.ONE
+	crate.position = Vector3(-10, 0.5, -10)
+	level.add_child(crate)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: 'StrayCrate' stands off the floor entirely — its footprint is x "
+			+ "-10.50..-9.50, z -10.50..-9.50, and the floor covers x 0.00..20.00, z "
+			+ "0.00..20.00. There is no slab under any of it: it draws where nothing holds it "
+			+ "up, and the hero who walks there falls out of the world. Move it inside the "
+			+ "extents, or grow the level's extents to cover it — the slabs span 0..extents "
+			+ "from the level's own origin and never move to meet stray geometry."
+		)
+	))
+	assert_int(level.unfloored_solids()).is_equal(1)
+
+
+## The milder half of the same fault, and the one an authored map actually
+## reaches: a crate pushed past the last centimetre of the extents. Most of
+## it is supported, so it is not told the hero falls through it — but the
+## overhang has no slab, and the count sees it.
+func test_a_solid_hanging_over_the_floor_edge_reports() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = Vector2(20, 20)
+	var crate := WaveProp.new()
+	crate.name = "LedgeCrate"
+	crate.size = Vector3.ONE
+	crate.position = Vector3(20, 0.5, 4.5)
+	level.add_child(crate)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: 'LedgeCrate' hangs over the edge of the floor — its footprint is x "
+			+ "19.50..20.50, z 4.00..5.00, and the floor covers x 0.00..20.00, z 0.00..20.00. "
+			+ "The part outside has no slab under it. Move it inside the extents, or grow the "
+			+ "level's extents to cover it — the slabs span 0..extents from the level's own "
+			+ "origin and never move to meet stray geometry."
+		)
+	))
+	assert_int(level.unfloored_solids()).is_equal(1)
+
+
+## The other half of a diagnostic, and the half that decides whether anyone
+## keeps reading it: the SHIPPED map says nothing. 125 authored solids, 19
+## of them walls whose padded boxes reach 0.45 m of the extents' edge, and
+## not one of them trips the law. A footprint test that fired here would be
+## noise from the first run.
+func test_the_shipped_map_stands_on_its_own_floor() -> void:
+	var level: WaveLevel = auto_free(SHIPPED_LEVEL.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_int(level.unfloored_solids()).is_equal(0)
