@@ -67,6 +67,10 @@ if [ "${PREBUILT_RUST:-}" != "1" ] \
     cargo fmt --check || { echo "ci: rust format FAILED (run cargo fmt)"; exit 1; }
     cargo clippy --all-targets -- -D warnings || { echo "ci: clippy FAILED"; exit 1; }
     cargo test || { echo "ci: cargo test FAILED"; exit 1; }
+    # editor-docs is non-default (its register-docs docs would bloat a
+    # shipped binary), so nothing above compiles it — check it here or it
+    # rots unnoticed until the designer bootstrap build breaks.
+    cargo check --features editor-docs || { echo "ci: editor-docs feature build FAILED"; exit 1; }
     cargo build --release || { echo "ci: rust build FAILED"; exit 1; }
   ) || exit 1
   echo "ci: rust gates OK"

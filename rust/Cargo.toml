@@ -14,6 +14,11 @@ godot = { version = "=0.5.4", features = ["api-4-7", "experimental-wasm", "lazy-
 
 [features]
 nothreads = ["godot/experimental-wasm-nothreads"]
+# In-editor Inspector docs for #[export] knobs. Deliberately non-default:
+# register-docs embeds every /// comment as plaintext in the binary, so a
+# shipped wasm/desktop export must never carry this feature. Only the
+# designer bootstrap build enables it.
+editor-docs = ["godot/register-docs"]
 
 [profile.release]
 # Thin, not fat: near-identical optimization for a library this size, at a
