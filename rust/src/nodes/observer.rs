@@ -349,17 +349,25 @@ impl WaveObserver {
     fn blob_round_trip_ok(&self, before: VarDictionary, after: VarDictionary) -> GString {
         let original = match parse_blob(&before) {
             Ok(state) => state,
-            Err(reason) => return GString::from(&format!("before: {reason}")),
+            Err(reason) => {
+                return GString::from(&format!(
+                    "the blob before the journey did not parse — {reason}"
+                ));
+            }
         };
         let returned = match parse_blob(&after) {
             Ok(state) => state,
-            Err(reason) => return GString::from(&format!("after: {reason}")),
+            Err(reason) => {
+                return GString::from(&format!(
+                    "the blob after the journey did not parse — {reason}"
+                ));
+            }
         };
         if let Some(field) = first_divergence(&original, &returned) {
             return GString::from(&format!("the journey changed {field}"));
         }
         let Some(claimed) = before.get("hash").and_then(|v| v.try_to::<GString>().ok()) else {
-            return GString::from("before.hash: missing");
+            return GString::from("the blob before the journey carries no hash key");
         };
         let actual = hex64(state_hash(&original));
         if claimed.to_string() == actual {
@@ -1620,13 +1628,44 @@ enum Floats {
     Text,
 }
 
+/// One refused field, in the codec's one diagnostic grammar: the word
+/// `field`, the dotted path, then what went wrong there.
+///
+/// Every refusal in this codec is built HERE rather than at its own
+/// `format!`, and the reason is the boot gate (`test/ci_boot_error_gate.sh`,
+/// `ci/boot_error_pattern.sh`). That gate censuses the opening of every
+/// diagnostic under `rust/src/` by reading string literals, and bans a
+/// message that builds its opening token out of an interpolation — a
+/// `format!` whose string opens on the path itself, colon and all,
+/// conjures an opening no census can read, so it cannot be checked
+/// against `BOOT_ERROR_PATTERN` at all. (That ban is checked by grepping
+/// this tree, so the shape it forbids cannot be written out here either,
+/// not even inside a comment.) The opening is therefore a literal, and
+/// there is exactly one of it, because a convention repeated at seventeen
+/// sites is a convention nothing enforces. The gate cannot enforce it: its
+/// reader is line-based, so it cannot see a `format!` whose string sits on
+/// the next line, and its regex wants the colon to follow the
+/// interpolation immediately, so an indexed path — an interpolation, a
+/// bracketed element, THEN the colon — walks past it in plain sight.
+///
+/// `field` is an ordinary word and deliberately NOT a class name. A
+/// refused blob field is a value handed back to the caller that asked for
+/// it — the same category as `WaveCore`'s refused wave request, which that
+/// gate documents as one it has no business failing on — not a node
+/// refusing to boot half-wired. `BOOT_ERROR_PATTERN` stays the list of
+/// classes that do.
+fn fault(path: &str, complaint: &str) -> String {
+    format!("field {path}: {complaint}")
+}
+
 /// One dictionary being read, how it spells its floats, and the dotted
 /// path it sits at.
 ///
-/// Every reader below reports `"<path>.<key>: <what went wrong>"`, because
-/// a parser that only says "malformed" hands its reader a five-kilobyte
-/// file and a shrug. The dictionary is held by handle (Godot's own
-/// refcounted one), so nesting into a group costs nothing.
+/// Every reader below reports `"field <path>.<key>: <what went wrong>"`
+/// (see [`fault`]), because a parser that only says "malformed" hands its
+/// reader a five-kilobyte file and a shrug. The dictionary is held by
+/// handle (Godot's own refcounted one), so nesting into a group costs
+/// nothing.
 struct Group {
     dict: VarDictionary,
     floats: Floats,
@@ -1653,7 +1692,7 @@ impl Group {
     fn raw(&self, key: &str) -> Result<Variant, String> {
         self.dict
             .get(key)
-            .ok_or_else(|| format!("{}: missing", self.path_of(key)))
+            .ok_or_else(|| fault(&self.path_of(key), "missing"))
     }
 
     fn bool(&self, key: &str) -> Result<bool, String> {
@@ -1661,7 +1700,7 @@ impl Group {
         if value.get_type() == VariantType::BOOL {
             Ok(value.to::<bool>())
         } else {
-            Err(format!("{}: expected a bool", self.path_of(key)))
+            Err(fault(&self.path_of(key), "expected a bool"))
         }
     }
 
@@ -1679,7 +1718,7 @@ impl Group {
                 let text = string_of(value, path)?;
                 text.parse::<f64>()
                     .map(canonical_nan)
-                    .map_err(|_| format!("{path}: expected a float as text, found {text:?}"))
+                    .map_err(|_| fault(path, &format!("expected a float as text, found {text:?}")))
             }
         }
     }
@@ -1692,7 +1731,7 @@ impl Group {
                 let text = string_of(value, path)?;
                 text.parse::<f32>()
                     .map(canonical_nan_f32)
-                    .map_err(|_| format!("{path}: expected a float as text, found {text:?}"))
+                    .map_err(|_| fault(path, &format!("expected a float as text, found {text:?}")))
             }
         }
     }
@@ -1710,11 +1749,14 @@ impl Group {
                 let found = value.to::<f64>();
                 let whole = found.trunc();
                 if found != whole || !(-SAFE_INT..=SAFE_INT).contains(&whole) {
-                    return Err(format!("{path}: expected a whole number, found {found}"));
+                    return Err(fault(
+                        &path,
+                        &format!("expected a whole number, found {found}"),
+                    ));
                 }
                 Ok(whole as i64)
             }
-            _ => Err(format!("{path}: expected an integer")),
+            _ => Err(fault(&path, "expected an integer")),
         }
     }
 
@@ -1730,9 +1772,9 @@ impl Group {
     fn u64_hex(&self, key: &str) -> Result<u64, String> {
         let text = self.string(key)?;
         let malformed = || {
-            format!(
-                "{}: expected 16 hex characters, found {text:?}",
-                self.path_of(key)
+            fault(
+                &self.path_of(key),
+                &format!("expected 16 hex characters, found {text:?}"),
             )
         };
         if text.len() != 16 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -1745,9 +1787,9 @@ impl Group {
     fn i64_text(&self, key: &str) -> Result<i64, String> {
         let text = self.string(key)?;
         text.parse::<i64>().map_err(|_| {
-            format!(
-                "{}: expected a 64-bit integer as text, found {text:?}",
-                self.path_of(key)
+            fault(
+                &self.path_of(key),
+                &format!("expected a 64-bit integer as text, found {text:?}"),
             )
         })
     }
@@ -1801,7 +1843,7 @@ impl Group {
         let mut out = [false; N];
         for (index, item) in items.iter().enumerate() {
             if item.get_type() != VariantType::BOOL {
-                return Err(format!("{path}[{index}]: expected a bool"));
+                return Err(fault(&format!("{path}[{index}]"), "expected a bool"));
             }
             out[index] = item.to::<bool>();
         }
@@ -1833,7 +1875,7 @@ fn string_of(value: &Variant, path: &str) -> Result<String, String> {
     if value.get_type() == VariantType::STRING {
         Ok(value.to::<GString>().to_string())
     } else {
-        Err(format!("{path}: expected a string"))
+        Err(fault(path, "expected a string"))
     }
 }
 
@@ -1845,21 +1887,21 @@ fn group_of(value: &Variant, floats: Floats, path: String) -> Result<Group, Stri
             path,
         })
     } else {
-        Err(format!("{path}: expected a dictionary"))
+        Err(fault(&path, "expected a dictionary"))
     }
 }
 
 fn elements(value: &Variant, expect: Option<usize>, path: &str) -> Result<Vec<Variant>, String> {
     if value.get_type() != VariantType::ARRAY {
-        return Err(format!("{path}: expected an array"));
+        return Err(fault(path, "expected an array"));
     }
     let items: Vec<Variant> = value.to::<VarArray>().iter_shared().collect();
     if let Some(count) = expect
         && items.len() != count
     {
-        return Err(format!(
-            "{path}: expected {count} entries, found {}",
-            items.len()
+        return Err(fault(
+            path,
+            &format!("expected {count} entries, found {}", items.len()),
         ));
     }
     Ok(items)
@@ -1871,7 +1913,7 @@ fn number(value: &Variant, path: &str) -> Result<f64, String> {
     match value.get_type() {
         VariantType::FLOAT => Ok(value.to::<f64>()),
         VariantType::INT => Ok(value.to::<i64>() as f64),
-        _ => Err(format!("{path}: expected a number")),
+        _ => Err(fault(path, "expected a number")),
     }
 }
 
@@ -1892,7 +1934,10 @@ pub(super) fn parse_blob(dict: &VarDictionary) -> Result<CaptureState, String> {
     let blob = Group::new(dict, Floats::Text, String::new());
     let version = blob.i64("format_version")?;
     let format_version = u32::try_from(version).map_err(|_| {
-        format!("format_version: expected a small positive integer, found {version}")
+        fault(
+            "format_version",
+            &format!("expected a small positive integer, found {version}"),
+        )
     })?;
     let level_scene = blob.string("level_scene")?;
     let env = parse_env_group(&blob.group("env")?)?;
@@ -1996,7 +2041,7 @@ fn parse_slot(group: &Group) -> Result<SlotCapture, String> {
         t0: group.f64("t0")?,
         end: group.f64("end")?,
         kind: i32::try_from(group.i64("kind")?)
-            .map_err(|_| format!("{}: out of range for a pulse kind", group.path_of("kind")))?,
+            .map_err(|_| fault(&group.path_of("kind"), "out of range for a pulse kind"))?,
     })
 }
 
@@ -2053,9 +2098,9 @@ fn parse_viewmodel(group: &Group) -> Result<ViewmodelCapture, String> {
         last_pitch: group.f64("last_pitch")?,
         step_t: group.f64("step_t")?,
         step_side: i32::try_from(group.i64("step_side")?).map_err(|_| {
-            format!(
-                "{}: out of range for a footstep side",
-                group.path_of("step_side")
+            fault(
+                &group.path_of("step_side"),
+                "out of range for a footstep side",
             )
         })?,
     })
@@ -2111,9 +2156,9 @@ fn parse_brain_state(group: &Group) -> Result<BrainState, String> {
         "Sit" => Ok(BrainState::Sit {
             left: group.f64("left")?,
         }),
-        other => Err(format!(
-            "{}: unknown brain state {other:?}",
-            group.path_of("kind")
+        other => Err(fault(
+            &group.path_of("kind"),
+            &format!("unknown brain state {other:?}"),
         )),
     }
 }
