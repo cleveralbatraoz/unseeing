@@ -229,4 +229,73 @@ probe "$CHECK_EXPORT" 1 "rejects an export whose main executable is arm64-only" 
 probe "$CHECK_EXPORT" 1 "rejects an export path that does not exist" "$T/never-exported.zip"
 probe "$CHECK_EXPORT" 2 "refuses an invocation with no export to check"
 
+# --- the build path: a slice must be proof that THIS run produced it --------
+#
+# `cargo exited 0` and `a file sits at the conventional path` are two facts,
+# and neither implies the other. A warm target/ — the normal state of a
+# developer's machine — holds slices from earlier checkouts indefinitely, so
+# any build that succeeds WITHOUT writing there leaves a stale artifact to be
+# fused and shipped under this commit's name. Three ways in, none exotic:
+# a dropped `--target`, a CARGO_TARGET_DIR or --target-dir redirect, and a
+# `[build] target-dir` in a config file nobody in this repo can see.
+#
+# The stub cargo below is all three at once: it exits 0 and writes nothing.
+BUILDER="$DIR/tools/build_macos_core.sh"
+if [ ! -x "$BUILDER" ]; then
+  bad "tools/build_macos_core.sh missing or not executable"
+else
+  FAKE="$T/fake"
+  mkdir -p "$FAKE/tools" "$FAKE/rust/target/release" \
+    "$FAKE/rust/target/aarch64-apple-darwin/release" \
+    "$FAKE/rust/target/x86_64-apple-darwin/release" \
+    "$T/stub" "$T/stubfail" "$T/nohome"
+  cp "$BUILDER" "$CHECK" "$FAKE/tools/"
+
+  printf '#!/bin/sh\nexit 0\n' > "$T/stub/cargo"
+  printf '#!/bin/sh\nexit 1\n' > "$T/stubfail/cargo"
+  for d in stub stubfail; do
+    printf '#!/bin/sh\nprintf "aarch64-apple-darwin\\nx86_64-apple-darwin\\n"\n' \
+      > "$T/$d/rustup"
+    chmod +x "$T/$d/cargo" "$T/$d/rustup"
+  done
+
+  # HOME is redirected because build_macos_core.sh sources $HOME/.cargo/env
+  # when it exists, and that puts the REAL cargo ahead of the stub on PATH.
+  runner() { # runner <stub dir> <out script>
+    cat > "$2" <<EOF
+#!/bin/sh
+PATH="$T/$1:\$PATH" HOME="$T/nohome" exec "$FAKE/tools/build_macos_core.sh"
+EOF
+    chmod +x "$2"
+  }
+  runner stub "$T/run_stub.sh"
+  runner stubfail "$T/run_stubfail.sh"
+
+  seed_stale() { # leftovers from an earlier checkout, both triples
+    rm -f "$FAKE/rust/target/release/libunseeing_core.dylib"
+    cp "$T/arm64.dylib" "$FAKE/rust/target/aarch64-apple-darwin/release/libunseeing_core.dylib"
+    cp "$T/x86_64.dylib" "$FAKE/rust/target/x86_64-apple-darwin/release/libunseeing_core.dylib"
+  }
+
+  # The one that matters. Both stale slices are in place and together they
+  # WOULD fuse into a perfectly valid universal binary — which is exactly why
+  # no check downstream can catch this: the artifact is not malformed, it is
+  # merely not this commit's.
+  seed_stale
+  probe "$T/run_stub.sh" 1 "refuses a slice this run did not build, however valid it looks"
+  names "is not there" "the stale-slice refusal names the guard that caught it"
+  if [ -e "$FAKE/rust/target/release/libunseeing_core.dylib" ]; then
+    bad "a stale slice was fused into the core anyway"
+  else
+    ok "no core is produced when a slice could not be rebuilt"
+  fi
+
+  # The neighbouring branch, so the case above cannot pass by firing the wrong
+  # guard: cargo failing outright must be reported as a failed build, not as a
+  # missing file.
+  seed_stale
+  probe "$T/run_stubfail.sh" 1 "refuses when cargo itself fails, stale slice or not"
+  names "FAILED cargo build" "the failed-build refusal names cargo, not the missing file"
+fi
+
 exit "$FAIL"

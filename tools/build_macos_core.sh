@@ -56,21 +56,34 @@ for triple in "$ARM64_TRIPLE" "$X86_64_TRIPLE"; do
   fi
 done
 
-# Builds one slice and prints its path — the ONLY way a path below comes into
-# existence, so a slice can never be handed to lipo without having just been
-# built. Keeping those two coupled is what makes "a --target went missing" a
-# visible failure rather than a stale artifact quietly fusing into the ship.
+# Builds one slice and prints its path — the only way a path reaches lipo.
+#
+# The slice is DELETED before the build, which is the whole trick: afterwards
+# its existence proves this run produced it, rather than proving only that
+# something is sitting at the conventional path. Those are different claims and
+# the gap between them ships stale binaries. `cargo` exiting 0 does not mean
+# cargo wrote here — a CARGO_TARGET_DIR or --target-dir redirect, a `[build]
+# target-dir` in a config file this repo cannot see, or a dropped `--target`
+# all send the output elsewhere while succeeding — and target/ keeps slices
+# from earlier checkouts indefinitely, so the leftovers are usually valid
+# Mach-O that fuse into a perfectly well-formed universal binary. Nothing
+# downstream can catch that: the artifact is not malformed, it is merely not
+# this commit's. Cargo re-emits a deleted output for free.
+#
+# Same clean-then-produce shape export_macos.sh uses for game/build/macos.
 # Everything conversational goes to stderr; stdout is the return value.
 build_slice() { # build_slice <triple>
+  _slice="$DIR/rust/target/$1/release/libunseeing_core.dylib"
+  rm -f "$_slice"
   echo "build-macos-core: cargo build --release --target $1" >&2
   (cd "$DIR/rust" && cargo build --release --target "$1" >&2) || {
     echo "build-macos-core: FAILED cargo build for $1" >&2
     return 1
   }
-  _slice="$DIR/rust/target/$1/release/libunseeing_core.dylib"
   [ -f "$_slice" ] || {
-    echo "build-macos-core: FAILED cargo reported success but $_slice is not there" >&2
-    echo "build-macos-core:        (a CARGO_TARGET_DIR in the environment moves it out of reach)" >&2
+    echo "build-macos-core: FAILED cargo exited 0 but $_slice is not there" >&2
+    echo "build-macos-core:        cargo built something, somewhere else — a CARGO_TARGET_DIR," >&2
+    echo "build-macos-core:        --target-dir or [build] target-dir is redirecting the output" >&2
     return 1
   }
   printf '%s' "$_slice"
