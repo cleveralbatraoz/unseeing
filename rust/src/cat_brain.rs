@@ -98,6 +98,22 @@ impl Pcg32 {
     pub fn range(&mut self, lo: f64, hi: f64) -> f64 {
         lo + self.unit() * (hi - lo)
     }
+
+    /// The raw stream words, for capture. An advanced PCG32 cannot be
+    /// rebuilt from its seed — the draws already taken are gone — so the
+    /// capture is the two words themselves.
+    #[must_use]
+    pub fn capture(&self) -> (u64, u64) {
+        (self.state, self.inc)
+    }
+
+    /// Rebuild a stream at an exact position, from a capture. Total: any
+    /// two words form a valid PCG32 state (inc's low bit being set is a
+    /// property `new` guarantees and `capture` preserves).
+    #[must_use]
+    pub fn restore(state: u64, inc: u64) -> Self {
+        Self { state, inc }
+    }
 }
 
 /// The floor rectangle the cat roams, in world coordinates.
@@ -357,6 +373,23 @@ mod tests {
             assert!((0.0..1.0).contains(&u));
             let r = rng.range(-3.0, 5.0);
             assert!((-3.0..5.0).contains(&r));
+        }
+    }
+
+    /// A captured stream, restored, continues EXACTLY where the original
+    /// would have — the property every cat restore rests on. Literals are
+    /// the module's own pinned reference stream (srandom(42, 54)), not
+    /// values read back from the code under test.
+    #[test]
+    fn a_restored_stream_continues_where_the_original_left_off() {
+        let mut original = Pcg32::new(42, 54);
+        let _ = original.next_u32(); // 0xa15c02b7, per the pinned stream
+        let (state, inc) = original.capture();
+        let mut restored = Pcg32::restore(state, inc);
+        // both must produce the identical next five draws
+        for _ in 0..5 {
+            assert_eq!(restored.next_u32(), original.clone().next_u32());
+            let _ = original.next_u32();
         }
     }
 
