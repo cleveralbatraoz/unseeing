@@ -133,13 +133,13 @@ impl Box3 {
 /// before ever reaching here, because `palette_len == 0` would make the
 /// starved fallback's `i % palette_len` divide by zero. Never panics
 /// otherwise: a node the palette cannot satisfy takes the least-contended
-/// slot it can get, counted in the returned `starved` total, rather than
-/// failing its caller.
+/// slot it can get, recorded in the returned ascending starved-index list,
+/// rather than failing its caller.
 pub(crate) fn welsh_powell(
     adjacency: &[Vec<usize>],
     banned: &[Vec<bool>],
     palette_len: usize,
-) -> (Vec<usize>, usize) {
+) -> (Vec<usize>, Vec<usize>) {
     debug_assert!(palette_len > 0, "welsh_powell needs a non-empty palette");
     let n = adjacency.len();
 
@@ -150,7 +150,7 @@ pub(crate) fn welsh_powell(
 
     let mut chosen: Vec<usize> = vec![0; n];
     let mut decided: Vec<bool> = vec![false; n];
-    let mut starved = 0;
+    let mut starved_slots: Vec<usize> = Vec::new();
     for &i in &order {
         let mut taken = vec![false; palette_len];
         for &j in &adjacency[i] {
@@ -162,7 +162,7 @@ pub(crate) fn welsh_powell(
         chosen[i] = match free {
             Some(slot) => slot,
             None => {
-                starved += 1;
+                starved_slots.push(i);
                 // honour the neighbours we still can, then the banned slots
                 (0..palette_len)
                     .find(|&slot| !taken[slot])
@@ -173,7 +173,10 @@ pub(crate) fn welsh_powell(
         decided[i] = true;
     }
 
-    (chosen, starved)
+    // Input order, not the most-constrained-first order the loop walked.
+    // A caller naming a class must not know the colouring's visit order.
+    starved_slots.sort_unstable();
+    (chosen, starved_slots)
 }
 
 #[cfg(test)]

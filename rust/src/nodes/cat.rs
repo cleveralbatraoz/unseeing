@@ -436,7 +436,6 @@ impl WaveCat {
         let mut mi = MeshInstance3D::new_alloc();
         mi.set_name("CatSkin");
         mi.set_mesh(&self.mesh.clone());
-        mi.set_instance_shader_parameter("u_oid", &CAT_OID.to_variant());
         self.base_mut().add_child(&mi);
 
         let pos = Vector3::ZERO;

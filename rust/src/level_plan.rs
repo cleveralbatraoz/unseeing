@@ -495,6 +495,24 @@ pub struct PlacedSolid {
     pub area: Box3,
 }
 
+/// One thing a designer placed where the level cannot support it: the
+/// node's address, held apart from the sentence a report prints about it.
+///
+/// `path` is the same handle [`PlacedSolid`] carries and [`SpawnCandidate`]
+/// quotes, so a fault points at a node the same way every other complaint
+/// does. `text` is the exact line [`unfloored`] or [`sunken`] would have
+/// printed before this type existed — kept whole, not reworded, because the
+/// boot gate and the shipped map's own suite pin its opening and phrasing.
+/// Carrying `path` alongside it, rather than only inside it, lets a
+/// consumer that needs to DECIDE something about the node — jump to it,
+/// count it against one solid rather than one line — do that without
+/// re-parsing a sentence meant for a person.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacementFault {
+    pub path: String,
+    pub text: String,
+}
+
 /// Slack on a placement test, in meters. A shape resting exactly ON a
 /// boundary — a wall's underside on the floor's top, a prop's face flush
 /// with the last centimetre of the extents — has to read as on it and not
@@ -552,7 +570,7 @@ fn ground_span(area: Box3) -> String {
 /// correct — telling that designer the hero falls through their crate would
 /// be telling them something untrue.
 #[must_use]
-pub fn unfloored(floor: Box3, solids: &[PlacedSolid]) -> Vec<String> {
+pub fn unfloored(floor: Box3, solids: &[PlacedSolid]) -> Vec<PlacementFault> {
     let (x, z) = (span(floor, 0), span(floor, 2));
     let mut complaints = Vec::new();
     for solid in solids {
@@ -562,7 +580,7 @@ pub fn unfloored(floor: Box3, solids: &[PlacedSolid]) -> Vec<String> {
         }
         let theirs = ground_span(solid.area);
         let ours = ground_span(floor);
-        complaints.push(if span_overlaps(their_x, x) && span_overlaps(their_z, z) {
+        let text = if span_overlaps(their_x, x) && span_overlaps(their_z, z) {
             format!(
                 "WaveLevel: '{}' hangs over the edge of the floor — its footprint is {theirs}, \
                  and the floor covers {ours}. The part outside has no slab under it. Move it \
@@ -580,6 +598,10 @@ pub fn unfloored(floor: Box3, solids: &[PlacedSolid]) -> Vec<String> {
                  geometry.",
                 solid.path,
             )
+        };
+        complaints.push(PlacementFault {
+            path: solid.path.clone(),
+            text,
         });
     }
     complaints
@@ -606,7 +628,7 @@ pub fn unfloored(floor: Box3, solids: &[PlacedSolid]) -> Vec<String> {
 /// complaint stops, and a law that went quiet there would reward making the
 /// fault total.
 #[must_use]
-pub fn sunken(floor: Box3, solids: &[PlacedSolid]) -> Vec<String> {
+pub fn sunken(floor: Box3, solids: &[PlacedSolid]) -> Vec<PlacementFault> {
     let top = floor.max[1];
     let mut complaints = Vec::new();
     for solid in solids {
@@ -614,7 +636,7 @@ pub fn sunken(floor: Box3, solids: &[PlacedSolid]) -> Vec<String> {
         if lo >= top - PLACEMENT_EPS {
             continue; // resting on the floor, or standing clear above it
         }
-        complaints.push(if hi > top + PLACEMENT_EPS {
+        let text = if hi > top + PLACEMENT_EPS {
             format!(
                 "WaveLevel: '{}' is sunk through the floor — its box spans y {lo:.2}..{hi:.2}, \
                  and the floor's top is at y {top:.2}. What is under the slab never draws, \
@@ -632,6 +654,10 @@ pub fn sunken(floor: Box3, solids: &[PlacedSolid]) -> Vec<String> {
                  world. Lift it until the whole shape clears y {top:.2}.",
                 solid.path,
             )
+        };
+        complaints.push(PlacementFault {
+            path: solid.path.clone(),
+            text,
         });
     }
     complaints
@@ -875,16 +901,40 @@ mod tests {
             floor_20x20(),
             &[placed("StrayCrate", [-10.5, 0.0, -10.5], [-9.5, 1.0, -9.5])],
         );
+        assert_eq!(complaints.len(), 1);
+        assert_eq!(complaints[0].path, "StrayCrate");
         assert_eq!(
-            complaints,
-            vec![
-                "WaveLevel: 'StrayCrate' stands off the floor entirely — its footprint is x \
-                 -10.50..-9.50, z -10.50..-9.50, and the floor covers x 0.00..20.00, z \
-                 0.00..20.00. There is no slab under any of it: it draws where nothing holds \
-                 it up, and the hero who walks there falls out of the world. Move it inside \
-                 the extents, or grow the level's extents to cover it — the slabs span \
-                 0..extents from the level's own origin and never move to meet stray geometry."
-            ]
+            complaints[0].text,
+            "WaveLevel: 'StrayCrate' stands off the floor entirely — its footprint is x \
+             -10.50..-9.50, z -10.50..-9.50, and the floor covers x 0.00..20.00, z \
+             0.00..20.00. There is no slab under any of it: it draws where nothing holds \
+             it up, and the hero who walks there falls out of the world. Move it inside \
+             the extents, or grow the level's extents to cover it — the slabs span \
+             0..extents from the level's own origin and never move to meet stray geometry."
+        );
+    }
+
+    /// `path` is the raw address [`PlacedSolid`] carried in, including any
+    /// `/` a nested node contributes — not something re-derived from the
+    /// sentence, which only QUOTES it. A consumer that jumps to the node by
+    /// path (Task 5's editor warning) has to get exactly what the census
+    /// walk gave, slashes and all, not a rewritten or truncated form of it.
+    #[test]
+    fn a_faults_path_is_the_solids_own_nested_address() {
+        let complaints = unfloored(
+            floor_20x20(),
+            &[placed(
+                "Rooms/StrayCrate",
+                [-10.5, 0.0, -10.5],
+                [-9.5, 1.0, -9.5],
+            )],
+        );
+        assert_eq!(complaints.len(), 1);
+        assert_eq!(complaints[0].path, "Rooms/StrayCrate");
+        assert!(
+            complaints[0].text.contains("'Rooms/StrayCrate'"),
+            "{}",
+            complaints[0].text
         );
     }
 
@@ -899,14 +949,15 @@ mod tests {
             &[placed("FarCrate", [24.0, 0.0, 24.0], [25.0, 1.0, 25.0])],
         );
         assert_eq!(complaints.len(), 1);
+        assert_eq!(complaints[0].path, "FarCrate");
         assert!(
-            complaints[0].starts_with(
+            complaints[0].text.starts_with(
                 "WaveLevel: 'FarCrate' stands off the floor entirely — its footprint is x \
                  24.00..25.00, z 24.00..25.00, and the floor covers x 0.00..20.00, z \
                  0.00..20.00."
             ),
             "{}",
-            complaints[0]
+            complaints[0].text
         );
     }
 
@@ -920,15 +971,15 @@ mod tests {
             floor_20x20(),
             &[placed("LedgeCrate", [19.5, 0.0, 4.0], [20.5, 1.0, 5.0])],
         );
+        assert_eq!(complaints.len(), 1);
+        assert_eq!(complaints[0].path, "LedgeCrate");
         assert_eq!(
-            complaints,
-            vec![
-                "WaveLevel: 'LedgeCrate' hangs over the edge of the floor — its footprint is x \
-                 19.50..20.50, z 4.00..5.00, and the floor covers x 0.00..20.00, z \
-                 0.00..20.00. The part outside has no slab under it. Move it inside the \
-                 extents, or grow the level's extents to cover it — the slabs span 0..extents \
-                 from the level's own origin and never move to meet stray geometry."
-            ]
+            complaints[0].text,
+            "WaveLevel: 'LedgeCrate' hangs over the edge of the floor — its footprint is x \
+             19.50..20.50, z 4.00..5.00, and the floor covers x 0.00..20.00, z \
+             0.00..20.00. The part outside has no slab under it. Move it inside the \
+             extents, or grow the level's extents to cover it — the slabs span 0..extents \
+             from the level's own origin and never move to meet stray geometry."
         );
     }
 
@@ -962,9 +1013,9 @@ mod tests {
             ],
         );
         assert_eq!(complaints.len(), 3);
-        assert!(complaints[0].contains("'Second'"), "{}", complaints[0]);
-        assert!(complaints[1].contains("'Third'"), "{}", complaints[1]);
-        assert!(complaints[2].contains("'Fourth'"), "{}", complaints[2]);
+        assert_eq!(complaints[0].path, "Second");
+        assert_eq!(complaints[1].path, "Third");
+        assert_eq!(complaints[2].path, "Fourth");
     }
 
     /// A room's worth of well-placed shapes: a wall standing exactly on
@@ -998,16 +1049,16 @@ mod tests {
                 [4.25, 0.25, 4.25],
             )],
         );
+        assert_eq!(complaints.len(), 1);
+        assert_eq!(complaints[0].path, "DesignerCrate");
         assert_eq!(
-            complaints,
-            vec![
-                "WaveLevel: 'DesignerCrate' is sunk through the floor — its box spans y \
-                 -0.25..0.25, and the floor's top is at y 0.00. What is under the slab never \
-                 draws, never sounds and cannot be walked into. A WaveProp is CENTRED on its \
-                 node, so dropping one on the floor plane buries exactly half of it, while a \
-                 wall, a column and a wedge STAND on theirs. Lift the node until the whole \
-                 shape clears y 0.00."
-            ]
+            complaints[0].text,
+            "WaveLevel: 'DesignerCrate' is sunk through the floor — its box spans y \
+             -0.25..0.25, and the floor's top is at y 0.00. What is under the slab never \
+             draws, never sounds and cannot be walked into. A WaveProp is CENTRED on its \
+             node, so dropping one on the floor plane buries exactly half of it, while a \
+             wall, a column and a wedge STAND on theirs. Lift the node until the whole \
+             shape clears y 0.00."
         );
     }
 
@@ -1023,14 +1074,36 @@ mod tests {
             floor_20x20(),
             &[placed("LostCrate", [3.75, -1.5, 3.75], [4.25, -0.5, 4.25])],
         );
+        assert_eq!(complaints.len(), 1);
+        assert_eq!(complaints[0].path, "LostCrate");
         assert_eq!(
-            complaints,
-            vec![
-                "WaveLevel: 'LostCrate' is buried under the floor — its box spans y \
-                 -1.50..-0.50, entirely below the floor's top at y 0.00. Nothing under the slab \
-                 draws, sounds or can be walked into, so the node is in the scene and not in \
-                 the world. Lift it until the whole shape clears y 0.00."
-            ]
+            complaints[0].text,
+            "WaveLevel: 'LostCrate' is buried under the floor — its box spans y \
+             -1.50..-0.50, entirely below the floor's top at y 0.00. Nothing under the slab \
+             draws, sounds or can be walked into, so the node is in the scene and not in \
+             the world. Lift it until the whole shape clears y 0.00."
+        );
+    }
+
+    /// Same guarantee as the unfloored case above, on the other law:
+    /// `sunken`'s fault carries the solid's raw nested path too, not a
+    /// copy trimmed to the leaf name.
+    #[test]
+    fn a_sunken_faults_path_is_the_solids_own_nested_address() {
+        let complaints = sunken(
+            floor_20x20(),
+            &[placed(
+                "Rooms/LostCrate",
+                [3.75, -1.5, 3.75],
+                [4.25, -0.5, 4.25],
+            )],
+        );
+        assert_eq!(complaints.len(), 1);
+        assert_eq!(complaints[0].path, "Rooms/LostCrate");
+        assert!(
+            complaints[0].text.contains("'Rooms/LostCrate'"),
+            "{}",
+            complaints[0].text
         );
     }
 
@@ -1066,15 +1139,21 @@ mod tests {
             ],
         );
         assert_eq!(complaints.len(), 2);
+        assert_eq!(complaints[0].path, "Half");
         assert!(
-            complaints[0].contains("spans y 4.75..5.25, and the floor's top is at y 5.00"),
-            "{}",
             complaints[0]
-        );
-        assert!(
-            complaints[1].contains("spans y 0.00..0.50, entirely below the floor's top at y 5.00"),
+                .text
+                .contains("spans y 4.75..5.25, and the floor's top is at y 5.00"),
             "{}",
+            complaints[0].text
+        );
+        assert_eq!(complaints[1].path, "Under");
+        assert!(
             complaints[1]
+                .text
+                .contains("spans y 0.00..0.50, entirely below the floor's top at y 5.00"),
+            "{}",
+            complaints[1].text
         );
     }
 

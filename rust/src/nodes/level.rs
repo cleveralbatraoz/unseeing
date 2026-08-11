@@ -224,6 +224,10 @@ pub struct WaveLevel {
     /// first successful `derive()` (the editor, or a level never added to
     /// the tree), exactly as `segments`/`occluders` start empty.
     face_census: Vec<FaceCensusEntry>,
+    /// Superface class indices the last label pass could not separate,
+    /// retained for the editor-warning pass that maps them back to their
+    /// owning scene nodes. Empty on a healthy level.
+    starved_oid_slots: Vec<usize>,
     base: Base<Node3D>,
 }
 
@@ -646,8 +650,8 @@ impl WaveLevel {
         };
         self.unfloored = strays.len() as i64;
         self.sunken = sunk.len() as i64;
-        for complaint in strays.iter().chain(sunk.iter()) {
-            godot_error!("{}", complaint);
+        for fault in strays.iter().chain(sunk.iter()) {
+            godot_error!("{}", fault.text);
         }
     }
 
@@ -918,6 +922,7 @@ impl WaveLevel {
                 out.starved
             );
         }
+        self.starved_oid_slots = out.starved_classes.clone();
 
         // bake: gather each entry's own labels by ordinal and rewrite its
         // mesh's CUSTOM0 — the shader's own G-channel source now.

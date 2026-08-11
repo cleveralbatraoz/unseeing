@@ -164,13 +164,15 @@ pub fn separated(a: f64, b: f64) -> bool {
 
 /// The outcome: one label per superface class, in class-index order
 /// (`label_of_class.len() == sf.classes`), plus how many colourable
-/// classes — those with no anchor — the palette could not satisfy.
-/// `starved` never counts an anchored class: it never competes for a
-/// palette slot in the first place.
+/// classes — those with no anchor — the palette could not satisfy. The
+/// class indices are retained so editor diagnostics can point at the nodes
+/// whose faces could not be separated. Anchored classes never starve: they
+/// do not compete for a palette slot in the first place.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Labelling {
     pub label_of_class: Vec<f64>,
     pub starved: usize,
+    pub starved_classes: Vec<usize>,
 }
 
 /// Colour `sf`'s superface classes. Every class named in `anchors` takes
@@ -199,10 +201,12 @@ pub fn assign(sf: &Superfaces, anchors: &[(usize, f64)], palette: &[f64]) -> Lab
         let label_of_class: Vec<f64> = (0..n)
             .map(|c| anchor_label[c].unwrap_or(oid_palette::NO_OID))
             .collect();
-        let starved = anchor_label.iter().filter(|a| a.is_none()).count();
+        let starved_classes: Vec<usize> = (0..n).filter(|&c| anchor_label[c].is_none()).collect();
+        let starved = starved_classes.len();
         return Labelling {
             label_of_class,
             starved,
+            starved_classes,
         };
     }
 
@@ -239,7 +243,12 @@ pub fn assign(sf: &Superfaces, anchors: &[(usize, f64)], palette: &[f64]) -> Lab
         }
     }
 
-    let (chosen, starved) = oid_palette::welsh_powell(&adjacency, &banned, palette.len());
+    let (chosen, starved_local) = oid_palette::welsh_powell(&adjacency, &banned, palette.len());
+    let starved_classes: Vec<usize> = starved_local
+        .iter()
+        .filter_map(|&local| colourable.get(local).copied())
+        .collect();
+    let starved = starved_classes.len();
 
     let mut label_of_class = vec![oid_palette::NO_OID; n];
     for c in 0..n {
@@ -259,6 +268,7 @@ pub fn assign(sf: &Superfaces, anchors: &[(usize, f64)], palette: &[f64]) -> Lab
     Labelling {
         label_of_class,
         starved,
+        starved_classes,
     }
 }
 
@@ -384,6 +394,7 @@ mod tests {
         let out = assign(&sf, &[], &PALETTE);
         assert_eq!(out.label_of_class.len(), n);
         assert_eq!(out.starved, 2);
+        assert_eq!(out.starved_classes, vec![5, 6]);
         assert!(out.label_of_class.iter().all(|l| PALETTE.contains(l)));
     }
 
@@ -479,7 +490,8 @@ mod tests {
             assign(&empty_sf, &[], &PALETTE),
             Labelling {
                 label_of_class: vec![],
-                starved: 0
+                starved: 0,
+                starved_classes: vec![],
             }
         );
         let sf = Superfaces {
@@ -494,6 +506,7 @@ mod tests {
             vec![oid_palette::NO_OID, oid_palette::NO_OID]
         );
         assert_eq!(out.starved, 2);
+        assert_eq!(out.starved_classes, vec![0, 1]);
     }
 
     /// Two machines must colour one graph identically — the wasm build and
