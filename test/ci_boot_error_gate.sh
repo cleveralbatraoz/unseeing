@@ -98,4 +98,62 @@ must_not_catch "a Godot ERR_FAIL_COND-style condition line is not caught" \
 must_not_catch "a Godot resource-loader ERROR: line is not caught" \
   "ERROR: Cannot open file 'res://nonexistent.tres'."
 
+# --- derived: every godot_error! prefix under rust/src/ must be covered
+# by BOOT_ERROR_PATTERN, so a brand-new engine node class (a SoundBell
+# tomorrow, say, with its own godot_error!("SoundBell: ...")) cannot
+# boot-check silently the way #21 itself did. The must_catch literals
+# above and BOOT_ERROR_PATTERN are both hand-copied from rust/src/, so
+# they can go stale together and stay green together; this section closes
+# that gap by reading rust/src/ directly instead of trusting a second copy
+# of the same names.
+#
+# ffi.rs:234 is the one documented, pinned exception: WaveCore's
+# REFUSAL_MESSAGE (rust/src/pulse_pool.rs) deliberately carries no class
+# prefix at all (see ci/boot_error_pattern.sh). Pinning it by exact
+# file:line means a NEW prefix-less godot_error! elsewhere in the tree is
+# NOT silently forgiven by the same exception — it shows up below as "no
+# Prefix: literal found" instead of vanishing.
+SITES="$(grep -rn 'godot_error!' "$DIR/rust/src/" | grep -oE '^[^:]+:[0-9]+')"
+if [ -z "$SITES" ]; then
+  bad "found zero godot_error! call sites under rust/src/ — the extraction below is broken"
+fi
+
+EXCEPTION_SEEN=0
+CHECKED=0
+UNCOVERED=0
+for site in $SITES; do
+  case "$site" in
+  */ffi.rs:234)
+    EXCEPTION_SEEN=1
+    continue
+    ;;
+  esac
+  ERR_FILE="${site%:*}"
+  ERR_LINE="${site##*:}"
+  # the message string sits on this line for most call sites, but three of
+  # the five WaveLevel ones open the macro on one line and quote the
+  # message on the next — read both and take the first quoted prefix.
+  MSG="$(sed -n "${ERR_LINE},$((ERR_LINE + 1))p" "$ERR_FILE")"
+  PREFIX="$(printf '%s\n' "$MSG" | grep -oE '"[A-Za-z_]+:' | head -1 | tr -d '":')"
+  if [ -z "$PREFIX" ]; then
+    bad "godot_error! at $site has no \"Prefix: ...\" literal and is not the documented ffi.rs:234 exception"
+    continue
+  fi
+  CHECKED=$((CHECKED + 1))
+  if ! printf '%s\n' "ERROR: $PREFIX: probe" | grep -qiE "$BOOT_ERROR_PATTERN"; then
+    UNCOVERED=$((UNCOVERED + 1))
+    bad "rust/src/ emits \"ERROR: $PREFIX:\" at $site but BOOT_ERROR_PATTERN does not cover it — this class would boot-check silently"
+  fi
+done
+
+if [ "$EXCEPTION_SEEN" -eq 1 ]; then
+  ok "ffi.rs:234 (WaveCore's REFUSAL_MESSAGE) is present and is the one documented prefix-less exception"
+else
+  bad "ffi.rs:234 exception site not found — REFUSAL_MESSAGE's call site moved; update the exception pin"
+fi
+
+if [ "$UNCOVERED" -eq 0 ]; then
+  ok "every godot_error! prefix under rust/src/ ($CHECKED checked) is covered by BOOT_ERROR_PATTERN"
+fi
+
 exit "$FAIL"
