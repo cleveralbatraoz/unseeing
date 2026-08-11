@@ -27,7 +27,7 @@ bad() { echo "gdscript-lint-scope: FAIL $1"; FAIL=1; }
 PROBE_DIR="$DIR/game/tools_ci_probe_$$"
 PROBE_FILE="$PROBE_DIR/probe.gd"
 cleanup() { rm -rf "$PROBE_DIR" "$DIR/game/.godot/ci_probe_$$.gd"; }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM HUP
 mkdir -p "$PROBE_DIR"
 printf 'extends Node\n' >"$PROBE_FILE"
 
