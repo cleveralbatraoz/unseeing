@@ -36,6 +36,8 @@ if ! command -v cargo >/dev/null 2>&1; then
   [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
   command -v cargo >/dev/null 2>&1 || {
     echo "bootstrap: FAILED rustup install did not leave a usable cargo on PATH"
+    echo "bootstrap: check the rustup/curl output above for why, then either:"
+    echo "bootstrap: fix: install rustup yourself from https://rustup.rs, run . \"\$HOME/.cargo/env\" (or reopen your terminal), and re-run tools/bootstrap.sh"
     exit 2
   }
 fi
