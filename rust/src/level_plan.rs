@@ -468,6 +468,84 @@ pub fn plan_demo_tap(walls: &[Vector4], spawn: Vector3, sources: &[SourceAim]) -
     TapVerdict { plan, complaint }
 }
 
+/// Wall segments one more room costs a designer: three new sides, plus the
+/// doorway, which is the GAP between two segments and so costs a segment of
+/// its own. The unit the wall budget speaks in — thirteen free slots is an
+/// inventory number, "three more rooms" is a thing a designer can plan
+/// around, and the report gives both.
+pub const ROOM_SEGMENTS: usize = 4;
+
+/// How loudly the level says something about itself.
+///
+/// The split is not decoration. An overflow means the drawn world is
+/// ALREADY wrong — walls a designer placed have stopped occluding — while
+/// a headroom warning means nothing is broken yet. Shouting both as errors
+/// would teach a designer to scroll past the one that matters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    /// Nothing is broken; the level is running out of room.
+    Warn,
+    /// The world the shaders draw no longer matches the authored scene.
+    Error,
+}
+
+/// One thing the level must say about a shader ceiling it is approaching or
+/// has passed, and how loudly to say it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Budget {
+    pub severity: Severity,
+    pub text: String,
+}
+
+/// What the level must say about its wall count against the sight shaders'
+/// occluder slots (`sight::MAXW`, mirrored as `MAXW` in
+/// `game/shaders/pulse_pool.gdshaderinc`). `None` while the level has a
+/// whole room's worth of segments to spare, which is the shipped map's
+/// state and must stay silent.
+///
+/// THE REPORT IS ABOUT HEADROOM, not about today's wall count. A level that
+/// outgrows the ceiling used to be discovered by an unrelated red
+/// assertion — the frozen census of 19 walls failing first, which reads
+/// like a bug in the census rather than a level that outgrew a shader
+/// constant. So this names the constant, the slots left, and what a slot is
+/// worth in rooms.
+///
+/// Total on any pair, the degenerate `slots == 0` included: the headroom is
+/// a saturating subtraction, never a `usize` that wrapped past zero.
+#[must_use]
+pub fn wall_budget(walls: usize, slots: usize) -> Option<Budget> {
+    if walls > slots {
+        return Some(Budget {
+            severity: Severity::Error,
+            text: format!(
+                "WaveLevel: {walls} walls exceed the sight shaders' {slots} slots — the table \
+                 keeps the first {slots} and drops {}, which stop occluding entirely: waves pass \
+                 straight through them and no sight line counts them. Delete or merge walls, or \
+                 raise MAXW (rust/src/sight.rs, mirrored in \
+                 game/shaders/pulse_pool.gdshaderinc) — a measured decision and not a free one: \
+                 every wall is another rect in the per-fragment sight loop, on every platform.",
+                walls - slots,
+            ),
+        });
+    }
+    let headroom = slots - walls;
+    if headroom >= ROOM_SEGMENTS {
+        return None; // room for another room: nothing worth saying
+    }
+    Some(Budget {
+        severity: Severity::Warn,
+        text: format!(
+            "WaveLevel: {walls} walls against the sight shaders' {slots} slots — {headroom} \
+             segments left, short of the {ROOM_SEGMENTS} another room costs (three sides plus the \
+             doorway, which is the gap between two segments and so costs a segment of its own). \
+             Every wall past the last slot silently stops occluding. Raising MAXW \
+             (rust/src/sight.rs, mirrored in game/shaders/pulse_pool.gdshaderinc) is a measured \
+             decision and not a free one: every wall is another rect in the per-fragment sight \
+             loop, on every platform."
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use godot::builtin::EulerOrder;
@@ -947,6 +1025,85 @@ mod tests {
     #[test]
     fn a_silent_level_aims_at_nothing() {
         assert_eq!(nearest_source(&[], Vector3::ZERO), None);
+    }
+
+    /// The shipped map spends 19 of the sight shaders' 32 slots, and a
+    /// level with rooms to spare must say NOTHING — a budget that spoke on
+    /// every level would be noise a designer learns to scroll past, and
+    /// the shipped scene emits zero WaveLevel messages today. 32 − 19 = 13
+    /// segments left, about three more rooms at four apiece; 28 walls is
+    /// the last count with a whole room still in hand.
+    #[test]
+    fn a_map_with_rooms_to_spare_says_nothing_about_its_wall_budget() {
+        assert_eq!(wall_budget(19, 32), None);
+        assert_eq!(wall_budget(0, 32), None);
+        assert_eq!(wall_budget(28, 32), None);
+    }
+
+    /// The heads-up fires one room short of the ceiling and quotes THE
+    /// HEADROOM, because how much room is left is the number a designer
+    /// can act on — "you have 29 walls" is not. 32 − 29 = 3 segments,
+    /// one short of the four another room costs.
+    #[test]
+    fn a_level_one_room_short_of_the_slots_reports_the_headroom_left() {
+        let budget = wall_budget(29, 32).expect("a heads-up");
+        assert_eq!(budget.severity, Severity::Warn);
+        assert_eq!(
+            budget.text,
+            "WaveLevel: 29 walls against the sight shaders' 32 slots — 3 segments left, short of \
+             the 4 another room costs (three sides plus the doorway, which is the gap between two \
+             segments and so costs a segment of its own). Every wall past the last slot silently \
+             stops occluding. Raising MAXW (rust/src/sight.rs, mirrored in \
+             game/shaders/pulse_pool.gdshaderinc) is a measured decision and not a free one: every \
+             wall is another rect in the per-fragment sight loop, on every platform."
+        );
+    }
+
+    /// A level standing exactly ON the ceiling is not broken YET — 32 walls
+    /// fit 32 slots and nothing is truncated — so it warns rather than
+    /// errors, with zero headroom. Erroring here would cry wolf on a legal
+    /// level; staying silent would hide that the very next wall is dropped.
+    #[test]
+    fn a_level_that_fills_every_slot_warns_with_no_headroom_left() {
+        let budget = wall_budget(32, 32).expect("a heads-up");
+        assert_eq!(budget.severity, Severity::Warn);
+        assert!(
+            budget
+                .text
+                .contains("32 walls against the sight shaders' 32 slots — 0 segments left"),
+            "{}",
+            budget.text
+        );
+    }
+
+    /// Past the ceiling the world is already wrong, so this is an ERROR
+    /// rather than a heads-up: the table keeps the first MAXW rects and
+    /// every wall after them stops occluding entirely. It COUNTS the
+    /// dropped walls instead of saying "the rest" — a designer deleting
+    /// walls to get back under the ceiling needs to know how many.
+    #[test]
+    fn a_level_past_the_slots_errors_and_counts_what_stopped_occluding() {
+        let budget = wall_budget(33, 32).expect("an error");
+        assert_eq!(budget.severity, Severity::Error);
+        assert_eq!(
+            budget.text,
+            "WaveLevel: 33 walls exceed the sight shaders' 32 slots — the table keeps the first 32 \
+             and drops 1, which stop occluding entirely: waves pass straight through them and no \
+             sight line counts them. Delete or merge walls, or raise MAXW (rust/src/sight.rs, \
+             mirrored in game/shaders/pulse_pool.gdshaderinc) — a measured decision and not a free \
+             one: every wall is another rect in the per-fragment sight loop, on every platform."
+        );
+        let far_past = wall_budget(40, 32).expect("an error");
+        assert!(far_past.text.contains("and drops 8,"), "{}", far_past.text);
+    }
+
+    /// Total on the degenerate budget a caller could hand it: a shader with
+    /// no slots at all overflows rather than subtracting past zero, which
+    /// on a `usize` is not a small number but a colossal one.
+    #[test]
+    fn a_slotless_shader_is_reported_not_subtracted_past_zero() {
+        assert_eq!(wall_budget(0, 0).map(|b| b.severity), Some(Severity::Warn));
+        assert_eq!(wall_budget(1, 0).map(|b| b.severity), Some(Severity::Error));
     }
 
     /// The shipped map, measured off the literals below: the fan's hub is

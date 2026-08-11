@@ -69,6 +69,43 @@ func test_maxp_matches_the_pool() -> void:
 	assert_float(_shader_const("MAXP")).is_equal(float(Pulses.MAXP))
 
 
+## MAXW lives in two languages: rust/src/sight.rs owns it and the include
+## pins it for the two occluding skins' uniform arrays. The level now READS
+## the Rust copy and tells a designer how many free slots are left, so a
+## drift between the two would be a lie in the most expensive direction —
+## a level reporting room it does not have while the shaders have already
+## dropped its newest walls. Nothing else compares the two numbers:
+## data_skins_test pins the include's literal, and pins Rust's to nothing.
+func test_maxw_matches_the_rust_sight_reference() -> void:
+	assert_int(int(_shader_const("MAXW"))).is_equal(WaveLevel.wall_slots())
+
+
+## The wall budget as a law about HEADROOM, not a census. A level that
+## outgrows the sight shaders' slots is a level-breaking fault — every wall
+## past the last slot silently stops occluding — and until now the only
+## thing that noticed was map_test's frozen wall count, which fails at the
+## twentieth wall and reads like a bug in the census rather than a map that
+## outgrew a shader constant.
+##
+## So this asserts what is LEFT: a room costs about four segments (three
+## sides plus the doorway, which is the gap between two segments), and the
+## shipped 19-wall map keeps 13 of 32 slots free — about three more rooms.
+## It goes red one room short of the ceiling, at the same count where
+## WaveLevel itself starts warning, and its message names the constant.
+func test_the_shipped_map_leaves_room_for_more_walls() -> void:
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var slots := WaveLevel.wall_slots()
+	var walls := level.wall_segments().size()
+	var room := WaveLevel.room_segments()
+	var left := slots - walls
+	var told := "%d walls of %d slots: %d segments left, under the %d " % [walls, slots, left, room]
+	told += "another room costs. Past the last slot a wall silently stops occluding."
+	told += " Shrink the map, or raise MAXW (rust/src/sight.rs) — a measured decision."
+	assert_int(left).append_failure_message(told).is_greater_equal(room)
+
+
 ## emit() packs dat.w as type * 10 + gain * 9; the shaders must decode with
 ## exactly floor(w / 10) and mod(w, 10) / 9 — pinned as literal source text,
 ## so a "harmless" rewrite of either expression trips the contract.

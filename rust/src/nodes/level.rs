@@ -297,6 +297,32 @@ impl WaveLevel {
         level_plan::WALL_H
     }
 
+    /// Occluder slots the sight shaders allocate ([`sight::MAXW`]) — the
+    /// ceiling [`level_plan::wall_budget`] measures a level's headroom
+    /// against, served the same way [`Self::wall_height`] is.
+    ///
+    /// It exists so the number can be READ BACK from the engine layer. The
+    /// constant lives in two languages — here, and as `MAXW` in
+    /// `game/shaders/pulse_pool.gdshaderinc` — and the level now quotes it
+    /// to a designer as a count of free slots. If the two copies drifted,
+    /// that count would be a lie in the most expensive direction: a level
+    /// told it has room while the shaders have already stopped occluding.
+    /// `game/tests/shader_contract_test.gd` holds them together.
+    #[func]
+    fn wall_slots() -> i64 {
+        sight::MAXW as i64
+    }
+
+    /// Wall segments one more room costs a designer
+    /// ([`level_plan::ROOM_SEGMENTS`]) — the unit the wall budget's
+    /// headroom is measured in, exposed so the suite that pins the shipped
+    /// map's headroom and the warning a designer actually sees are
+    /// threshold-for-threshold the same number.
+    #[func]
+    fn room_segments() -> i64 {
+        level_plan::ROOM_SEGMENTS as i64
+    }
+
     /// Drive every sound source for one frame: advance its clockwork with
     /// the SIMULATED clock (so movie-maker runs and time scaling stay
     /// correct), then tell it how strongly its standing acoustic image is
@@ -486,18 +512,18 @@ impl WaveLevel {
     /// centerlines inflated into shrunk occluder rects ([`sight::wall_rect`]),
     /// pushed as `u_walls`/`u_wall_count`/`u_wall_top` onto the world and
     /// source skins — the wall table their analytic sight test runs
-    /// against. Loud when a level outgrows the shader's slots (truncated:
-    /// the overflow walls stop occluding).
+    /// against.
+    ///
+    /// Loud about the shaders' slot ceiling BEFORE it is hit as well as
+    /// after ([`level_plan::wall_budget`]): a level past it has walls that
+    /// silently stopped occluding, and a level one room short of it is
+    /// about to. Only the truncation stays here, because it is the act the
+    /// message describes — the words themselves are a decision over two
+    /// numbers, and live in the pure plan where cargo can hold them.
     fn push_wall_table(&mut self) {
         let mut rects: Vec<Vector4> = self.segments.iter().map(|s| sight::wall_rect(*s)).collect();
-        if rects.len() > sight::MAXW {
-            godot_error!(
-                "WaveLevel: {} walls exceed the sight shaders' {} slots — the rest stop occluding",
-                rects.len(),
-                sight::MAXW
-            );
-            rects.truncate(sight::MAXW);
-        }
+        say(level_plan::wall_budget(rects.len(), sight::MAXW));
+        rects.truncate(sight::MAXW); // a no-op below the ceiling
         // kept for the per-object source muffle: the walls a camera→source
         // sight line is counted against, once per frame on the CPU
         self.occluders = rects.clone();
@@ -578,6 +604,25 @@ impl WaveLevel {
         let mut census = Census::default();
         collect(&self.base().clone().upcast::<Node>(), &mut census);
         census
+    }
+}
+
+/// Say one shader-budget verdict out loud at the volume it asked for, and
+/// nothing at all when there is nothing to say.
+///
+/// The two volumes are not interchangeable. An overflow is an ERROR because
+/// the world the shaders draw no longer matches the scene a designer
+/// authored — walls that were placed have stopped occluding. Running out of
+/// headroom is a WARNING because nothing is broken yet, and a level that
+/// shouted about a ceiling it had not hit would teach the reader to scroll
+/// past the one that matters.
+fn say(budget: Option<level_plan::Budget>) {
+    let Some(budget) = budget else {
+        return; // comfortably inside every ceiling: silence is the report
+    };
+    match budget.severity {
+        level_plan::Severity::Error => godot_error!("{}", budget.text),
+        level_plan::Severity::Warn => godot_warn!("{}", budget.text),
     }
 }
 
