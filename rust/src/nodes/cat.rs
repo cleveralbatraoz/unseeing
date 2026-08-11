@@ -26,9 +26,10 @@ use godot::classes::{
 use godot::prelude::*;
 
 use super::limbs::{sphere, sphere_lod, tube, tube_res};
-use crate::cat_body::{self, CatPose, TAIL_N, Tail};
-use crate::cat_brain::{BrainCapture, CatBrain, RoamRect};
-use crate::cat_gait::{self, CatGait, GaitCapture};
+use crate::cat_body::{self, CatPose, Tail};
+use crate::cat_brain::{CatBrain, RoamRect};
+use crate::cat_gait::{self, CatGait};
+use crate::reproduce::blob::CatCapture;
 use crate::sound_source::Cadence;
 
 /// Collider radius — small enough to slip between furniture legs.
@@ -91,42 +92,6 @@ pub struct WaveCat {
     /// not once per rendered frame — no wasted rebuilds above 60 Hz.
     mesh_dirty: bool,
     base: Base<CharacterBody3D>,
-}
-
-/// The cat as data — a whole life in one value, so a whim mid-stride
-/// moves whole or not at all.
-#[expect(
-    dead_code,
-    reason = "the door this task builds; the blob module (a later task) is \
-              its first caller"
-)]
-pub(crate) struct CatCapture {
-    /// The body's transform and momentum — world position, world-space
-    /// yaw, and the CharacterBody3D velocity move_and_slide reads next.
-    pub position: Vector3,
-    pub yaw: f64,
-    pub velocity: Vector3,
-    /// The mind's whole state — RNG words included, or the restored cat
-    /// diverges at its first whim.
-    pub brain: BrainCapture,
-    /// The stride's whole state — every planted paw and swing aim.
-    pub gait: GaitCapture,
-    /// The tail's exact curve — a settled cat and a mid-sway cat are
-    /// different tails, and only the exact one is the truth.
-    pub tail: [Vector3; TAIL_N],
-    /// The last-built skeleton pose — carried verbatim so `paw_positions`
-    /// and `mood` answer correctly between the restore and the first tick.
-    pub pose: CatPose,
-    /// The idle-presence cadence's next appointment, or NaN when the cat
-    /// never beat (see the comment on `restore_state` below).
-    pub presence_next: f64,
-    /// The eased sit blend and the elapsed sim clock the tail's idle
-    /// breath rides.
-    pub sit: f64,
-    pub sim_t: f64,
-    /// The body position at the start of the last physics tick — the
-    /// brain's honest-progress feed depends on this exact value.
-    pub last_pos: Vector3,
 }
 
 #[godot_api]

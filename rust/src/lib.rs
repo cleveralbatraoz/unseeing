@@ -75,6 +75,7 @@ pub mod prop_shape;
 pub mod pulse_pool;
 pub mod radio_wave;
 pub mod ray_fan;
+pub mod reproduce;
 pub mod settings_menu;
 pub mod sight;
 pub mod sound_source;
