@@ -47,22 +47,30 @@ first place does take one terminal step, though: nothing ships as a
 downloadable binary yet (that gap is issue #38), so building the Rust
 library yourself is the only way in today.
 
-1. Build the Rust library once so the editor knows the engine nodes:
-   install `rustup` — it will pick up the toolchain pinned in
-   `../rust/rust-toolchain.toml` automatically — and run `cargo build
-   --release` in `../rust/` (needed after a fresh clone or an engine
-   change). Skip this and the scene still opens, but every `WaveWall`,
-   `WaveProp`, `SoundFan` and so on loads as a `MissingNode` placeholder:
-   no viewport geometry, and any method call on one fails (`Invalid call.
-   Nonexistent function 'set_length (via call)' in base 'MissingNode'`).
-   You cannot lay out a level that way, but you cannot damage one either
-   — the placeholder keeps the original type and every property (a
-   wall's `length` reads back off it intact). Reopening the scene is not
-   how you get it back, though: a GDExtension that failed to load when
-   the editor started is never retried while that editor process keeps
-   running, so a build finished mid-session still shows `MissingNode`
-   rows until you quit and relaunch Godot — only then does the scene
-   come back exactly as it was.
+1. Build the engine once so the editor knows the engine nodes: run
+   `../tools/bootstrap.sh` (needed after a fresh clone or an engine
+   change). It installs `rustup` if you don't already have one — the
+   toolchain pinned in `../rust/rust-toolchain.toml` is picked up
+   automatically — builds the Rust library, lets Godot import it, and
+   checks that every engine class actually registered, ending in
+   `bootstrap: OK`. macOS and Linux only: on Windows the script exits
+   with the per-triple `cargo build --release --features editor-docs
+   --target x86_64-pc-windows-msvc` command to run by hand instead. Skip
+   this and the scene still opens, but every `WaveWall`, `WaveProp`,
+   `SoundFan` and so on loads as a `MissingNode` placeholder: no viewport
+   geometry, and any method call on one fails (`Invalid call. Nonexistent
+   function 'set_length (via call)' in base 'MissingNode'`). You cannot
+   lay out a level that way, but you cannot damage one either — the
+   placeholder keeps the original type and every property (a wall's
+   `length` reads back off it intact). Reopening the scene is not how you
+   get it back, though: a GDExtension that failed to load when the editor
+   started is never retried while that editor process keeps running, so a
+   build finished mid-session still shows `MissingNode` rows until you
+   quit and relaunch Godot — only then does the scene come back exactly
+   as it was. Once it has, sound sources and the cat show their blueprint
+   shapes right there in the editor viewport, and a yellow triangle on a
+   node means the level found a fault with it — hover the triangle to
+   read why.
 2. Open `game/project.godot` in Godot and double-click
    `scenes/level_01.tscn`.
 3. Walls: duplicate any `WaveWall` (Ctrl+D), drag it where you want,

@@ -162,6 +162,16 @@ GODOT="$GODOT" "$DIR/tools/probe_editor_sources.sh" || { echo "ci: editor-source
 echo "ci: editor-level probe (the level derives while the designer watches)"
 GODOT="$GODOT" "$DIR/tools/probe_editor_level.sh" || { echo "ci: editor-level probe FAILED"; exit 1; }
 
+# Pure ClassDB census, one mode, no editor/run duality to prove — so unlike
+# its three siblings above it needs no tools/probe_*.sh wrapper, just the
+# same import-then-invoke shape the boot check already uses. It exists so
+# tools/bootstrap.sh's own final step (a fresh designer's whole reason to
+# run this) is exercised here too, and a class-roster drift never reaches
+# a clone before CI catches it.
+echo "ci: engine census (every registered class the source declares is present)"
+"$GODOT" --headless --path "$DIR/game" -s res://tests/probe/engine_census_probe.gd \
+  || { echo "ci: engine census FAILED"; exit 1; }
+
 if [ "${SKIP_EXPORT:-}" = "1" ]; then
   echo "ci: SKIP_EXPORT=1 — checks-only run"
   echo "ci: OK"
