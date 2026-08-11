@@ -19,3 +19,14 @@ windows.debug.arm64 = "res://../rust/target/aarch64-pc-windows-msvc/release/unse
 windows.release.arm64 = "res://../rust/target/aarch64-pc-windows-msvc/release/unseeing_core.dll"
 web.debug.wasm32 = "res://../rust/target/wasm32-unknown-emscripten/release/unseeing_core.wasm"
 web.release.wasm32 = "res://../rust/target/wasm32-unknown-emscripten/release/unseeing_core.wasm"
+
+[icons]
+
+WaveLevel = "res://icons/wave_level.svg"
+WaveWall = "res://icons/wave_wall.svg"
+WaveProp = "res://icons/wave_prop.svg"
+WaveColumn = "res://icons/wave_column.svg"
+WaveWedge = "res://icons/wave_wedge.svg"
+SoundFan = "res://icons/sound_fan.svg"
+SoundRadio = "res://icons/sound_radio.svg"
+WaveCat = "res://icons/wave_cat.svg"
