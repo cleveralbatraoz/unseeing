@@ -7,11 +7,18 @@
 # refuses to run half-wired rather than limp: WaveLevel (level integrity —
 # starved object ids, no SpawnPoint marker, more walls than the sight
 # shaders have slots for), SoundFan/SoundRadio/WaveCat/UnseeingPlayer/
-# hero_body (composition-root injection). This is the literal set of
-# `godot_error!` prefixes under rust/src/ as of this writing — grep
-# `godot_error!` there before adding to it, rather than guessing a class
-# name from its Rust struct: hero_body carries its refusal in snake_case,
-# not "HeroBody:", because that is what the Rust source actually prints.
+# hero_body (composition-root injection). This is the set of message
+# openings under rust/src/ as of this writing.
+#
+# Do NOT derive an addition by grepping `godot_error!`: the message text
+# usually is not there. The two-layer rule builds it in the pure,
+# cargo-testable module (level_plan.rs writes the "WaveLevel: …" strings)
+# and the node relays it with godot_error!("{}", complaint). Grep for the
+# LITERAL instead — test/ci_boot_error_gate.sh censuses every one of them
+# and fails if this list has fallen behind. And read the opening off the
+# Rust source rather than guessing a class name from its struct:
+# hero_body carries its refusal in snake_case, not "HeroBody:", because
+# that is what the source actually prints.
 #
 # Deliberately NOT a catch-all `^ERROR:`: Godot's own engine prints ERROR:
 # for conditions this gate has no business failing on — WaveCore's
@@ -19,4 +26,13 @@
 # legacy "Pulses.emit:" text rather than a class prefix, and does not
 # belong here. Widening this to everything would make the cheapest gate
 # in the pipeline flaky, which is worse than the hole it used to have.
-BOOT_ERROR_PATTERN="SCRIPT ERROR|SHADER ERROR|Parse Error|ERROR: Failed to|ERROR: WaveLevel|ERROR: SoundFan|ERROR: SoundRadio|ERROR: WaveCat|ERROR: UnseeingPlayer|ERROR: hero_body"
+#
+# WaveWall is here for a class that only WARNS today (wall.rs:135, the
+# quarter-turn snap). That is on purpose and it is not speculative
+# widening: the volume a message is said at is a run-time choice —
+# level.rs:765-766 sends one level_plan Budget text to godot_error! or
+# godot_warn! depending on severity — so "which classes can error" is not a
+# fact the source can be asked. Godot prints warnings as "WARNING: ", which
+# no entry here matches, so this costs the boot check nothing and covers
+# WaveWall the day it raises its voice.
+BOOT_ERROR_PATTERN="SCRIPT ERROR|SHADER ERROR|Parse Error|ERROR: Failed to|ERROR: WaveLevel|ERROR: SoundFan|ERROR: SoundRadio|ERROR: WaveCat|ERROR: UnseeingPlayer|ERROR: WaveWall|ERROR: hero_body"

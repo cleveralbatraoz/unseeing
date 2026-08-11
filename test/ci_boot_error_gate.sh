@@ -14,9 +14,26 @@
 # keeps this from becoming a catch-all `^ERROR:` and the cheapest gate in
 # the pipeline flaky.
 #
+# The derived half of that used to read the macro SITES and pull a
+# "Prefix: " literal off each one, which held only while every message was
+# written at its own godot_error!. The two-layer rule then moved the words
+# where they belong — built in the pure, cargo-testable module, with the
+# node merely saying them out loud — and four sites became
+# godot_error!("{}", complaint) with no literal to read. The unit here is
+# therefore the message TEXT, wherever it is written: what each macro puts
+# at the head of its own message, plus a census of every class-style
+# opening in the tree, plus a ban on conjuring one out of an interpolation.
+# A macro that writes no leading text is a RELAY and vouches for nothing —
+# it is the census that vouches for it, which is why the census may not be
+# skipped, softened, or allowed to read nothing.
+#
 # Pure POSIX sh, no network, no Godot — runs anywhere ci/pipeline.sh does.
 set -eu
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# The tree the derived half reads, relative to $DIR. Overridable for one
+# reason only: so this script can run ITSELF against a planted copy and
+# prove it goes red — see the composition probe at the bottom.
+SRC="${BOOT_GATE_SRC:-rust/src}"
 FAIL=0
 
 . "$DIR/ci/boot_error_pattern.sh"
@@ -98,62 +115,398 @@ must_not_catch "a Godot ERR_FAIL_COND-style condition line is not caught" \
 must_not_catch "a Godot resource-loader ERROR: line is not caught" \
   "ERROR: Cannot open file 'res://nonexistent.tres'."
 
-# --- derived: every godot_error! prefix under rust/src/ must be covered
-# by BOOT_ERROR_PATTERN, so a brand-new engine node class (a SoundBell
-# tomorrow, say, with its own godot_error!("SoundBell: ...")) cannot
-# boot-check silently the way #21 itself did. The must_catch literals
-# above and BOOT_ERROR_PATTERN are both hand-copied from rust/src/, so
-# they can go stale together and stay green together; this section closes
-# that gap by reading rust/src/ directly instead of trusting a second copy
-# of the same names.
+# --- the three readers ---
+# What Godot prints is "ERROR: " followed by the formatted message, and
+# BOOT_ERROR_PATTERN is a list of the openings that message is allowed to
+# have. So the readers below answer the same question in the message's own
+# currency — leading TEXT — rather than in a guessed-at "prefix" abstraction
+# that only held while every message was a literal at its macro.
+
+# The text a macro at <file>:<line> puts at the head of its own message:
+# everything from its first string literal up to the first interpolation,
+# line continuation or closing quote. An EMPTY head is the interesting
+# answer — it means the macro writes no leading text at all and RELAYS a
+# message built elsewhere, which is the two-layer shape this project asks
+# for (the decision, and its words, live in the pure cargo-tested module;
+# the node only says it out loud).
 #
-# ffi.rs:234 is the one documented, pinned exception: WaveCore's
-# REFUSAL_MESSAGE (rust/src/pulse_pool.rs) deliberately carries no class
-# prefix at all (see ci/boot_error_pattern.sh). Pinning it by exact
-# file:line means a NEW prefix-less godot_error! elsewhere in the tree is
-# NOT silently forgiven by the same exception — it shows up below as "no
-# Prefix: literal found" instead of vanishing.
-SITES="$(grep -rn 'godot_error!' "$DIR/rust/src/" | grep -oE '^[^:]+:[0-9]+')"
-if [ -z "$SITES" ]; then
-  bad "found zero godot_error! call sites under rust/src/ — the extraction below is broken"
+# The three truncations are three expressions rather than one bracket
+# expression: `[{"\]` would be a backslash inside a bracket, where POSIX
+# says literal and GNU sed claims escapes as an extension. Cutting at the
+# first of each in turn lands on the earliest of the three either way, and
+# needs nothing from sed that both implementations agree on.
+literal_head() { # literal_head <file> <line>
+  sed -n "$2,$(($2 + 1))p" "$1" | tr '\n' ' ' | sed -n 's/^[^"]*"//p' |
+    sed -e 's/{.*$//' -e 's/".*$//' -e 's/\\.*$//'
+}
+
+# Every class-style diagnostic opening in <dir>, wherever it is written: a
+# string literal beginning with an identifier followed by ": " ("WaveLevel:
+# …") or by a quoted node name ("WaveWall '…': …") — the two shapes this
+# project's engine classes actually use. Prints "<prefix> <file>:<line>".
+#
+# This is the reader that sees an opening built in a pure module, and it is
+# what makes a relayed godot_error! provable instead of merely plausible.
+#
+# It censuses godot_warn! openings too, and that is deliberate. Telling the
+# volumes apart needs a positional guess at which macro owns a literal, and
+# that guess is defeated by one line of prose: a comment reading "fatal, not
+# a godot_warn!" written above a format! excludes the very literal below it,
+# and the class ships unseen. A gate a comment can switch off is not a gate.
+# Nor would it be sound where it worked — level.rs:765-766 sends ONE
+# level_plan Budget text to BOTH volumes, so a literal in a pure module
+# cannot honestly be attributed to one of them. The rule is therefore flat:
+# an engine class that names itself in a diagnostic belongs in
+# BOOT_ERROR_PATTERN, whatever volume it happens to say it at today. That
+# costs exactly one entry — WaveWall, which only warns — and buys its
+# coverage the day it starts erroring.
+#
+# The colon form requires the SPACE after it. Without that, "res://…"
+# censuses as a class called "res" and every resource path in the tree is a
+# failure. Measured: requiring the space drops none of the 36 real openings.
+diagnostic_census() { # diagnostic_census <dir>
+  grep -rnoE '"[A-Za-z_][A-Za-z0-9_.]*(: | '\'')' "$1" |
+    sed 's/^\([^:]*\):\([0-9][0-9]*\):"\([A-Za-z_][A-Za-z0-9_.]*\).*$/\3 \1:\2/'
+}
+
+# Messages that build their opening token out of an interpolation —
+# format!("{cls}: …") or format!("{cls} '…'"). No census can read those, so
+# they are banned outright rather than chased: this is the assumption the
+# census rests on, checked instead of assumed.
+#
+# Scoped to a message macro's FIRST argument on purpose. The bare shape
+# appears all over ordinary Rust — `assert_eq!(got, want, "{case}: the plan
+# disagreed")` is idiomatic, has nothing to do with Godot's log, and a gate
+# that reddens on it teaches its reader to stop believing it. What matters
+# here is a message whose OPENING is conjured, and that only happens where
+# the literal opens the call.
+synthesised_prefixes() { # synthesised_prefixes <dir>
+  grep -rnE '(format!|godot_error!|godot_warn!)\("\{[^"{}]*\}(: | '\'')' "$1" || true
+}
+
+# The verdict on a census (read from stdin): every opening the boot check
+# would NOT catch, minus the documented exception in the file that owns it.
+#
+# Forgiveness is by (prefix, home file) and is not rationed within that
+# file. Rationing it to one read well and was wrong: this project's test
+# doctrine says hand-derive the literal rather than mirror the code, so
+# `assert_eq!(REFUSAL_MESSAGE, "Pulses.emit: …")` in pulse_pool.rs's own
+# test module is exactly what a good test looks like here — and a second
+# copy of the same legacy message in the file that owns it is not a new
+# class sneaking in. What must never be forgiven is a DIFFERENT opening, or
+# this one anywhere else, and both are still reported.
+uncovered_openings() { # uncovered_openings <exception-prefix> <exception-home>
+  while read -r prefix at; do
+    [ -n "$prefix" ] || continue
+    if [ "$prefix" = "$1" ] && [ "${at%:*}" = "$2" ]; then
+      continue
+    fi
+    if printf '%s\n' "ERROR: $prefix" | grep -qiE "$BOOT_ERROR_PATTERN"; then
+      continue
+    fi
+    printf '%s %s\n' "$prefix" "$at"
+  done
+}
+
+# --- the readers' own fixtures ---
+# Everything below this line reads rust/src/ and reports what it found
+# there, so a reader that has quietly stopped matching reports an empty
+# tree and passes. These run those same readers over a synthetic file
+# whose every answer is written out by hand, so a broken regex fails HERE,
+# by name, instead of going vacuously green down there.
+FIX="$(mktemp -d)"
+trap 'rm -rf "$FIX"' EXIT INT TERM
+cat >"$FIX/fixture.rs" <<'FIXTURE'
+// a node class that names itself at the macro site
+godot_error!("SoundBell: the bell will not ring");
+// the same, opened on one line and quoted on the next
+godot_error!(
+    "SoundBell: {} of {} bells are silent",
+    dead, all
+);
+// a COVERED class, so a reader that found nothing cannot pass as a reader
+godot_error!("WaveLevel: materials/pulses not injected");
+// the two-layer relay: the macro contributes no leading text of its own
+godot_error!("{}", complaint);
+// a relay of a named constant
+godot_error!("{REFUSAL_MESSAGE}");
+// the pure module that builds the message that relay carries
+let complaint = format!("SoundBell: {} rang out of turn", name);
+// a class naming a node before its colon, at a WARNING — censused all the same
+godot_warn!(
+    "SoundBell '{}': hung crooked",
+    name
+);
+// ordinary strings, not diagnostics at all
+let key = "u_wall_count";
+let why = "the bell has no clapper";
+// a message that SYNTHESISES its opening token
+let bad = format!("{cls}: no census can read this");
+// a class that names a node before its colon, this time bound for an ERROR
+let cracked = format!("SoundGong '{}': cracked clean through", name);
+// a message wrapped onto the next line with a continuation
+godot_error!(
+    "SoundBell: the rope is too short \
+     to reach the bell"
+);
+// a resource path: it opens exactly like a class if the space is forgotten
+let scene = load::<PackedScene>("res://scenes/bell.tscn");
+// a synthesised opening that is NOT a message macro's first argument
+assert_eq!(got, want, "{case}: the plan disagreed");
+FIXTURE
+
+must_head() { # must_head <line> <expected head> <label>
+  GOT="$(literal_head "$FIX/fixture.rs" "$1")"
+  if [ "$GOT" = "$2" ]; then ok "$3"; else bad "$3 (read [$GOT], expected [$2])"; fi
+}
+
+must_head 2 "SoundBell: the bell will not ring" \
+  "a one-line godot_error! yields its whole leading literal"
+must_head 4 "SoundBell: " \
+  "a macro quoted on the NEXT line still yields its head, truncated at the first {}"
+must_head 9 "WaveLevel: materials/pulses not injected" \
+  "a covered class yields its head too (a reader that returns nothing is not a reader)"
+must_head 11 "" \
+  'godot_error!("{}", x) yields an EMPTY head — it relays, it does not prefix'
+must_head 13 "" \
+  'godot_error!("{CONST}") yields an empty head as well'
+must_head 29 "SoundBell: the rope is too short " \
+  "a head stops at the line continuation rather than running into the next line"
+
+CENSUS_FIX="$(diagnostic_census "$FIX")"
+must_census() { # must_census <prefix> <line> <label>
+  if printf '%s\n' "$CENSUS_FIX" | grep -q "^$1 .*fixture\.rs:$2\$"; then
+    ok "$3"
+  else
+    bad "$3 (census missed it — the SoundBell it cannot see is the one that ships)"
+  fi
+}
+must_not_census() { # must_not_census <line> <label>
+  if printf '%s\n' "$CENSUS_FIX" | grep -q "fixture\.rs:$1\$"; then
+    bad "$2 (census claimed a diagnostic prefix that is not one — it will go flaky)"
+  else
+    ok "$2"
+  fi
+}
+
+must_census SoundBell 2 "census sees a prefix written at the macro"
+must_census SoundBell 5 "census sees a prefix written one line below its macro"
+must_census SoundBell 15 "census sees a prefix built in a PURE module — the whole point of this fix"
+must_census SoundBell 18 "census sees a godot_warn!'s opening too — no adjacency guess a comment could defeat"
+must_census SoundGong 27 "census sees a class that names a node before its colon, bound for an ERROR"
+must_not_census 22 "a plain shader-parameter string is not mistaken for a diagnostic prefix"
+must_not_census 23 "an ordinary sentence starting with a word is not mistaken for a class prefix"
+must_not_census 25 "a SYNTHESISED opening is invisible to the census — which is exactly why it is banned outright"
+must_not_census 34 "a res:// path is not censused as a class called \"res\" — this is what the colon's SPACE buys"
+
+SYNTH_FIX="$(synthesised_prefixes "$FIX")"
+if printf '%s\n' "$SYNTH_FIX" | grep -q 'fixture\.rs:25'; then
+  ok "a message that builds its opening token out of an interpolation is flagged"
+else
+  bad "a synthesised opening token slipped past — the census is blind to it and so is the gate"
+fi
+if printf '%s\n' "$SYNTH_FIX" | grep -q 'fixture\.rs:36'; then
+  bad "an assert_eq! message was flagged as a synthesised class opening — idiomatic Rust that cannot reach a boot log, and a gate that cries on it stops being read"
+else
+  ok "an interpolation opening a NON-first argument (assert_eq!'s message) is left alone"
 fi
 
-EXCEPTION_SEEN=0
-CHECKED=0
-UNCOVERED=0
+# The verdict, over a census written out by hand rather than read off this
+# tree, so every branch of the exception is exercised — including the two
+# that rust/src/ cannot show today because it holds exactly one legitimate
+# exception and no violations.
+VERDICT_GOT="$(uncovered_openings Pulses.emit rust/src/pulse_pool.rs <<'CENSUS_FIXTURE'
+WaveLevel rust/src/nodes/level.rs:178
+SoundBell rust/src/bell_plan.rs:12
+Pulses.emit rust/src/nodes/stranger.rs:7
+Pulses.emit rust/src/pulse_pool.rs:31
+Pulses.emit rust/src/pulse_pool.rs:99
+CENSUS_FIXTURE
+)"
+# The stranger carries the SAME prefix as the exception from a file that is
+# not its home, which is what tells "forgiven by prefix" from "forgiven by
+# prefix AND home" apart. The home file's second copy is forgiven on
+# purpose: a hand-written pin for REFUSAL_MESSAGE in pulse_pool.rs's own
+# test module is the anti-mirror form this project's doctrine asks for, and
+# it must not redden the pipeline.
+VERDICT_WANT="SoundBell rust/src/bell_plan.rs:12
+Pulses.emit rust/src/nodes/stranger.rs:7"
+if [ "$VERDICT_GOT" = "$VERDICT_WANT" ]; then
+  ok "the verdict passes a covered class, reports an uncovered one, and spends the documented exception exactly ONCE and only in its own file"
+else
+  bad "the verdict misread its fixture — got [$VERDICT_GOT], expected [$VERDICT_WANT]"
+fi
+
+# --- derived, and read four ways ---
+# Reading the macro SITES alone stopped being enough the moment the message
+# text moved where the two-layer rule wants it: built in the pure,
+# cargo-testable module, with the node merely saying it out loud. The unit
+# below is therefore the message TEXT, wherever it is written, and the
+# question asked of it is the boot check's own: would
+# ci/pipeline.sh's grep catch the line Godot prints? All four read rust/src/
+# directly rather than trusting the hand-copied literals above, which can go
+# stale together with BOOT_ERROR_PATTERN and stay green together.
+
+# (1) SITES — what each godot_error! writes at the head of its OWN message.
+# "ERROR: <head>" goes to the same pattern ci/pipeline.sh greps the boot log
+# with, so this is the real predicate on the real string rather than a proxy
+# for it. It is strictly stronger than the "Prefix: " extraction it replaces,
+# which could only see a class name followed by a colon and would have missed
+# a godot_error!("WaveWall '{}': ...") entirely.
+SITES="$(cd "$DIR" && grep -rn 'godot_error!' "$SRC" | grep -oE '^[^:]+:[0-9]+' || true)"
+if [ -z "$SITES" ]; then
+  bad "found zero godot_error! call sites under $SRC — the site reader is broken"
+fi
+
+HEADED=0
+RELAYS=""
 for site in $SITES; do
-  case "$site" in
-  */ffi.rs:234)
-    EXCEPTION_SEEN=1
-    continue
-    ;;
-  esac
-  ERR_FILE="${site%:*}"
-  ERR_LINE="${site##*:}"
-  # the message string sits on this line for most call sites, but three of
-  # the five WaveLevel ones open the macro on one line and quote the
-  # message on the next — read both and take the first quoted prefix.
-  MSG="$(sed -n "${ERR_LINE},$((ERR_LINE + 1))p" "$ERR_FILE")"
-  PREFIX="$(printf '%s\n' "$MSG" | grep -oE '"[A-Za-z_]+:' | head -1 | tr -d '":')"
-  if [ -z "$PREFIX" ]; then
-    bad "godot_error! at $site has no \"Prefix: ...\" literal and is not the documented ffi.rs:234 exception"
+  HEAD="$(cd "$DIR" && literal_head "${site%:*}" "${site##*:}")"
+  if [ -z "$HEAD" ]; then
+    # (2) A RELAY. The macro writes no leading text, so the site itself can
+    # vouch for nothing — and nothing is waved through on that account. What
+    # answers for it is (3), which reads the literal where it was actually
+    # written, and (4), which forbids conjuring one that was never written at
+    # all. Printed by name: a relay nobody names is a relay nobody reviews.
+    RELAYS="$RELAYS $site"
     continue
   fi
-  CHECKED=$((CHECKED + 1))
-  if ! printf '%s\n' "ERROR: $PREFIX: probe" | grep -qiE "$BOOT_ERROR_PATTERN"; then
-    UNCOVERED=$((UNCOVERED + 1))
-    bad "rust/src/ emits \"ERROR: $PREFIX:\" at $site but BOOT_ERROR_PATTERN does not cover it — this class would boot-check silently"
+  HEADED=$((HEADED + 1))
+  if ! printf '%s\n' "ERROR: $HEAD" | grep -qiE "$BOOT_ERROR_PATTERN"; then
+    bad "$SRC prints \"ERROR: $HEAD\" at $site and BOOT_ERROR_PATTERN does not catch it — this class would boot-check silently"
   fi
 done
 
-if [ "$EXCEPTION_SEEN" -eq 1 ]; then
-  ok "ffi.rs:234 (WaveCore's REFUSAL_MESSAGE) is present and is the one documented prefix-less exception"
+if [ "$HEADED" -gt 0 ]; then
+  ok "every godot_error! that writes its own leading text ($HEADED of them) prints a line BOOT_ERROR_PATTERN catches"
 else
-  bad "ffi.rs:234 exception site not found — REFUSAL_MESSAGE's call site moved; update the exception pin"
+  bad "not one godot_error! under $SRC was read as writing leading text — literal_head has stopped reading"
+fi
+if [ -n "$RELAYS" ]; then
+  # Deliberately NOT "vouched for". The census reads every CLASS-STYLE
+  # opening in the tree, so a relay carrying one is answered for; a relay
+  # carrying a message that opens some other way — "SoundBell rang twice" —
+  # is read by neither reader and is this gate's standing blind spot. It is
+  # narrow (every engine diagnostic in this tree opens "Class: " or
+  # "Class '") but it is real, and the honest word for it is not "vouched".
+  ok "relayed from elsewhere, so answered for by the census below, not by the site:$RELAYS"
 fi
 
-if [ "$UNCOVERED" -eq 0 ]; then
-  ok "every godot_error! prefix under rust/src/ ($CHECKED checked) is covered by BOOT_ERROR_PATTERN"
+# (3) CENSUS — every class-style diagnostic opening in the tree, wherever it
+# is written, must be one BOOT_ERROR_PATTERN catches. This is the check that
+# sees the next SoundBell: a format!("SoundBell: …") in a pure module is red
+# here even though not one macro site mentions the name.
+CENSUS="$(cd "$DIR" && diagnostic_census "$SRC")"
+
+# The one documented exception, and it is a PREFIX with a home, not a call
+# site: WaveCore's REFUSAL_MESSAGE deliberately keeps pulses.gd's legacy
+# "Pulses.emit:" text instead of a class name (see ci/boot_error_pattern.sh),
+# and one refused wave request does not mean the level shipped broken the way
+# a starved object id does. Pinning the prefix AND the file that owns it is
+# what keeps it a single exception rather than a category: a different
+# opening, or this one anywhere else, is reported like any other violation.
+EXCEPT_PREFIX="Pulses.emit"
+EXCEPT_HOME="$SRC/pulse_pool.rs"
+
+if [ -z "$CENSUS" ]; then
+  bad "the census read zero class-style openings out of $SRC — diagnostic_census has stopped reading"
+else
+  CENSUSED="$(printf '%s\n' "$CENSUS" | grep -c . || true)"
+  # Reading the right tree is a separate claim from reading it correctly,
+  # and only the second one has fixtures. Aim the census at $SRC/nodes and
+  # it still reads perfectly — it just stops seeing every opening built in
+  # a pure module, which is the entire reason this check exists. So assert
+  # the census actually reached one.
+  if printf '%s\n' "$CENSUS" | grep -Fq "$SRC/level_plan.rs:"; then
+    ok "the census reached the pure modules and not just the node classes ($CENSUSED openings, level_plan.rs among them)"
+  else
+    bad "the census read $CENSUSED openings but none from $SRC/level_plan.rs — it is aimed too narrowly, and every opening built in a pure module is invisible to it"
+  fi
+
+  UNCOVERED="$(printf '%s\n' "$CENSUS" | uncovered_openings "$EXCEPT_PREFIX" "$EXCEPT_HOME")"
+  if [ -z "$UNCOVERED" ]; then
+    ok "every class-style opening under $SRC prints a line BOOT_ERROR_PATTERN catches, bar the forgiven \"$EXCEPT_PREFIX\" in $EXCEPT_HOME"
+  else
+    # Fed by here-doc, not by a pipe: down a pipe `bad` would set FAIL in a
+    # subshell that then exits, and this whole half would print its failures
+    # and return 0. ci/pipeline.sh reads the exit code and nothing else.
+    while read -r prefix at; do
+      [ -n "$prefix" ] || continue
+      bad "$at opens messages with \"$prefix\" and BOOT_ERROR_PATTERN does not catch \"ERROR: $prefix\" — that class would boot-check silently"
+    done <<UNCOVERED_EOF
+$UNCOVERED
+UNCOVERED_EOF
+  fi
+fi
+
+# The forgiven opening is allowed to be uncaught because exactly one macro
+# says it. Counted, not pinned to a line number: the old file:line pin broke
+# on any edit above it and never checked this claim at all.
+EXCEPT_EMITTERS="$(cd "$DIR" && grep -rn 'godot_error!.*REFUSAL_MESSAGE' "$SRC" | grep -c . || true)"
+if [ "$EXCEPT_EMITTERS" = "1" ]; then
+  ok "the forgiven \"$EXCEPT_PREFIX\" opening has exactly one emitter in the tree — one refused wave request, one line"
+else
+  bad "the forgiven \"$EXCEPT_PREFIX\" opening has $EXCEPT_EMITTERS emitters, not 1 — a message BOOT_ERROR_PATTERN deliberately ignores has grown a second way to the boot log"
+fi
+
+# (4) No message may build its opening token out of an interpolation. The
+# census reads literals; a format!("{cls}: …") would be invisible to it, and
+# a relay carrying one would print a class name nobody ever wrote down. This
+# is the assumption (3) rests on, checked rather than hoped for.
+SYNTH="$(cd "$DIR" && synthesised_prefixes "$SRC")"
+if [ -z "$SYNTH" ]; then
+  ok "no message under $SRC builds its opening token out of an interpolation — every class name is a literal the census can read"
+else
+  bad "a message builds its opening token out of an interpolation, so no census can read it: $(printf '%s' "$SYNTH" | tr '\n' ' ')"
+fi
+
+# --- the composition's own probe ---
+# Everything above is checked in parts: the readers by fixtures, the pattern
+# by hand-written lines. The parts have been right and the WHOLE still a
+# no-op — an exclusion driven by comment text, a census aimed at the wrong
+# directory, a verdict whose failure flag died in a subshell. Each of those
+# left every assertion above green.
+#
+# So: copy the real tree, plant in it exactly the thing this gate exists to
+# stop — a class BOOT_ERROR_PATTERN has never heard of, its message built in
+# a pure module and relayed by a node, in the two-layer shape the project
+# asks for — and run THIS SCRIPT against the copy. Green there is a broken
+# gate no matter how many OKs precede it. The clean copy runs first, so a
+# red from the plant is the plant and not the copying.
+#
+# $SRC is what makes this possible and it exists for nothing else.
+if [ -z "${BOOT_GATE_SRC:-}" ]; then
+  cp -R "$DIR/$SRC" "$FIX/clean"
+  if (BOOT_GATE_SRC="$FIX/clean" sh "$0" >/dev/null 2>&1); then
+    ok "an untouched copy of $SRC still passes — so the red below is the plant, not the copy"
+  else
+    bad "an untouched copy of $SRC does NOT pass, so the plant below proves nothing — fix this first"
+  fi
+
+  cp -R "$DIR/$SRC" "$FIX/planted"
+  # NotAnEngineClass rather than SoundBell: the day a SoundBell really ships
+  # and joins BOOT_ERROR_PATTERN, this probe must not quietly stop probing.
+  # The comment above the format! is not decoration — mentioning godot_warn!
+  # next to a literal once excluded it from the census, and this pins that
+  # shut.
+  cat >>"$FIX/planted/level_plan.rs" <<'PLANT'
+
+/// Fatal, not a godot_warn!: a class the boot pattern has never heard of.
+pub fn planted_complaint(n: u32) -> String {
+    format!("NotAnEngineClass: {n} of them, and none of them draw")
+}
+PLANT
+  cat >>"$FIX/planted/nodes/level.rs" <<'PLANT'
+// the two-layer relay: the words are the pure module's, the voice is here
+fn planted_say() {
+    godot_error!("{}", level_plan::planted_complaint(2));
+}
+PLANT
+  if (BOOT_GATE_SRC="$FIX/planted" sh "$0" >/dev/null 2>&1); then
+    bad "a NotAnEngineClass built in a pure module and relayed by a node did NOT turn this gate red — the derived half above is decorative"
+  else
+    ok "a class built in a pure module and relayed by a node turns this gate red, end to end — the composition works, not just the parts"
+  fi
 fi
 
 exit "$FAIL"
