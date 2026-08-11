@@ -27,7 +27,12 @@ echo "bootstrap: checking for rustup/cargo"
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 if ! command -v cargo >/dev/null 2>&1; then
   echo "bootstrap: cargo not found — installing rustup (non-interactive)"
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+  # `|| true`: under set -eu a nonzero exit here (curl network failure,
+  # rustup's own installer refusing an unsupported platform, a conflicting
+  # partial install) would kill the script on this line with rustup's raw
+  # exit code, skipping the diagnostic two lines below entirely. Let it
+  # fall through so that check is what actually reports the failure.
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || true
   [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
   command -v cargo >/dev/null 2>&1 || {
     echo "bootstrap: FAILED rustup install did not leave a usable cargo on PATH"
