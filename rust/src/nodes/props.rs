@@ -50,6 +50,7 @@ use godot::classes::MeshInstance3D;
 
 use super::solid::{
     self, BOX_ORDINALS, LIMBS, SignFold, Skin, WaveSolid, build_body, build_box, clear_limbs,
+    warnings_from_level,
 };
 use crate::prop_shape;
 use crate::render;
@@ -93,6 +94,14 @@ impl IStaticBody3D for WaveProp {
         self.shape = Some(built.shape);
         let name = self.base().get_name();
         self.fold.say(Some(name));
+    }
+
+    /// The Scene dock's warning icon for this one prop — whatever its
+    /// owning [`super::level::WaveLevel`] pinned to this node's path, via
+    /// [`warnings_from_level`]. Empty outside any level, which is legal: a
+    /// prefab edited on its own has committed no fault yet.
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        warnings_from_level(&self.base().clone().upcast::<Node>())
     }
 }
 
@@ -143,6 +152,15 @@ impl WaveProp {
     /// [`solid::paint_solid`].
     pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
         solid::paint_solid(self.mesh.as_mut(), labels_by_ordinal);
+    }
+
+    /// The engine-facing read-back of
+    /// [`IStaticBody3D::get_configuration_warnings`] — the GDVIRTUAL a
+    /// script cannot reach directly; see [`Self::oid`] for the same
+    /// disambiguation this forwarder needs.
+    #[func]
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        IStaticBody3D::get_configuration_warnings(self)
     }
 }
 
@@ -231,6 +249,14 @@ impl IStaticBody3D for WaveColumn {
             self.relift();
         }
     }
+
+    /// The Scene dock's warning icon for this one column — whatever its
+    /// owning [`super::level::WaveLevel`] pinned to this node's path, via
+    /// [`warnings_from_level`]. Empty outside any level, which is legal: a
+    /// prefab edited on its own has committed no fault yet.
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        warnings_from_level(&self.base().clone().upcast::<Node>())
+    }
 }
 
 #[godot_api]
@@ -296,6 +322,15 @@ impl WaveColumn {
     /// [`solid::paint_solid`].
     pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
         solid::paint_solid(self.mesh.as_mut(), labels_by_ordinal);
+    }
+
+    /// The engine-facing read-back of
+    /// [`IStaticBody3D::get_configuration_warnings`] — the GDVIRTUAL a
+    /// script cannot reach directly; see [`Self::oid`] for the same
+    /// disambiguation this forwarder needs.
+    #[func]
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        IStaticBody3D::get_configuration_warnings(self)
     }
 
     /// Mesh, collider and lift together, so a knob dragged in the
@@ -417,6 +452,14 @@ impl IStaticBody3D for WaveWedge {
             self.relift();
         }
     }
+
+    /// The Scene dock's warning icon for this one wedge — whatever its
+    /// owning [`super::level::WaveLevel`] pinned to this node's path, via
+    /// [`warnings_from_level`]. Empty outside any level, which is legal: a
+    /// prefab edited on its own has committed no fault yet.
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        warnings_from_level(&self.base().clone().upcast::<Node>())
+    }
 }
 
 #[godot_api]
@@ -458,6 +501,15 @@ impl WaveWedge {
     /// [`solid::paint_solid`].
     pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
         solid::paint_solid(self.mesh.as_mut(), labels_by_ordinal);
+    }
+
+    /// The engine-facing read-back of
+    /// [`IStaticBody3D::get_configuration_warnings`] — the GDVIRTUAL a
+    /// script cannot reach directly; see [`Self::oid`] for the same
+    /// disambiguation this forwarder needs.
+    #[func]
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        IStaticBody3D::get_configuration_warnings(self)
     }
 
     /// Rebuild the surface and the hull from the size knob, and re-lift the

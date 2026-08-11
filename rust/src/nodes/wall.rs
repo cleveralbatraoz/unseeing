@@ -27,7 +27,10 @@
 use godot::classes::{ArrayMesh, BoxShape3D, IStaticBody3D, Material, StaticBody3D};
 use godot::prelude::*;
 
-use super::solid::{self, BOX_ORDINALS, LIMBS, SignFold, Skin, WaveSolid, build_box, clear_limbs};
+use super::solid::{
+    self, BOX_ORDINALS, LIMBS, SignFold, Skin, WaveSolid, build_box, clear_limbs,
+    warnings_from_level,
+};
 use crate::level_plan;
 use crate::render;
 
@@ -70,6 +73,14 @@ impl IStaticBody3D for WaveWall {
         self.shape = Some(built.shape);
         let name = self.base().get_name();
         self.fold.say(Some(name));
+    }
+
+    /// The Scene dock's warning icon for this one wall — whatever its
+    /// owning [`super::level::WaveLevel`] pinned to this node's path, via
+    /// [`warnings_from_level`]. Empty outside any level, which is legal:
+    /// a prefab edited on its own has committed no fault yet.
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        warnings_from_level(&self.base().clone().upcast::<Node>())
     }
 }
 
@@ -130,6 +141,19 @@ impl WaveWall {
     /// [`solid::paint_solid`].
     pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
         solid::paint_solid(self.mesh.as_mut(), labels_by_ordinal);
+    }
+
+    /// The engine-facing read-back of
+    /// [`IStaticBody3D::get_configuration_warnings`] — needed for the same
+    /// reason [`super::level::WaveLevel`]'s own forwarder carries one: that
+    /// override is a pure GDVIRTUAL Godot's editor calls directly through
+    /// the C++ virtual table and never binds to `ClassDB`, so no script can
+    /// reach it under that name. Same disambiguation as [`Self::oid`] above
+    /// — an inherent `#[func]` of the same name, forwarded through UFCS so
+    /// it calls the trait override instead of recursing into itself.
+    #[func]
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        IStaticBody3D::get_configuration_warnings(self)
     }
 
     /// This wall's centerline as the classic (x1, z1, x2, z2) segment —

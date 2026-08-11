@@ -30,6 +30,7 @@ use godot::classes::{
 use godot::obj::WithBaseField;
 use godot::prelude::*;
 
+use super::level::WaveLevel;
 use crate::oid_palette;
 use crate::render;
 
@@ -105,6 +106,30 @@ pub trait WaveSolid {
     /// Take the world skin — the data-writing material the level deals to
     /// everything that renders at real depth.
     fn set_material(&mut self, mat: &Gd<Material>);
+}
+
+/// The warnings a solid wears in the Scene dock: whatever its owning
+/// [`WaveLevel`] pinned to it by path in [`WaveLevel::faults_for`] — the
+/// same unfloored, sunken and face-label-starvation complaints a designer reads off
+/// the level's own icon, here narrowed to the one node that earned each
+/// one. Every solid class's `get_configuration_warnings` override calls
+/// this with its own upcast node so the fault lands where it was caused,
+/// not lumped into a level-wide list a designer has to guess their way
+/// through.
+///
+/// A solid outside any `WaveLevel` — a prefab edited standalone, which is a
+/// legal authoring context — walks all the way to the scene root without
+/// finding one and wears no warning at all: it has committed no fault the
+/// level could have judged, so nothing here invents one.
+pub(crate) fn warnings_from_level(node: &Gd<Node>) -> PackedStringArray {
+    let mut cursor = node.get_parent();
+    while let Some(parent) = cursor {
+        if let Ok(level) = parent.clone().try_cast::<WaveLevel>() {
+            return level.bind().faults_for(node);
+        }
+        cursor = parent.get_parent();
+    }
+    PackedStringArray::new()
 }
 
 /// The half of every solid that is identical: the one mesh limb the data

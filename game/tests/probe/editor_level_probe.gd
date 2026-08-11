@@ -87,11 +87,34 @@ func _judge(editor: bool) -> void:
 		_level.add_child(fixed)
 		_level.call("rederive")
 		_check("editor: giving it a spawn clears the warning", not _has(_warnings(), "SpawnPoint"))
+		_judge_solid_warning()
 	else:
 		_check(
 			"run: an uninjected level still derives honest geometry",
 			(_level.call("wall_segments") as PackedVector4Array).size() == 1
 		)
+
+
+## The fault-lands-on-its-node law: a WaveProp dropped on the floor plane
+## (the classic half-sunk designer gesture — a box prop is CENTRED on its
+## node, so y=0 buries half of it) wears the level's "sunk" complaint on
+## ITS OWN warning icon, not only on the level's; lifting it clear makes
+## that one icon empty again, on the very next rederive. Reached exactly
+## like `wall_segments()` and `rederive()` above, through ClassDB.instantiate
+## + `.call()`, never a static `WaveProp` reference: the class may not exist
+## at parse time on a fresh clone with no extension loaded yet.
+func _judge_solid_warning() -> void:
+	var crate := ClassDB.instantiate("WaveProp") as Node3D
+	crate.name = "Crate"
+	crate.position = Vector3(3, 0, 3)
+	_level.add_child(crate)
+	_level.call("rederive")
+	var crate_warnings := crate.call("get_configuration_warnings") as PackedStringArray
+	_check("editor: the half-sunk crate wears its own warning", _has(crate_warnings, "sunk"))
+	crate.position.y = 0.35
+	_level.call("rederive")
+	var lifted := crate.call("get_configuration_warnings") as PackedStringArray
+	_check("editor: lifting the crate clears it", lifted.is_empty())
 
 
 func _check(what: String, ok: bool) -> void:

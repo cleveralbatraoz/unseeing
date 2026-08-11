@@ -243,13 +243,14 @@ pub struct WaveLevel {
     starved_oid_slots: Vec<usize>,
     /// Every level-wide complaint the last derivation produced — spawn
     /// faults, the demo-tap fault, the wall-budget and pack-range budgets,
-    /// the oid-starvation count — in the order `derive` produced them.
+    /// the label-starvation count — in the order `derive` produced them.
     /// Rewritten from scratch on EVERY derivation, editor or run, so a
     /// fault a designer already fixed does not linger; this is exactly
     /// what [`Self::get_configuration_warnings`] reports.
     level_faults: Vec<String>,
     /// Every fault the last derivation pinned to a SPECIFIC node — an
-    /// unfloored or sunken solid, one entry per oid-starved slot — so a
+    /// unfloored or sunken solid, one entry per authored owner of a
+    /// starved face class — so a
     /// consumer can ask "what is wrong with THIS node" rather than read a
     /// level-wide list and guess. Rewritten alongside `level_faults`, same
     /// rule, same reason. See [`Self::faults_for`].
@@ -442,18 +443,11 @@ impl WaveLevel {
     }
 
     /// Every fault the last derivation pinned to `node` specifically — an
-    /// unfloored/sunken placement, an oid-starved seam — matched by the
+    /// unfloored/sunken placement, or a starved face-class seam — matched by the
     /// same `root.get_path_to` address every entry in `node_faults`
-    /// carries. Not `#[func]`: this is a solid's own
-    /// `get_configuration_warnings` reaching up to the level that derived
-    /// it, not a designer-facing knob.
-    ///
-    /// Unwired today — no solid's `get_configuration_warnings` calls it
-    /// yet, which is the next task's job — so nothing in this crate reads
-    /// it and `dead_code` cannot see past that. The read side of
-    /// `node_faults` belongs beside the write side it names, not stubbed
-    /// out or deferred to the task that wires it in.
-    #[allow(dead_code)]
+    /// carries. Not `#[func]`: this is [`super::solid::warnings_from_level`]'s
+    /// door into the level, called from every solid's own
+    /// `get_configuration_warnings`, not a designer-facing knob.
     pub(super) fn faults_for(&self, node: &Gd<Node>) -> PackedStringArray {
         let root = self.base().clone().upcast::<Node>();
         let path = root.get_path_to(node).to_string();
@@ -708,6 +702,11 @@ impl WaveLevel {
     /// at run time — `ready` no longer returns before it — so a designer
     /// sees the level's complaints while dragging, not only after pressing
     /// play; [`Self::rederive`] is the manual replay of this same pass.
+    ///
+    /// The level's own icon is not the only one that can go stale: a fault
+    /// this pass pinned to one solid's path a moment ago may no longer
+    /// apply to it, so every censused solid is told to refresh its icon
+    /// too, right after the level tells the engine about its own.
     fn derive(&mut self) {
         let editor = Engine::singleton().is_editor_hint();
         self.level_faults.clear();
@@ -727,6 +726,12 @@ impl WaveLevel {
         // fault site above just rewrote level_faults, so this is the one
         // place that needs to say so
         self.base_mut().update_configuration_warnings();
+        // node_faults was rewritten too, and a solid's own icon reads it
+        // through solid::warnings_from_level — refresh every censused
+        // solid so a cleared fault stops showing and a new one starts
+        for solid in &census.solids {
+            solid.clone().into_gd().update_configuration_warnings();
+        }
     }
 
     /// Say out loud what a designer has placed where the level cannot hold
