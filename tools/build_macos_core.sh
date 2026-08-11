@@ -38,10 +38,17 @@ command -v cargo >/dev/null 2>&1 || {
   exit 2
 }
 
+# Exactly two, named rather than accumulated into a list. A universal macOS
+# binary IS arm64 plus x86_64 — nothing here is variadic — and two names carry
+# the paths to lipo fully quoted, so a repo living under a directory with a
+# space in it fuses correctly instead of splitting into four arguments.
+ARM64_TRIPLE=aarch64-apple-darwin
+X86_64_TRIPLE=x86_64-apple-darwin
+
 # Both triples are already listed in rust/rust-toolchain.toml, so a rustup
 # that honours the pin has them. Say so precisely when it does not, rather
 # than letting cargo's own error explain a project rule it has never read.
-for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+for triple in "$ARM64_TRIPLE" "$X86_64_TRIPLE"; do
   if ! rustup target list --installed 2>/dev/null | grep -qx "$triple"; then
     echo "build-macos-core: FAILED rust target $triple is not installed"
     echo "build-macos-core:        rustup target add $triple (rust-toolchain.toml already lists it)"
@@ -49,21 +56,28 @@ for triple in aarch64-apple-darwin x86_64-apple-darwin; do
   fi
 done
 
-SLICES=""
-for triple in aarch64-apple-darwin x86_64-apple-darwin; do
-  echo "build-macos-core: cargo build --release --target $triple"
-  (cd "$DIR/rust" && cargo build --release --target "$triple") || {
-    echo "build-macos-core: FAILED cargo build for $triple"
-    exit 1
+# Builds one slice and prints its path — the ONLY way a path below comes into
+# existence, so a slice can never be handed to lipo without having just been
+# built. Keeping those two coupled is what makes "a --target went missing" a
+# visible failure rather than a stale artifact quietly fusing into the ship.
+# Everything conversational goes to stderr; stdout is the return value.
+build_slice() { # build_slice <triple>
+  echo "build-macos-core: cargo build --release --target $1" >&2
+  (cd "$DIR/rust" && cargo build --release --target "$1" >&2) || {
+    echo "build-macos-core: FAILED cargo build for $1" >&2
+    return 1
   }
-  slice="$DIR/rust/target/$triple/release/libunseeing_core.dylib"
-  [ -f "$slice" ] || {
-    echo "build-macos-core: FAILED cargo reported success but $slice is not there"
-    echo "build-macos-core:        (a CARGO_TARGET_DIR in the environment moves it out of reach)"
-    exit 1
+  _slice="$DIR/rust/target/$1/release/libunseeing_core.dylib"
+  [ -f "$_slice" ] || {
+    echo "build-macos-core: FAILED cargo reported success but $_slice is not there" >&2
+    echo "build-macos-core:        (a CARGO_TARGET_DIR in the environment moves it out of reach)" >&2
+    return 1
   }
-  SLICES="${SLICES:+$SLICES }$slice"
-done
+  printf '%s' "$_slice"
+}
+
+ARM64_SLICE="$(build_slice "$ARM64_TRIPLE")" || exit 1
+X86_64_SLICE="$(build_slice "$X86_64_TRIPLE")" || exit 1
 
 # The path game/unseeing.gdextension names for macos.debug AND macos.release.
 # One binary for the editor, the headless checks and the export — deliberately,
@@ -73,8 +87,7 @@ CORE="$DIR/rust/target/release/libunseeing_core.dylib"
 # Written beside the target and moved into place, never straight over it: a
 # killed run must not leave a truncated dylib at the one path every macOS key
 # resolves to. Same directory, so the rename is atomic.
-# shellcheck disable=SC2086
-lipo -create -output "$CORE.new" $SLICES || {
+lipo -create -output "$CORE.new" "$ARM64_SLICE" "$X86_64_SLICE" || {
   rm -f "$CORE.new"
   echo "build-macos-core: FAILED lipo could not fuse the slices"
   exit 1
