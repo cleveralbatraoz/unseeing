@@ -120,6 +120,9 @@ echo "ci: unit tests (gdUnit4)"
   exit 1
 }
 
+echo "ci: determinism probe (two seeded fixed-fps boots must agree)"
+GODOT="$GODOT" "$DIR/tools/determinism_probe.sh"
+
 if [ "${SKIP_EXPORT:-}" = "1" ]; then
   echo "ci: SKIP_EXPORT=1 — checks-only run"
   echo "ci: OK"
