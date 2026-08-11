@@ -145,6 +145,19 @@ impl PaintItem {
             PaintItem::Wedge(_) => render::paint::ShapeKind::Wedge,
         }
     }
+
+    /// The authored scene node this paint entry came from. The two slabs
+    /// belong to the level itself, so only authored solids have a node a
+    /// configuration warning can be pinned to.
+    fn node(&self) -> Option<Gd<Node>> {
+        match self {
+            PaintItem::Slab { .. } => None,
+            PaintItem::Wall(node) => Some(node.clone().upcast()),
+            PaintItem::Prop(node) => Some(node.clone().upcast()),
+            PaintItem::Column(node) => Some(node.clone().upcast()),
+            PaintItem::Wedge(node) => Some(node.clone().upcast()),
+        }
+    }
 }
 
 /// One item [`WaveLevel::paint_labels`] colours: a floor/ceiling slab or an
@@ -228,6 +241,19 @@ pub struct WaveLevel {
     /// retained for the editor-warning pass that maps them back to their
     /// owning scene nodes. Empty on a healthy level.
     starved_oid_slots: Vec<usize>,
+    /// Every level-wide complaint the last derivation produced — spawn
+    /// faults, the demo-tap fault, the wall-budget and pack-range budgets,
+    /// the oid-starvation count — in the order `derive` produced them.
+    /// Rewritten from scratch on EVERY derivation, editor or run, so a
+    /// fault a designer already fixed does not linger; this is exactly
+    /// what [`Self::get_configuration_warnings`] reports.
+    level_faults: Vec<String>,
+    /// Every fault the last derivation pinned to a SPECIFIC node — an
+    /// unfloored or sunken solid, one entry per oid-starved slot — so a
+    /// consumer can ask "what is wrong with THIS node" rather than read a
+    /// level-wide list and guess. Rewritten alongside `level_faults`, same
+    /// rule, same reason. See [`Self::faults_for`].
+    node_faults: Vec<level_plan::PlacementFault>,
     base: Base<Node3D>,
 }
 
@@ -235,16 +261,28 @@ pub struct WaveLevel {
 impl INode3D for WaveLevel {
     fn ready(&mut self) {
         self.build_slabs();
-        if Engine::singleton().is_editor_hint() {
-            return; // the editor wants shapes to drag, not contracts
-        }
         // no silent nulls: an uninjected level would render nothing and
         // sound nothing — say so once, loudly, and still derive honest
-        // geometry so the contracts stay readable
-        if self.data_mat.is_none() || self.source_mat.is_none() || self.pulses.is_none() {
+        // geometry so the contracts stay readable. Never checked in the
+        // editor: a scene open there is legitimately uninjected (injection
+        // is the composition root's job, at run time), and printing this
+        // on every scene open would be noise a designer learns to skip.
+        if !Engine::singleton().is_editor_hint()
+            && (self.data_mat.is_none() || self.source_mat.is_none() || self.pulses.is_none())
+        {
             godot_error!("WaveLevel: materials/pulses not injected — the level cannot be seen");
         }
         self.derive();
+    }
+
+    /// The Scene dock's warning icon, editor-only — the same faults a
+    /// running level shouts through `godot_error!`/`godot_warn!`, read back
+    /// off `level_faults` instead of the log. [`Self::derive`] calls
+    /// [`Node::update_configuration_warnings`] itself after every pass, so
+    /// this is asked for exactly when the engine already knows it might
+    /// have changed.
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        self.level_faults.iter().map(GString::from).collect()
     }
 }
 
@@ -313,6 +351,32 @@ impl WaveLevel {
         self.extents
     }
 
+    /// Manual refresh: re-run the whole derivation against the scene as it
+    /// stands right now. `ready` already calls [`Self::derive`] once, so
+    /// this exists for whoever changes the scene AFTER that — the editor,
+    /// moving a wall or adding a marker, and this probe. In-tree only, the
+    /// same contract `derive` itself carries: `WaveWall::segment` and every
+    /// `mesh_world_box` read global transforms, which only exist once the
+    /// level has entered the tree.
+    #[func]
+    fn rederive(&mut self) {
+        self.derive();
+    }
+
+    /// The engine-facing read-back of [`INode3D::get_configuration_warnings`]
+    /// — needed because that override is a pure GDVIRTUAL: Godot's editor
+    /// calls it directly through the C++ virtual table and never binds it
+    /// to `ClassDB`, so no script can reach it (measured: neither
+    /// `has_method` nor `.call()` finds it, on this class or on a bare
+    /// `Node3D`). Exactly the same shape as [`WaveWall::oid`] disambiguating
+    /// from [`WaveSolid::oid`] — an inherent `#[func]` of the same name,
+    /// so a suite can see what the override would have told the Scene
+    /// dock.
+    #[func]
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        INode3D::get_configuration_warnings(self)
+    }
+
     /// Where the hero wakes: the SpawnPoint marker lifted to capsule
     /// height.
     #[func]
@@ -375,6 +439,29 @@ impl WaveLevel {
     #[func]
     pub(super) fn wall_rects(&self) -> PackedVector4Array {
         PackedVector4Array::from(&self.occluders[..])
+    }
+
+    /// Every fault the last derivation pinned to `node` specifically — an
+    /// unfloored/sunken placement, an oid-starved seam — matched by the
+    /// same `root.get_path_to` address every entry in `node_faults`
+    /// carries. Not `#[func]`: this is a solid's own
+    /// `get_configuration_warnings` reaching up to the level that derived
+    /// it, not a designer-facing knob.
+    ///
+    /// Unwired today — no solid's `get_configuration_warnings` calls it
+    /// yet, which is the next task's job — so nothing in this crate reads
+    /// it and `dead_code` cannot see past that. The read side of
+    /// `node_faults` belongs beside the write side it names, not stubbed
+    /// out or deferred to the task that wires it in.
+    #[allow(dead_code)]
+    pub(super) fn faults_for(&self, node: &Gd<Node>) -> PackedStringArray {
+        let root = self.base().clone().upcast::<Node>();
+        let path = root.get_path_to(node).to_string();
+        self.node_faults
+            .iter()
+            .filter(|fault| fault.path == path)
+            .map(|fault| GString::from(&fault.text))
+            .collect()
     }
 
     /// The level's sound sources, in scene order — exposed as plain nodes
@@ -538,7 +625,13 @@ impl WaveLevel {
     /// world position lifted to capsule height, the level's own origin as
     /// the fallback, and each candidate's path under the level root, which
     /// is the only thing that tells two markers named `SpawnPoint` apart.
-    fn derive_spawn(&mut self, markers: &[Gd<Marker3D>]) {
+    ///
+    /// `editor` is [`Self::derive`]'s one read of `Engine::is_editor_hint`:
+    /// every complaint is ALWAYS filed into `level_faults` (the totals
+    /// rewrite an editor's warning icon reads), and printed through
+    /// `godot_error!` only at run time, byte-identical to before — the
+    /// boot gate reads exactly these prints and must keep seeing them.
+    fn derive_spawn(&mut self, markers: &[Gd<Marker3D>], editor: bool) {
         let lift = Vector3::new(0.0, level_plan::SPAWN_LIFT as f32, 0.0);
         let fallback = self.base().get_global_position() + lift;
         let root = self.base().clone().upcast::<Node>();
@@ -559,8 +652,11 @@ impl WaveLevel {
             });
         }
         let verdict = level_plan::choose_spawn(&candidates, fallback);
-        for complaint in &verdict.complaints {
-            godot_error!("{}", complaint);
+        for complaint in verdict.complaints {
+            if !editor {
+                godot_error!("{}", complaint);
+            }
+            self.level_faults.push(complaint);
         }
         match verdict.winner.and_then(|slot| kept.get(slot)) {
             Some(marker) => {
@@ -577,8 +673,9 @@ impl WaveLevel {
     /// Where the input-less demo strikes. The DECISION is pure and lives in
     /// [`level_plan::plan_demo_tap`] — which source, which wall, and what to
     /// say when there is no wall at all; this end only reads each source's
-    /// hub and name off the live nodes.
-    fn derive_tap(&mut self) {
+    /// hub and name off the live nodes. `editor` behaves exactly as it does
+    /// in [`Self::derive_spawn`].
+    fn derive_tap(&mut self, editor: bool) {
         let aims: Vec<level_plan::SourceAim> = self
             .source_children
             .iter()
@@ -593,26 +690,43 @@ impl WaveLevel {
             self.tap_normal = plan.normal;
         }
         if let Some(complaint) = verdict.complaint {
-            godot_error!("{}", complaint);
+            if !editor {
+                godot_error!("{}", complaint);
+            }
+            self.level_faults.push(complaint);
         }
     }
 
     /// Derive every technical contract from the children as they stand:
     /// centerlines from the walls, the spawn from its marker, the demo tap
     /// from the wall between the spawn and the nearest source. Loud about
-    /// whatever a designer left unplaceable.
+    /// whatever a designer left unplaceable — at run time through
+    /// `godot_error!`/`godot_warn!`, and in EITHER mode into `level_faults`
+    /// / `node_faults`, which are cleared and rewritten here on every call
+    /// rather than accumulated, so a fault a designer already fixed cannot
+    /// linger in the next warning read. Runs in the editor now as well as
+    /// at run time — `ready` no longer returns before it — so a designer
+    /// sees the level's complaints while dragging, not only after pressing
+    /// play; [`Self::rederive`] is the manual replay of this same pass.
     fn derive(&mut self) {
+        let editor = Engine::singleton().is_editor_hint();
+        self.level_faults.clear();
+        self.node_faults.clear();
         let census = self.census();
         self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
-        self.push_wall_table();
-        self.report_pack_range();
-        self.paint_labels(&census);
-        self.report_placement(&census);
+        self.push_wall_table(editor);
+        self.report_pack_range(editor);
+        self.paint_labels(&census, editor);
+        self.report_placement(&census, editor);
         self.source_children = census.sources;
         self.cat_children = census.cats;
         self.wall_children = census.walls;
-        self.derive_spawn(&census.spawns);
-        self.derive_tap();
+        self.derive_spawn(&census.spawns, editor);
+        self.derive_tap(editor);
+        // the Scene dock's warning icon only repaints when told to; every
+        // fault site above just rewrote level_faults, so this is the one
+        // place that needs to say so
+        self.base_mut().update_configuration_warnings();
     }
 
     /// Say out loud what a designer has placed where the level cannot hold
@@ -629,15 +743,16 @@ impl WaveLevel {
     /// would sink every shelf and beam that is meant to float. Both cures
     /// are worse than the faults, so the level reports and leaves it.
     ///
-    /// Derive time is RUN time: `ready` returns before `derive` under
-    /// `Engine::is_editor_hint`, so none of this reaches a designer while
-    /// they are dragging. Surfacing it in the editor is a separate job.
     /// A level with no floor to measure against — nothing built to stand
     /// on — has no verdict rather than an early return, so the counts are
     /// rewritten on EVERY derivation. An early return would leave the last
     /// build's numbers standing as this build's, which is the quietest kind
     /// of wrong a report can be.
-    fn report_placement(&mut self, census: &Census) {
+    ///
+    /// `editor` reaches a designer now too: every fault is always filed
+    /// into `node_faults` (Task 6 reads it per-node), and `godot_error!` —
+    /// unchanged text — fires only at run time, exactly as it always has.
+    fn report_placement(&mut self, census: &Census, editor: bool) {
         let (strays, sunk) = match self.floor_box() {
             Some(floor) => {
                 let placed = self.placed_solids(census);
@@ -650,8 +765,11 @@ impl WaveLevel {
         };
         self.unfloored = strays.len() as i64;
         self.sunken = sunk.len() as i64;
-        for fault in strays.iter().chain(sunk.iter()) {
-            godot_error!("{}", fault.text);
+        for fault in strays.into_iter().chain(sunk) {
+            if !editor {
+                godot_error!("{}", fault.text);
+            }
+            self.node_faults.push(fault);
         }
     }
 
@@ -709,7 +827,13 @@ impl WaveLevel {
     /// The shader reads `CUSTOM0` straight through for G now, so baking it
     /// onto each solid's mesh is the whole of painting — there is no
     /// per-instance uniform left to keep in step with it.
-    fn paint_labels(&mut self, census: &Census) {
+    ///
+    /// Starvation is both a level-wide warning and one node warning for
+    /// every authored solid that owns a starved superface class. The latter
+    /// is deliberately mapped from `classes_of_entry`, not from a retired
+    /// per-solid colour slot: one solid can now own several face classes,
+    /// and one merged class can belong to several solids.
+    fn paint_labels(&mut self, census: &Census, editor: bool) {
         let entries = self.paint_entries(census);
 
         // the touch graph — the SAME law the retired per-solid
@@ -913,14 +1037,43 @@ impl WaveLevel {
         // matching the pre-superface `assign_oids` voice: a starved class
         // is a seam that will not draw, and the shipped-map pin
         // (`game/tests/map_test.gd::test_shipped_level_derives_with_no_starved_classes`)
-        // holds the count at zero.
+        // holds the count at zero. In the editor, file the same words for
+        // the warning triangle instead of flooding the output panel.
         if out.starved > 0 {
-            godot_error!(
+            let message = format!(
                 "WaveLevel: {} superface class(es) could not take a label distinct from \
                  everything they touch — those seams will not draw. Spread the geometry or \
                  widen WORLD_OIDS.",
                 out.starved
             );
+            if !editor {
+                godot_error!("{}", message);
+            }
+            self.level_faults.push(message);
+        }
+
+        // A class, unlike the retired object-id slot, may belong to more
+        // than one solid after coplanar faces merge. Walk every authored
+        // entry once and pin one warning to it if ANY class it owns starved;
+        // slabs have no separate scene node and remain represented by the
+        // level-wide warning above.
+        let root = self.base().clone().upcast::<Node>();
+        for (entry, owned_classes) in entries.iter().zip(&classes_of_entry) {
+            if !owned_classes
+                .iter()
+                .any(|class| out.starved_classes.contains(class))
+            {
+                continue;
+            }
+            let Some(node) = entry.item.node() else {
+                continue;
+            };
+            self.node_faults.push(level_plan::PlacementFault {
+                path: root.get_path_to(&node).to_string(),
+                text: "one or more face classes cannot take a label distinct from everything they \
+                       touch — those seams will not draw."
+                    .to_string(),
+            });
         }
         self.starved_oid_slots = out.starved_classes.clone();
 
@@ -1091,9 +1244,10 @@ impl WaveLevel {
     /// about to. Only the truncation stays here, because it is the act the
     /// message describes — the words themselves are a decision over two
     /// numbers, and live in the pure plan where cargo can hold them.
-    fn push_wall_table(&mut self) {
+    fn push_wall_table(&mut self, editor: bool) {
         let mut rects: Vec<Vector4> = self.segments.iter().map(|s| sight::wall_rect(*s)).collect();
-        say(level_plan::wall_budget(rects.len(), sight::MAXW));
+        let budget = level_plan::wall_budget(rects.len(), sight::MAXW);
+        self.say(editor, budget);
         rects.truncate(sight::MAXW); // a no-op below the ceiling
         // kept for the per-object source muffle: the walls a camera→source
         // sight line is counted against, once per frame on the CPU
@@ -1110,11 +1264,12 @@ impl WaveLevel {
     /// designer meets by widening a room rather than by adding geometry.
     /// Measured off the derived centerlines, so it moves when a border wall
     /// moves; the words and the verdict are pure, and cargo holds them.
-    fn report_pack_range(&self) {
-        say(level_plan::pack_range_budget(
+    fn report_pack_range(&mut self, editor: bool) {
+        let budget = level_plan::pack_range_budget(
             level_plan::map_diagonal(&self.segments),
             level_plan::DIST_PACK_RANGE,
-        ));
+        );
+        self.say(editor, budget);
     }
 
     /// Push the wall table onto one data-writing material — loud when it is
@@ -1189,24 +1344,31 @@ impl WaveLevel {
         collect(&self.base().clone().upcast::<Node>(), &mut census);
         census
     }
-}
 
-/// Say one shader-budget verdict out loud at the volume it asked for, and
-/// nothing at all when there is nothing to say.
-///
-/// The two volumes are not interchangeable. An overflow is an ERROR because
-/// the world the shaders draw no longer matches the scene a designer
-/// authored — walls that were placed have stopped occluding. Running out of
-/// headroom is a WARNING because nothing is broken yet, and a level that
-/// shouted about a ceiling it had not hit would teach the reader to scroll
-/// past the one that matters.
-fn say(budget: Option<level_plan::Budget>) {
-    let Some(budget) = budget else {
-        return; // comfortably inside every ceiling: silence is the report
-    };
-    match budget.severity {
-        level_plan::Severity::Error => godot_error!("{}", budget.text),
-        level_plan::Severity::Warn => godot_warn!("{}", budget.text),
+    /// Say one shader-budget verdict out loud at the volume it asked for,
+    /// and nothing at all when there is nothing to say — and, in EITHER
+    /// mode, file its text into `level_faults`, which is what makes it
+    /// readable from the editor's warning icon at all.
+    ///
+    /// The two volumes are not interchangeable. An overflow is an ERROR
+    /// because the world the shaders draw no longer matches the scene a
+    /// designer authored — walls that were placed have stopped occluding.
+    /// Running out of headroom is a WARNING because nothing is broken yet,
+    /// and a level that shouted about a ceiling it had not hit would teach
+    /// the reader to scroll past the one that matters. That mapping is
+    /// unchanged and still fires only at run time — an editor's scene-open
+    /// is not the moment for either volume.
+    fn say(&mut self, editor: bool, budget: Option<level_plan::Budget>) {
+        let Some(budget) = budget else {
+            return; // comfortably inside every ceiling: silence is the report
+        };
+        if !editor {
+            match budget.severity {
+                level_plan::Severity::Error => godot_error!("{}", budget.text),
+                level_plan::Severity::Warn => godot_warn!("{}", budget.text),
+            }
+        }
+        self.level_faults.push(budget.text);
     }
 }
 

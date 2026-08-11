@@ -155,6 +155,9 @@ GODOT="$GODOT" "$DIR/tools/probe_editor_slabs.sh" || { echo "ci: editor-mode pro
 echo "ci: editor-source probe (blueprint limbs vs the runtime guard)"
 GODOT="$GODOT" "$DIR/tools/probe_editor_sources.sh" || { echo "ci: editor-source probe FAILED"; exit 1; }
 
+echo "ci: editor-level probe (the level derives while the designer watches)"
+GODOT="$GODOT" "$DIR/tools/probe_editor_level.sh" || { echo "ci: editor-level probe FAILED"; exit 1; }
+
 if [ "${SKIP_EXPORT:-}" = "1" ]; then
   echo "ci: SKIP_EXPORT=1 — checks-only run"
   echo "ci: OK"
