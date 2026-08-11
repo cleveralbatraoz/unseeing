@@ -320,16 +320,73 @@ func test_uninjected_level_reports() -> void:
 	))
 
 
-## A level without a SpawnPoint marker has nowhere to wake the hero —
-## loud, with the level origin as the fallback.
+## A level without a SpawnPoint marker has nowhere to wake the hero, and
+## the fallback is worse than "somewhere else": the level's own origin is
+## the corner outside the border walls, so the hero wakes sealed into the
+## sliver there. The message says where it was put and that it is very
+## likely unreachable — "nowhere to wake" alone never did.
 func test_missing_spawn_reports() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	var enter := func() -> void: add_child(level)
 	await (assert_error(enter).is_push_error(
-		"WaveLevel: no SpawnPoint marker — the hero has nowhere to wake"
+		(
+			"WaveLevel: no Marker3D named exactly 'SpawnPoint' under the level — the hero has "
+			+ "nowhere to wake, so it wakes at the level's own origin, (0, 0.9, 0). That is the "
+			+ "corner of the map, outside the border walls: the hero is very likely sealed into "
+			+ "the sliver there and cannot reach the level at all. Add a Marker3D named "
+			+ "'SpawnPoint', standing on the floor, facing where the hero should look."
+		)
 	))
 	assert_vector(level.spawn_pos()).is_equal(Vector3(0, 0.9, 0))
+
+
+## THE Ctrl+D case, the one issue #19 is named for: duplicating the marker
+## in the editor leaves 'SpawnPoint2', which the exact-name test never
+## matched — so the copy was not even collected, a designer who dragged it
+## across the map moved nothing, and the hero woke at the original without
+## a word. The winner is unchanged; the silence is not.
+func test_auto_numbered_spawn_copy_is_reported_and_never_promoted() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	var copy := _spawn_marker(Vector3(9, 0, 9), 1.0)
+	copy.name = "SpawnPoint2"
+	level.add_child(copy)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: auto-numbered spawn copies IGNORED: 'SpawnPoint2'. Only a Marker3D "
+			+ "named exactly 'SpawnPoint' wakes the hero, and Ctrl+D renames the copy — so "
+			+ "moving the copy moves nothing. Rename the one you want to 'SpawnPoint' and "
+			+ "delete the rest."
+		)
+	))
+	assert_vector(level.spawn_pos()).is_equal(Vector3(1, 0.9, 3))
+
+
+## Two markers named EXACTLY 'SpawnPoint' is legal in Godot under two
+## different parents, and used to be settled in silence by whichever the
+## walk reached first. The first still wins — nothing that is valid today
+## moves — and the loser is named by its PATH, the only thing that
+## separates two nodes carrying one name.
+func test_two_exact_spawn_markers_name_the_one_that_lost() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	var room := Node3D.new()
+	room.name = "Rooms"
+	room.add_child(_spawn_marker(Vector3(9, 0, 9), 1.0))
+	level.add_child(room)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: 2 markers are named exactly 'SpawnPoint' — the hero wakes at the first "
+			+ "the level walk reaches, 'SpawnPoint', and ignores 'Rooms/SpawnPoint'. Delete or "
+			+ "rename every spawn marker but one."
+		)
+	))
+	assert_vector(level.spawn_pos()).is_equal(Vector3(1, 0.9, 3))
 
 
 ## An open-sided fan room is legal now: the fan's waves are stopped by the

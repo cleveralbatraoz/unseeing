@@ -24,9 +24,13 @@
 //! retyping anything or tripping an enclosure law: the waves simply light
 //! what they can reach and stop at what they cannot.
 //!
-//! Spawn decision: a `Marker3D` child named `SpawnPoint`, standing ON
-//! the floor, facing where the hero should look — the designer drags and
-//! rotates a gizmo; the engine lifts it to capsule height.
+//! Spawn decision: a `Marker3D` child named exactly `SpawnPoint`, standing
+//! ON the floor, facing where the hero should look — the designer drags and
+//! rotates a gizmo; the engine lifts it to capsule height. Every OTHER
+//! marker whose name reads like a spawn is collected too — the `SpawnPoint2`
+//! Ctrl+D leaves behind, a second exact name under another parent — not to
+//! compete with it, but so the level can NAME what it ignored instead of
+//! letting a moved copy change nothing in silence.
 
 use godot::classes::{
     Engine, INode3D, Marker3D, Material, MeshInstance3D, Node3D, ShaderMaterial, StaticBody3D,
@@ -90,7 +94,12 @@ struct Census {
     walls: Vec<Gd<WaveWall>>,
     sources: Vec<DynGd<Node, dyn SoundSource>>,
     cats: Vec<Gd<WaveCat>>,
-    spawn: Option<Gd<Marker3D>>,
+    /// EVERY marker whose name reads as a spawn — the exact one and any
+    /// auto-numbered copy Ctrl+D left behind, in walk order. The winner is
+    /// still the first exact name, but a copy that was never collected
+    /// could never be reported either, which is the whole bug: the level
+    /// has to see what it refuses in order to say it refused it.
+    spawns: Vec<Gd<Marker3D>>,
 }
 
 /// The level root node. `inject` BEFORE adding it to the tree — children
@@ -317,6 +326,48 @@ impl WaveLevel {
         level_plan::SOURCE_THROUGH.powi(crossings as i32)
     }
 
+    /// Where the hero wakes, and every word a designer needs about the
+    /// markers that did not win. The DECISION is pure and lives in
+    /// [`level_plan::choose_spawn`]; this end only measures — the winner's
+    /// world position lifted to capsule height, the level's own origin as
+    /// the fallback, and each candidate's path under the level root, which
+    /// is the only thing that tells two markers named `SpawnPoint` apart.
+    fn derive_spawn(&mut self, markers: &[Gd<Marker3D>]) {
+        let lift = Vector3::new(0.0, level_plan::SPAWN_LIFT as f32, 0.0);
+        let fallback = self.base().get_global_position() + lift;
+        let root = self.base().clone().upcast::<Node>();
+        // the two lists are grown in ONE pass, so a verdict's index cannot
+        // slide off the marker it names — the walk already applied the same
+        // predicate, but a filter that ever disagreed with it would silently
+        // wake the hero at the wrong node
+        let mut kept: Vec<&Gd<Marker3D>> = Vec::new();
+        let mut candidates: Vec<level_plan::SpawnCandidate> = Vec::new();
+        for marker in markers {
+            let Some(kind) = level_plan::spawn_name(&marker.get_name().to_string()) else {
+                continue; // renamed since the walk: no longer a spawn marker
+            };
+            kept.push(marker);
+            candidates.push(level_plan::SpawnCandidate {
+                path: root.get_path_to(marker).to_string(),
+                kind,
+            });
+        }
+        let verdict = level_plan::choose_spawn(&candidates, fallback);
+        for complaint in &verdict.complaints {
+            godot_error!("{}", complaint);
+        }
+        match verdict.winner.and_then(|slot| kept.get(slot)) {
+            Some(marker) => {
+                self.spawn_at = marker.get_global_position() + lift;
+                self.spawn_heading = f64::from(marker.get_rotation().y);
+            }
+            None => {
+                self.spawn_at = fallback;
+                self.spawn_heading = 0.0;
+            }
+        }
+    }
+
     /// Derive every technical contract from the children as they stand:
     /// centerlines from the walls, the spawn from the marker, the demo tap
     /// from the wall between the spawn and the first source. Loud about
@@ -329,15 +380,7 @@ impl WaveLevel {
         self.source_children = census.sources;
         self.cat_children = census.cats;
         self.wall_children = census.walls;
-        let lift = Vector3::new(0.0, level_plan::SPAWN_LIFT as f32, 0.0);
-        if let Some(marker) = census.spawn {
-            self.spawn_at = marker.get_global_position() + lift;
-            self.spawn_heading = f64::from(marker.get_rotation().y);
-        } else {
-            godot_error!("WaveLevel: no SpawnPoint marker — the hero has nowhere to wake");
-            self.spawn_at = self.base().get_global_position() + lift;
-            self.spawn_heading = 0.0;
-        }
+        self.derive_spawn(&census.spawns);
         let Some(source) = self.source_children.first() else {
             return; // a silent level is legal: no source to strike toward
         };
@@ -706,9 +749,9 @@ fn collect(node: &Gd<Node>, census: &mut Census) {
         } else if let Ok(cat) = child.clone().try_cast::<WaveCat>() {
             census.cats.push(cat);
         } else if let Ok(marker) = child.clone().try_cast::<Marker3D>()
-            && marker.get_name() == "SpawnPoint"
+            && level_plan::spawn_name(&marker.get_name().to_string()).is_some()
         {
-            census.spawn.get_or_insert(marker);
+            census.spawns.push(marker);
         }
         collect(&child, census);
     }
