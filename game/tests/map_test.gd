@@ -73,17 +73,21 @@ func _shipped_level() -> WaveLevel:
 	return level
 
 
-## A level's sound source, found by the NAME its scene gives it rather than
-## by where it sits in scene order. Scene order is what every derivation
-## leans on, so it is exactly what a designer changes by dragging one node
-## above another — and a positional lookup answers such an edit with a null
-## to crash on instead of a sentence. A map that has lost the named source
-## says so here, once, in words.
-func _source_named(level: WaveLevel, node_name: String) -> Node3D:
+## A level's sound source, found by the NAME its scene gives it AND the
+## class it is, rather than by where it sits in scene order. Scene order is
+## what every derivation leans on, so it is exactly what a designer changes
+## by dragging one node above another — and a positional lookup answers
+## such an edit with a null to crash on instead of a sentence.
+##
+## Both halves of the identity are checked because each closes the other's
+## hole: a class alone is re-pointed by a second source of that class, a
+## name alone by anything renamed into its place, and neither miss is
+## noisy. A map that has lost the source says so here, once, in words.
+func _source_named(level: WaveLevel, node_name: String, kind: String) -> Node3D:
 	for source: Node3D in level.sources():
-		if str(source.name) == node_name:
+		if str(source.name) == node_name and source.is_class(kind):
 			return source
-	fail("the level carries no sound source named '%s'" % node_name)
+	fail("the level carries no %s named '%s'" % [kind, node_name])
 	return null
 
 
@@ -196,7 +200,7 @@ func test_the_source_muffle_dims_once_per_wall_it_crosses() -> void:
 ## radio is a ghost of a ghost.
 func test_the_radio_is_one_wall_from_the_fan_room() -> void:
 	var level := _shipped_level()
-	var radio := _source_named(level, "Radio")
+	var radio := _source_named(level, "Radio", "SoundRadio")
 	var hub := radio.global_position + SoundRadio.hub_offset()
 	var in_fan_room := Vector3(18.0, 1.6, 4.0)
 	assert_float(level.source_muffle(in_fan_room, hub)).is_equal_approx(0.3, 0.0001)
@@ -223,8 +227,34 @@ func test_a_source_added_first_leaves_the_map_claim_where_it_was() -> void:
 	add_child(level)
 	assert_int(level.sources().size()).is_equal(3)
 	assert_object(level.sources()[0]).is_same(intruder)  # it really is first
-	var radio := _source_named(level, "Radio")
+	var radio := _source_named(level, "Radio", "SoundRadio")
 	assert_object(radio).is_not_same(intruder)
+	var hub := radio.global_position + SoundRadio.hub_offset()
+	assert_float(level.source_muffle(Vector3(18.0, 1.6, 4.0), hub)).is_equal_approx(0.3, 0.0001)
+
+
+## A NODE WEARING THE RADIO'S NAME is not the radio. A name is exactly as
+## editable as scene order — a designer copies a source and renames it, or
+## drops a fan into a grouping folder and calls it Radio — so a lookup that
+## trusts only the name is re-pointed as silently as the positional one it
+## replaced. The two halves of the identity close each other's hole: a
+## class alone is re-pointed by a second radio, a name alone by a rename,
+## and together they name one node.
+func test_a_node_wearing_the_radios_name_is_not_the_radio() -> void:
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	var folder := Node3D.new()  # a grouping folder, so the name is free to reuse
+	folder.name = "Furniture"
+	level.add_child(folder)
+	var impostor := SoundFan.new()
+	impostor.name = "Radio"
+	impostor.position = Vector3(18.0, 0, 4.0)  # in the fan room, beside the eye
+	folder.add_child(impostor)
+	level.move_child(folder, 0)  # and first in scene order
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_object(level.sources()[0]).is_same(impostor)  # it really does come first
+	var radio := _source_named(level, "Radio", "SoundRadio")
+	assert_object(radio).is_not_same(impostor)
 	var hub := radio.global_position + SoundRadio.hub_offset()
 	assert_float(level.source_muffle(Vector3(18.0, 1.6, 4.0), hub)).is_equal_approx(0.3, 0.0001)
 
