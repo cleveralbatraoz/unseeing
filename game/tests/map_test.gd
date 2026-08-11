@@ -6,6 +6,12 @@ extends GdUnitTestSuite
 ## spawn and the dev demo tap the level derives, the census of shapes that
 ## furnish it, and the object-id seam law across every touching pair.
 ##
+## The two LAWS the map exists to make audible — how much of a source
+## survives a wall, and what a wall costs against the volume ladder — are
+## held on levels built in code instead. They are true of every level, and
+## asserting them through the shipped scene's node ORDER made a source added
+## in the editor crash the suite rather than fail it.
+##
 ## The map is a 28 x 28 m plan of rooms on wall centerlines 0.6 m inside
 ## its edges:
 ##
@@ -67,6 +73,29 @@ func _shipped_level() -> WaveLevel:
 	return level
 
 
+## A level's sound source, found by the NAME its scene gives it rather than
+## by where it sits in scene order. Scene order is what every derivation
+## leans on, so it is exactly what a designer changes by dragging one node
+## above another — and a positional lookup answers such an edit with a null
+## to crash on instead of a sentence. A map that has lost the named source
+## says so here, once, in words.
+func _source_named(level: WaveLevel, node_name: String) -> Node3D:
+	for source: Node3D in level.sources():
+		if str(source.name) == node_name:
+			return source
+	fail("the level carries no sound source named '%s'" % node_name)
+	return null
+
+
+## The spawn marker every legal level needs — a level with no hero start is
+## an error, and these built-in-code levels are not testing that.
+func _spawn_marker(at: Vector3) -> Marker3D:
+	var marker := Marker3D.new()
+	marker.name = "SpawnPoint"
+	marker.position = at
+	return marker
+
+
 func test_shipped_walls_axis_aligned_and_bordered() -> void:
 	var segs := _shipped_level().wall_segments()
 	assert_int(segs.size()).is_greater_equal(4)
@@ -125,16 +154,39 @@ func test_shipped_level_matches_validated_design() -> void:
 	)
 
 
-## The per-object source muffle: from the spawn — behind the one divider
-## between it and the fan — the silhouette's standing floor survives at
-## SOURCE_THROUGH (0.3, a faint ghost) and the whole shape dims together;
-## from inside the fan room, no wall, it is untouched (1.0).
-func test_shipped_source_muffle_dims_through_the_divider() -> void:
-	var level := _shipped_level()
-	var fan := level.sources()[0] as SoundFan
-	var hub := fan.global_position + Vector3(0, SoundFan.head_h(), 0)
-	assert_float(level.source_muffle(level.spawn_pos(), hub)).is_equal_approx(0.3, 0.0001)
-	assert_float(level.source_muffle(Vector3(12, 1.6, 5), hub)).is_equal_approx(1.0, 0.0001)
+## The per-object source muffle, on a level built in code: a source's
+## standing silhouette is untouched in the open (1.0), survives ONE wall at
+## SOURCE_THROUGH (0.3, a faint ghost), and is multiplied down again by
+## every further wall. The compounding is the law — a muffle that merely
+## flagged "walled" would read 0.3 through two walls as well, and a hero
+## could not tell a source in the next room from one three rooms away.
+##
+## Two z-run walls at x = 4 and x = 12, an eye west of both: the fan shares
+## the eye's room, the radio stands one wall east, and the far hub is two
+## walls out.
+func test_the_source_muffle_dims_once_per_wall_it_crosses() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	for x: float in [4.0, 12.0]:
+		var wall := WaveWall.new()  # a z-run wall spanning z 0..8
+		wall.length = 8.0
+		wall.position = Vector3(x, 0, 4)
+		wall.rotation.y = PI * 0.5
+		level.add_child(wall)
+	var fan := SoundFan.new()
+	fan.position = Vector3(2, 0, 4)  # the eye's own room
+	level.add_child(fan)
+	var radio := SoundRadio.new()
+	radio.position = Vector3(8, 0, 4)  # one wall east
+	level.add_child(radio)
+	level.add_child(_spawn_marker(Vector3(1, 0, 4)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var eye := Vector3(1, 1.6, 4)
+	var fan_hub := fan.global_position + Vector3(0, SoundFan.head_h(), 0)
+	var radio_hub := radio.global_position + SoundRadio.hub_offset()
+	assert_float(level.source_muffle(eye, fan_hub)).is_equal_approx(1.0, 0.0001)
+	assert_float(level.source_muffle(eye, radio_hub)).is_equal_approx(0.3, 0.0001)
+	assert_float(level.source_muffle(eye, Vector3(14, 1.15, 4))).is_equal_approx(0.09, 0.0001)
 
 
 ## THE map's reason for growing: the radio sits in a dedicated room whose
@@ -144,7 +196,7 @@ func test_shipped_source_muffle_dims_through_the_divider() -> void:
 ## radio is a ghost of a ghost.
 func test_the_radio_is_one_wall_from_the_fan_room() -> void:
 	var level := _shipped_level()
-	var radio := level.sources()[1] as SoundRadio
+	var radio := _source_named(level, "Radio")
 	var hub := radio.global_position + SoundRadio.hub_offset()
 	var in_fan_room := Vector3(18.0, 1.6, 4.0)
 	assert_float(level.source_muffle(in_fan_room, hub)).is_equal_approx(0.3, 0.0001)
@@ -154,24 +206,62 @@ func test_the_radio_is_one_wall_from_the_fan_room() -> void:
 	assert_bool(level.source_muffle(level.spawn_pos(), hub) < 0.3).is_true()
 
 
+## A THIRD SOURCE dropped into the map must not re-point the test above.
+## Scene order is the map's most editable property — a designer adds a
+## source, or drags one above another, and every positional lookup in this
+## suite silently changes what it is talking about. Worse than changing:
+## `sources()[1] as SoundRadio` on a level whose second source is the fan
+## yields a NULL, and the suite dies on the next property read instead of
+## naming the map's fault.
+func test_a_source_added_first_leaves_the_map_claim_where_it_was() -> void:
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	var intruder := SoundRadio.new()
+	intruder.name = "Intruder"
+	level.add_child(intruder)
+	level.move_child(intruder, 0)  # ahead of the shipped fan and radio
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_int(level.sources().size()).is_equal(3)
+	assert_object(level.sources()[0]).is_same(intruder)  # it really is first
+	var radio := _source_named(level, "Radio")
+	assert_object(radio).is_not_same(intruder)
+	var hub := radio.global_position + SoundRadio.hub_offset()
+	assert_float(level.source_muffle(Vector3(18.0, 1.6, 4.0), hub)).is_equal_approx(0.3, 0.0001)
+
+
 ## A WALL COSTS MORE THAN THE LADDER IS WORTH, and the map is laid out so
-## the hero meets that fact head on. Standing in the fan room the quieter
-## fan reads 0.75 in open air while the LOUDER radio, one wall east, reads
-## 0.30 — because the ladder is a factor of 1.33 and a wall is a factor of
-## 3.33. That is not a bug to tune away: a quiet thing beside you genuinely
-## does sound louder than a loud thing in the next room, which is what
-## SOURCE_THROUGH exists to say. The standing image is a COMPOSITE of
-## loudness and geometry, and this pins both halves at one concrete eye
-## point.
+## the hero meets that fact head on. With the quieter fan in the eye's own
+## room and the LOUDER radio one wall east, the fan reads 0.75 in open air
+## while the radio reads 0.30 — because the ladder is a factor of 1.33 and
+## a wall is a factor of 3.33. That is not a bug to tune away: a quiet
+## thing beside you genuinely does sound louder than a loud thing in the
+## next room, which is what SOURCE_THROUGH exists to say. The standing
+## image is a COMPOSITE of loudness and geometry, and this pins both halves
+## at one concrete eye point.
+##
+## The layout is built in code because the law is not the map's: any level
+## that puts the two sources this way owes these numbers.
 ##
 ## The ladder's own ordering is pinned like-for-like elsewhere — at equal
 ## wall count, in radio_wave.rs — so the two facts do not have to be true
 ## of the same number.
 func test_a_wall_costs_more_than_the_volume_ladder_is_worth() -> void:
-	var level := _shipped_level()
-	var fan := level.sources()[0] as SoundFan
-	var radio := level.sources()[1] as SoundRadio
-	var eye := Vector3(18.0, 1.6, 4.0)
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var wall := WaveWall.new()  # a z-run wall at x = 4, spanning z 0..8
+	wall.length = 8.0
+	wall.position = Vector3(4, 0, 4)
+	wall.rotation.y = PI * 0.5
+	level.add_child(wall)
+	var fan := SoundFan.new()
+	fan.position = Vector3(2, 0, 4)  # the eye's own room
+	level.add_child(fan)
+	var radio := SoundRadio.new()
+	radio.position = Vector3(8, 0, 4)  # one wall east
+	level.add_child(radio)
+	level.add_child(_spawn_marker(Vector3(1, 0, 4)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var eye := Vector3(1.0, 1.6, 4.0)
 	var fan_hub := fan.global_position + Vector3(0, SoundFan.head_h(), 0)
 	var radio_hub := radio.global_position + SoundRadio.hub_offset()
 	var fan_image := fan.volume * level.source_muffle(eye, fan_hub)
