@@ -23,7 +23,7 @@ use godot::prelude::*;
 
 use super::limbs::{sphere, tube};
 use super::player::UnseeingPlayer;
-use crate::viewmodel::{self, Pose, Viewmodel};
+use crate::viewmodel::{self, Pose, Viewmodel, ViewmodelCapture};
 
 /// The arm-and-cane layer's flat object id (the data pass's `u_oid`): one
 /// silhouette for the whole viewmodel arm, in the creature band (0.7+) so
@@ -276,6 +276,30 @@ impl HeroBody {
             sphere(&mut mesh, leg.shoe, 0.08);
         }
         mesh.surface_end();
+    }
+
+    /// The viewmodel as data — `None` when `_ready` refused (uninjected)
+    /// and the viewmodel never existed, which the blob reports as a
+    /// refusal, never as a default pose.
+    #[expect(
+        dead_code,
+        reason = "the door this task builds; the blob module (a later task) \
+                  is its first caller"
+    )]
+    pub(crate) fn capture_vm(&self) -> Option<ViewmodelCapture> {
+        self.vm.as_ref().map(Viewmodel::capture)
+    }
+
+    /// Place a built viewmodel into a captured mid-stride state — the
+    /// footstep clock and shoe alternation included, so the very next
+    /// footfall lands exactly where the original's would have.
+    #[expect(
+        dead_code,
+        reason = "the door this task builds; the restorer module (a later \
+                  task) is its first caller"
+    )]
+    pub(crate) fn restore_vm(&mut self, capture: ViewmodelCapture) {
+        self.vm = Some(Viewmodel::restore(capture));
     }
 }
 

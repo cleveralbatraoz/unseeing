@@ -135,6 +135,27 @@ pub fn leg_pose(
     }
 }
 
+/// Everything a Viewmodel is, as data — `step_t`/`step_side` included, or
+/// a restored walker's next footstep fires on the wrong tick with the
+/// wrong shoe. `Viewmodel::new` always starts the clock SPENT
+/// (`step_t = 0.0`) and the alternation at right (`step_side = 1`); a
+/// restore that reconstructed instead of copying these two would fire a
+/// spurious footstep on the very next moving frame and reset which shoe
+/// strikes first.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewmodelCapture {
+    pub walk_amp: f64,
+    pub leg_phase: f64,
+    pub swing_phase: f64,
+    pub cane_swing: f64,
+    pub sway_x: f64,
+    pub sway_y: f64,
+    pub last_yaw: f64,
+    pub last_pitch: f64,
+    pub step_t: f64,
+    pub step_side: i32,
+}
+
 /// The viewmodel state machine: walk amplitude, phases, sway lag, and the
 /// footstep clock. One instance per hero body, advanced once per rendered
 /// frame — never by wall time.
@@ -239,6 +260,44 @@ impl Viewmodel {
     #[must_use]
     pub fn sway_y(&self) -> f64 {
         self.sway_y
+    }
+
+    /// The whole viewmodel as data — every field the walk cycle, the
+    /// look-sway and the footstep clock carry between frames, `step_t`/
+    /// `step_side` included.
+    #[must_use]
+    pub fn capture(&self) -> ViewmodelCapture {
+        ViewmodelCapture {
+            walk_amp: self.walk_amp,
+            leg_phase: self.leg_phase,
+            swing_phase: self.swing_phase,
+            cane_swing: self.cane_swing,
+            sway_x: self.sway_x,
+            sway_y: self.sway_y,
+            last_yaw: self.last_yaw,
+            last_pitch: self.last_pitch,
+            step_t: self.step_t,
+            step_side: self.step_side,
+        }
+    }
+
+    /// A viewmodel rebuilt mid-stride — the one thing `new` cannot express
+    /// (it hard-codes the footstep clock SPENT and the alternation at
+    /// right; see [`ViewmodelCapture`]'s doc for why that matters).
+    #[must_use]
+    pub fn restore(capture: ViewmodelCapture) -> Self {
+        Self {
+            walk_amp: capture.walk_amp,
+            leg_phase: capture.leg_phase,
+            swing_phase: capture.swing_phase,
+            cane_swing: capture.cane_swing,
+            sway_x: capture.sway_x,
+            sway_y: capture.sway_y,
+            last_yaw: capture.last_yaw,
+            last_pitch: capture.last_pitch,
+            step_t: capture.step_t,
+            step_side: capture.step_side,
+        }
     }
 
     /// The footstep clock — hero_body.gd's `_footsteps`, verbatim: idling
@@ -467,5 +526,38 @@ mod tests {
         assert_eq!(cane_lift(true, -0.3), 0.0);
         assert!((cane_lift(true, 0.13) - 0.5).abs() < 1e-12);
         assert_eq!(cane_lift(false, 0.26), 0.3);
+    }
+
+    /// The restored walker's NEXT footstep lands exactly when the
+    /// original's would — timing and which shoe. A reconstructed
+    /// viewmodel (new()) cannot do this: it starts with the step clock
+    /// SPENT and the alternation reset to right.
+    #[test]
+    fn a_restored_walker_keeps_its_step_clock_and_its_next_shoe() {
+        let mut original = Viewmodel::new(0.0, 0.0);
+        // walk until the first step fires and the clock is mid-count
+        let mut fired = None;
+        let mut steps = 0;
+        while fired.is_none() || steps < 3 {
+            fired = original.footstep(0.05, true);
+            if fired.is_some() {
+                steps += 1;
+            }
+        }
+        // now mid-interval: 0.05 into the 0.42 rebook, next side known
+        let mut restored = Viewmodel::restore(original.capture());
+        assert_eq!(restored, original);
+        // lockstep to the next firing: same tick, same side
+        loop {
+            let a = original.footstep(0.05, true);
+            let b = restored.footstep(0.05, true);
+            assert_eq!(a, b);
+            if a.is_some() {
+                break;
+            }
+        }
+        // and the spurious-first-step failure a fresh walker would show:
+        let mut fresh = Viewmodel::new(0.0, 0.0);
+        assert!(fresh.footstep(0.05, true).is_some()); // fires at once
     }
 }

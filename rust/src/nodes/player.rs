@@ -622,4 +622,30 @@ impl UnseeingPlayer {
             })
             .collect()
     }
+
+    /// The restore door for the eye: the same clamp the look law applies,
+    /// so a blob cannot place the eye past `PITCH_LIMIT`.
+    #[expect(
+        dead_code,
+        reason = "the door this task builds; the restorer module (a later \
+                  task) is its first caller"
+    )]
+    pub(crate) fn set_eye_pitch(&mut self, pitch: f64) {
+        if let Some(camera) = self.camera.as_mut() {
+            let mut rot = camera.get_rotation();
+            rot.x = pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT) as f32;
+            camera.set_rotation(rot);
+        }
+    }
+
+    /// Empty the out-tray before a restore rebuilds it — restoring onto a
+    /// non-empty queue would replay the captured waves AND the stale ones.
+    #[expect(
+        dead_code,
+        reason = "the door this task builds; the restorer module (a later \
+                  task) is its first caller"
+    )]
+    pub(crate) fn clear_wave_queue(&mut self) {
+        self.wave_queue.clear();
+    }
 }
