@@ -33,11 +33,13 @@ fi
 echo "ci: repository hygiene"
 "$DIR/test/repo_hygiene.sh" || exit 1
 
-# Self-test for the boot-check gate further down (#21) — pure shell, no
-# Godot, so it belongs up here with the other cheap invariant checks
+# Self-tests for two gates further down (#21, #28) — pure shell, no
+# Godot, so they belong up here with the other cheap invariant checks
 # rather than after minutes of Rust/export work.
 echo "ci: boot-error gate self-test"
 "$DIR/test/ci_boot_error_gate.sh" || exit 1
+echo "ci: gdscript lint scope self-test"
+"$DIR/test/ci_gdscript_lint_scope.sh" || exit 1
 
 # The test bench is vendored third-party code, so nothing else in this
 # pipeline would notice if it drifted — the pre-commit hook deliberately
@@ -100,7 +102,8 @@ GDLINT="$(command -v gdlint || echo "$HOME/.local/bin/gdlint")"
   echo "ci: FAILED gdformat/gdlint not found (pipx install 'gdtoolkit==4.*')"
   exit 2
 }
-GD_FILES="$(find "$DIR/game/scripts" "$DIR/game/tests" -name '*.gd')"
+. "$DIR/ci/gdscript_files.sh"
+GD_FILES="$(gdscript_files "$DIR")"
 "$GDFORMAT" --check $GD_FILES || { echo "ci: format check FAILED (run gdformat on the files above)"; exit 1; }
 "$GDLINT" $GD_FILES || { echo "ci: lint FAILED"; exit 1; }
 echo "ci: format + lint OK"
