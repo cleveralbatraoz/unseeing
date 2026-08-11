@@ -182,9 +182,19 @@ names "libunseeing_core.dylib" "the coreless rejection names what is missing"
 # Vacuity: nothing Mach-O anywhere. "I checked every binary and they were all
 # fine" is a lie when there were none, and this is the shape a wrong path
 # argument takes.
+#
+# The exit code alone cannot pin this, and a mutation proved it: an export
+# with no Mach-O in it also has no wave core, so the core-presence rejection
+# fires on the same fixture and answers 1 too. Weakening the vacuity guard to
+# a condition that never holds changed nothing any assertion could see. So the
+# MESSAGE is the assertion here — "you pointed me at something that is not an
+# export" and "this export is missing its engine" are different failures with
+# different fixes, and a check that cannot tell them apart is worth less than
+# one that can.
 mkdir -p "$T/empty/unseeing.app/Contents/Resources"
 printf 'GDPC\n' > "$T/empty/unseeing.app/Contents/Resources/unseeing.pck"
 probe "$CHECK_EXPORT" 1 "rejects an export containing no Mach-O binary at all" "$T/empty"
+names "no Mach-O binary anywhere" "the empty-export rejection says nothing was verified, not that a core is missing"
 
 # The template's own executable is half a binary while the core is fine — the
 # other way this bundle fails its preset. binary_format/architecture is a
