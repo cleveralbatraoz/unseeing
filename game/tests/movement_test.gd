@@ -124,6 +124,22 @@ func test_mouse_look_capture_gate_and_pitch_clamp() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 
+## The scripted eye: look() applies the exact captured-mouse law — yaw by
+## -x, pitch by -y, both scaled by MOUSE_SENS — without needing a mouse.
+## 100 px right = -(100 x 0.0026) = -0.26 rad, hand-derived from the
+## constant, not read back from the code under test.
+func test_look_turns_the_body_by_the_mouse_law() -> void:
+	_player.look(Vector2(100, 0))
+	assert_float(_player.rotation.y).is_equal_approx(-0.26, 1e-4)
+
+
+## The pitch clamp holds for scripted look exactly as for the mouse: a
+## huge downward swipe pins the eye at -PITCH_LIMIT, never past it.
+func test_look_pitch_stops_at_the_limit() -> void:
+	_player.look(Vector2(0, 10000))
+	assert_float(_player.camera.rotation.x).is_equal_approx(-1.35, 1e-4)
+
+
 func _motion(relative: Vector2) -> InputEventMouseMotion:
 	var motion := InputEventMouseMotion.new()
 	motion.relative = relative

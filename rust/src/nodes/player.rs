@@ -173,15 +173,7 @@ impl ICharacterBody3D for UnseeingPlayer {
     fn unhandled_input(&mut self, event: Gd<InputEvent>) {
         if let Ok(motion) = event.clone().try_cast::<InputEventMouseMotion>() {
             if Input::singleton().get_mouse_mode() == input::MouseMode::CAPTURED {
-                let relative = motion.get_relative();
-                self.base_mut()
-                    .rotate_y((f64::from(-relative.x) * MOUSE_SENS) as f32);
-                if let Some(camera) = self.camera.as_mut() {
-                    let mut rot = camera.get_rotation();
-                    rot.x = (f64::from(rot.x) - f64::from(relative.y) * MOUSE_SENS)
-                        .clamp(-PITCH_LIMIT, PITCH_LIMIT) as f32;
-                    camera.set_rotation(rot);
-                }
+                self.apply_look(motion.get_relative());
             }
             return;
         }
@@ -318,6 +310,16 @@ impl UnseeingPlayer {
         self.tap_queued = true;
     }
 
+    /// One mouse-motion's worth of look, as data: yaw by -x, pitch by -y,
+    /// both scaled by [`MOUSE_SENS`], pitch clamped to [`PITCH_LIMIT`] —
+    /// the exact law the captured-mouse handler applies, callable without
+    /// a mouse so a scripted run turns the hero through the player's real
+    /// look path instead of teleporting the rotation around it.
+    #[func]
+    pub fn look(&mut self, relative: Vector2) {
+        self.apply_look(relative);
+    }
+
     /// The viewmodel's sweep asks for the cane rest to be computed at
     /// this yaw offset. One frame of latency BY DESIGN: requested during
     /// the render frame, honored on the next physics tick, read back
@@ -391,6 +393,20 @@ impl UnseeingPlayer {
                 entry
             })
             .collect()
+    }
+
+    /// The look law, shared by the captured mouse and the scripted
+    /// `look`: the capture GATE stays at the event handler — it is about
+    /// who owns the cursor, not about how rotation works.
+    fn apply_look(&mut self, relative: Vector2) {
+        self.base_mut()
+            .rotate_y((f64::from(-relative.x) * MOUSE_SENS) as f32);
+        if let Some(camera) = self.camera.as_mut() {
+            let mut rot = camera.get_rotation();
+            rot.x = (f64::from(rot.x) - f64::from(relative.y) * MOUSE_SENS)
+                .clamp(-PITCH_LIMIT, PITCH_LIMIT) as f32;
+            camera.set_rotation(rot);
+        }
     }
 
     /// The cane speaks. Executed inside the physics tick, one queued tap
