@@ -88,5 +88,14 @@ must_not_catch "WaveCore's refusal message carries no class prefix, so it is not
 # unrelated to any of our classes must pass through untouched.
 must_not_catch "an arbitrary unrelated ERROR: line is not a catch-all hit" \
   "ERROR: NotAnEngineClass: this line exists only to prove the gate is not a bare catch-all"
+# Well-known Godot *engine* ERROR: formats (Core's ERR_FAIL_COND-family
+# macros) — not captured from this project's own boot (which is clean on
+# every machine tried so far, see the report), but real, documented Godot
+# core text, covering the Linux/droplet engine chatter neither this
+# machine nor the reviewer's could reproduce.
+must_not_catch "a Godot ERR_FAIL_COND-style condition line is not caught" \
+  'ERROR: Condition "p_size.x < 0" is true.'
+must_not_catch "a Godot resource-loader ERROR: line is not caught" \
+  "ERROR: Cannot open file 'res://nonexistent.tres'."
 
 exit "$FAIL"
