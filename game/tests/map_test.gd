@@ -391,6 +391,35 @@ func test_shipped_level_reuses_ids_between_distant_boxes() -> void:
 	assert_int(distinct.size()).is_less(boxes.size())
 
 
+## Every disagreement between a level's derived wall centerlines and the
+## occluder table its skin was actually handed, as sentences.
+##
+## The walk stops at the SHORTER of the two, because a length mismatch is
+## the very fault this check exists to catch: the table is truncated at the
+## sight shaders' slots (MAXW, rust/src/sight.rs:32) and every wall past
+## them stops occluding. Indexing the table by the segments' index instead
+## reads off the end of it — "Out of bounds get index '32'", once per
+## overflow wall — and buries the one sentence that says what went wrong.
+## So the mismatch is NAMED first and the prefix walk is only the rest of
+## the story.
+func _table_faults(level: WaveLevel, mat: ShaderMaterial) -> Array[String]:
+	var segs := level.wall_segments()
+	var rects: PackedVector4Array = mat.get_shader_parameter("u_walls")
+	var faults: Array[String] = []
+	if rects.size() != segs.size():
+		faults.append(
+			(
+				"%d walls but %d occluder rects: truncated, and the rest stop occluding"
+				% [segs.size(), rects.size()]
+			)
+		)
+	for i: int in mini(segs.size(), rects.size()):
+		var want := _occluder(segs[i])
+		if (rects[i] - want).length() > 0.001:
+			faults.append("wall %d occludes as %s, not %s" % [i, rects[i], want])
+	return faults
+
+
 ## The reveal-occlusion wall table reaches BOTH occluding skins — the
 ## world (reveal occlusion) and the source image (its silhouette's
 ## per-object muffle): one occluder rect per wall, the count and the wall
@@ -405,13 +434,48 @@ func test_wall_table_reaches_the_occluding_skins() -> void:
 	var segs := level.wall_segments()
 	assert_int(segs.size()).is_equal(19)
 	for m: ShaderMaterial in [data_mat, source_mat]:
-		var rects: PackedVector4Array = m.get_shader_parameter("u_walls")
-		assert_int(rects.size()).is_equal(segs.size())
-		for i: int in segs.size():
-			assert_vector(rects[i]).is_equal_approx(_occluder(segs[i]), Vector4.ONE * 0.001)
+		var faults := _table_faults(level, m)
+		(
+			assert_array(faults)
+			. append_failure_message(
+				"the occluding skin was handed a wrong table: %s" % str(faults)
+			)
+			. is_empty()
+		)
 		assert_int(m.get_shader_parameter("u_wall_count")).is_equal(segs.size())
 		assert_float(m.get_shader_parameter("u_wall_top")).is_equal(3.0)
 	assert_int(level.wall_rects().size()).is_equal(segs.size())
+
+
+## A level that outgrows the sight shaders' slots is REPORTED, not indexed
+## into. `wall_rects()` truncates at MAXW (rust/src/sight.rs:32) and the
+## walls past it silently stop occluding — a level-breaking fault, and the
+## one this check exists to name. Walking the table by the SEGMENTS' index
+## instead dies on "Out of bounds get index '32'" first, so the reader is
+## handed a Godot runtime error and a stack trace where a count belonged.
+func test_a_level_past_the_shader_slots_reports_the_truncation() -> void:
+	var data_mat := ShaderMaterial.new()
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	for i: int in 33:
+		var wall := WaveWall.new()  # a z-run stub, four meters clear of the next
+		wall.length = 2.0
+		wall.position = Vector3(float(i) * 4.0, 0, 0)
+		wall.rotation.y = PI * 0.5
+		level.add_child(wall)
+	level.add_child(_spawn_marker(Vector3.ZERO))
+	level.inject(data_mat, ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var segs := level.wall_segments()
+	assert_int(segs.size()).is_equal(33)
+	(
+		assert_bool(level.wall_rects().size() < segs.size())
+		. append_failure_message("33 walls no longer overflow MAXW — build this level past it")
+		. is_true()
+	)
+	var faults := _table_faults(level, data_mat)
+	assert_int(faults.size()).is_equal(1)  # the truncation, and nothing invented past it
+	assert_str(faults[0]).contains("33 walls but")
+	assert_str(faults[0]).contains("truncated")
 
 
 ## Every solid the level draws, as the world box it actually fills — walls
