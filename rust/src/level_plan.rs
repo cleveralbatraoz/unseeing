@@ -838,6 +838,92 @@ pub fn pack_range_budget(diagonal: f64, range: f64) -> Option<Budget> {
     })
 }
 
+/// One censused node's contribution to [`scene_signature`]: where a
+/// designer finds it, its global pose, and — for a solid — its skin
+/// mesh's LOCAL AABB (position then size, six floats). The AABB is what a
+/// transform alone cannot see: a designer dragging a `radius` or `size`
+/// knob reshapes this box without the node's own transform moving a
+/// millimetre, so the condition-watch would miss every knob edit without
+/// it — this is the field the mutation check names directly.
+#[derive(Debug, Clone)]
+pub struct SignatureNode {
+    /// The node's address under the level root — the same handle every
+    /// other derived report (`PlacedSolid`, `SpawnCandidate`) quotes.
+    pub path: String,
+    /// The node's global transform: basis columns (X, Y, Z, three floats
+    /// each) then origin — twelve floats, the same twelve a `Transform3D`
+    /// is built from.
+    pub transform: [f32; 12],
+    /// The skin mesh's local AABB (position then size), for a solid only.
+    /// `None` for a wall's typed twin (never folded twice — see
+    /// [`scene_signature`]), a source, a cat or a spawn marker, all of
+    /// which carry no shape a knob can reshape independent of their pose.
+    pub aabb: Option<[f32; 6]>,
+}
+
+/// FNV-1a's 64-bit offset basis and prime — the classic non-cryptographic
+/// fold. Nothing here needs to resist an adversary: the signature exists
+/// so the level can tell "changed" from "unchanged", never to be
+/// unguessable, so the textbook constants are exactly enough machinery.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+/// Fold one byte into a running FNV-1a hash.
+#[must_use]
+fn fnv_byte(hash: u64, byte: u8) -> u64 {
+    (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
+}
+
+/// Fold a byte slice into a running hash, one byte at a time.
+#[must_use]
+fn fnv_bytes(hash: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(hash, |h, &b| fnv_byte(h, b))
+}
+
+/// Fold one f32's raw bit pattern into a running hash — the BITS, not a
+/// float comparison, so the fold is answering one question only ("did
+/// ANYTHING change"), never "is this float equal to that one", which is
+/// the comparison this whole mechanism exists to avoid needing.
+#[must_use]
+fn fnv_f32(hash: u64, value: f32) -> u64 {
+    fnv_bytes(hash, &value.to_bits().to_le_bytes())
+}
+
+/// The level's condition-watch signature: one `u64` FNV-1a fold over every
+/// censused node's path, global transform and (for a solid) skin AABB, in
+/// the order given — SCENE order, the same deterministic walk order every
+/// other derivation leans on, so the same scene always folds to the same
+/// number and a designer reordering the Scene dock is a real authoring
+/// edit the signature is right to notice.
+///
+/// Every node folds a boundary byte after its path and a presence byte
+/// before its AABB (`1` then six floats, or a bare `0`), so the fold can
+/// never confuse a node with a shorter path and a longer transform for one
+/// with a longer path and a shorter one, and a solid whose AABB
+/// disappears between two frames (its mesh torn down, about to be
+/// rebuilt) changes the signature even though nothing else about it did.
+#[must_use]
+pub fn scene_signature(nodes: &[SignatureNode]) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for node in nodes {
+        hash = fnv_bytes(hash, node.path.as_bytes());
+        hash = fnv_byte(hash, 0); // path/transform boundary
+        for &f in &node.transform {
+            hash = fnv_f32(hash, f);
+        }
+        match node.aabb {
+            Some(aabb) => {
+                hash = fnv_byte(hash, 1); // "an aabb follows"
+                for &f in &aabb {
+                    hash = fnv_f32(hash, f);
+                }
+            }
+            None => hash = fnv_byte(hash, 0), // "no aabb here"
+        }
+    }
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use godot::builtin::EulerOrder;
@@ -1948,6 +2034,88 @@ mod tests {
                  planned and stays at the world origin, where an input-less run \
                  (UNSEEING_DEMO=1, or ?demo in the URL) strikes instead of on a wall."
             )
+        );
+    }
+
+    /// One node standing still: identity transform, a 0.5 m cube skin. The
+    /// scene-signature tests below all start from this and change exactly
+    /// one thing at a time.
+    fn still_node(path: &str) -> SignatureNode {
+        SignatureNode {
+            path: path.to_string(),
+            transform: [
+                1.0, 0.0, 0.0, // basis X
+                0.0, 1.0, 0.0, // basis Y
+                0.0, 0.0, 1.0, // basis Z
+                0.0, 0.0, 0.0, // origin
+            ],
+            aabb: Some([0.0, 0.0, 0.0, 0.5, 0.5, 0.5]),
+        }
+    }
+
+    /// The whole point of a condition-watch: an unchanged scene folds to
+    /// the SAME number twice, so the level's per-frame poll can compare
+    /// against last frame's answer at all.
+    #[test]
+    fn the_same_scene_folds_to_the_same_signature_twice() {
+        let scene = vec![still_node("Walls/North"), still_node("Rooms/Crate")];
+        assert_eq!(scene_signature(&scene), scene_signature(&scene.clone()));
+    }
+
+    /// A designer nudging a node one float's smallest step still moves the
+    /// signature — the fold has to be sensitive to the whole bit pattern,
+    /// not just to a value a human would call "different".
+    #[test]
+    fn one_bit_of_transform_change_moves_the_signature() {
+        let mut nudged = still_node("Rooms/Crate");
+        nudged.transform[9] = f32::from_bits(nudged.transform[9].to_bits() ^ 1);
+        assert_ne!(
+            scene_signature(&[still_node("Rooms/Crate")]),
+            scene_signature(&[nudged])
+        );
+    }
+
+    /// The fold reads the census in SCENE order, and order is part of the
+    /// condition: two nodes folded in one order and the same two folded in
+    /// the other must not collide, or a designer dragging a row in the
+    /// Scene dock — which reorders the walk without moving anything —
+    /// would silently escape the watch on one specific reorder.
+    #[test]
+    fn swapping_two_nodes_moves_the_signature() {
+        let a = still_node("Walls/North");
+        let b = still_node("Rooms/Crate");
+        assert_ne!(
+            scene_signature(&[a.clone(), b.clone()]),
+            scene_signature(&[b, a])
+        );
+    }
+
+    /// THE mutation this test exists to catch: a solid's AABB changing —
+    /// the `radius`/`size` knob a designer drags in the Inspector — with
+    /// its path and its transform both held fixed. Nothing but the AABB
+    /// fold in `scene_signature` can possibly notice this; drop that fold
+    /// and this is the one test in the file that goes green for the wrong
+    /// reason and then quietly stops meaning anything.
+    #[test]
+    fn a_solids_aabb_change_alone_moves_the_signature_a_transform_did_not() {
+        let mut resized = still_node("Rooms/Crate");
+        resized.aabb = Some([0.0, 0.0, 0.0, 0.8, 0.5, 0.5]);
+        assert_ne!(
+            scene_signature(&[still_node("Rooms/Crate")]),
+            scene_signature(&[resized])
+        );
+    }
+
+    /// A wall's skin never disappears once built, but the fold must still
+    /// tell a node WITH a shape apart from an otherwise-identical node
+    /// with none — the boundary byte earns its keep here.
+    #[test]
+    fn losing_the_aabb_entirely_moves_the_signature() {
+        let mut bare = still_node("Rooms/Crate");
+        bare.aabb = None;
+        assert_ne!(
+            scene_signature(&[still_node("Rooms/Crate")]),
+            scene_signature(&[bare])
         );
     }
 }

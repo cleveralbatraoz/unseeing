@@ -274,6 +274,30 @@ pub fn face_count(kind: ShapeKind) -> usize {
     }
 }
 
+/// Recover the immutable face ordinal for one vertex from the builder's
+/// layout, never from the mutable CUSTOM0 value the previous paint pass
+/// already replaced with a real label. This is what makes painting total
+/// and idempotent when the editor re-derives after a drag.
+#[must_use]
+pub fn vertex_ordinal(kind: ShapeKind, vertex: usize) -> Option<usize> {
+    match kind {
+        ShapeKind::Box | ShapeKind::Slab => (vertex < 24).then_some(vertex / 4),
+        ShapeKind::Wedge => crate::prop_shape::WEDGE_TRIANGLE_ORDINALS
+            .get(vertex / 3)
+            .map(|ordinal| *ordinal as usize),
+        ShapeKind::Column => {
+            if vertex >= crate::prop_shape::COLUMN_SEGMENTS * 12 {
+                return None;
+            }
+            Some(match vertex % 12 {
+                0..=2 => 0,
+                3..=5 => 1,
+                _ => 2,
+            })
+        }
+    }
+}
+
 /// The vertex/normal/CUSTOM0 arrays a triangle-list mesh (no index
 /// buffer) is built from — the [`labelled_box_arrays`] of
 /// [`resize_triangle_surface`].
@@ -374,20 +398,21 @@ pub fn custom0_format() -> ArrayFormat {
 }
 
 /// The derive-time bake: rewrite `mesh`'s existing (single-surface) CUSTOM0
-/// channel in place, replacing each vertex's PLACEHOLDER face ordinal — the
-/// value a builder wrote at build time, task 5's ordinal contract — with
-/// the real label `labels_by_ordinal[ordinal]` the paint pass chose for
-/// that face. Every other array (VERTEX, NORMAL, INDEX) is read straight
-/// back off the mesh and resubmitted byte for byte, so the geometry a
-/// designer sees never moves — only the G channel changes underneath it.
+/// channel in place with the real label the paint pass chose for each
+/// face. The ordinal is recovered from [`vertex_ordinal`]'s immutable
+/// builder layout, not read from CUSTOM0: after the first derive that
+/// channel already carries labels, and treating a second pass's label as
+/// an ordinal would collapse every value below 1.0 onto face zero. Every
+/// other array (VERTEX, NORMAL, INDEX) is read straight back off the mesh
+/// and resubmitted byte for byte, so the geometry a designer sees never
+/// moves — only the G channel changes underneath it.
 ///
-/// An ordinal at or past `labels_by_ordinal.len()` — a mesh built from a
-/// wider ordinal table than the caller's labels cover, or a mesh this pass
-/// was never meant to touch — keeps its placeholder value rather than
-/// panicking on an out-of-range read: a wrong colour is recoverable mid
-/// derive, a panic is not. A mesh with no surface yet (a knob dragged
-/// before `_ready`) is a no-op for the same reason.
-pub fn relabel(mesh: &mut Gd<ArrayMesh>, labels_by_ordinal: &[f32]) {
+/// A vertex outside the shape's known layout, or an ordinal at or past
+/// `labels_by_ordinal.len()`, keeps its current value rather than panicking:
+/// a wrong colour is recoverable mid derive, a panic is not. A mesh with
+/// no surface yet (a knob dragged before `_ready`) is a no-op for the same
+/// reason.
+pub fn relabel(mesh: &mut Gd<ArrayMesh>, kind: ShapeKind, labels_by_ordinal: &[f32]) {
     if mesh.get_surface_count() == 0 {
         return;
     }
@@ -398,10 +423,11 @@ pub fn relabel(mesh: &mut Gd<ArrayMesh>, labels_by_ordinal: &[f32]) {
     let Ok(mut custom) = custom_variant.try_to::<PackedFloat32Array>() else {
         return;
     };
-    for label in custom.as_mut_slice() {
-        let ordinal = *label as usize;
-        if let Some(&real) = labels_by_ordinal.get(ordinal) {
-            *label = real;
+    for (vertex, label) in custom.as_mut_slice().iter_mut().enumerate() {
+        if let Some(real) =
+            vertex_ordinal(kind, vertex).and_then(|ordinal| labels_by_ordinal.get(ordinal))
+        {
+            *label = *real;
         }
     }
     let mut new_arrays = arrays.clone();
@@ -765,6 +791,41 @@ mod tests {
         assert_eq!(face_count(ShapeKind::Slab), 6);
         assert_eq!(face_count(ShapeKind::Wedge), 5);
         assert_eq!(face_count(ShapeKind::Column), 3);
+    }
+
+    /// Repainting is driven by immutable vertex layout, not by whatever
+    /// real label CUSTOM0 already carries from the previous derive. These
+    /// hand-derived sequences pin every static-solid layout so an editor
+    /// watch can paint a second time without treating labels below 1.0 as
+    /// ordinal zero and collapsing the mesh.
+    #[test]
+    fn every_static_shape_recovers_ordinals_from_vertex_layout() {
+        assert_eq!(vertex_ordinal(ShapeKind::Box, 0), Some(0));
+        assert_eq!(vertex_ordinal(ShapeKind::Box, 3), Some(0));
+        assert_eq!(vertex_ordinal(ShapeKind::Box, 4), Some(1));
+        assert_eq!(vertex_ordinal(ShapeKind::Box, 23), Some(5));
+        assert_eq!(vertex_ordinal(ShapeKind::Slab, 23), Some(5));
+
+        assert_eq!(vertex_ordinal(ShapeKind::Column, 0), Some(0));
+        assert_eq!(vertex_ordinal(ShapeKind::Column, 2), Some(0));
+        assert_eq!(vertex_ordinal(ShapeKind::Column, 3), Some(1));
+        assert_eq!(vertex_ordinal(ShapeKind::Column, 5), Some(1));
+        assert_eq!(vertex_ordinal(ShapeKind::Column, 6), Some(2));
+        assert_eq!(vertex_ordinal(ShapeKind::Column, 383), Some(2));
+
+        let wedge = [0, 0, 1, 1, 2, 2, 3, 4];
+        for (triangle, expected) in wedge.into_iter().enumerate() {
+            for corner in 0..3 {
+                assert_eq!(
+                    vertex_ordinal(ShapeKind::Wedge, triangle * 3 + corner),
+                    Some(expected)
+                );
+            }
+        }
+
+        assert_eq!(vertex_ordinal(ShapeKind::Box, 24), None);
+        assert_eq!(vertex_ordinal(ShapeKind::Column, 384), None);
+        assert_eq!(vertex_ordinal(ShapeKind::Wedge, 24), None);
     }
 
     // ---------------------------------------------------------------

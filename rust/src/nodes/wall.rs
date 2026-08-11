@@ -140,7 +140,11 @@ impl WaveWall {
     /// Bake the derive-time paint pass's labels onto this wall — see
     /// [`solid::paint_solid`].
     pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
-        solid::paint_solid(self.mesh.as_mut(), labels_by_ordinal);
+        solid::paint_solid(
+            self.mesh.as_mut(),
+            render::paint::ShapeKind::Box,
+            labels_by_ordinal,
+        );
     }
 
     /// The engine-facing read-back of

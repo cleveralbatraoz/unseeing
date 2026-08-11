@@ -64,7 +64,7 @@ use godot::prelude::*;
 use super::cat::WaveCat;
 use super::props::{WaveColumn, WaveProp, WaveWedge};
 use super::solid::{
-    WaveSolid, basis_columns_f64, build_box, clear_limbs, mesh_first_label, to_f64_3,
+    SKIN_NAME, WaveSolid, basis_columns_f64, build_box, clear_limbs, mesh_first_label, to_f64_3,
 };
 use super::source::SoundSource;
 use super::wall::WaveWall;
@@ -255,6 +255,12 @@ pub struct WaveLevel {
     /// level-wide list and guess. Rewritten alongside `level_faults`, same
     /// rule, same reason. See [`Self::faults_for`].
     node_faults: Vec<level_plan::PlacementFault>,
+    /// The scene signature ([`Self::scene_signature`]) as of the last
+    /// derivation — the condition [`INode3D::process`]'s editor-only poll
+    /// watches. Seeded from the FIRST derive in [`INode3D::ready`], so a
+    /// scene that has not changed since the level entered the tree does
+    /// not re-derive on its very first editor frame.
+    last_signature: u64,
     base: Base<Node3D>,
 }
 
@@ -262,18 +268,60 @@ pub struct WaveLevel {
 impl INode3D for WaveLevel {
     fn ready(&mut self) {
         self.build_slabs();
+        let editor = Engine::singleton().is_editor_hint();
         // no silent nulls: an uninjected level would render nothing and
         // sound nothing — say so once, loudly, and still derive honest
         // geometry so the contracts stay readable. Never checked in the
         // editor: a scene open there is legitimately uninjected (injection
         // is the composition root's job, at run time), and printing this
         // on every scene open would be noise a designer learns to skip.
-        if !Engine::singleton().is_editor_hint()
+        if !editor
             && (self.data_mat.is_none() || self.source_mat.is_none() || self.pulses.is_none())
         {
             godot_error!("WaveLevel: materials/pulses not injected — the level cannot be seen");
         }
         self.derive();
+        if editor {
+            // seed the condition-watch with what was JUST derived, so the
+            // first editor frame after a scene opens sees no change and
+            // does not re-derive a second time for nothing
+            self.last_signature = self.scene_signature();
+            self.base_mut().set_process(true);
+        } else {
+            // defining `process` below would otherwise enable per-frame
+            // processing here too (gdext auto-enables it once the
+            // INode3D::process override exists) and charge a running level
+            // an O(scene) census walk every frame for a poll only the
+            // editor needs — so the runtime branch turns it back off
+            // explicitly.
+            self.base_mut().set_process(false);
+        }
+    }
+
+    /// Editor-only: watch the scene for the condition [`Self::derive`]
+    /// actually depends on, and re-derive the moment it changes — a
+    /// designer drags a wall or a knob and sees the wall table, the
+    /// warnings and the object-id colouring update without ever pressing
+    /// play or calling [`Self::rederive`] by hand.
+    ///
+    /// DESIGN: condition-watching, not dirty-flag plumbing. Six classes'
+    /// setters and transform notifications would each have to remember to
+    /// mark the level dirty, and any one that forgot would be a silent
+    /// stale-until-play bug with no test able to see it was missing. A
+    /// signature folded fresh every frame cannot forget: it is the same
+    /// census `derive` itself would walk (~130 nodes, microseconds), so
+    /// whatever `derive` reads, this watches, automatically, forever.
+    /// Nothing here runs at run time — see the branch in [`INode3D::ready`]
+    /// that turns processing back off outside the editor.
+    fn process(&mut self, _delta: f64) {
+        if !Engine::singleton().is_editor_hint() {
+            return;
+        }
+        let sig = self.scene_signature();
+        if sig != self.last_signature {
+            self.last_signature = sig;
+            self.derive();
+        }
     }
 
     /// The Scene dock's warning icon, editor-only — the same faults a
@@ -707,6 +755,24 @@ impl WaveLevel {
     /// this pass pinned to one solid's path a moment ago may no longer
     /// apply to it, so every censused solid is told to refresh its icon
     /// too, right after the level tells the engine about its own.
+    ///
+    /// Both refreshes are DEFERRED (`call_deferred`), never called
+    /// straight — and now that [`INode3D::process`] can reach `derive`
+    /// every editor frame, on top of [`Self::rederive`] and
+    /// [`INode3D::ready`], that is load-bearing rather than tidy. `derive`
+    /// always runs with `self` exclusively bound (every caller holds
+    /// `&mut self`), and `update_configuration_warnings` can make the
+    /// Scene dock read a warning back SYNCHRONOUSLY through
+    /// `node_configuration_warning_changed`: a solid's override walks up
+    /// to THIS level and binds it again (`warnings_from_level` →
+    /// `faults_for`), and the level's own override would re-enter itself
+    /// the same way. Either is a bind attempted while this call is still
+    /// holding the exclusive one — a re-entrancy panic in the designer's
+    /// face, not a hypothetical. Deferring moves both reads to idle time,
+    /// after `derive` has returned and the bind is released. A probe never
+    /// sees the difference: every check below reads the fault store
+    /// through the `#[func]` forwarders (`get_configuration_warnings`,
+    /// `faults_for`), synchronously, never through the dock's cached copy.
     fn derive(&mut self) {
         let editor = Engine::singleton().is_editor_hint();
         self.level_faults.clear();
@@ -724,13 +790,18 @@ impl WaveLevel {
         self.derive_tap(editor);
         // the Scene dock's warning icon only repaints when told to; every
         // fault site above just rewrote level_faults, so this is the one
-        // place that needs to say so
-        self.base_mut().update_configuration_warnings();
+        // place that needs to say so — deferred, see the doc comment above
+        self.base_mut()
+            .call_deferred("update_configuration_warnings", &[]);
         // node_faults was rewritten too, and a solid's own icon reads it
         // through solid::warnings_from_level — refresh every censused
-        // solid so a cleared fault stops showing and a new one starts
+        // solid so a cleared fault stops showing and a new one starts,
+        // deferred for the same reentrancy reason
         for solid in &census.solids {
-            solid.clone().into_gd().update_configuration_warnings();
+            solid
+                .clone()
+                .into_gd()
+                .call_deferred("update_configuration_warnings", &[]);
         }
     }
 
@@ -1227,7 +1298,11 @@ impl WaveLevel {
                 let Some(slab) = self.slabs.iter_mut().find(|s| s.lid == *lid) else {
                     return;
                 };
-                render::paint::relabel(&mut slab.mesh, labels_by_ordinal);
+                render::paint::relabel(
+                    &mut slab.mesh,
+                    render::paint::ShapeKind::Slab,
+                    labels_by_ordinal,
+                );
             }
             PaintItem::Wall(w) => w.clone().bind_mut().paint(labels_by_ordinal),
             PaintItem::Prop(p) => p.clone().bind_mut().paint(labels_by_ordinal),
@@ -1347,6 +1422,61 @@ impl WaveLevel {
         let mut census = Census::default();
         collect(&self.base().clone().upcast::<Node>(), &mut census);
         census
+    }
+
+    /// The condition [`INode3D::process`]'s editor-only poll watches: a
+    /// fresh census, folded by [`level_plan::scene_signature`] into a
+    /// single `u64` — every solid, source, cat and spawn marker's path and
+    /// global pose, plus a solid's skin AABB, so the fold changes the
+    /// moment ANYTHING [`Self::derive`] reads would read differently.
+    ///
+    /// TWO CENSUS WALKS, deliberately, not one shared with `derive`. This
+    /// runs every editor frame; `derive` runs only when the signature just
+    /// computed differs from the last one — the ordinary case is a still
+    /// scene, one walk, no second one to share. Threading a `&Census`
+    /// through `derive` (which also mutates `self.segments`,
+    /// `self.source_children` and the rest from it) would couple two
+    /// pieces of code that change for different reasons — "what does the
+    /// level derive" and "what does the level watch" — to save a walk that
+    /// is already microseconds at ~130 nodes. If this ever profiles hot,
+    /// that coupling is the next place to look, not before.
+    fn scene_signature(&self) -> u64 {
+        let census = self.census();
+        let root = self.base().clone().upcast::<Node>();
+        let mut nodes: Vec<level_plan::SignatureNode> = Vec::new();
+        for solid in &census.solids {
+            let node = solid.clone().into_gd();
+            nodes.push(level_plan::SignatureNode {
+                path: root.get_path_to(&node).to_string(),
+                transform: transform_floats(&node),
+                aabb: skin_local_aabb(&node),
+            });
+        }
+        for source in &census.sources {
+            let node = source.clone().into_gd();
+            nodes.push(level_plan::SignatureNode {
+                path: root.get_path_to(&node).to_string(),
+                transform: transform_floats(&node),
+                aabb: None,
+            });
+        }
+        for cat in &census.cats {
+            let node = cat.clone().upcast::<Node>();
+            nodes.push(level_plan::SignatureNode {
+                path: root.get_path_to(&node).to_string(),
+                transform: transform_floats(&node),
+                aabb: None,
+            });
+        }
+        for spawn in &census.spawns {
+            let node = spawn.clone().upcast::<Node>();
+            nodes.push(level_plan::SignatureNode {
+                path: root.get_path_to(&node).to_string(),
+                transform: transform_floats(&node),
+                aabb: None,
+            });
+        }
+        level_plan::scene_signature(&nodes)
     }
 
     /// Say one shader-budget verdict out loud at the volume it asked for,
@@ -1649,6 +1779,62 @@ fn collect(node: &Gd<Node>, census: &mut Census) {
         }
         collect(&child, census);
     }
+}
+
+/// The 12 floats of a node's global transform — basis columns (X, Y, Z)
+/// then origin — the pose half of [`WaveLevel::scene_signature`]. Every
+/// censused node is Node3D-derived (a solid stands on `StaticBody3D`, a
+/// source and the cat on their own `Node3D`-family bases, a spawn on
+/// `Marker3D`), so the cast is total in the scenes this ever runs
+/// against; a node that somehow were not simply contributes the identity
+/// transform, which still moves the signature the instant any sibling's
+/// path or AABB does.
+fn transform_floats(node: &Gd<Node>) -> [f32; 12] {
+    let xf = node
+        .clone()
+        .try_cast::<Node3D>()
+        .map(|n3| n3.get_global_transform())
+        .unwrap_or(Transform3D::IDENTITY);
+    let (bx, by, bz) = (xf.basis.col_a(), xf.basis.col_b(), xf.basis.col_c());
+    [
+        bx.x,
+        bx.y,
+        bx.z,
+        by.x,
+        by.y,
+        by.z,
+        bz.x,
+        bz.y,
+        bz.z,
+        xf.origin.x,
+        xf.origin.y,
+        xf.origin.z,
+    ]
+}
+
+/// A solid's skin-mesh LOCAL AABB — position then size, six floats — the
+/// shape half of [`WaveLevel::scene_signature`]. Read straight off the
+/// child every solid class names [`SKIN_NAME`] ([`build_body`]/
+/// [`build_box`] in [`super::solid`]), so a designer dragging a `radius`
+/// or `size` knob moves the signature even though it moves the node's own
+/// transform not at all. `None` before a skin exists — the instant a
+/// fresh node enters the tree, ahead of its own `_ready` — which is itself
+/// a real difference the signature is right to notice.
+fn skin_local_aabb(node: &Gd<Node>) -> Option<[f32; 6]> {
+    let skin = node
+        .get_children()
+        .iter_shared()
+        .find(|child| child.get_name() == SKIN_NAME)
+        .and_then(|child| child.try_cast::<MeshInstance3D>().ok())?;
+    let aabb = skin.get_aabb();
+    Some([
+        aabb.position.x,
+        aabb.position.y,
+        aabb.position.z,
+        aabb.size.x,
+        aabb.size.y,
+        aabb.size.z,
+    ])
 }
 
 /// The world box a node's drawn geometry occupies — the union over every

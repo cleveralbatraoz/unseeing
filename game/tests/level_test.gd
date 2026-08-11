@@ -881,6 +881,46 @@ func test_a_solid_merged_into_a_wall_warns_naming_it() -> void:
 	))
 
 
+## Editor watching makes derive repeat after every authored change. A
+## second paint must use the mesh builder's immutable vertex layout, not
+## mistake the first pass's real CUSTOM0 labels (all below 1.0) for face
+## ordinal zero. This merge fixture deliberately gives WallCrate several
+## face labels; the retired CUSTOM0-as-ordinal implementation collapsed
+## all 24 vertices to one label on the replay.
+func test_rederive_keeps_a_multilabel_solid_byte_for_byte() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_wall(4.0, Vector3.ZERO, false))
+	var crate := WaveProp.new()
+	crate.name = "WallCrate"
+	crate.size = Vector3(0.4, 0.4, 0.32)
+	crate.position = Vector3(0.0, 0.5, 0.01)
+	level.add_child(crate)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var warning := (
+		"WaveLevel: 'WallCrate' overlaps the wall structure and is drawn as part of it — "
+		+ "its faces take the walls' labels and its pierce lines draw. Pull it clear of the "
+		+ "wall if that was a nudge, or leave it if the bump is authored."
+	)
+	var enter := func() -> void: add_child(level)
+	await assert_error(enter).is_push_warning(warning)
+
+	var first: PackedFloat32Array = _skin(crate).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	var has_more_than_one := false
+	for label: float in first:
+		if not is_equal_approx(label, first[0]):
+			has_more_than_one = true
+			break
+	assert_bool(has_more_than_one).is_true()
+
+	var replay := func() -> void: level.rederive()
+	await assert_error(replay).is_push_warning(warning)
+	var second: PackedFloat32Array = _skin(crate).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	assert_int(second.size()).is_equal(first.size())
+	for vertex: int in range(first.size()):
+		assert_float(second[vertex]).is_equal(first[vertex])
+
+
 ## THE ORDINAL GUARD: a degenerate box (one extent flattened to zero)
 ## folds four of its six faces away — `render::faces::face_from_poly`
 ## refuses each collapsed polygon (its own two first corners coincide

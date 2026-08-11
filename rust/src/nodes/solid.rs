@@ -382,9 +382,13 @@ pub(crate) fn basis_columns_f64(b: Basis) -> [[f64; 3]; 3] {
 /// left to keep in step. `mesh` is `None` for a solid whose knob was
 /// dragged before `_ready` built one; a no-op, the same as every other
 /// builder call in this module.
-pub(crate) fn paint_solid(mesh: Option<&mut Gd<ArrayMesh>>, labels_by_ordinal: &[f32]) {
+pub(crate) fn paint_solid(
+    mesh: Option<&mut Gd<ArrayMesh>>,
+    kind: render::paint::ShapeKind,
+    labels_by_ordinal: &[f32],
+) {
     if let Some(mesh) = mesh {
-        render::paint::relabel(mesh, labels_by_ordinal);
+        render::paint::relabel(mesh, kind, labels_by_ordinal);
     }
 }
 
