@@ -363,7 +363,10 @@ func _judge(editor: bool) -> void:
 		_level.call("rederive")
 		_check("editor: giving it a spawn clears the warning", not _has(_level.get_configuration_warnings(), "SpawnPoint"))
 	else:
-		_check("run: warnings are a courtesy here too, not a crash", true)
+		_check(
+			"run: an uninjected level still derives honest geometry",
+			(_level.call("wall_segments") as PackedVector4Array).size() == 1
+		)
 ```
 
 (`_has` = helper looping the `PackedStringArray` for a substring.) Run `tools/probe_editor_level.sh` — expected editor failure: warnings empty and `wall_segments` empty, because today `ready()` returns before `derive()` under the editor hint.
