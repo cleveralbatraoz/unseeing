@@ -31,6 +31,16 @@
 //! Ctrl+D leaves behind, a second exact name under another parent — not to
 //! compete with it, but so the level can NAME what it ignored instead of
 //! letting a moved copy change nothing in silence.
+//!
+//! Tap decision: the dev demo strike aims at the sound source whose HUB IS
+//! NEAREST THE SPAWN in the XZ plane, ties broken by the node's name in
+//! ascending order — never the first source in scene order, because a row
+//! dragged in the Scene dock is an authoring convenience and not a contract,
+//! and never a slice index or anything hashed, which the determinism law
+//! forbids. The plane is the measure because the tap IS a wall crossing read
+//! in it. If no wall stands between the two the strike cannot be planned and
+//! the level says so, since the alternative is a zeroed tap firing at the
+//! world origin; a level with NO source stays silent, which is legal.
 
 use godot::classes::{
     Engine, INode3D, Marker3D, Material, MeshInstance3D, Node3D, ShaderMaterial, StaticBody3D,

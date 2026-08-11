@@ -949,11 +949,17 @@ mod tests {
         assert_eq!(nearest_source(&[], Vector3::ZERO), None);
     }
 
-    /// The shipped map, measured: the fan's hub is 5.6 m from the spawn in
-    /// the XZ plane and the radio's is 18.5, so the nearest-hub rule aims
-    /// at the same fan the old first-in-scene-order rule did. That is the
+    /// The shipped map, measured off the literals below: the fan's hub is
+    /// 5.7 m from the spawn in the XZ plane (dx 5.7, dz 0.4) and the
+    /// radio's is 18.5 (dx 18.5, dz −0.71), so the nearest-hub rule aims at
+    /// the same fan the old first-in-scene-order rule did. That is the
     /// whole reason this fix is invisible to `level_01.tscn` — and it stays
     /// invisible with the dock listed the other way round.
+    ///
+    /// The hubs are not the node positions: the fan's is its node at
+    /// (8.6, 0, 4.4) plus the spinner's local (0, HEAD_H, −0.10) carried
+    /// through the node's quarter turn, and the radio's is its node at
+    /// (21.4, 0.78, 3.4) times the same basis applied to HUB.
     #[test]
     fn the_shipped_map_still_aims_the_tap_at_the_fan() {
         let spawn = Vector3::new(3.0, 0.9, 4.0);
@@ -991,7 +997,7 @@ mod tests {
     fn the_plan_follows_the_nearest_source_not_the_first_listed() {
         let walls = retired_map_walls();
         let spawn = Vector3::new(3.0, 0.9, 4.0);
-        let fan = aim("Fan", 8.6, 1.15, 4.4); // 5.6 m east, behind the divider
+        let fan = aim("Fan", 8.6, 1.15, 4.4); // 5.6 east, 5.61 out, past the divider
         let radio = aim("WestRadio", 0.0, 1.0, 4.0); // 3.0 m west, behind the border
         let plan = plan_demo_tap(&walls, spawn, &[fan.clone(), radio.clone()])
             .plan
