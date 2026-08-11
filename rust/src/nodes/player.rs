@@ -24,6 +24,8 @@ use godot::classes::{
 use godot::global::{Key, MouseButton};
 use godot::prelude::*;
 
+use crate::observe::QueuedWave;
+
 /// Eye height above the floor.
 pub const EYE: f64 = 1.6;
 
@@ -585,5 +587,39 @@ impl UnseeingPlayer {
         self.base()
             .get_world_3d()
             .and_then(|world| world.get_direct_space_state())
+    }
+}
+
+impl UnseeingPlayer {
+    /// The cane's queued-intent flag, for the observer: a tap accepted
+    /// this frame that the physics tick has not yet executed.
+    pub(crate) fn tap_queued(&self) -> bool {
+        self.tap_queued
+    }
+
+    /// The eye's pitch, radians — `None` before `_ready` has built the
+    /// camera, which is a different fact from a level gaze and must not
+    /// be reported as one.
+    pub(crate) fn eye_pitch(&self) -> Option<f64> {
+        self.camera
+            .as_ref()
+            .map(|camera| f64::from(camera.get_rotation().x))
+    }
+
+    /// The wave queue as pure observations — the same content the
+    /// `queued_waves` #[func] serialises for the suites.
+    pub(crate) fn wave_queue(&self) -> Vec<QueuedWave> {
+        self.wave_queue
+            .iter()
+            .map(|w| QueuedWave {
+                kind: w.kind,
+                at: w.at,
+                max_r: w.max_r,
+                speed: w.speed,
+                gain: w.gain,
+                echoes: w.echoes,
+                normal: w.normal,
+            })
+            .collect()
     }
 }

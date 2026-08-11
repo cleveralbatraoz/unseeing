@@ -30,6 +30,7 @@ use godot::classes::{
 use godot::prelude::*;
 
 use super::level::WaveLevel;
+use super::player::UnseeingPlayer;
 use super::source;
 use crate::ffi::{WaveCore, cast_reflection_fan};
 use crate::level_plan;
@@ -42,8 +43,8 @@ use crate::observe::reflect::{
     ReflectionRequest,
 };
 use crate::observe::{
-    EchoObservation, EyeObservation, FrameObservation, SceneObservation, SourceObservation,
-    SpawnObservation, frame,
+    EchoObservation, EyeObservation, FrameObservation, HeroObservation, QueuedWave,
+    SceneObservation, SourceObservation, SpawnObservation, frame,
 };
 use crate::ray_fan;
 
@@ -88,6 +89,10 @@ const NO_SPACE: &str = "the observer stands in no physics world — reflection r
 pub struct WaveObserver {
     level: Option<Gd<WaveLevel>>,
     camera: Option<Gd<Camera3D>>,
+    /// The hero to read, injected separately from the world: a suite
+    /// building a bare level has no hero, and that absence is REPORTED
+    /// (in `unknown`) rather than refusing the whole snapshot.
+    player: Option<Gd<UnseeingPlayer>>,
     /// Reflection questions waiting on a physics frame, and the answers
     /// that frame produced.
     explanations: ExplanationLedger,
@@ -141,6 +146,14 @@ impl WaveObserver {
         self.camera = camera;
     }
 
+    /// Hand the observer the hero to read, separately from the world: a
+    /// suite building a bare level has no hero, and that absence must be
+    /// REPORTED (in `unknown`) rather than refusing the world around it.
+    #[func]
+    fn inject_hero(&mut self, player: Option<Gd<UnseeingPlayer>>) {
+        self.player = player;
+    }
+
     /// The whole state vector as of `now`: the pool slot by slot, the next
     /// eviction, every sound source as an agent reads it, the wall table,
     /// and where the eye stands.
@@ -187,6 +200,7 @@ impl WaveObserver {
                     position: level.spawn_pos(),
                     yaw: level.spawn_yaw(),
                 },
+                hero: self.hero_observation(),
             },
         );
         frame_dict(&observation, flick.is_some())
@@ -340,6 +354,39 @@ impl WaveObserver {
             Some(camera) if !camera.is_instance_valid() => Err(DEAD_CAMERA),
             Some(camera) => Ok(camera),
         }
+    }
+
+    /// The hero group, if a live, fully-built hero was injected. `None` —
+    /// which the snapshot names in `unknown` — covers never-injected,
+    /// freed, and a player whose camera has not been built yet: a pitch
+    /// invented for an eyeless hero would be a guess, and the group is
+    /// all-or-nothing like the capture blob it will one day feed.
+    ///
+    /// Validity is checked BEFORE the handle is cloned, the same order
+    /// `live_level`/`live_camera` use: cloning a `Gd<T>` for a freed
+    /// instance panics rather than returning a dead handle, so a freed
+    /// hero must be caught on the reference, never after taking ownership
+    /// of a copy.
+    fn hero_observation(&self) -> Option<HeroObservation> {
+        let player = self.player.as_ref()?;
+        if !player.is_instance_valid() {
+            return None;
+        }
+        let position = player.get_global_position();
+        let velocity = player.get_velocity();
+        let yaw = f64::from(player.get_rotation().y);
+        let bound = player.bind();
+        let pitch = bound.eye_pitch()?;
+        Some(HeroObservation {
+            position,
+            velocity,
+            yaw,
+            pitch,
+            last_tap: bound.last_tap,
+            tap_target: bound.tap_target,
+            tap_queued: bound.tap_queued(),
+            queued_waves: bound.wave_queue(),
+        })
     }
 
     /// The physics space the observer itself stands in. A plain `Node` has
@@ -503,6 +550,12 @@ fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionar
     state.set("wall_truncated", observation.wall_truncated);
     state.set("camera", &camera_dict(&observation.eye));
     state.set("spawn", &spawn_dict(&observation.spawn));
+    match &observation.hero {
+        Some(hero) => {
+            state.set("hero", &hero_dict(hero));
+        }
+        None => unknown.push("hero"),
+    }
     state.set("unknown", &unknown);
     state
 }
@@ -588,6 +641,34 @@ fn spawn_dict(spawn: &SpawnObservation) -> VarDictionary {
     let mut entry = VarDictionary::new();
     entry.set("position", spawn.position);
     entry.set("yaw", spawn.yaw);
+    entry
+}
+
+fn hero_dict(hero: &HeroObservation) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("position", hero.position);
+    entry.set("velocity", hero.velocity);
+    entry.set("yaw", hero.yaw);
+    entry.set("pitch", hero.pitch);
+    entry.set("last_tap", hero.last_tap);
+    entry.set("tap_target", hero.tap_target);
+    entry.set("tap_queued", hero.tap_queued);
+    let queued: Array<VarDictionary> = hero.queued_waves.iter().map(queued_wave_dict).collect();
+    entry.set("queued_waves", &queued);
+    entry
+}
+
+/// Keyed exactly as the player's own `queued_waves` #[func] keys them
+/// ("type", not "kind"), so a reader sees one vocabulary for one queue.
+fn queued_wave_dict(wave: &QueuedWave) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("type", wave.kind);
+    entry.set("at", wave.at);
+    entry.set("max_r", wave.max_r);
+    entry.set("speed", wave.speed);
+    entry.set("gain", wave.gain);
+    entry.set("echoes", wave.echoes);
+    entry.set("normal", wave.normal);
     entry
 }
 

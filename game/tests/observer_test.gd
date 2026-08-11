@@ -135,11 +135,21 @@ func test_a_freed_camera_refuses_rather_than_crashing() -> void:
 ## 2.75 m across and is still alive. A level that has been driven for a
 ## frame leaves nothing unobserved, so `unknown` is empty and every key is
 ## present — the other half of the contract the next test pins.
+##
+## The hero group joined that contract in this task: a snapshot with a live
+## player injected has nothing left to name, so the player is built and
+## injected here too — otherwise the absent hero, correctly named in
+## `unknown`, would falsify a claim this test makes about a different part
+## of the snapshot entirely.
 func test_snapshot_reports_a_tap_that_was_emitted() -> void:
 	var pulses := Pulses.new()
 	var level := _shipped_level(pulses, _eye())
 	var obs := _observer()
+	var player: UnseeingPlayer = auto_free(UnseeingPlayer.new())
+	player.pulses = pulses
+	add_child(player)
 	obs.inject(level, _eye())
+	obs.inject_hero(player)
 	pulses.emit(0, Vector3.ZERO, 6.0, 5.5, 1.0, 0.0)
 	var snap: Dictionary = obs.snapshot(0.5)
 	assert_float(snap["now"]).is_equal_approx(0.5, 0.0001)
@@ -725,3 +735,91 @@ func _spawn_marker() -> Marker3D:
 	var marker := Marker3D.new()
 	marker.name = "SpawnPoint"
 	return marker
+
+
+## The hero group binds the body, the eye, and the cane's out-tray into
+## the SAME snapshot as the pool they feed — before this, the "one
+## instant" guarantee stopped at the camera and the hero was eight
+## separate reads across frames.
+func test_the_snapshot_binds_the_hero_at_one_instant() -> void:
+	var pulses := Pulses.new()
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), pulses)
+	add_child(level)
+	var player: UnseeingPlayer = auto_free(UnseeingPlayer.new())
+	player.pulses = pulses
+	player.position = Vector3(5.0, 0.9, 3.0)
+	player.rotation.y = 0.7
+	add_child(player)
+	var obs: WaveObserver = auto_free(WaveObserver.new())
+	obs.inject(level, player.camera)
+	obs.inject_hero(player)
+	add_child(obs)
+	player.camera.rotation.x = -0.3
+	player.queue_wave(2, Vector3.ZERO, 4.0, 4.0, 0.5, 0, Vector3.UP)
+	player.tap()
+	# read BEFORE any physics tick drains the queue or runs the tap: the
+	# flag and the out-tray must appear beside the pool they will feed
+	var snap: Dictionary = obs.snapshot(0.0)
+	assert_bool(snap.has("unavailable")).is_false()
+	var hero: Dictionary = snap["hero"]
+	assert_vector(hero["position"]).is_equal_approx(Vector3(5.0, 0.9, 3.0), Vector3.ONE * 0.001)
+	assert_float(hero["yaw"]).is_equal_approx(0.7, 0.0001)
+	assert_float(hero["pitch"]).is_equal_approx(-0.3, 0.0001)
+	assert_float(hero["last_tap"]).is_equal(-10.0)
+	assert_bool(hero["tap_queued"]).is_true()
+	var queued: Array = hero["queued_waves"]
+	assert_int(queued.size()).is_equal(1)
+	assert_int(queued[0]["type"]).is_equal(2)
+	assert_vector(queued[0]["normal"]).is_equal(Vector3.UP)
+
+
+## No hero is a NAMED absence, not a hero at the origin: a suite building
+## a bare level has no player, and the snapshot says so in `unknown`.
+func test_a_heroless_snapshot_names_the_absence() -> void:
+	var pulses := Pulses.new()
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), pulses)
+	add_child(level)
+	var camera: Camera3D = auto_free(Camera3D.new())
+	add_child(camera)
+	var obs: WaveObserver = auto_free(WaveObserver.new())
+	obs.inject(level, camera)
+	add_child(obs)
+	var snap: Dictionary = obs.snapshot(0.0)
+	assert_bool(snap.has("hero")).is_false()
+	assert_bool((snap["unknown"] as Array).has("hero")).is_true()
+
+
+## A freed hero must degrade to the SAME named absence — never a crash,
+## and never data read through a dangling handle.
+func test_a_freed_hero_reports_unknown_rather_than_crashing() -> void:
+	var pulses := Pulses.new()
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), pulses)
+	add_child(level)
+	var camera: Camera3D = auto_free(Camera3D.new())
+	add_child(camera)
+	var player := UnseeingPlayer.new()
+	player.pulses = pulses
+	add_child(player)
+	var obs: WaveObserver = auto_free(WaveObserver.new())
+	obs.inject(level, camera)
+	obs.inject_hero(player)
+	add_child(obs)
+	remove_child(player)
+	player.free()
+	var snap: Dictionary = obs.snapshot(0.0)
+	assert_bool(snap.has("hero")).is_false()
+	assert_bool((snap["unknown"] as Array).has("hero")).is_true()
+
+
+## The composition root hands the observer the hero it built, exactly as
+## it hands it the level and the eye.
+func test_the_composition_root_injects_the_hero() -> void:
+	var main: UnseeingMain = auto_free(MAIN_SCENE.instantiate() as UnseeingMain)
+	add_child(main)
+	var snap: Dictionary = main.observer.snapshot(0.0)
+	var hero: Dictionary = snap["hero"]
+	assert_vector(hero["position"]).is_equal(main.player.global_position)
+	assert_bool((snap["unknown"] as Array).has("hero")).is_false()

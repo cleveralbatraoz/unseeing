@@ -125,6 +125,7 @@ func _ready() -> void:
 	# with nothing asking it questions is a run it does not exist in.
 	observer = WaveObserver.new()
 	observer.inject(level, player.camera)
+	observer.inject_hero(player)
 	add_child(observer)
 	# the settings overlay, added LAST on purpose: unhandled input walks
 	# the tree bottom-up, so the overlay sees Escape before the world does

@@ -98,6 +98,42 @@ pub struct SpawnObservation {
     pub yaw: f64,
 }
 
+/// One wave request still waiting for the physics tick, as an agent reads
+/// it — the hero's out-tray, bound into the snapshot at the same instant
+/// as the pool it will feed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QueuedWave {
+    pub kind: i64,
+    pub at: Vector3,
+    pub max_r: f64,
+    pub speed: f64,
+    pub gain: f64,
+    pub echoes: i64,
+    pub normal: Vector3,
+}
+
+/// The hero as an agent reads them: where the body stands and moves,
+/// where the eye points, and the cane's clocks. Before this group existed
+/// an agent stitched the same facts from eight separate property reads
+/// across frames, so the "one instant" guarantee never covered the hero.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeroObservation {
+    pub position: Vector3,
+    pub velocity: Vector3,
+    /// Body yaw, radians — the way the hero faces.
+    pub yaw: f64,
+    /// Eye pitch, radians, as the look law last clamped it.
+    pub pitch: f64,
+    /// The tap clock reading of the last ACCEPTED tap (−10.0 when none).
+    pub last_tap: f64,
+    /// Where that tap landed.
+    pub tap_target: Vector3,
+    /// A tap accepted this frame that the physics tick has not yet run.
+    pub tap_queued: bool,
+    /// Every wave request waiting for the next physics tick.
+    pub queued_waves: Vec<QueuedWave>,
+}
+
 /// The scene as the boundary measured it this frame — everything
 /// [`frame`] needs that does not come out of the wave engine itself.
 ///
@@ -110,6 +146,7 @@ pub struct SceneObservation {
     pub wall_rects: Vec<Vector4>,
     pub eye: EyeObservation,
     pub spawn: SpawnObservation,
+    pub hero: Option<HeroObservation>,
 }
 
 /// The whole state vector for one frame.
@@ -141,6 +178,7 @@ pub struct FrameObservation {
     pub wall_truncated: bool,
     pub eye: EyeObservation,
     pub spawn: SpawnObservation,
+    pub hero: Option<HeroObservation>,
 }
 
 /// Compose one frame's observation from parts the boundary supplies.
@@ -173,6 +211,7 @@ pub fn frame(
         wall_rects: scene.wall_rects,
         eye: scene.eye,
         spawn: scene.spawn,
+        hero: scene.hero,
     }
 }
 
@@ -233,6 +272,7 @@ mod tests {
             wall_rects,
             eye: test_eye(),
             spawn: test_spawn(),
+            hero: None,
         }
     }
 
@@ -360,5 +400,36 @@ mod tests {
     fn the_eye_carries_its_field_of_view() {
         let pool = PulsePool::new();
         assert_eq!(empty_frame(&pool, 0.0).eye.fov, TEST_FOV);
+    }
+
+    /// The composer carries the hero through untouched — and an absent
+    /// hero stays absent rather than becoming a hero at the origin, which
+    /// would be the vacuous pass this layer exists to prevent.
+    #[test]
+    fn a_frame_carries_the_hero_when_the_scene_has_one() {
+        let pool = PulsePool::new();
+        let hero = HeroObservation {
+            position: Vector3::new(1.0, 0.9, -2.0),
+            velocity: Vector3::new(0.0, 0.0, -2.1),
+            yaw: 0.7,
+            pitch: -0.3,
+            last_tap: 4.5,
+            tap_target: Vector3::new(1.0, 0.0, -3.5),
+            tap_queued: true,
+            queued_waves: vec![QueuedWave {
+                kind: 2,
+                at: Vector3::ZERO,
+                max_r: 4.0,
+                speed: 4.0,
+                gain: 0.5,
+                echoes: 0,
+                normal: Vector3::UP,
+            }],
+        };
+        let mut scene = test_scene(Vec::new());
+        scene.hero = Some(hero.clone());
+        let f = frame(&pool, &EchoQueue::new(), 0.0, 1.0, scene);
+        assert_eq!(f.hero, Some(hero));
+        assert_eq!(empty_frame(&pool, 0.0).hero, None);
     }
 }
