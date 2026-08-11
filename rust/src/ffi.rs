@@ -222,6 +222,18 @@ impl WaveCore {
         self.echoes.capture()
     }
 
+    /// The write side of those two: both halves of the engine's memory of
+    /// sound, replaced at once by the restorer.
+    ///
+    /// One door for the pair on purpose. The pool and the echo book are one
+    /// state — an appointment in the book fires INTO the pool — so a
+    /// restore that set one and not the other would leave the world
+    /// scheduling reflections of waves it no longer remembers.
+    pub(crate) fn restore_state(&mut self, pool: PulsePool, echoes: EchoQueue) {
+        self.pool = pool;
+        self.echoes = echoes;
+    }
+
     /// The one door into the pool: forwards to the pure emit and maps its
     /// refusal value onto the exact `push_error` the GDScript pool raised,
     /// so the observable refusal (loud message, no slot taken) survives

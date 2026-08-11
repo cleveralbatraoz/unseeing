@@ -47,6 +47,9 @@ var level: WaveLevel
 var settings: SettingsMenu
 ## The agent's window into the engine — reads every system, drives none.
 var observer: WaveObserver
+## The other direction: it drives every system and reads none, and proves
+## each restore by asking the observer to read the world back.
+var restorer: WaveRestorer
 
 ## The game clock: simulated seconds accumulated from frame deltas — NOT wall
 ## time, so offline rendering (movie maker) and time scaling stay correct.
@@ -131,6 +134,12 @@ func _ready() -> void:
 	# capture without it could not say when the next footfall lands
 	observer.inject_body(hero)
 	add_child(observer)
+	# the write side: the same three systems the observer reads, plus the
+	# observer itself — a restore proves itself by asking the READER what
+	# the world now holds, never by reading its own writes back
+	restorer = WaveRestorer.new()
+	restorer.inject(level, player, hero, observer)
+	add_child(restorer)
 	# the settings overlay, added LAST on purpose: unhandled input walks
 	# the tree bottom-up, so the overlay sees Escape before the world does
 	# and can swallow every key it takes.
@@ -204,6 +213,57 @@ func capture_env() -> Dictionary:
 		"flicker_next_drop": _flicker._next_drop,
 		"flicker_rng_state": _flicker._rng.state,
 	}
+
+
+## Put a captured env group back — the exact nine fields `capture_env`
+## reads, and the only half of a blob that no Rust node can write.
+##
+## The values are handed in NATIVE (real floats, a plain int for the
+## stream position), because GDScript cannot read the blob's own spelling
+## of a float without losing bits: measured on this build, `String.to_float`
+## is not correctly rounded, drops the sign of "-0" and reads "NaN" as zero.
+## `WaveObserver.env_of` does that reading in Rust and hands back exactly
+## what `capture_env` produced, so this function only assigns.
+func apply_env(env: Dictionary) -> void:
+	now = env["now"]
+	_demo_checked = env["demo_checked"]
+	_demo.armed = env["demo_armed"]
+	_demo._next = env["demo_next"]
+	_flicker._t = env["flicker_t"]
+	_flicker._level = env["flicker_level"]
+	_flicker._drop_until = env["flicker_drop_until"]
+	_flicker._next_drop = env["flicker_next_drop"]
+	# the stream POSITION, all 64 bits of it — a flicker one draw out of
+	# step replays a different envelope from the very next frame
+	_flicker._rng.state = env["flicker_rng_state"]
+
+
+## Apply a captured blob to this running game — the one call the suites and
+## the reproduction probes make.
+##
+## The blob has two halves and they are owned by different layers: the env
+## group is this script's own state and is applied here, and everything else
+## is the restorer's transaction, which re-captures the world and refuses on
+## any divergence. Freeze first — state must not move between the halves.
+##
+## The env half is rolled BACK when the verdict refuses. Every refusal the
+## restorer can reach before it writes anything (a wrong format, another
+## map, a scene that does not match the blob) would otherwise still leave
+## this script holding the blob's clock and the blob's flicker: a world
+## dated at an instant nothing else in it has ever been at.
+func restore_blob(blob: Dictionary) -> Dictionary:
+	get_tree().paused = true
+	var env: Dictionary = observer.env_of(blob)
+	if env.has("unavailable"):
+		get_tree().paused = false
+		return env
+	var previous := capture_env()
+	apply_env(env)
+	var verdict: Dictionary = restorer.restore(blob, capture_env())
+	if verdict.has("unavailable"):
+		apply_env(previous)
+	get_tree().paused = false
+	return verdict
 
 
 ## Deterministic runs arm the seed three ways: UNSEEING_SEED (seed alone,

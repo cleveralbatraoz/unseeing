@@ -296,9 +296,10 @@ impl UnseeingPlayer {
     }
 
     /// The clock is handed, never poked: the composition root advances
-    /// the simulated time here every frame.
+    /// the simulated time here every frame — and the restorer places it
+    /// back on the captured instant before the cane's own clocks land.
     #[func]
-    fn tick(&mut self, now_t: f64) {
+    pub(crate) fn tick(&mut self, now_t: f64) {
         self.now = now_t;
     }
 
@@ -625,11 +626,6 @@ impl UnseeingPlayer {
 
     /// The restore door for the eye: the same clamp the look law applies,
     /// so a blob cannot place the eye past `PITCH_LIMIT`.
-    #[expect(
-        dead_code,
-        reason = "the door this task builds; the restorer module (a later \
-                  task) is its first caller"
-    )]
     pub(crate) fn set_eye_pitch(&mut self, pitch: f64) {
         if let Some(camera) = self.camera.as_mut() {
             let mut rot = camera.get_rotation();
@@ -640,12 +636,22 @@ impl UnseeingPlayer {
 
     /// Empty the out-tray before a restore rebuilds it — restoring onto a
     /// non-empty queue would replay the captured waves AND the stale ones.
-    #[expect(
-        dead_code,
-        reason = "the door this task builds; the restorer module (a later \
-                  task) is its first caller"
-    )]
     pub(crate) fn clear_wave_queue(&mut self) {
         self.wave_queue.clear();
+    }
+
+    /// The restore door for the cane's queued intent — the flag as DATA,
+    /// both ways.
+    ///
+    /// [`Self::tap`] cannot serve here, and that is the whole reason this
+    /// exists: it only ever SETS the flag, so a blob captured with no tap
+    /// pending could not clear one the live world was holding, and the
+    /// transaction would refuse itself at `hero.tap_queued` over a
+    /// difference it was able to fix. Nothing else about a tap is decided
+    /// here — the cooldown, the aim and the three voices all still run in
+    /// [`Self::cane_tap`], on the physics tick, exactly as a real click's
+    /// would.
+    pub(crate) fn restore_tap_queued(&mut self, queued: bool) {
+        self.tap_queued = queued;
     }
 }

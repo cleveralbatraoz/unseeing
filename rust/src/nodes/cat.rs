@@ -339,11 +339,6 @@ impl WaveCat {
 
     /// Place a built cat into a captured mid-life state. Callers hold the
     /// tree frozen; the next physics tick resumes the captured life.
-    #[expect(
-        dead_code,
-        reason = "the door this task builds; the restorer module (a later \
-                  task) is its first caller"
-    )]
     pub(crate) fn restore_state(&mut self, capture: &CatCapture) {
         self.base_mut().set_global_position(capture.position);
         let mut rot = self.base().get_global_rotation();

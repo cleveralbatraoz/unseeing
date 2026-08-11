@@ -112,12 +112,6 @@ pub trait SoundSource {
     /// (one beat per jump) never fires on a restore. Required, not
     /// defaulted: a source that cannot restore its gate is a source a
     /// blob cannot carry, and the compiler says so at the source.
-    #[expect(
-        dead_code,
-        reason = "the restorer (a later task) is the caller; this door is opened ahead of it \
-                  on purpose so fan and radio must implement it now, and the compiler will \
-                  flag this attribute itself as stale the moment that caller lands"
-    )]
     fn restore_appointment(&mut self, next: f64);
 }
 
@@ -162,12 +156,6 @@ impl SourceRig {
     /// Replace the rig's gate wholesale — the restore door. The limbs are
     /// untouched: geometry is derived from the scene, only the clock is
     /// state.
-    #[expect(
-        dead_code,
-        reason = "called from fan/radio's restore_appointment, which the restorer (a later \
-                  task) is what actually reaches; the compiler will flag this attribute \
-                  itself as stale once that call lands"
-    )]
     pub(crate) fn restore_cadence(&mut self, cadence: Cadence) {
         self.cadence = cadence;
     }

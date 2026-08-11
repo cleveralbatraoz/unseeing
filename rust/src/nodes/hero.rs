@@ -288,11 +288,6 @@ impl HeroBody {
     /// Place a built viewmodel into a captured mid-stride state — the
     /// footstep clock and shoe alternation included, so the very next
     /// footfall lands exactly where the original's would have.
-    #[expect(
-        dead_code,
-        reason = "the door this task builds; the restorer module (a later \
-                  task) is its first caller"
-    )]
     pub(crate) fn restore_vm(&mut self, capture: ViewmodelCapture) {
         self.vm = Some(Viewmodel::restore(capture));
     }

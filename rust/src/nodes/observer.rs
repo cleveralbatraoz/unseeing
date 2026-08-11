@@ -586,7 +586,16 @@ impl WaveObserver {
     /// measured FROM the eye; a blob carries neither, and refusing for a
     /// subsystem the artifact does not contain would be a refusal that
     /// misnames its own limits.
-    fn capture_state(&self, now: f64, env: &VarDictionary) -> Result<CaptureState, String> {
+    ///
+    /// Visible to the whole `nodes` module because the RESTORER's proof is
+    /// a second capture of the world it just wrote — through THIS function,
+    /// never a copy of it. A restore that proved itself against its own
+    /// idea of what a capture is would prove nothing at all.
+    pub(super) fn capture_state(
+        &self,
+        now: f64,
+        env: &VarDictionary,
+    ) -> Result<CaptureState, String> {
         let env = parse_env(env)?;
         if env.now.to_bits() != now.to_bits() {
             return Err(format!(
@@ -676,7 +685,11 @@ fn cast_and_explain(
 /// The one refusal shape. A dictionary carrying only this key is how an
 /// agent learns it asked a question that could not be answered — as
 /// opposed to one whose answer happens to be empty.
-fn unavailable(reason: &str) -> VarDictionary {
+///
+/// Shared with the restorer: a refused restore and a refused snapshot read
+/// the same way to the agent holding them, and two spellings of "no" is
+/// one more than a caller can be asked to parse.
+pub(super) fn unavailable(reason: &str) -> VarDictionary {
     let mut refusal = VarDictionary::new();
     refusal.set("unavailable", reason);
     refusal
@@ -1194,8 +1207,11 @@ fn rule_name(rule: EvictionRule) -> &'static str {
 // whole plan exists to prevent.
 // ─────────────────────────────────────────────────────────────────────
 
-/// A 64-bit word as the 16 hex characters JSON carries losslessly.
-fn hex64(word: u64) -> String {
+/// A 64-bit word as the 16 hex characters JSON carries losslessly. Shared
+/// with the restorer, whose verdict hands back the hash of the world it
+/// restored: how a hash is spelled is part of the wire format, and a
+/// second spelling of it would be a second format.
+pub(super) fn hex64(word: u64) -> String {
     format!("{word:016x}")
 }
 

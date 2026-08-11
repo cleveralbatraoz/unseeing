@@ -23,6 +23,7 @@ mod observer;
 mod player;
 mod props;
 mod radio;
+mod restorer;
 mod settings;
 mod solid;
 mod source;
