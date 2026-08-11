@@ -158,7 +158,9 @@ impl SourceRig {
 
     /// Build one limb: a mesh instance drawn through the injected skin,
     /// positioned and rotated in its parent. Remembered, so the standing
-    /// image reaches it every frame.
+    /// image reaches it every frame. Returns the built instance so a caller
+    /// that needs a stable handle (a rebuilding `ready()` freeing it by
+    /// name) can name it.
     ///
     /// The caller's own mesh already carries its
     /// [`crate::render::role_label`] value baked into `CUSTOM0` — the
@@ -171,7 +173,7 @@ impl SourceRig {
         at: Vector3,
         rotation: Vector3,
         skin: Option<&Gd<Material>>,
-    ) {
+    ) -> Gd<MeshInstance3D> {
         let mut mi = MeshInstance3D::new_alloc();
         mi.set_mesh(mesh);
         if let Some(skin) = skin {
@@ -180,7 +182,8 @@ impl SourceRig {
         mi.set_position(at);
         mi.set_rotation(rotation);
         parent.add_child(&mi);
-        self.limbs.push(mi);
+        self.limbs.push(mi.clone());
+        mi
     }
 
     /// Push the standing acoustic image onto every limb this source built.

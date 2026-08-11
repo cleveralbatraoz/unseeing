@@ -8,26 +8,31 @@ extends SceneTree
 const READY_FRAMES := 30
 
 var _fan: Node3D = null
+var _radio: Node3D = null
 var _frames := 0
 var _checks := 0
 var _failed := 0
 
 
 func _initialize() -> void:
-	if not ClassDB.class_exists("SoundFan"):
+	if not ClassDB.class_exists("SoundFan") or not ClassDB.class_exists("SoundRadio"):
 		_check("the Rust extension is loaded (see .godot/extension_list.cfg)", false)
 		_report()
 		return
 	_fan = ClassDB.instantiate("SoundFan") as Node3D
 	root.add_child(_fan)
+	_radio = ClassDB.instantiate("SoundRadio") as Node3D
+	root.add_child(_radio)
 
 
 func _process(_delta: float) -> bool:
 	_frames += 1
-	if _frames < READY_FRAMES and _fan != null and _fan.get_child_count() == 0:
-		if Engine.is_editor_hint():
+	if _frames < READY_FRAMES and Engine.is_editor_hint():
+		var fan_empty := _fan != null and _fan.get_child_count() == 0
+		var radio_empty := _radio != null and _radio.get_child_count() == 0
+		if fan_empty or radio_empty:
 			return false
-	if _fan == null:
+	if _fan == null or _radio == null:
 		return true
 	_judge()
 	_report()
@@ -38,6 +43,7 @@ func _judge() -> void:
 	var editor := Engine.is_editor_hint()
 	print("# sources: mode=%s" % ("editor" if editor else "run"))
 	_judge_fan(editor)
+	_judge_radio(editor)
 
 
 func _judge_fan(editor: bool) -> void:
@@ -48,6 +54,18 @@ func _judge_fan(editor: bool) -> void:
 		_check("editor: the fan builds its pivot head", pivot != null)
 	else:
 		_check("run uninjected: the fan builds nothing", _fan.get_child_count() == 0)
+
+
+func _judge_radio(editor: bool) -> void:
+	var case := _radio.get_node_or_null("RadioCase")
+	var grille := _radio.get_node_or_null("RadioGrille")
+	var antenna := _radio.get_node_or_null("RadioAntenna")
+	if editor:
+		_check("editor: the radio builds its case", case != null)
+		_check("editor: the radio builds its grille", grille != null)
+		_check("editor: the radio builds its antenna", antenna != null)
+	else:
+		_check("run uninjected: the radio builds nothing", _radio.get_child_count() == 0)
 
 
 func _check(what: String, ok: bool) -> void:

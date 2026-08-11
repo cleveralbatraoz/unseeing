@@ -22,11 +22,12 @@
 use std::f32::consts::PI;
 
 use godot::classes::{
-    ArrayMesh, BoxShape3D, CollisionShape3D, INode3D, Material, Mesh, Node3D, RefCounted,
+    ArrayMesh, BoxShape3D, CollisionShape3D, Engine, INode3D, Material, Mesh, Node3D, RefCounted,
     StaticBody3D,
 };
 use godot::prelude::*;
 
+use super::solid::clear_limbs;
 use super::source::{SoundSource, SourceRig, sound};
 use crate::radio_wave;
 use crate::render::{self, Role};
@@ -55,12 +56,27 @@ const OIDS: [f64; 2] = [
     render::role_label(Role::Shell),
 ];
 
+/// The six built subtrees, named so a rebuilding ready() can free the
+/// ghosts a Ctrl+D duplicate carries in (names are the only handle — a
+/// duplicate reaches _ready as a fresh Rust object). The case is a
+/// StaticBody3D child of the radio node; the five fascia limbs are
+/// MeshInstance3D children of the radio node itself (`build_fascia`
+/// parents them straight to `self.base()`, not to a wrapper group).
+const LIMBS: [&str; 6] = [
+    "RadioCase",
+    "RadioGrille",
+    "RadioTuner",
+    "RadioDialA",
+    "RadioDialB",
+    "RadioAntenna",
+];
+
 /// The radio node. Scene limbs are built in `_ready` from the injected
 /// acoustic-image skin; `update(t)` — driven by the level with the
 /// simulated clock — fires the cadence into the injected pulse pool. There
 /// are no motion curves: a radio sits still and sounds.
 #[derive(GodotClass)]
-#[class(init, base=Node3D)]
+#[class(tool, init, base=Node3D)]
 pub struct SoundRadio {
     /// The wave pool every sound enters — asked only to `emit`, and only
     /// dynamically, so the GDScript shim and the Rust core both answer.
@@ -95,6 +111,17 @@ pub struct SoundRadio {
 #[godot_api]
 impl INode3D for SoundRadio {
     fn ready(&mut self) {
+        clear_limbs(self, &LIMBS);
+        self.rig.clear();
+        if Engine::singleton().is_editor_hint() {
+            // blueprint mode: the same geometry the game outlines, skinless
+            // (SourceRig::limb skips the override while data_mat is None).
+            // Nothing ticks, emits, or registers here — advance() is only
+            // ever called by the level at run time.
+            self.build_case();
+            self.build_fascia();
+            return;
+        }
         // no silent nulls: without the pool and the acoustic-image skin the
         // radio can neither sound nor be seen — refuse to build instead of
         // crashing later
@@ -143,6 +170,7 @@ impl SoundRadio {
     /// The case: one box, with the collider that lets the cane find it.
     fn build_case(&mut self) {
         let mut body = StaticBody3D::new_alloc();
+        body.set_name("RadioCase");
         self.base_mut().add_child(&body);
         let mut node = body.clone().upcast::<Node3D>();
         let skin = self.data_mat.clone();
@@ -173,43 +201,54 @@ impl SoundRadio {
         let flat = Vector3::new(PI * 0.5, 0.0, 0.0); // a disc facing front
         let shell = render::role_label(Role::Shell);
 
-        self.rig.limb(
-            &mut node,
-            &labelled_torus(0.052, 0.086, shell),
-            Vector3::new(HUB.x, HUB.y, face),
-            flat,
-            skin.as_ref(),
-        );
-        self.rig.limb(
-            &mut node,
-            &labelled_boxm(Vector3::new(0.15, 0.05, 0.014), shell),
-            Vector3::new(0.11, 0.195, face),
-            Vector3::ZERO,
-            skin.as_ref(),
-        );
-        for x in [0.055_f32, 0.165] {
-            self.rig.limb(
+        self.rig
+            .limb(
                 &mut node,
-                &labelled_cyl(0.030, 0.026, shell),
-                Vector3::new(x, 0.075, face),
+                &labelled_torus(0.052, 0.086, shell),
+                Vector3::new(HUB.x, HUB.y, face),
                 flat,
                 skin.as_ref(),
-            );
+            )
+            .set_name("RadioGrille");
+        self.rig
+            .limb(
+                &mut node,
+                &labelled_boxm(Vector3::new(0.15, 0.05, 0.014), shell),
+                Vector3::new(0.11, 0.195, face),
+                Vector3::ZERO,
+                skin.as_ref(),
+            )
+            .set_name("RadioTuner");
+        for (x, name) in [0.055_f32, 0.165]
+            .into_iter()
+            .zip(["RadioDialA", "RadioDialB"])
+        {
+            self.rig
+                .limb(
+                    &mut node,
+                    &labelled_cyl(0.030, 0.026, shell),
+                    Vector3::new(x, 0.075, face),
+                    flat,
+                    skin.as_ref(),
+                )
+                .set_name(name);
         }
         // the antenna, leaning back off the case's top corner
         let tilt = 0.32_f32;
         let half = 0.28_f32;
-        self.rig.limb(
-            &mut node,
-            &labelled_cyl(0.008, half * 2.0, shell),
-            Vector3::new(
-                CASE.x * 0.5 - 0.04,
-                CASE.y + half * tilt.cos(),
-                half * tilt.sin(),
-            ),
-            Vector3::new(tilt, 0.0, 0.0),
-            skin.as_ref(),
-        );
+        self.rig
+            .limb(
+                &mut node,
+                &labelled_cyl(0.008, half * 2.0, shell),
+                Vector3::new(
+                    CASE.x * 0.5 - 0.04,
+                    CASE.y + half * tilt.cos(),
+                    half * tilt.sin(),
+                ),
+                Vector3::new(tilt, 0.0, 0.0),
+                skin.as_ref(),
+            )
+            .set_name("RadioAntenna");
     }
 }
 
