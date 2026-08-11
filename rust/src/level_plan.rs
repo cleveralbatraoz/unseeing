@@ -75,6 +75,24 @@ pub fn wall_box(length: f64) -> Vector3 {
     )
 }
 
+/// Whether the level DRAWS one of the two slabs it built. The pair is
+/// always BUILT — the level keeps floor and ceiling as one ordered pair,
+/// and everything that reads it (the extents knob, the object-id anchors,
+/// the seam census) must find the same two slabs at edit time as at run
+/// time. Only the drawing bends, and only one way: a lid spanning the
+/// whole extents is one opaque quad over the entire map, and the view it
+/// covers — straight down — is the one a designer lays a plan out in. So
+/// the ceiling is not drawn in the editor. The floor is: it is the ground
+/// plane every wall and prop is placed against.
+///
+/// Nothing about this reaches the running game, where both slabs draw:
+/// the hero's world is a closed room, and its lid is where the ceiling
+/// reflections and the 0.9 seam come from.
+#[must_use]
+pub fn slab_drawn(lid: bool, editor_hint: bool) -> bool {
+    !(lid && editor_hint)
+}
+
 /// The nearest quarter turn to a free-hand yaw: 0 faces +X down the local
 /// length axis, 1..3 step counterclockwise by 90°. Total on any input,
 /// NaN included (NaN rounds to quadrant 0 rather than poisoning a cast).
@@ -288,6 +306,29 @@ mod tests {
             assert_eq!(back, wall_segment(center, 4.0, quadrant));
             assert!(back.x <= back.z && back.y <= back.w, "ends out of order");
         }
+    }
+
+    /// The map is laid out from above, and a lid spanning the whole
+    /// extents is one opaque quad across that entire view — no walls, no
+    /// props, nothing to place against. So the ceiling is not drawn at
+    /// edit time. The floor is: it is the ground plane every wall and prop
+    /// is dragged onto, and dropping it would trade one blind view for
+    /// another.
+    #[test]
+    fn the_editor_draws_the_floor_but_not_the_lid() {
+        assert!(slab_drawn(false, true), "the editor lost its ground plane");
+        assert!(!slab_drawn(true, true), "the editor drew the lid");
+    }
+
+    /// The other half, and the one that keeps the fix honest: the hero's
+    /// world is a closed room, so at run time BOTH slabs draw. Deleting
+    /// the ceiling outright — or carrying the editor's rule into the game
+    /// — satisfies the test above and opens the level to the sky, where
+    /// the ceiling reflections and the 0.9 lid seam come from.
+    #[test]
+    fn the_running_game_draws_both_slabs() {
+        assert!(slab_drawn(false, false), "the game lost its floor");
+        assert!(slab_drawn(true, false), "the game lost its ceiling");
     }
 
     /// Free-hand yaws round to the nearest quarter turn, whole windings

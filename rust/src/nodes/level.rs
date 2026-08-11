@@ -464,9 +464,18 @@ impl WaveLevel {
     /// the tree after `request_ready()` runs it again, and a duplicated
     /// level arrives carrying copies of the slabs the original built. This
     /// build owns the pair — whatever it finds under those names goes.
+    ///
+    /// BOTH slabs are always built, in this order, in the editor too — the
+    /// pair is what `set_extents`, the object-id anchors and the seam
+    /// census all read, and a level that carried one slab at edit time and
+    /// two at run time would describe two different worlds through the
+    /// same accessors. What bends is the DRAWING, per
+    /// [`level_plan::slab_drawn`]: the lid is hidden in the editor, where
+    /// it would otherwise cover the top-down view the map is laid out in.
     fn build_slabs(&mut self) {
         self.slabs.clear();
         clear_limbs(self, &SLAB_NAMES);
+        let editor_hint = Engine::singleton().is_editor_hint();
         for lid in [false, true] {
             let built = build_box(
                 Vector3::new(self.extents.x, level_plan::SLAB_T as f32, self.extents.y),
@@ -476,6 +485,9 @@ impl WaveLevel {
             let mut body = StaticBody3D::new_alloc();
             body.set_name(SLAB_NAMES[usize::from(lid)]);
             body.set_position(slab_center(self.extents, lid));
+            // the whole body, so the collision debug draw of a 28 × 28 lid
+            // goes with the mesh it belongs to
+            body.set_visible(level_plan::slab_drawn(lid, editor_hint));
             body.add_child(&built.skin);
             body.add_child(&built.collider);
             self.base_mut().add_child(&body);

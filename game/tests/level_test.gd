@@ -379,6 +379,36 @@ func test_extents_knob_resizes_slabs() -> void:
 	assert_vector(slabs[1].position).is_equal(Vector3(4, 3.05, 3))
 
 
+## The running half of the slab-drawing law (level_plan::slab_drawn). The
+## editor hides the ceiling — a lid over the whole extents is one opaque
+## quad across the top-down view a map is laid out in — and the risk in
+## that fix is that it leaks into the game, or that the lid is dropped
+## outright instead of hidden. Either one opens the hero's closed room to
+## the sky, silently: nothing else in this suite looks at whether a slab
+## draws. So both slabs are still BUILT, in floor-then-ceiling order, and
+## both are still drawn.
+##
+## Asked of the skin's visibility IN THE TREE, not of one node's flag, so
+## it holds however the lid is hidden — body, skin, or a parent above them.
+func test_both_slabs_draw_in_the_running_game() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3.ZERO, 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var slabs := _slabs(level)
+	assert_int(slabs.size()).is_equal(2)
+	(
+		assert_bool(_skin(slabs[0]).is_visible_in_tree())
+		. append_failure_message("the floor does not draw in the running game")
+		. is_true()
+	)
+	(
+		assert_bool(_skin(slabs[1]).is_visible_in_tree())
+		. append_failure_message("the ceiling does not draw in the running game")
+		. is_true()
+	)
+
+
 ## The same law on the level root, whose limbs are whole slab BODIES. A
 ## `_ready` runs again whenever a node re-enters the tree after
 ## `request_ready()` — which is what the editor does to a reloaded scene —
