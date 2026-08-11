@@ -180,8 +180,21 @@ diagnostic_census() { # diagnostic_census <dir>
 # that reddens on it teaches its reader to stop believing it. What matters
 # here is a message whose OPENING is conjured, and that only happens where
 # the literal opens the call.
+#
+# The list is every macro that BUILDS a message, not the three that came to
+# mind first: write!, writeln! and format_args! take the same format string
+# and produce the same String, and naming only format! left three doors open
+# in the one check the census leans on. rust/src holds zero of them today, so
+# widening this cannot false-positive — it is pure insurance, which is the
+# only sensible thing for the assumption everything else rests on.
+#
+# Two greps because "the format string" is not always the first argument:
+# write! and writeln! take the destination first. Widening the first pattern
+# to allow anything before the literal would have re-admitted assert_eq!'s
+# message, which is the false positive this scoping exists to avoid.
 synthesised_prefixes() { # synthesised_prefixes <dir>
-  grep -rnE '(format!|godot_error!|godot_warn!)\("\{[^"{}]*\}(: | '\'')' "$1" || true
+  grep -rnE '(format!|format_args!|godot_error!|godot_warn!)\("\{[^"{}]*\}(: | '\'')' "$1" || true
+  grep -rnE '(write!|writeln!)\([^,"]*, *"\{[^"{}]*\}(: | '\'')' "$1" || true
 }
 
 # The verdict on a census (read from stdin): every opening the boot check
@@ -253,6 +266,10 @@ godot_error!(
 let scene = load::<PackedScene>("res://scenes/bell.tscn");
 // a synthesised opening that is NOT a message macro's first argument
 assert_eq!(got, want, "{case}: the plan disagreed");
+// the same conjuring through the OTHER message builders — write! puts its
+// destination first, so its format string is the second argument
+write!(buf, "{cls}: built somewhere else entirely").ok();
+format_args!("{cls} 'Bell': and by a third route");
 FIXTURE
 
 must_head() { # must_head <line> <expected head> <label>
@@ -309,6 +326,16 @@ if printf '%s\n' "$SYNTH_FIX" | grep -q 'fixture\.rs:36'; then
   bad "an assert_eq! message was flagged as a synthesised class opening — idiomatic Rust that cannot reach a boot log, and a gate that cries on it stops being read"
 else
   ok "an interpolation opening a NON-first argument (assert_eq!'s message) is left alone"
+fi
+if printf '%s\n' "$SYNTH_FIX" | grep -q 'fixture\.rs:39'; then
+  ok "write! conjuring an opening is flagged too — its format string is the SECOND argument and was a hole"
+else
+  bad "write! can still conjure a class opening — the census cannot read what it builds, and neither can this gate"
+fi
+if printf '%s\n' "$SYNTH_FIX" | grep -q 'fixture\.rs:40'; then
+  ok "format_args! conjuring an opening is flagged too"
+else
+  bad "format_args! can still conjure a class opening — same message, same log, different macro"
 fi
 
 # The verdict, over a census written out by hand rather than read off this
@@ -368,6 +395,18 @@ for site in $SITES; do
     # answers for it is (3), which reads the literal where it was actually
     # written, and (4), which forbids conjuring one that was never written at
     # all. Printed by name: a relay nobody names is a relay nobody reviews.
+    #
+    # THE STANDING BLIND SPOT, stated as the family it is rather than the
+    # one member that is easiest to picture: a relayed message is read here
+    # only if its class token is the HEAD OF A SINGLE STRING LITERAL. Split
+    # it and nothing reads it — "SoundBell".to_string() + ": no clapper",
+    # concat!("SoundBell", ": no clapper"), s.push_str("SoundBell"), or a
+    # message that simply opens some other way ("SoundBell rang twice").
+    # Every one of those puts ERROR: SoundBell: … in the boot log with
+    # nothing for the census to see. None of those idioms appears in
+    # rust/src today — format! is universal here and every engine
+    # diagnostic opens with its class name — but that is a habit, not a
+    # law, and this is the seam it protects.
     RELAYS="$RELAYS $site"
     continue
   fi
@@ -416,11 +455,14 @@ else
   # and only the second one has fixtures. Aim the census at $SRC/nodes and
   # it still reads perfectly — it just stops seeing every opening built in
   # a pure module, which is the entire reason this check exists. So assert
-  # the census actually reached one.
-  if printf '%s\n' "$CENSUS" | grep -Fq "$SRC/level_plan.rs:"; then
-    ok "the census reached the pure modules and not just the node classes ($CENSUSED openings, level_plan.rs among them)"
+  # the census actually reached outside the node classes. Stated as the
+  # directory rather than as a filename: naming level_plan.rs would redden
+  # this gate the day that file is renamed, for a reason having nothing to
+  # do with boot errors.
+  if printf '%s\n' "$CENSUS" | grep -Fv " $SRC/nodes/" | grep -q .; then
+    ok "the census reached past the node classes into the pure modules ($CENSUSED openings)"
   else
-    bad "the census read $CENSUSED openings but none from $SRC/level_plan.rs — it is aimed too narrowly, and every opening built in a pure module is invisible to it"
+    bad "the census read $CENSUSED openings and every one of them is under $SRC/nodes/ — it is aimed too narrowly, and every opening built in a pure module is invisible to it"
   fi
 
   UNCOVERED="$(printf '%s\n' "$CENSUS" | uncovered_openings "$EXCEPT_PREFIX" "$EXCEPT_HOME")"
@@ -439,14 +481,41 @@ UNCOVERED_EOF
   fi
 fi
 
-# The forgiven opening is allowed to be uncaught because exactly one macro
-# says it. Counted, not pinned to a line number: the old file:line pin broke
-# on any edit above it and never checked this claim at all.
+# What the forgiveness actually covers: ONE message, not a prefix anyone may
+# borrow. Without this, a new const in pulse_pool.rs reading "Pulses.emit:
+# SoundBell has no clapper", emitted from a node, is waved straight through
+# — and the line below would still have announced a single emitter, because
+# it counts the IDENTIFIER REFUSAL_MESSAGE rather than the opening the log
+# actually carries. A printed claim outrunning its assertion is the exact
+# defect the census was built to stop; it does not get to live here.
+#
+# The pinned text is a second copy of pulse_pool.rs's const, deliberately,
+# in the same spirit as the hand-copied must_catch lines above: if the const
+# is reworded this goes red asking to be re-pinned, rather than quietly
+# widening to whatever the const now says.
+EXCEPT_TEXT="Pulses.emit: speed and max_r must be positive — wave refused"
+FORGIVEN=0
+while read -r prefix at; do
+  [ "$prefix" = "$EXCEPT_PREFIX" ] || continue
+  [ "${at%:*}" = "$EXCEPT_HOME" ] || continue
+  FORGIVEN=$((FORGIVEN + 1))
+  TEXT="$(cd "$DIR" && literal_head "${at%:*}" "${at##*:}")"
+  if [ "$TEXT" != "$EXCEPT_TEXT" ]; then
+    bad "$at opens \"$EXCEPT_PREFIX\" but says \"$TEXT\" — the forgiveness covers the one legacy refusal message, not a prefix a new message may wear to get past this gate"
+  fi
+done <<FORGIVEN_EOF
+$CENSUS
+FORGIVEN_EOF
+
+# And the call site, which is a different claim from the opening and is
+# still singular: one identifier, one macro, one way to the log. Counted
+# rather than pinned to a line number — the old `sed -n '234p'` pin broke on
+# any edit above it and never tested this at all.
 EXCEPT_EMITTERS="$(cd "$DIR" && grep -rn 'godot_error!.*REFUSAL_MESSAGE' "$SRC" | grep -c . || true)"
 if [ "$EXCEPT_EMITTERS" = "1" ]; then
-  ok "the forgiven \"$EXCEPT_PREFIX\" opening has exactly one emitter in the tree — one refused wave request, one line"
+  ok "the forgiveness covers $FORGIVEN written copies of ONE legacy message in $EXCEPT_HOME, and the REFUSAL_MESSAGE const reaches the log from exactly one macro"
 else
-  bad "the forgiven \"$EXCEPT_PREFIX\" opening has $EXCEPT_EMITTERS emitters, not 1 — a message BOOT_ERROR_PATTERN deliberately ignores has grown a second way to the boot log"
+  bad "REFUSAL_MESSAGE is emitted from $EXCEPT_EMITTERS macros, not 1 — a message BOOT_ERROR_PATTERN deliberately ignores has grown a second way to the boot log"
 fi
 
 # (4) No message may build its opening token out of an interpolation. The
@@ -473,6 +542,13 @@ fi
 # asks for — and run THIS SCRIPT against the copy. Green there is a broken
 # gate no matter how many OKs precede it. The clean copy runs first, so a
 # red from the plant is the plant and not the copying.
+#
+# Precisely what this proves, since the honest scope is narrower than "end
+# to end" suggests: the chain census -> verdict -> FAIL -> exit code, over
+# the real tree's shape and size. The relay half of the plant is there to
+# make it the realistic two-layer shape, not because the red depends on it
+# — the pure-module literal alone is already red. Relay HANDLING is covered
+# by the site fixtures, not here.
 #
 # $SRC is what makes this possible and it exists for nothing else.
 if [ -z "${BOOT_GATE_SRC:-}" ]; then
