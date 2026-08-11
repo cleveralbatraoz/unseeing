@@ -535,16 +535,30 @@ mod tests {
     #[test]
     fn a_restored_walker_keeps_its_step_clock_and_its_next_shoe() {
         let mut original = Viewmodel::new(0.0, 0.0);
-        // walk until the first step fires and the clock is mid-count
+        // walk under a turning, nodding look until the third footstep
+        // fires: advance() runs every frame so every eased field —
+        // walk_amp, leg_phase, swing_phase, sway_x, sway_y, last_yaw,
+        // last_pitch — settles at a distinct, nonzero value before
+        // capture. A restore that transposed any pair of captured fields
+        // (e.g. swapped sway_x and sway_y) must be observable here, not
+        // masked by two matching zeros.
+        let mut now = 0.0;
+        let mut frame = 0.0;
         let mut fired = None;
         let mut steps = 0;
         while fired.is_none() || steps < 3 {
-            fired = original.footstep(0.05, true);
+            now += 0.05;
+            frame += 1.0;
+            let pose = original.advance(now, 0.05, 2.1, 0.11 * frame, 0.04 * frame, -10.0);
+            fired = original.footstep(0.05, pose.moving);
             if fired.is_some() {
                 steps += 1;
             }
         }
-        // now mid-interval: 0.05 into the 0.42 rebook, next side known
+        // the loop exits right after the 3rd firing: step_t is freshly
+        // re-booked to the full 0.42 s interval (not mid-count), and
+        // step_side is whichever shoe the alternation has reached — both
+        // still exactly the state a restore must reproduce.
         let mut restored = Viewmodel::restore(original.capture());
         assert_eq!(restored, original);
         // lockstep to the next firing: same tick, same side
