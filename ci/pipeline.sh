@@ -33,6 +33,14 @@ fi
 echo "ci: repository hygiene"
 "$DIR/test/repo_hygiene.sh" || exit 1
 
+# Self-tests for two gates further down (#21, #28) — pure shell, no
+# Godot, so they belong up here with the other cheap invariant checks
+# rather than after minutes of Rust/export work.
+echo "ci: boot-error gate self-test"
+"$DIR/test/ci_boot_error_gate.sh" || exit 1
+echo "ci: gdscript lint scope self-test"
+"$DIR/test/ci_gdscript_lint_scope.sh" || exit 1
+
 # The test bench is vendored third-party code, so nothing else in this
 # pipeline would notice if it drifted — the pre-commit hook deliberately
 # skips game/addons/. Check it against its lock before trusting a green run.
@@ -94,21 +102,23 @@ GDLINT="$(command -v gdlint || echo "$HOME/.local/bin/gdlint")"
   echo "ci: FAILED gdformat/gdlint not found (pipx install 'gdtoolkit==4.*')"
   exit 2
 }
-GD_FILES="$(find "$DIR/game/scripts" "$DIR/game/tests" -name '*.gd')"
+. "$DIR/ci/gdscript_files.sh"
+GD_FILES="$(gdscript_files "$DIR")"
 "$GDFORMAT" --check $GD_FILES || { echo "ci: format check FAILED (run gdformat on the files above)"; exit 1; }
 "$GDLINT" $GD_FILES || { echo "ci: lint FAILED"; exit 1; }
 echo "ci: format + lint OK"
 
 echo "ci: import + headless boot check"
+. "$DIR/ci/boot_error_pattern.sh"
 "$GODOT" --headless --path "$DIR/game" --import >/dev/null 2>&1 || true
 OUT="$("$GODOT" --headless --path "$DIR/game" --quit-after 30 2>&1)" || {
   printf '%s\n' "$OUT" | tail -15
   echo "ci: boot check FAILED (non-zero exit)"
   exit 1
 }
-if printf '%s' "$OUT" | grep -qiE "SCRIPT ERROR|SHADER ERROR|Parse Error|ERROR: Failed to"; then
-  printf '%s\n' "$OUT" | grep -iE "SCRIPT ERROR|SHADER ERROR|Parse Error|ERROR: Failed to" | head -10
-  echo "ci: boot check FAILED (script/shader errors)"
+if printf '%s' "$OUT" | grep -qiE "$BOOT_ERROR_PATTERN"; then
+  printf '%s\n' "$OUT" | grep -iE "$BOOT_ERROR_PATTERN" | head -10
+  echo "ci: boot check FAILED (script/shader/engine-class errors)"
   exit 1
 fi
 echo "ci: boot check OK"
