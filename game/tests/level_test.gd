@@ -652,3 +652,44 @@ func test_the_shipped_map_stands_on_its_own_floor() -> void:
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
 	assert_int(level.unfloored_solids()).is_equal(0)
+
+
+## THE authoring gesture: drag a WaveProp onto the floor plane, which is
+## where the editor's grid puts it. A box prop is CENTRED on its node — the
+## origin law is right, since a shelf or a beam floats as often as it stands
+## — so exactly half the crate ends up under the slab, where nothing draws,
+## nothing sounds and nothing can be walked into. Until now the only thing
+## that noticed was a CI assertion in the shipped map's own suite.
+func test_a_prop_dropped_on_the_floor_plane_reports() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = Vector2(20, 20)
+	var crate := WaveProp.new()
+	crate.name = "DesignerCrate"
+	crate.size = Vector3(0.5, 0.5, 0.5)
+	crate.position = Vector3(4, 0, 4)
+	level.add_child(crate)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: 'DesignerCrate' is sunk through the floor — its box spans y "
+			+ "-0.25..0.25, and the floor's top is at y 0.00. What is under the slab never "
+			+ "draws, never sounds and cannot be walked into. A WaveProp is CENTRED on its "
+			+ "node, so dropping one on the floor plane buries exactly half of it, while a "
+			+ "wall, a column and a wedge STAND on theirs. Lift the node until the whole "
+			+ "shape clears y 0.00."
+		)
+	))
+	assert_int(level.sunken_solids()).is_equal(1)
+
+
+## And the half that keeps the law readable: the SHIPPED map says nothing.
+## Every one of its 125 solids stands on the floor or above it — the walls
+## resting their undersides exactly on y = 0, which is the boundary case a
+## sloppy predicate would report as sunk on every wall in the level.
+func test_the_shipped_map_keeps_every_solid_above_its_floor() -> void:
+	var level: WaveLevel = auto_free(SHIPPED_LEVEL.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_int(level.sunken_solids()).is_equal(0)

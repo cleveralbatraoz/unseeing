@@ -575,6 +575,58 @@ pub fn unfloored(floor: Box3, solids: &[PlacedSolid]) -> Vec<String> {
     complaints
 }
 
+/// Every solid that crosses or hides under the floor plane, said out loud
+/// — one line per node, in the order the level walk found them. The plane
+/// is the floor slab's TOP where it actually stands, never the world's
+/// `y = 0`: a level lifted anywhere carries its own floor with it.
+///
+/// THE ORIGIN LAW IS RIGHT AND IS NOT WHAT IS BROKEN. A box prop is CENTRED
+/// on its node because a shelf, a tabletop or a beam floats as often as it
+/// stands, while a wall, a column and a wedge STAND on theirs because one
+/// that is not resting on something is a mistake. What that costs is the
+/// most natural authoring gesture there is: drop a `WaveProp` on the floor
+/// plane, and exactly half of it is under the slab — where nothing draws,
+/// nothing sounds and nothing can be walked into, and where no system
+/// notices. So the law keeps its shapes and the level gains its voice.
+///
+/// Two degrees again. A box that STRADDLES the plane is half a room and
+/// half nothing. A box entirely BELOW it is a node the designer thinks they
+/// placed and did not — reported for the same reason, and for one more: the
+/// obvious cure for a half-sunk warning is to push the node down until the
+/// complaint stops, and a law that went quiet there would reward making the
+/// fault total.
+#[must_use]
+pub fn sunken(floor: Box3, solids: &[PlacedSolid]) -> Vec<String> {
+    let top = floor.max[1];
+    let mut complaints = Vec::new();
+    for solid in solids {
+        let (lo, hi) = span(solid.area, 1);
+        if lo >= top - PLACEMENT_EPS {
+            continue; // resting on the floor, or standing clear above it
+        }
+        complaints.push(if hi > top + PLACEMENT_EPS {
+            format!(
+                "WaveLevel: '{}' is sunk through the floor — its box spans y {lo:.2}..{hi:.2}, \
+                 and the floor's top is at y {top:.2}. What is under the slab never draws, \
+                 never sounds and cannot be walked into. A WaveProp is CENTRED on its node, so \
+                 dropping one on the floor plane buries exactly half of it, while a wall, a \
+                 column and a wedge STAND on theirs. Lift the node until the whole shape clears \
+                 y {top:.2}.",
+                solid.path,
+            )
+        } else {
+            format!(
+                "WaveLevel: '{}' is buried under the floor — its box spans y {lo:.2}..{hi:.2}, \
+                 entirely below the floor's top at y {top:.2}. Nothing under the slab draws, \
+                 sounds or can be walked into, so the node is in the scene and not in the \
+                 world. Lift it until the whole shape clears y {top:.2}.",
+                solid.path,
+            )
+        });
+    }
+    complaints
+}
+
 #[cfg(test)]
 mod tests {
     use godot::builtin::EulerOrder;
@@ -728,6 +780,117 @@ mod tests {
         assert!(complaints[0].contains("'Second'"), "{}", complaints[0]);
         assert!(complaints[1].contains("'Third'"), "{}", complaints[1]);
         assert!(complaints[2].contains("'Fourth'"), "{}", complaints[2]);
+    }
+
+    /// A room's worth of well-placed shapes: a wall standing exactly on
+    /// the floor's top, a crate lifted onto it, a shelf floating clear.
+    /// None of these is sunk, and a law that said so would be noise.
+    #[test]
+    fn a_solid_resting_on_or_above_the_floor_says_nothing() {
+        let clear = [
+            placed("BorderWall", [4.0, 0.0, 0.5], [8.0, 3.0, 0.8]),
+            placed("Crate", [4.0, 0.0, 4.0], [4.5, 0.5, 4.5]),
+            placed("Rooms/Shelf", [1.0, 1.2, 2.0], [1.4, 1.6, 3.4]),
+        ];
+        let quiet = sunken(floor_20x20(), &clear);
+        assert!(quiet.is_empty(), "{quiet:?}");
+    }
+
+    /// THE authoring gesture the issue is named for: drag a `WaveProp` onto
+    /// the floor plane. A box prop is CENTRED on its node, so exactly half
+    /// of it ends up under the slab — where it never draws, never sounds
+    /// and cannot be walked into — and the only thing that ever noticed was
+    /// a CI assertion in the shipped map's own suite. The message carries
+    /// the origin law, because a designer who does not know it will keep
+    /// reaching the same state.
+    #[test]
+    fn a_prop_dropped_on_the_floor_plane_is_reported_as_half_sunk() {
+        let complaints = sunken(
+            floor_20x20(),
+            &[placed(
+                "DesignerCrate",
+                [3.75, -0.25, 3.75],
+                [4.25, 0.25, 4.25],
+            )],
+        );
+        assert_eq!(
+            complaints,
+            vec![
+                "WaveLevel: 'DesignerCrate' is sunk through the floor — its box spans y \
+                 -0.25..0.25, and the floor's top is at y 0.00. What is under the slab never \
+                 draws, never sounds and cannot be walked into. A WaveProp is CENTRED on its \
+                 node, so dropping one on the floor plane buries exactly half of it, while a \
+                 wall, a column and a wedge STAND on theirs. Lift the node until the whole \
+                 shape clears y 0.00."
+            ]
+        );
+    }
+
+    /// A prop entirely BELOW the floor is reported too, and differently. It
+    /// is a node the designer thinks they placed and did not — nothing
+    /// under the slab is ever lit or struck — and it is one nudge past the
+    /// straddle: the obvious cure for a half-sunk warning is to push the
+    /// node down until the complaint stops, so a law that went quiet here
+    /// would reward making the fault total.
+    #[test]
+    fn a_solid_entirely_below_the_floor_is_reported_as_buried() {
+        let complaints = sunken(
+            floor_20x20(),
+            &[placed("LostCrate", [3.75, -1.5, 3.75], [4.25, -0.5, 4.25])],
+        );
+        assert_eq!(
+            complaints,
+            vec![
+                "WaveLevel: 'LostCrate' is buried under the floor — its box spans y \
+                 -1.50..-0.50, entirely below the floor's top at y 0.00. Nothing under the slab \
+                 draws, sounds or can be walked into, so the node is in the scene and not in \
+                 the world. Lift it until the whole shape clears y 0.00."
+            ]
+        );
+    }
+
+    /// The predicate is "crosses the plane", not "crosses it by enough to
+    /// see": a centimetre under the slab is still a shape cut in two. Float
+    /// dust is not — the arithmetic that carries a local AABB into world
+    /// space costs ULPs, and a wall's underside sits on the floor's top by
+    /// construction.
+    #[test]
+    fn a_hair_of_straddle_is_reported_and_float_dust_is_not() {
+        let hair = [placed("Barely", [4.0, -0.01, 4.0], [4.5, 0.49, 4.5])];
+        assert_eq!(sunken(floor_20x20(), &hair).len(), 1);
+        let dust = [placed("Flush", [4.0, -0.0004, 4.0], [4.5, 0.5, 4.5])];
+        let quiet = sunken(floor_20x20(), &dust);
+        assert!(quiet.is_empty(), "{quiet:?}");
+    }
+
+    /// The plane is the floor's TOP where the slab actually stands, never
+    /// the world's y = 0. A level lifted to y = 5 carries its floor up with
+    /// it, so a crate at y 4.75..5.25 is half-sunk there and a crate at
+    /// y 0.0..0.5 is not merely sunk but five metres under the map.
+    #[test]
+    fn the_floor_plane_is_the_slab_top_not_the_world_origin() {
+        let raised = Box3 {
+            min: [0.0, 4.9, 0.0],
+            max: [20.0, 5.0, 20.0],
+        };
+        let complaints = sunken(
+            raised,
+            &[
+                placed("Half", [3.75, 4.75, 3.75], [4.25, 5.25, 4.25]),
+                placed("Under", [3.75, 0.0, 3.75], [4.25, 0.5, 4.25]),
+            ],
+        );
+        assert_eq!(complaints.len(), 2);
+        assert!(
+            complaints[0].contains("spans y 4.75..5.25, and the floor's top is at y 5.00"),
+            "{}",
+            complaints[0]
+        );
+        assert!(
+            complaints[1].contains("spans y 0.00..0.50, entirely below the floor's top at y 5.00"),
+            "{}",
+            complaints[1]
+        );
     }
 
     /// A marker a designer named by hand, on purpose.

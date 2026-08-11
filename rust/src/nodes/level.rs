@@ -37,7 +37,12 @@
 //! geometry dragged past that has no floor under it and the hero who walks
 //! there falls — and until this, in silence. Growing the slabs to cover the
 //! stray would be the worse cure, because it changes the footprint of an
-//! authored map behind the designer's back. See [`Self::report_placement`].
+//! authored map behind the designer's back. The same holds a metre lower:
+//! a box prop is CENTRED on its node, so dropping one on the floor plane
+//! buries half of it under the slab where nothing draws or sounds — and
+//! centring every shape instead would sink every shelf and beam meant to
+//! float. Both faults are reported and neither is repaired. See
+//! [`Self::report_placement`].
 //!
 //! Tap decision: the dev demo strike aims at the sound source whose HUB IS
 //! NEAREST THE SPAWN in the XZ plane, ties broken by the node's name in
@@ -153,6 +158,9 @@ pub struct WaveLevel {
     /// does not reach — one per line the level printed. Zero on a healthy
     /// level; see [`Self::report_placement`].
     unfloored: i64,
+    /// How many solids the last derivation found crossing or hiding under
+    /// the floor plane. Zero on a healthy level, same as above.
+    sunken: i64,
     base: Base<Node3D>,
 }
 
@@ -276,6 +284,14 @@ impl WaveLevel {
     #[func]
     fn unfloored_solids(&self) -> i64 {
         self.unfloored
+    }
+
+    /// How many solids cross the floor plane or hide under it — zero on a
+    /// healthy level, and read for the same reasons as
+    /// [`Self::unfloored_solids`].
+    #[func]
+    fn sunken_solids(&self) -> i64 {
+        self.sunken
     }
 
     /// Every wall's centerline as (x1, z1, x2, z2) — the derived table
@@ -443,13 +459,18 @@ impl WaveLevel {
     }
 
     /// Say out loud what a designer has placed where the level cannot hold
-    /// it. The DECISION is pure and lives in [`level_plan::unfloored`];
+    /// it — off the floor's footprint ([`level_plan::unfloored`]) or
+    /// through its top ([`level_plan::sunken`]). Both DECISIONS are pure;
     /// this end only measures — the floor slab where it actually stands,
-    /// and each painted solid's world box.
+    /// and each painted solid's world box — and both read the same one
+    /// walk of the subtree, since the two faults are two questions about
+    /// one set of boxes.
     ///
-    /// Nothing MOVES here, deliberately. Growing the slabs to cover stray
-    /// geometry would silently change the footprint of an authored map,
-    /// which is a worse failure than the one being reported.
+    /// Nothing MOVES here, deliberately, and neither origin law bends.
+    /// Growing the slabs to cover stray geometry would silently change the
+    /// footprint of an authored map; centring every shape on its node
+    /// would sink every shelf and beam that is meant to float. Both cures
+    /// are worse than the faults, so the level reports and leaves it.
     ///
     /// Derive time is RUN time: `ready` returns before `derive` under
     /// `Engine::is_editor_hint`, so none of this reaches a designer while
@@ -460,8 +481,10 @@ impl WaveLevel {
         };
         let placed = self.placed_solids(census);
         let strays = level_plan::unfloored(floor, &placed);
+        let sunk = level_plan::sunken(floor, &placed);
         self.unfloored = strays.len() as i64;
-        for complaint in &strays {
+        self.sunken = sunk.len() as i64;
+        for complaint in strays.iter().chain(sunk.iter()) {
             godot_error!("{}", complaint);
         }
     }
