@@ -133,6 +133,18 @@ echo "ci: unit tests (gdUnit4)"
 echo "ci: determinism probe (two seeded fixed-fps boots must agree)"
 GODOT="$GODOT" "$DIR/tools/determinism_probe.sh"
 
+# The suite above is blind to one branch by construction: it runs in the
+# GAME, and Godot exposes no way to set Engine.is_editor_hint() from a
+# script. The probe launches a second engine with `-e` instead, which is the
+# only way to reach the editor half of the slab law — and it is headless, so
+# it belongs here rather than with the windowed probes a human runs.
+#
+# GODOT is handed down for the same reason its sibling above gets it: this
+# script would otherwise re-discover a binary on its own, skipping the
+# .godot-version pin check performed at the top of this file.
+echo "ci: editor-mode probe (the slab law's other half)"
+GODOT="$GODOT" "$DIR/tools/probe_editor_slabs.sh" || { echo "ci: editor-mode probe FAILED"; exit 1; }
+
 if [ "${SKIP_EXPORT:-}" = "1" ]; then
   echo "ci: SKIP_EXPORT=1 — checks-only run"
   echo "ci: OK"
