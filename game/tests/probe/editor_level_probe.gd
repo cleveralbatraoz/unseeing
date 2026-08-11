@@ -6,9 +6,14 @@ extends SceneTree
 ## at edit time too — its `get_configuration_warnings()` read-back reports
 ## the missing spawn, and `wall_segments()` is already populated — and,
 ## once in the tree, it WATCHES the scene and keeps deriving on its own:
-## moving the wall or re-sinking the crate, with no `rederive()` call
-## anywhere near either edit, still reaches `wall_segments()` and the
-## crate's own warning icon a few editor frames later. A run-mode level,
+## moving the wall, re-sinking the crate, or shrinking the level's own
+## `extents` knob — with no `rederive()` call anywhere near any of the
+## three — still reaches `wall_segments()` and the crate's own warning icon
+## a few editor frames later. `extents` is not a censused node's property
+## at all (it lives on the level itself), which is exactly why it gets its
+## own phase here: `derive` genuinely reads it (`report_placement` measures
+## the floor slab's own world box), so the watch has to see a resize as a
+## real change too, not only a moved or reshaped child. A run-mode level,
 ## even uninjected, still derives honest geometry exactly as before, and
 ## pays no per-frame cost doing it — `process()` is off outside the editor.
 ##
@@ -20,7 +25,7 @@ extends SceneTree
 ## probe that silently ran in run mode twice would assert nothing about
 ## the editor at all.
 
-enum Phase { WAIT_FOR_READY, WAIT_FOR_WALL_MOVE, WAIT_FOR_CRATE_WARNING }
+enum Phase { WAIT_FOR_READY, WAIT_FOR_WALL_MOVE, WAIT_FOR_CRATE_WARNING, WAIT_FOR_EXTENTS_WARNING }
 
 const READY_FRAMES := 30
 ## The condition-watch runs on the ENGINE's own frame cadence, not this
@@ -65,6 +70,8 @@ func _process(_delta: float) -> bool:
 			return _wait_for_wall_move()
 		Phase.WAIT_FOR_CRATE_WARNING:
 			return _wait_for_crate_warning()
+		Phase.WAIT_FOR_EXTENTS_WARNING:
+			return _wait_for_extents_warning()
 		_:
 			return true
 
@@ -115,7 +122,9 @@ func _wait_for_wall_move() -> bool:
 ## Phase 2 (editor only): the crate was just re-sunk to the floor plane —
 ## the exact half-sunk gesture `_judge_solid_warning` already lifted clear
 ## — with no `rederive()` call. Poll the crate's OWN warning icon until the
-## "sunk" complaint reappears or the budget lapses, then report.
+## "sunk" complaint reappears or the budget lapses, then shrink the
+## level's own `extents` knob — the one condition `derive` reads that is
+## NOT a censused node's property — and move on to watch its effect.
 func _wait_for_crate_warning() -> bool:
 	var warnings := _crate.call("get_configuration_warnings") as PackedStringArray
 	var sunk_again := _has(warnings, "sunk")
@@ -123,6 +132,38 @@ func _wait_for_crate_warning() -> bool:
 		return false
 	_check(
 		"editor: re-sinking the crate re-derives its warning with no rederive() call", sunk_again
+	)
+	_level.set("extents", Vector2(2.0, 20.0))
+	_frames = 0
+	_phase = Phase.WAIT_FOR_EXTENTS_WARNING
+	return false
+
+
+## Phase 3 (editor only): `extents` was just shrunk from (20, 20) to
+## (2, 20) — through `.set()`, exactly as the Inspector would — with no
+## `rederive()` call and no further touch on the crate. Hand-derived
+## geometry: the crate sits at (3, 0, 3) with its default 0.5 m cube skin,
+## so its world footprint is x [2.75, 3.25], z [2.75, 3.25]. Against the
+## ORIGINAL 20x20 floor (x [0, 20]) that footprint is fully inside — no
+## unfloored complaint, only the "sunk" one this phase already found.
+## Against the SHRUNK floor (x [0, 2]) it is entirely outside — neither
+## edge overlaps — so `unfloored()` reports it as standing off the floor
+## entirely, and that message is the only one in the level's placement
+## vocabulary that names the shape's "footprint". `set_extents` itself
+## resizes the floor mesh synchronously, but the WARNING can only move
+## through `derive`, which nothing here calls by hand — poll the crate's
+## icon for "footprint" until it appears or the budget lapses, then report.
+func _wait_for_extents_warning() -> bool:
+	var warnings := _crate.call("get_configuration_warnings") as PackedStringArray
+	var off_the_shrunk_floor := _has(warnings, "footprint")
+	if not off_the_shrunk_floor and _frames < WATCH_FRAMES:
+		return false
+	_check(
+		(
+			"editor: shrinking extents re-derives the crate's floor warning with no "
+			+ "rederive() call"
+		),
+		off_the_shrunk_floor
 	)
 	_report()
 	return true

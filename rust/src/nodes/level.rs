@@ -1424,11 +1424,19 @@ impl WaveLevel {
         census
     }
 
-    /// The condition [`INode3D::process`]'s editor-only poll watches: a
-    /// fresh census, folded by [`level_plan::scene_signature`] into a
-    /// single `u64` — every solid, source, cat and spawn marker's path and
-    /// global pose, plus a solid's skin AABB, so the fold changes the
-    /// moment ANYTHING [`Self::derive`] reads would read differently.
+    /// The condition [`INode3D::process`]'s editor-only poll watches: the
+    /// level's own `extents` knob plus a fresh census, folded by
+    /// [`level_plan::scene_signature`] into a single `u64` — every solid,
+    /// source, cat and spawn marker's path and global pose, plus a
+    /// solid's skin AABB, so the fold changes the moment ANYTHING
+    /// [`Self::derive`] reads would read differently. `extents` has to be
+    /// folded here explicitly rather than discovered through the census:
+    /// it is not a censused node's property, it is read straight off
+    /// `self` — `report_placement` measures the floor slab's world box,
+    /// which `set_extents` resizes the instant the knob is dragged, and
+    /// `assign_oids` anchors the slab ids against that same box — so a
+    /// resize with every node held still is a real change `derive` would
+    /// answer differently, and the fold has to see it as one.
     ///
     /// TWO CENSUS WALKS, deliberately, not one shared with `derive`. This
     /// runs every editor frame; `derive` runs only when the signature just
@@ -1476,7 +1484,7 @@ impl WaveLevel {
                 aabb: None,
             });
         }
-        level_plan::scene_signature(&nodes)
+        level_plan::scene_signature([self.extents.x, self.extents.y], &nodes)
     }
 
     /// Say one shader-budget verdict out loud at the volume it asked for,

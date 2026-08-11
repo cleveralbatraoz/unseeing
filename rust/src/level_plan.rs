@@ -889,12 +889,24 @@ fn fnv_f32(hash: u64, value: f32) -> u64 {
     fnv_bytes(hash, &value.to_bits().to_le_bytes())
 }
 
-/// The level's condition-watch signature: one `u64` FNV-1a fold over every
-/// censused node's path, global transform and (for a solid) skin AABB, in
-/// the order given — SCENE order, the same deterministic walk order every
-/// other derivation leans on, so the same scene always folds to the same
-/// number and a designer reordering the Scene dock is a real authoring
-/// edit the signature is right to notice.
+/// The level's condition-watch signature: one `u64` FNV-1a fold over the
+/// level's own `extents` knob, then every censused node's path, global
+/// transform and (for a solid) skin AABB, in the order given — SCENE
+/// order, the same deterministic walk order every other derivation leans
+/// on, so the same scene always folds to the same number and a designer
+/// reordering the Scene dock is a real authoring edit the signature is
+/// right to notice.
+///
+/// `extents` folds FIRST and outside the per-node loop, not as a synthetic
+/// node, because it is not a censused node's property at all: it is read
+/// straight off `WaveLevel` itself — `derive`'s `report_placement` reads
+/// it through the floor slab's own world box, and `assign_oids` anchors
+/// the slab ids against that same box — so the fold has to name it as
+/// what it is, the level's own top-level condition, rather than dress it
+/// up as a node with an invented path. A dedicated boundary byte (`2`,
+/// distinct from the `0`/`1` presence bytes every node folds around its
+/// AABB) closes the extents section before the first node's path bytes
+/// begin, so nothing after it can be misread as more extents floats.
 ///
 /// Every node folds a boundary byte after its path and a presence byte
 /// before its AABB (`1` then six floats, or a bare `0`), so the fold can
@@ -903,8 +915,11 @@ fn fnv_f32(hash: u64, value: f32) -> u64 {
 /// disappears between two frames (its mesh torn down, about to be
 /// rebuilt) changes the signature even though nothing else about it did.
 #[must_use]
-pub fn scene_signature(nodes: &[SignatureNode]) -> u64 {
+pub fn scene_signature(extents: [f32; 2], nodes: &[SignatureNode]) -> u64 {
     let mut hash = FNV_OFFSET;
+    hash = fnv_f32(hash, extents[0]);
+    hash = fnv_f32(hash, extents[1]);
+    hash = fnv_byte(hash, 2); // extents/nodes boundary
     for node in nodes {
         hash = fnv_bytes(hash, node.path.as_bytes());
         hash = fnv_byte(hash, 0); // path/transform boundary
@@ -2037,6 +2052,11 @@ mod tests {
         );
     }
 
+    /// The extents every scene-signature test below folds against unless
+    /// it is the one thing under test — a 20x20 level, same as the shipped
+    /// map's own fixtures elsewhere in this file.
+    const STILL_EXTENTS: [f32; 2] = [20.0, 20.0];
+
     /// One node standing still: identity transform, a 0.5 m cube skin. The
     /// scene-signature tests below all start from this and change exactly
     /// one thing at a time.
@@ -2059,7 +2079,10 @@ mod tests {
     #[test]
     fn the_same_scene_folds_to_the_same_signature_twice() {
         let scene = vec![still_node("Walls/North"), still_node("Rooms/Crate")];
-        assert_eq!(scene_signature(&scene), scene_signature(&scene.clone()));
+        assert_eq!(
+            scene_signature(STILL_EXTENTS, &scene),
+            scene_signature(STILL_EXTENTS, &scene.clone())
+        );
     }
 
     /// A designer nudging a node one float's smallest step still moves the
@@ -2070,8 +2093,8 @@ mod tests {
         let mut nudged = still_node("Rooms/Crate");
         nudged.transform[9] = f32::from_bits(nudged.transform[9].to_bits() ^ 1);
         assert_ne!(
-            scene_signature(&[still_node("Rooms/Crate")]),
-            scene_signature(&[nudged])
+            scene_signature(STILL_EXTENTS, &[still_node("Rooms/Crate")]),
+            scene_signature(STILL_EXTENTS, &[nudged])
         );
     }
 
@@ -2085,8 +2108,8 @@ mod tests {
         let a = still_node("Walls/North");
         let b = still_node("Rooms/Crate");
         assert_ne!(
-            scene_signature(&[a.clone(), b.clone()]),
-            scene_signature(&[b, a])
+            scene_signature(STILL_EXTENTS, &[a.clone(), b.clone()]),
+            scene_signature(STILL_EXTENTS, &[b, a])
         );
     }
 
@@ -2101,8 +2124,8 @@ mod tests {
         let mut resized = still_node("Rooms/Crate");
         resized.aabb = Some([0.0, 0.0, 0.0, 0.8, 0.5, 0.5]);
         assert_ne!(
-            scene_signature(&[still_node("Rooms/Crate")]),
-            scene_signature(&[resized])
+            scene_signature(STILL_EXTENTS, &[still_node("Rooms/Crate")]),
+            scene_signature(STILL_EXTENTS, &[resized])
         );
     }
 
@@ -2114,8 +2137,24 @@ mod tests {
         let mut bare = still_node("Rooms/Crate");
         bare.aabb = None;
         assert_ne!(
-            scene_signature(&[still_node("Rooms/Crate")]),
-            scene_signature(&[bare])
+            scene_signature(STILL_EXTENTS, &[still_node("Rooms/Crate")]),
+            scene_signature(STILL_EXTENTS, &[bare])
+        );
+    }
+
+    /// THE mutation this test exists to catch, this time: the level's
+    /// `extents` knob changing with the censused scene held perfectly
+    /// still. This is the designer-facing gap the fold used to have —
+    /// `derive` genuinely reads `extents` (through the floor slab's own
+    /// world box, in `report_placement` and `assign_oids`), so a resize
+    /// that is not in the fold is a resize the condition-watch cannot see.
+    /// Drop the extents fold and this is the test that goes quiet.
+    #[test]
+    fn a_different_extents_alone_moves_the_signature() {
+        let scene = [still_node("Walls/North"), still_node("Rooms/Crate")];
+        assert_ne!(
+            scene_signature(STILL_EXTENTS, &scene),
+            scene_signature([2.0, 20.0], &scene)
         );
     }
 }
