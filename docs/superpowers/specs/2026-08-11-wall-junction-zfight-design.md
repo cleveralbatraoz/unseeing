@@ -82,3 +82,35 @@ excluded on argument: this game's eye lives strictly between floor and
 ceiling, and a horizontal fight is visible only from above or below its
 plane). It is exposed through `explain_oids` and pinned to **zero** for the
 shipped map in the suite, so the artifact class cannot land again silently.
+
+## Amended after in-branch review (2026-08-11)
+
+Three statements above did not survive the branch that implemented them.
+The verdicts stand; the corrected reasoning is recorded here rather than
+rewritten above, so the original decision stays legible as decided.
+
+- **The standing gate is eye-BAND-aware, not a blanket exclusion.** The
+  shipped law does not exclude horizontal planes "because the eye lives
+  strictly between floor and ceiling" — that argument was false: a
+  tabletop pair below the eye is in plain view. The law censuses X and Z
+  planes always, and a horizontal pair by where the walking eye actually
+  sweeps (`player::EYE ± viewmodel::BOB_AMP`, the band [1.572, 1.628]):
+  an upward (max-max) pair fights iff its plane is below the bob crest,
+  a downward (min-min) pair iff its plane is above the bob trough, both
+  edges exclusive (at an edge the bob's extreme meets the plane edge-on,
+  zero projected area). Floor-flush bottoms and wall tops still never
+  census — for that reason, not the false one.
+- **Five interior L-corners, not one.** The shipped map's interior
+  L-corners are `DividerNorth`/`FanRoomSouth` (6.4, 8),
+  `FanRoomSouth`/`InnerEast` (14, 8), `InnerEast`/`InnerSouth`
+  (14, 15.6), `PartyEastSouth`/`PartySouthEast` (19.4, 19.4) and
+  `StoreNorth`/`StoreEast` (21.4, 22.4) — all carrying the identical
+  5 × 5 mm notch in walkable space. The border corners face the void.
+- **The notch is invisible because nothing can DRAW in it, not because
+  it is sub-pixel.** At the shipped 66° vertical FOV the notch subtends
+  about 4 px at 1 m and drops sub-pixel only beyond ~4–6 m. What keeps
+  it dark is the render maths: its depth steps (at most ~7 mm) sit two
+  orders of magnitude under the 0.012 silhouette floor
+  (`hearing_post.gdshader`), and each exposed cap strip carries its own
+  wall's id, so the only id step present is the corner's own crease —
+  the line the corner draws anyway.

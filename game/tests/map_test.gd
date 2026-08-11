@@ -425,9 +425,14 @@ func test_shipped_level_reuses_ids_between_distant_boxes() -> void:
 ## rasterised area sit at the SAME depth, so the GPU picks a winner per
 ## pixel per frame — and where their object ids differ, the crease shader
 ## honours whichever id won, speckling the shared patch into a jagged band
-## (issue #14). The walls bury their end caps by CAP_INSET for exactly this
-## reason; the furniture has to be authored clear of it, so the shipped
-## scene is held to the observer's coplanar-fight census coming back EMPTY.
+## (issue #14). CAP_INSET cures exactly one family of these: a cap
+## arriving in a junction partner's FLANK plane sinks 5 mm inside it. Two
+## COLLINEAR WaveWall segments butted end-to-end are a different family —
+## they share both flank planes along the whole joint and genuinely fight,
+## and no inset can cure them; their cure is one longer wall, or a
+## perpendicular joint. Furniture is the third family, authored clear by
+## tucking flush panels. The shipped scene is held to the observer's
+## coplanar-fight census coming back EMPTY.
 func test_shipped_level_has_no_coplanar_face_fights() -> void:
 	var level := _shipped_level()
 	var obs: WaveObserver = auto_free(WaveObserver.new())
@@ -447,10 +452,13 @@ func test_shipped_level_has_no_coplanar_face_fights() -> void:
 		. append_failure_message(
 			(
 				(
-					"same-facing coplanar faces z-fight into speckled bands: %s. A flush "
-					+ "same-facing panel must be tucked a few millimetres behind its "
-					+ "neighbour's plane — on a 40 mm back panel a 5 mm tuck breaks the "
-					+ "plane and still leaves the pair deeply touching."
+					"same-facing coplanar faces z-fight into speckled bands: %s. Two "
+					+ "cures, by family: a flush same-facing PANEL is tucked a few "
+					+ "millimetres behind its neighbour's plane (on a 40 mm back panel "
+					+ "a 5 mm tuck breaks the plane and still leaves the pair deeply "
+					+ "touching); two COLLINEAR WaveWall segments butted end-to-end "
+					+ "fight on both flank planes and no inset helps — merge them into "
+					+ "one wall, or meet at a perpendicular joint."
 				)
 				% str(fights)
 			)

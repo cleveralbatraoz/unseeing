@@ -497,10 +497,11 @@ func test_two_flush_props_report_their_fight() -> void:
 
 
 ## The shipped map answers the census too. The KEY is the contract here,
-## never the count: the shipped level's remaining fights are the next
-## task's business, and a number pinned now would freeze a bug in. An
-## empty array must always mean "no fights" — a census that could not run
-## is a one-key refusal, which the uninjected and freed-level tests above
+## never the count: the shipped level's zero-fights invariant is pinned in
+## map_test.gd, beside the geometry it constrains, and this case holds
+## only the boundary's grammar — `fights` present, and an Array. An empty
+## array must always mean "no fights" — a census that could not run is a
+## one-key refusal, which the uninjected and freed-level tests above
 ## already hold explain_oids to.
 func test_the_shipped_level_reports_its_fights_key() -> void:
 	var level := _shipped_level(Pulses.new())
