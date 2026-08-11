@@ -543,25 +543,82 @@ func test_no_prop_is_buried_in_a_wall() -> void:
 	)
 
 
-## Nothing sinks through the floor or pokes through the ceiling, and
-## nothing has been dragged outside the map — the room is a closed box and
-## the waves only light what is inside it.
-func test_every_solid_stands_inside_the_room() -> void:
+## Every solid that has left the room: sunk through the floor, poked out
+## of the ceiling, or been dragged past the map's edge.
+##
+## The edge is read off the level's own EXTENTS, never written down. A
+## border wall stands on a centerline MAP_BORDER inside that edge and its
+## box reaches a wall half-thickness further out again, so the furthest
+## anything legally stands is MAP_BORDER − WALL_HALF_T in from the edge —
+## 0.45 m on any map, whatever its size — and EDGE_SLACK is the float dust
+## that lets a border wall's own box land ON the bound instead of a hair
+## outside it. Written down as a literal (0.4 and 27.6, the 28 x 28 map's
+## own numbers) the same test passes vacuously on a bigger map and
+## condemns the border walls themselves on a smaller one.
+func _strays(level: WaveLevel) -> Array[String]:
+	const MAP_BORDER := 0.6
+	const WALL_HALF_T := 0.15  # level_plan.rs::WALL_T
+	const EDGE_SLACK := 0.05
 	var solids: Array[Dictionary] = []
-	_solid_boxes(_shipped_level(), solids)
+	_solid_boxes(level, solids)
+	var margin := MAP_BORDER - WALL_HALF_T - EDGE_SLACK
+	var far := level.extents - Vector2(margin, margin)
 	var strays: Array[String] = []
 	for solid: Dictionary in solids:
 		var box: AABB = solid["box"]
 		var hi := box.position + box.size
 		if box.position.y < -0.001 or hi.y > WaveLevel.wall_height() + 0.001:
 			strays.append("%s spans y %.2f..%.2f" % [solid["name"], box.position.y, hi.y])
-		if box.position.x < 0.4 or hi.x > 27.6 or box.position.z < 0.4 or hi.z > 27.6:
-			strays.append("%s is outside the map" % solid["name"])
+		if box.position.x < margin or hi.x > far.x or box.position.z < margin or hi.z > far.y:
+			strays.append(
+				(
+					"%s spans x %.2f..%.2f z %.2f..%.2f, outside a %s map"
+					% [solid["name"], box.position.x, hi.x, box.position.z, hi.z, level.extents]
+				)
+			)
+	return strays
+
+
+## Nothing sinks through the floor or pokes through the ceiling, and
+## nothing has been dragged outside the map — the room is a closed box and
+## the waves only light what is inside it.
+func test_every_solid_stands_inside_the_room() -> void:
+	var strays := _strays(_shipped_level())
 	(
 		assert_array(strays)
 		. append_failure_message("solids out of the room: %s" % str(strays))
 		. is_empty()
 	)
+
+
+## A level of one crate, sized by its extents knob — the smallest thing
+## that can be inside a room or outside it.
+func _one_crate_level(extents: Vector2, at: Vector3) -> WaveLevel:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = extents
+	var crate := WaveProp.new()  # the shipped default: a 0.5 m box
+	crate.name = "Crate"
+	crate.position = at
+	level.add_child(crate)
+	level.add_child(_spawn_marker(Vector3(1, 0, 1)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	return level
+
+
+## The room's edge is the EXTENTS knob's, not the shipped map's. One crate,
+## spanning x 11.65..12.15, hangs 0.15 m past a 12 x 12 map's own edge —
+## over the void, since the floor slab spans the extents and no further —
+## and sits comfortably inside a 28 x 28 one. The law that says so has to
+## move with the knob: against a written-down 27.6 the small map's stray
+## reads as perfectly placed, which is the whole defect: a resized level
+## passes this test by having nothing left to fail it.
+func test_the_room_bound_follows_the_extents_knob() -> void:
+	var crate_at := Vector3(11.9, 0.25, 6.0)
+	var strays := _strays(_one_crate_level(Vector2(12, 12), crate_at))
+	assert_int(strays.size()).is_equal(1)
+	assert_str(strays[0]).contains("Crate")
+	assert_array(_strays(_one_crate_level(Vector2(28, 28), crate_at))).is_empty()
 
 
 ## The seam law's tightest pair, and the one the box census cannot see: a
