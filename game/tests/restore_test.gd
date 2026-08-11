@@ -78,6 +78,9 @@ func test_capture_never_mutates() -> void:
 		# a capture that advanced a cadence or an RNG would differ here
 		var before_source: Dictionary = was[i]
 		var after_source: Dictionary = is_now[i]
+		# the key must BE there: two absent appointments compare equal as
+		# null, and this loop would pass over a source that had none
+		assert_bool(before_source.has("next_emit")).is_true()
 		assert_that(after_source.get("next_emit")).is_equal(before_source.get("next_emit"))
 
 
@@ -113,7 +116,9 @@ func test_capture_refuses_a_clock_that_disagrees_with_its_env() -> void:
 	var main := await _boot_ticked()
 	var blob: Dictionary = main.observer.capture(main.now + 1.0, main.capture_env())
 	assert_bool(blob.has("unavailable")).is_true()
-	assert_str(blob["unavailable"]).contains("now")
+	# the env grammar plus the offending key, not merely the word "now" —
+	# which occurs inside half the messages this boundary can produce
+	assert_str(blob["unavailable"]).contains("malformed: now")
 	assert_bool(blob.has("slots")).is_false()
 
 
@@ -169,3 +174,182 @@ func test_a_negative_zero_survives_the_journey() -> void:
 	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
 	var parsed := JSON.parse_string(JSON.stringify(blob, "", true, true)) as Dictionary
 	assert_str(main.observer.blob_round_trip_ok(blob, parsed)).is_equal("")
+
+
+## A blob is a FILE by the time anything reads it back, so the parser is
+## the only thing standing between a damaged one and a world restored to
+## whatever the scene happened to be holding. It defaults nothing, and
+## these cases pin that every guard names its own dotted path — a parser
+## that only said "malformed" would hand its reader five kilobytes and a
+## shrug.
+##
+## Each takes a fresh, independent copy through JSON, breaks exactly one
+## field in it, and asks the boundary what it thinks. `_copy` is what a
+## damaged file or a hand-edit actually looks like, and it leaves the
+## original the comparison is made against untouched.
+func _copy(blob: Dictionary) -> Dictionary:
+	return JSON.parse_string(JSON.stringify(blob, "", true, true)) as Dictionary
+
+
+## The marker a hand-built level needs to have somewhere to wake the hero
+## (the same fixture observer_test.gd builds its bare levels from).
+func _spawn_marker() -> Marker3D:
+	var marker := Marker3D.new()
+	marker.name = "SpawnPoint"
+	return marker
+
+
+## An integer field accepts a whole float — the JSON road writes `2` for
+## `2.0` and a hand-edit may well write `2.0` back — but a FRACTIONAL one
+## is a corrupt blob, not a roundable one. A pulse kind of 2.5 silently
+## truncated to 2 is a wave of the wrong class in the pool.
+func test_a_fractional_integer_is_named_rather_than_rounded() -> void:
+	var main := await _boot_ticked()
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var broken := _copy(blob)
+	var slot: Dictionary = (broken["slots"] as Array)[0]
+	slot["kind"] = 2.5
+	assert_str(main.observer.blob_round_trip_ok(blob, broken)).contains(
+		"slots[0].kind: expected a whole number"
+	)
+
+
+## Every fixed-arity run in the blob has a length the FORMAT fixes: 64 pool
+## slots, five tail nodes, four paws. A short one is a truncated file, never
+## a smaller world — and a parser that just walked what it found would build
+## a pool with 63 slots and hash it as though that were the truth.
+func test_a_truncated_run_is_named_rather_than_walked() -> void:
+	var main := await _boot_ticked()
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var short_pool := _copy(blob)
+	(short_pool["slots"] as Array).resize(63)
+	assert_str(main.observer.blob_round_trip_ok(blob, short_pool)).contains(
+		"slots: expected 64 entries, found 63"
+	)
+	var short_tail := _copy(blob)
+	var cat: Dictionary = (short_tail["cats"] as Array)[0]
+	(cat["tail"] as Array).resize(4)
+	assert_str(main.observer.blob_round_trip_ok(blob, short_tail)).contains(
+		"cats[0].tail: expected 5 entries, found 4"
+	)
+
+
+## Types are checked, not coerced. Godot would happily give a number for a
+## string and a truthy value for a bool; a boundary that let it would
+## restore a source matched against the name "5" and a paw that is swinging
+## because its entry was not empty.
+func test_a_wrong_typed_field_is_named_rather_than_coerced() -> void:
+	var main := await _boot_ticked()
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var numbered_source := _copy(blob)
+	var source: Dictionary = (numbered_source["sources"] as Array)[0]
+	source["name"] = 5
+	assert_str(main.observer.blob_round_trip_ok(blob, numbered_source)).contains(
+		"sources[0].name: expected a string"
+	)
+	var wordy_paw := _copy(blob)
+	var gait: Dictionary = ((wordy_paw["cats"] as Array)[0] as Dictionary)["gait"]
+	(gait["in_swing"] as Array)[0] = "yes"
+	assert_str(main.observer.blob_round_trip_ok(blob, wordy_paw)).contains(
+		"cats[0].gait.in_swing[0]: expected a bool"
+	)
+
+
+## The cat's mood is spelled out on the wire precisely so a rename cannot
+## pass silently. An unknown name is refused rather than defaulted to Roam:
+## a cat restored wandering when it was sitting is a different cat, and the
+## hash would agree with itself about it forever.
+func test_an_unknown_mood_is_named_rather_than_defaulted() -> void:
+	var main := await _boot_ticked()
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var broken := _copy(blob)
+	var brain: Dictionary = ((broken["cats"] as Array)[0] as Dictionary)["brain"]
+	(brain["state"] as Dictionary)["kind"] = "Nap"
+	assert_str(main.observer.blob_round_trip_ok(blob, broken)).contains(
+		'cats[0].brain.state.kind: unknown brain state "Nap"'
+	)
+
+
+## The PCG words cross as 16 hex characters because 64 bits cannot survive
+## JSON as a number. Text that is not those characters is refused: a word
+## quietly read as zero is a cat whose whole future is a different stream.
+func test_a_malformed_rng_word_is_named_rather_than_zeroed() -> void:
+	var main := await _boot_ticked()
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var broken := _copy(blob)
+	var brain: Dictionary = ((broken["cats"] as Array)[0] as Dictionary)["brain"]
+	brain["rng_state"] = "not-sixteen-hex"
+	assert_str(main.observer.blob_round_trip_ok(blob, broken)).contains(
+		"cats[0].brain.rng_state: expected 16 hex characters"
+	)
+
+
+## The hero is not optional equipment for a blob, though it IS for a
+## snapshot: a snapshot names the absence in `unknown` and reports the world
+## around it, where a blob without its hero would restore as a different
+## world entirely.
+func test_capture_without_the_hero_refuses_whole() -> void:
+	var main := await _boot_ticked()
+	main.observer.inject_hero(null)
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_int(blob.size()).is_equal(1)
+	assert_str(blob["unavailable"]).contains("never injected the hero")
+
+
+## A body that refused to build has no viewmodel state — and a DEFAULT pose
+## is not a harmless stand-in: it restores a walker mid-stride as one
+## standing still, with the footstep clock reset under them.
+func test_capture_refuses_a_body_that_never_built_its_viewmodel() -> void:
+	var main := await _boot_ticked()
+	var bare: HeroBody = auto_free(HeroBody.new())
+	add_child(bare)  # uninjected: _ready refuses, so there is no viewmodel
+	main.observer.inject_body(bare)
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_int(blob.size()).is_equal(1)
+	assert_str(blob["unavailable"]).contains("never built its viewmodel")
+
+
+## A source whose gate can never fire keeps no appointment, and that is a
+## refusal rather than a zero: restoring it would leave the gate to book a
+## fresh date off the restored clock, and the level would sound one wave the
+## original never made.
+##
+## The level is hand-built and swapped in under the observer, whose hero and
+## body injections still stand — a level derives its source list once, in
+## _ready, so a shipped one cannot be given a silenced source after the fact.
+func test_capture_refuses_a_source_holding_no_appointment() -> void:
+	var main := await _boot_ticked()
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var fan := SoundFan.new()
+	fan.name = "Fan"
+	fan.cadence = 0.0  # a non-positive interval never fires (sound_source.rs)
+	level.add_child(fan)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	main.observer.inject(level, main.player.camera)
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_int(blob.size()).is_equal(1)
+	assert_str(blob["unavailable"]).contains("no beat appointment")
+	assert_str(blob["unavailable"]).contains("Fan")
+
+
+## A cat that never built has no mind, stride, tail or pose to read, and a
+## defaulted one is a cat with a different life. Same swap as above: the
+## stray joins the level AFTER injection, so it is counted by the level's
+## census but was never handed a pool, exactly as a designer's mistake would
+## leave it.
+func test_capture_refuses_a_cat_that_never_built() -> void:
+	var main := await _boot_ticked()
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var stray := WaveCat.new()
+	stray.name = "Stray"
+	level.add_child(stray)
+	add_child(level)
+	main.observer.inject(level, main.player.camera)
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_int(blob.size()).is_equal(1)
+	assert_str(blob["unavailable"]).contains("never built")
+	assert_str(blob["unavailable"]).contains("Stray")

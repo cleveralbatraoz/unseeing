@@ -1168,6 +1168,14 @@ fn rule_name(rule: EvictionRule) -> &'static str {
 //     for both signed zeros, for the infinities, and for the NaN a cat
 //     that never beat carries. It also stays a number a human can read,
 //     which a hex bit pattern would not.
+//     The ONE deliberate narrowing: a NaN's sign and payload do not
+//     survive — every NaN is written "NaN" and read back as the canonical
+//     `f64::NAN`. That is chosen, not overlooked. The only NaN this state
+//     can hold is the `unwrap_or(f64::NAN)` marker for "no appointment",
+//     which is that exact bit pattern; and if some future field ever
+//     carried a different one, the loss is LOUD rather than silent — the
+//     state hash compares bit patterns, so the round-trip test names the
+//     field instead of a restore quietly disagreeing with its blob.
 //   - EVERY 64-bit integer crosses as text too: the cat's two PCG words
 //     as 16 hex characters, the flicker's stream position as decimal,
 //     the state hash as 16 hex characters.
