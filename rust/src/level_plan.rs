@@ -44,6 +44,28 @@ pub const SOURCE_THROUGH: f64 = 0.3;
 /// Half-thickness of a wall in meters.
 pub const WALL_T: f64 = 0.15;
 
+/// How far a wall's END caps retreat inside the full half-thickness pad.
+///
+/// A junction puts one wall's centerline end ON its partner's centerline —
+/// every T and L in the shipped map — and a flush cap (a full [`WALL_T`]
+/// of run padding) then lands exactly in the partner's far flank plane.
+/// Same-facing, coplanar, overlapping: under the world skin's
+/// `cull_disabled` the two faces depth-fight per pixel, and the id crease
+/// draws the per-pixel winner as a jagged band of noise (issue 14). So
+/// each cap retreats by this much: a junction cap sits strictly INSIDE
+/// the partner's box, the partner's flank wins the depth test
+/// deterministically at every pixel, and the only line left is the clean
+/// corner crease. Occlusion never notices — [`wall_segment`] stays
+/// centerline-derived on purpose.
+///
+/// Five millimetres is five of [`crate::observe::oids::COPLANAR_EPS`],
+/// the coincidence band under which the compatibility renderer's 24-bit
+/// depth buffer can still tie at the map's far range — while staying
+/// invisible on the floor plan: a doorway's two free ends widen the
+/// authored gap by one centimetre, and an L-corner's convex edge gains a
+/// 5 mm × 5 mm notch masked by its own drawn corner line.
+pub const CAP_INSET: f64 = 0.005;
+
 /// Thickness of the floor and ceiling slabs.
 pub const SLAB_T: f64 = 0.1;
 
@@ -61,8 +83,11 @@ pub const DEMO_TAP_MARGIN: f64 = 0.2;
 pub const AXIS_EPS: f32 = 0.001;
 
 /// The box a wall segment occupies: the centerline padded by a wall
-/// half-thickness on every side, floor to ceiling — so two walls whose
-/// centerlines meet share a clean corner instead of leaving a gap.
+/// half-thickness on each flank, floor to ceiling, and by [`WALL_T`] minus
+/// [`CAP_INSET`] past each end — so two walls whose centerlines meet still
+/// share a corner with no gap, but the arriving cap buries inside its
+/// partner instead of tying with the partner's flank plane and
+/// depth-fighting on it.
 ///
 /// A length is a MAGNITUDE: a minus sign is folded away here rather than
 /// carried into the engine, where a negative extent means two different
@@ -71,7 +96,7 @@ pub const AXIS_EPS: f32 = 0.001;
 #[must_use]
 pub fn wall_box(length: f64) -> Vector3 {
     Vector3::new(
-        (length.abs() + WALL_T * 2.0) as f32,
+        (length.abs() + (WALL_T - CAP_INSET) * 2.0) as f32,
         WALL_H as f32,
         (WALL_T * 2.0) as f32,
     )
@@ -1244,12 +1269,136 @@ mod tests {
         ]
     }
 
-    /// The box pads the centerline by a half-thickness each way — the
-    /// retired map builder's numbers, bit for bit.
+    /// The box pads the centerline's FLANKS by a full half-thickness each
+    /// way, but the END caps retreat by the cap inset: 7.4 + 2 × (0.15 −
+    /// 0.005) = 7.69 and 18.8 + 0.29 = 19.09 along the run, flank 0.3 and
+    /// height 3.0 untouched. The literals are hand-derived and the f32
+    /// narrowing agrees with them exactly. A run axis back at 7.7 is the
+    /// retired flush cap — the face that ties with a junction partner's
+    /// flank plane and z-fights (issue 14); a flank thinner than 0.3 opens
+    /// a gap along every wall's face instead.
     #[test]
-    fn wall_box_pads_the_centerline() {
-        assert_eq!(wall_box(7.4), Vector3::new(7.7, 3.0, 0.3));
-        assert_eq!(wall_box(18.8), Vector3::new(19.1, 3.0, 0.3));
+    fn wall_box_pads_the_flanks_flush_and_buries_the_caps() {
+        assert_eq!(wall_box(7.4), Vector3::new(7.69, 3.0, 0.3));
+        assert_eq!(wall_box(18.8), Vector3::new(19.09, 3.0, 0.3));
+    }
+
+    /// The issue-14 T-junction, boxed exactly as the level boxes it: wall
+    /// A runs along X, centerline (−2, 0)..(2, 0); wall B runs along Z,
+    /// centerline (0, 0)..(0, 4), its south END on A's centerline. Each
+    /// node's floor position is its centerline midpoint, the box rises
+    /// 0..WALL_H so center y = 1.5, and the size is `wall_box(length)`
+    /// with the run and flank axes swapped into world for the Z-runner.
+    fn t_junction_boxes() -> [Box3; 2] {
+        let a = wall_box(4.0);
+        let b = wall_box(4.0);
+        [
+            Box3::from_center_size(
+                [0.0, 1.5, 0.0],
+                [f64::from(a.x), f64::from(a.y), f64::from(a.z)],
+            ),
+            Box3::from_center_size(
+                [0.0, 1.5, 2.0],
+                [f64::from(b.z), f64::from(b.y), f64::from(b.x)],
+            ),
+        ]
+    }
+
+    /// THE issue-14 case. Wall B's centerline ends ON wall A's centerline
+    /// — every junction in the shipped map — and a flush end cap (a full
+    /// WALL_T of run padding) lands exactly in A's far flank plane at
+    /// z = −0.15: a same-facing coplanar overlapping pair that
+    /// depth-fights per pixel under the world skin's cull_disabled, the id
+    /// crease drawing the noise as the issue's jagged band. The census
+    /// must find NOTHING here: the cap has to retreat strictly inside A's
+    /// box, where A's flank wins the depth test at every pixel. With flush
+    /// caps this exact pair fights on that plane and the test fails.
+    #[test]
+    fn a_t_junction_cap_never_fights_the_partners_flank() {
+        let boxes = t_junction_boxes();
+        assert_eq!(
+            crate::observe::oids::coplanar_fights_checked(&boxes, &[0.25, 0.34]),
+            Some(vec![])
+        );
+    }
+
+    /// The cap is BURIED, not flush: B's south cap plane sits at
+    /// 0 − (0.15 − 0.005) = −0.145, strictly inside A's flank planes at
+    /// ±0.15, and a full five millimetres — five of the census's 1e-3
+    /// coplanarity band — clear of the near one, so the compatibility
+    /// renderer's 24-bit depth buffer can never tie on it. The tolerance
+    /// is 1e-6, not tighter, because the box crosses the engine's f32 lane
+    /// (~2e-8 of narrowing dust); the distances under test are 5e-3. A cap
+    /// back at −0.15 — or one that overshoots past +0.15 and out the far
+    /// side — fails here by three orders of magnitude.
+    #[test]
+    fn the_junction_cap_sits_five_epsilons_inside_the_partner() {
+        let [a, b] = t_junction_boxes();
+        assert!(
+            (b.min[2] - (-0.145)).abs() < 1e-6,
+            "south cap plane at {}",
+            b.min[2]
+        );
+        assert!(
+            a.min[2] < b.min[2] && b.min[2] < a.max[2],
+            "cap plane {} not strictly inside the flank planes {}..{}",
+            b.min[2],
+            a.min[2],
+            a.max[2]
+        );
+        assert!(
+            b.min[2] - a.min[2] > 1e-3,
+            "cap only {} clear of the flank — inside the depth tie band",
+            b.min[2] - a.min[2]
+        );
+    }
+
+    /// Burying the cap must not un-touch the joint: touching is what
+    /// forces the colouring to keep the two walls' ids apart, and that id
+    /// step is the crease that draws the visible corner. B still reaches
+    /// 0.295 deep into A along its run — A's far flank at 0.15 minus B's
+    /// cap at −0.145 (within the f32 lane's 1e-6). An inset large enough
+    /// to pull the cap out of A's box would pass the fight census and
+    /// silently license the palette to merge the ids, melting the corner
+    /// into one shape.
+    #[test]
+    fn the_buried_cap_still_touches_and_interpenetrates_the_partner() {
+        let [a, b] = t_junction_boxes();
+        assert!(a.touches(&b), "the junction came apart");
+        let overlap = a.max[2].min(b.max[2]) - a.min[2].max(b.min[2]);
+        assert!(
+            (overlap - 0.295).abs() < 1e-6,
+            "overlap along B's run is {}",
+            overlap
+        );
+    }
+
+    /// An L-corner — BOTH centerlines ending on the shared point (2, 0),
+    /// A heading east and B heading north — is the junction's other
+    /// spelling, and with flush caps it fights twice at once: A's east cap
+    /// in B's east flank plane at x = 2.15, and B's south cap in A's north
+    /// flank plane at z = −0.15. Both caps retreat, both fights vanish;
+    /// either one surviving fails the census here.
+    #[test]
+    fn an_l_corner_yields_zero_fights() {
+        let a = wall_box(4.0);
+        let b = wall_box(4.0);
+        let boxes = [
+            // A ends at (2, 0) heading east: centerline (−2, 0)..(2, 0).
+            Box3::from_center_size(
+                [0.0, 1.5, 0.0],
+                [f64::from(a.x), f64::from(a.y), f64::from(a.z)],
+            ),
+            // B ends at (2, 0) heading north: centerline (2, 0)..(2, 4).
+            Box3::from_center_size(
+                [2.0, 1.5, 2.0],
+                [f64::from(b.z), f64::from(b.y), f64::from(b.x)],
+            ),
+        ];
+        assert_eq!(
+            crate::observe::oids::coplanar_fights_checked(&boxes, &[0.25, 0.34]),
+            Some(vec![])
+        );
     }
 
     /// A designer's minus sign is a typo, not a wall pointing backwards.
