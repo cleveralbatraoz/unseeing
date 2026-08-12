@@ -4,8 +4,9 @@ render_mode unshaded, cull_disabled, depth_draw_never, depth_test_disabled, fog_
 // HEARING PASS — a fullscreen quad pinned to the camera. Everything the
 // player ever sees is produced here, from two ingredients:
 //   1. thin white OUTLINES where geometry breaks (silhouettes via a distance
-//      Laplacian, creases via normal-id differences), gated by the per-pixel
-//      "reveal" the data pass wrote — outlines exist only where a wave swept;
+//      Laplacian, creases via per-face LABEL differences), gated by the
+//      per-pixel "reveal" the data pass wrote — outlines exist only where a
+//      wave swept;
 //   2. the WAVES themselves: expanding spherical shells ray-traced in air,
 //      limb-brightened into rings, occluded by the world (walls carve bites
 //      out of a ring — absence of wave IS the shape of the world).
@@ -64,11 +65,12 @@ void fragment() {
 	bool seen_walled = wall_crossings(cam, seen_pt) > 0;
 
 	// thin white outlines: silhouettes (Laplacian of the packed distance in B)
-	// + creases (object-id differences in G — a flat per-instance id, or a
-	// normal-derived one where the level tagged nothing), visible only where
-	// a wave has swept (max of the five reveal taps in R). Two touching
-	// objects with the SAME id draw no seam at all: see rust/src/oid_palette.rs
-	// for the 0.08 separation the smoothstep below demands.
+	// + creases (label differences in G — the per-vertex superface label the
+	// derive-time paint pass bakes into each mesh's CUSTOM0, read straight
+	// through as G), visible only where a wave has swept (max of the five
+	// reveal taps in R). Two touching faces sharing the SAME label draw no
+	// seam at all: see rust/src/render/labels.rs (MIN_SEP) for the 0.08
+	// separation the smoothstep below demands.
 	float lap = abs(c_l.b + c_r.b + c_u.b + c_d.b - 4.0 * c_c.b);
 	float nrm = abs(c_l.g - c_r.g) + abs(c_u.g - c_d.g);
 	float edge = max(smoothstep(0.012, 0.03, lap), smoothstep(0.04, 0.08, nrm));

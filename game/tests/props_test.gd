@@ -462,7 +462,18 @@ func test_every_shape_answers_the_same_solid_door() -> void:
 	for solid: Node in [box, column, wedge]:
 		assert_object(_skin(solid).material_override).is_same(world)
 		var oid: float = solid.call("oid")
-		assert_bool(oid >= 0.0).append_failure_message("%s took no id" % solid.name).is_true()
+		# `oid >= 0.0` alone is vacuous post-flip: a solid's mesh carries a
+		# real, non-negative CUSTOM0 ordinal (0..5, BOX_ORDINALS) from the
+		# moment it is BUILT, before the derive-time paint pass ever runs —
+		# so "never painted" and "painted for real" both clear that bar.
+		# Real labels live in [0.15, 0.96] (the perception law), strictly
+		# outside the placeholder ordinals' own range, so this is the check
+		# that actually tells "painted" from "never painted" apart.
+		(
+			assert_float(oid)
+			. append_failure_message("%s took no real label (read back %.3f)" % [solid.name, oid])
+			. is_between(0.15, 0.96)
+		)
 
 
 ## How many limbs a shape has built for itself — one mesh and one collider

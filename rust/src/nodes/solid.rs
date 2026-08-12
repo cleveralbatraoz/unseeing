@@ -176,8 +176,8 @@ impl Skin {
 /// This is still a SOLID-granularity read — the first face standing in for
 /// a mesh that may carry several different labels across its own faces —
 /// exactly the coarseness `WaveLevel::oid_census` (`super::level`) accepts
-/// for the identical reason, until a later stage's real per-face law
-/// replaces both call sites at once.
+/// for the identical reason, until Task 10's real per-face law replaces
+/// both call sites at once.
 pub(crate) fn mesh_first_label(limb: &Gd<MeshInstance3D>) -> Option<f64> {
     let mesh = limb.get_mesh()?;
     if mesh.get_surface_count() == 0 {

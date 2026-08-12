@@ -3,10 +3,10 @@
 //! fan's guard ring and the radio's speaker grille.
 //!
 //! Both parts used to be the engine's own `TorusMesh` primitive, drawn
-//! through a per-instance `u_oid` alone — legal while the shader read only
-//! that uniform, but a `TorusMesh` carries no `CUSTOM0` channel to bake a
-//! per-vertex label into (Task 7), so it has to become real geometry this
-//! crate owns, the same turn a cylinder already took as
+//! through a per-instance object-id uniform alone — legal while the shader
+//! read only that uniform, but a `TorusMesh` carries no `CUSTOM0` channel
+//! to bake a per-vertex label into (Task 7), so it has to become real
+//! geometry this crate owns, the same turn a cylinder already took as
 //! [`crate::prop_shape::column_triangles`].
 //!
 //! Orientation matches the `TorusMesh` primitive this replaces, so no

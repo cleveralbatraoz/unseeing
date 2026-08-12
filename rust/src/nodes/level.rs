@@ -1242,8 +1242,8 @@ impl WaveLevel {
     /// that may now carry several. That is deliberately coarser than what
     /// actually draws, kept only so this census (and the observer's
     /// `explain_oids`, which reads it) keeps compiling and reporting
-    /// something true, if incomplete; the real per-face postcondition is a
-    /// later stage's job.
+    /// something true, if incomplete; the real per-face postcondition is
+    /// Task 10's job.
     pub(super) fn oid_census(&self) -> Vec<PaintedSolid> {
         let census = self.census();
         let mut painted = Vec::new();

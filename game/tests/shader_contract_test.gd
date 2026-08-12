@@ -21,6 +21,27 @@ func _include_text() -> String:
 	return _read(INC_PATH)
 
 
+## Every shader/include file directly under res://shaders, walked rather
+## than named one by one — a file added later (a 6th skin, a new include)
+## is covered by construction instead of silently joining the "checked only
+## 3 of 5" gap a hand-typed list leaves.
+func _all_shader_files() -> Array[String]:
+	var files: Array[String] = []
+	var dir := DirAccess.open("res://shaders")
+	assert_object(dir).is_not_null()
+	dir.list_dir_begin()
+	var entry := dir.get_next()
+	while entry != "":
+		if (
+			not dir.current_is_dir()
+			and (entry.ends_with(".gdshader") or entry.ends_with(".gdshaderinc"))
+		):
+			files.append("res://shaders/%s" % entry)
+		entry = dir.get_next()
+	dir.list_dir_end()
+	return files
+
+
 ## The G channel carries a per-VERTEX superface label now, packed in the
 ## shared data CORE (every data-writing skin — the world and the
 ## always-on-top acoustic image — reads the same machinery): the derive-time
@@ -35,16 +56,23 @@ func _include_text() -> String:
 ## already says. Pinned as source text so a "harmless" rewrite cannot
 ## silently revert the whole game's outline style, and the data pass must
 ## include the core rather than carry its own copy.
+##
+## The signature alone is not the packing: `pack_data(float reveal, vec3
+## world, vec3 cam)` and `varying float v_label` both stay true even if the
+## BODY quietly returned a literal in G's slot instead of v_label — so this
+## also pins the exact return expression, the one line that actually wires
+## the varying into the channel the outline pass diffs.
 func test_data_core_reads_the_per_vertex_label_into_g() -> void:
 	var core := _read(CORE_PATH)
 	assert_str(core).contains("varying float v_label")
 	assert_str(core).contains("vec3 pack_data(float reveal, vec3 world, vec3 cam)")
+	assert_str(core).contains("clamp(reveal, 0.0, 1.0), v_label,")
 	var data_pass := _read(DATA_PASS_PATH)
 	var xray := _read(XRAY_PATH)
 	assert_str(data_pass).contains("data_core.gdshaderinc")
 	assert_str(data_pass).contains("v_label = CUSTOM0.x")
 	assert_str(xray).contains("v_label = CUSTOM0.x")
-	for path: String in [CORE_PATH, DATA_PASS_PATH, XRAY_PATH]:
+	for path: String in _all_shader_files():
 		var text := _read(path)
 		(
 			assert_bool(text.contains("u_oid"))
