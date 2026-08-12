@@ -77,9 +77,18 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 /// one. A degenerate polygon — a collapsed box, a wedge whose hull has
 /// folded to a point — must yield no face rather than a NaN normal out of
 /// dividing by a near-zero length.
+///
+/// The guard checks `!len.is_finite()` FIRST, before the threshold — a
+/// plain `len < 1e-12` alone is not NaN-total, because every ordered
+/// comparison with NaN is false under IEEE 754. A NaN `len` (from a
+/// NaN-poisoned input coordinate, most directly) would make `len < 1e-12`
+/// false too, so that spelling alone falls through to the "valid" branch
+/// and divides by NaN. `is_finite()` catches both NaN and an overflowing
+/// `+Inf` length and routes them to `None` like every other length this
+/// vocabulary can't carry a direction for.
 fn unit(v: [f64; 3]) -> Option<[f64; 3]> {
     let len = dot(v, v).sqrt();
-    if len < 1e-12 {
+    if !len.is_finite() || len < 1e-12 {
         None
     } else {
         Some(scale(v, 1.0 / len))
@@ -408,13 +417,29 @@ mod tests {
     }
 
     /// Every emitted polygon winds counter-clockwise as seen from OUTSIDE
-    /// its own normal — the contract `Face::poly`'s doc comment states. A
-    /// winding bug would not panic and would not fail a count assertion;
-    /// it would silently reverse which side of a seam the outline draws,
-    /// so this recomputes the same cross product the merge law will use
-    /// rather than trusting the construction order — the break it catches
-    /// is a swapped ring-walking direction on the column's top rim, or a
-    /// transcribed-backwards row in `BOX_FACE_CORNERS` or a wedge polygon.
+    /// its own normal — the contract `Face::poly`'s doc comment states.
+    ///
+    /// This is a GENUINE independent check only for the column: its rims'
+    /// normal is a fixed constant (`column_faces` hardcodes `[0,-1,0]`/
+    /// `[0,1,0]`), entirely independent of the ring's own point order, so
+    /// a swapped walking direction on either rim is a real bug this test
+    /// can catch. Confirmed by mutation, not assumed: forcing the top rim
+    /// to walk the same direction as the bottom fails ONLY here, not in
+    /// `a_column_contributes_only_its_rims` (recorded in the task report).
+    ///
+    /// For Box3d and Wedge it is NOT such a check, and must not be read as
+    /// one: `face_from_poly` derives `normal` FROM this exact `poly` (the
+    /// first two edges' own cross product), so `dot(cross(e1, e2), normal)
+    /// > 0` holds BY CONSTRUCTION for any point order `face_from_poly` was
+    /// given — a transcribed-backwards row in `BOX_FACE_CORNERS`, or a
+    /// scrambled wedge polygon, still passes this test, because the
+    /// normal simply flips to agree with whatever order it was handed.
+    /// Also confirmed by mutation: a bowtie-scrambled wedge floor row
+    /// passes this test unchanged. That class of bug is instead caught by
+    /// tests that check a face's normal against an independently derived
+    /// expectation rather than trusting the face's own construction:
+    /// `a_wedge_yields_five_faces_including_the_diagonal` for the wedge,
+    /// and `every_box_face_normal_matches_its_own_position` for the box.
     #[test]
     fn every_emitted_face_winds_outward() {
         let mut all = faces(
@@ -460,6 +485,59 @@ mod tests {
         }
     }
 
+    /// Every one of a box's six faces has the normal its own GEOMETRIC
+    /// POSITION implies — derived from where the face's polygon actually
+    /// sits (its centroid's offset along each basis axis), never from
+    /// `face.normal` itself. A centroid is invariant under any reordering
+    /// of the same four corners, so unlike `every_emitted_face_winds_outward`
+    /// (which recomputes the very cross product `face_from_poly` used to
+    /// build the normal, and so cannot tell a correct row from a
+    /// transcribed-backwards one — see that test's doc comment) this one
+    /// can: a scrambled `BOX_FACE_CORNERS` row still puts its four points
+    /// on the right plane, so the centroid still names the right face,
+    /// even though the wrong-order cross product flips which way
+    /// `face.normal` points. Run at two bases — identity and a quarter
+    /// turn — so all six local rows, negative ones included, get checked:
+    /// the two brief-given box tests together only ever inspect four of
+    /// the six (+X plain, and −Z/+X/+Y turned).
+    #[test]
+    fn every_box_face_normal_matches_its_own_position() {
+        let center = [0.3, -0.1, 0.4];
+        let size = [2.0, 1.0, 4.0];
+        let half = [1.0, 0.5, 2.0];
+        for basis in [
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            // quadrant_basis(1): X-col (0,0,-1), Y-col (0,1,0), Z-col (1,0,0)
+            [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+        ] {
+            let f = faces(
+                0,
+                &Shape::Box3d {
+                    center,
+                    size,
+                    basis,
+                },
+            );
+            assert_eq!(f.len(), 6);
+            for face in &f {
+                let n = face.poly.len() as f64;
+                let sum = face.poly.iter().fold([0.0; 3], |acc, p| add(acc, *p));
+                let centroid = scale(sum, 1.0 / n);
+                let rel = sub(centroid, center);
+                let (axis, sign) = (0..3)
+                    .map(|a| (a, dot(rel, basis[a]) / half[a]))
+                    .find(|&(_, t)| (t.abs() - 1.0).abs() < 1e-9)
+                    .map(|(a, t)| (a, t.signum()))
+                    .unwrap_or_else(|| panic!("centroid {centroid:?} not on any face plane"));
+                let expected = scale(basis[axis], sign);
+                assert_eq!(
+                    face.normal, expected,
+                    "face at centroid {centroid:?} (basis {basis:?})"
+                );
+            }
+        }
+    }
+
     /// A box collapsed to zero size has no faces to draw — total rather
     /// than six zero-area quads carrying a NaN normal out of a zero-length
     /// cross product.
@@ -482,6 +560,26 @@ mod tests {
     fn a_collapsed_wedge_yields_no_faces() {
         let p = [1.0, 2.0, 3.0];
         let f = faces(0, &Shape::Wedge { hull: [p; 6] });
+        assert!(f.is_empty());
+    }
+
+    /// A NaN-poisoned center still yields no faces. The break this catches
+    /// is a `unit()` guard written as a plain `len < eps`: under IEEE 754
+    /// `NaN < eps` is FALSE (every ordered comparison with NaN is false),
+    /// so a naive guard falls through to the "valid" branch and hands back
+    /// six faces carrying a `[NaN, NaN, NaN]` normal instead of an empty
+    /// list — the exact failure mode `unit()`'s own doc comment promises
+    /// can't happen.
+    #[test]
+    fn a_nan_centered_box_yields_no_faces() {
+        let f = faces(
+            0,
+            &Shape::Box3d {
+                center: [f64::NAN, 0.0, 0.0],
+                size: [1.0; 3],
+                basis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            },
+        );
         assert!(f.is_empty());
     }
 
