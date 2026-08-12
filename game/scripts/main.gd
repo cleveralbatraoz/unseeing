@@ -58,6 +58,13 @@ var now := 0.0
 # Nervous light: the reveal intensity wavers, with rare brief dropouts.
 # Part of the mood, not noise; owned by Flicker with its own seeded stream.
 var _flicker: Flicker
+## The hearing pass's full-screen quad — kept so the web-only `?gprobe` flag
+## below can hide it, exposing the data pass's own raw unshaded ALBEDO
+## (reveal/label/distance) as the on-screen image instead of the composited
+## outline. Same trick `tests/probe/occlusion_probe.gd`'s `_hide_quad`
+## already plays natively; this is the browser's only way to reach it, since
+## headless Chrome has no GDScript to call. Nothing else reads this field.
+var _post_quad: MeshInstance3D
 
 # Dev-only demo tap (see _demo_tap below).
 var _demo: DemoTap
@@ -122,6 +129,18 @@ func _ready() -> void:
 	hero.body_mat = body_mat
 	add_child(hero)
 	_setup_post_quad(player.camera)
+	# test-only: web_probe.py appends &gprobe to prove CUSTOM0 binds to G on
+	# the one platform a browser can inspect from the outside — hiding the
+	# post quad lets its screenshot see the data pass's raw label channel
+	# directly, exactly as tests/probe/occlusion_probe.gd's _hide_quad does
+	# natively. The game never sets this itself; the flag is meaningless off
+	# the web, and _seed_armed/_demo_tap already read window.location.search
+	# from _ready()/_process() the same way on web, so this is not a new
+	# pattern.
+	if OS.has_feature("web"):
+		var probe_search := str(JavaScriptBridge.eval("window.location.search", true))
+		if probe_search.contains("gprobe"):
+			_post_quad.visible = false
 	# the debug window: the level (which already holds the wave pool) and
 	# the hero's own eye, because how many walls stand between the hero and
 	# a source is measured from there. It reads and never drives, so a run
@@ -303,7 +322,7 @@ func _seed_armed() -> bool:
 
 
 ## The "hearing" pass: a fullscreen quad glued to the camera. It edge-detects
-## the data the world pass wrote (reveal / normals / distance) and ray-traces
+## the data the world pass wrote (reveal / label / distance) and ray-traces
 ## the wave shells — the only two ways anything becomes visible.
 func _setup_post_quad(cam: Camera3D) -> void:
 	var quad := MeshInstance3D.new()
@@ -314,5 +333,6 @@ func _setup_post_quad(cam: Camera3D) -> void:
 	# The vertex shader pins the quad to the full screen; a huge cull margin
 	# stops Godot from frustum-culling the tiny quad mesh it thinks this is.
 	quad.extra_cull_margin = 16384.0
+	_post_quad = quad
 	quad.position = Vector3(0, 0, -1)
 	cam.add_child(quad)
