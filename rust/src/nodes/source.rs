@@ -163,6 +163,12 @@ impl SourceRig {
     /// Build one limb: a mesh instance drawn through the injected skin,
     /// tagged with its flat object id, positioned and rotated in its
     /// parent. Remembered, so the standing image reaches it every frame.
+    ///
+    /// `oid` is now (Task 7) a [`crate::render::role_label`] value the
+    /// caller's own mesh ALREADY carries baked into `CUSTOM0` — this push
+    /// is the TEMPORARY BRIDGE onto the per-instance `u_oid` the shader
+    /// still reads until Task 8 flips it to read `CUSTOM0` directly; the
+    /// two must always agree, since nothing here checks that they do.
     pub(crate) fn limb(
         &mut self,
         parent: &mut Gd<Node3D>,

@@ -17,22 +17,13 @@
 //! lives in the pure [`viewmodel`] module; this file only reads the
 //! player, poses the pure curves, and rebuilds the immediate meshes.
 
-use godot::classes::mesh::PrimitiveType;
-use godot::classes::{Camera3D, INode3D, ImmediateMesh, MeshInstance3D, Node3D, ShaderMaterial};
+use godot::classes::{ArrayMesh, Camera3D, INode3D, MeshInstance3D, Node3D, ShaderMaterial};
 use godot::prelude::*;
 
-use super::limbs::{sphere, tube};
+use super::limbs::{LimbBuf, sphere, tube};
 use super::player::UnseeingPlayer;
+use crate::render::{self, Role};
 use crate::viewmodel::{self, Pose, Viewmodel, ViewmodelCapture};
-
-/// The arm-and-cane layer's flat object id (the data pass's `u_oid`): one
-/// silhouette for the whole viewmodel arm, in the creature band (0.7+) so
-/// it always separates from the world behind it.
-const CANE_OID: f64 = 0.96;
-
-/// The legs-and-torso layer's flat object id — distinct from the arm so
-/// the two read apart when the arm crosses the body.
-const BODY_OID: f64 = 0.82;
 
 /// The hero's body node. Injected with the player it dresses, the camera
 /// the arm anchors to, the wave pool (held for injection parity — waves
@@ -63,10 +54,19 @@ pub struct HeroBody {
     /// computed here, applied by the player — the camera's one owner.
     #[var]
     bob_offset: f64,
-    #[init(val = ImmediateMesh::new_gd())]
-    cane_mesh: Gd<ImmediateMesh>,
-    #[init(val = ImmediateMesh::new_gd())]
-    body_mesh: Gd<ImmediateMesh>,
+    #[init(val = ArrayMesh::new_gd())]
+    cane_mesh: Gd<ArrayMesh>,
+    #[init(val = ArrayMesh::new_gd())]
+    body_mesh: Gd<ArrayMesh>,
+    /// The frame's raw triangle geometry for each layer — cleared and
+    /// refilled every rebuild rather than allocated fresh, the same
+    /// steady-state-capacity trick the companion cat's own buffer relies
+    /// on: both layers rebuild every rendered frame, not merely every
+    /// physics tick.
+    #[init(val = Vec::new())]
+    cane_buf: LimbBuf,
+    #[init(val = Vec::new())]
+    body_buf: LimbBuf,
     vm: Option<Viewmodel>,
     shoes: [Vector3; 2],
     base: Base<Node3D>,
@@ -88,10 +88,18 @@ impl INode3D for HeroBody {
         }
         let cane_mesh = self.cane_mesh.clone();
         let cane_mat = self.cane_mat.clone();
-        self.add_layer(&cane_mesh, cane_mat.as_ref(), CANE_OID);
+        self.add_layer(
+            &cane_mesh,
+            cane_mat.as_ref(),
+            render::role_label(Role::HeroCane),
+        );
         let body_mesh = self.body_mesh.clone();
         let body_mat = self.body_mat.clone();
-        self.add_layer(&body_mesh, body_mat.as_ref(), BODY_OID);
+        self.add_layer(
+            &body_mesh,
+            body_mat.as_ref(),
+            render::role_label(Role::HeroBody),
+        );
         self.vm = Some(Viewmodel::new(
             f64::from(player.get_rotation().y),
             f64::from(camera.get_rotation().x),
@@ -176,29 +184,32 @@ impl HeroBody {
         PackedVector3Array::from(&self.shoes[..])
     }
 
-    /// The cane/arm immediate mesh — observable for the mesh-sanity pins.
+    /// The cane/arm baked mesh — observable for the mesh-sanity pins.
     #[func]
-    fn cane_mesh(&self) -> Gd<ImmediateMesh> {
+    fn cane_mesh(&self) -> Gd<ArrayMesh> {
         self.cane_mesh.clone()
     }
 
-    /// The legs/torso immediate mesh — observable for the same pins.
+    /// The legs/torso baked mesh — observable for the same pins.
     #[func]
-    fn body_mesh(&self) -> Gd<ImmediateMesh> {
+    fn body_mesh(&self) -> Gd<ArrayMesh> {
         self.body_mesh.clone()
     }
 
-    /// One render layer of the body: an immediate mesh drawn through the
-    /// given data-pass material, never frustum-culled (the mesh mutates
-    /// every frame), tagged with a flat object id so the arm and the
-    /// legs/torso each read as one silhouette, not a heap of tubes.
-    fn add_layer(&mut self, mesh: &Gd<ImmediateMesh>, mat: Option<&Gd<ShaderMaterial>>, oid: f64) {
+    /// One render layer of the body: a baked mesh drawn through the given
+    /// data-pass material, never frustum-culled (the mesh mutates every
+    /// frame), tagged with a flat label so the arm and the legs/torso each
+    /// read as one silhouette, not a heap of tubes. `CUSTOM0` (baked into
+    /// the mesh every rebuild) is the new truth; this per-instance u_oid is
+    /// the TEMPORARY BRIDGE the shader still reads until Task 8 flips it to
+    /// CUSTOM0 directly — the two must always carry the identical label.
+    fn add_layer(&mut self, mesh: &Gd<ArrayMesh>, mat: Option<&Gd<ShaderMaterial>>, label: f64) {
         let mut mi = MeshInstance3D::new_alloc();
         mi.set_mesh(mesh);
         if let Some(mat) = mat {
             mi.set_material_override(mat);
         }
-        mi.set_instance_shader_parameter("u_oid", &oid.to_variant());
+        mi.set_instance_shader_parameter("u_oid", &label.to_variant());
         mi.set_extra_cull_margin(16384.0);
         self.base_mut().add_child(&mi);
     }
@@ -231,14 +242,13 @@ impl HeroBody {
         rest_tip.y = (f64::from(rest_tip.y) + 0.12 * lift * (1.0 - pose.thrust)) as f32;
         let tip = rest_tip.lerp(target, pose.thrust.clamp(0.0, 1.0) as f32);
 
-        let mut mesh = self.cane_mesh.clone();
-        mesh.clear_surfaces();
-        mesh.surface_begin(PrimitiveType::TRIANGLES);
-        tube(&mut mesh, elbow, hand, 0.055, 0.045);
-        sphere(&mut mesh, hand, 0.055);
-        tube(&mut mesh, hand, tip, 0.013, 0.010);
-        sphere(&mut mesh, tip, 0.040);
-        mesh.surface_end();
+        let label = render::role_label(Role::HeroCane) as f32;
+        self.cane_buf.clear();
+        tube(&mut self.cane_buf, elbow, hand, 0.055, 0.045, label);
+        sphere(&mut self.cane_buf, hand, 0.055, label);
+        tube(&mut self.cane_buf, hand, tip, 0.013, 0.010, label);
+        sphere(&mut self.cane_buf, tip, 0.040, label);
+        render::paint::resize_triangle_surface(&mut self.cane_mesh, &self.cane_buf);
     }
 
     /// The torso and both legs, rebuilt for this frame's walk phase; the
@@ -251,31 +261,41 @@ impl HeroBody {
         let rv_raw = basis.col_a();
         let rv = Vector3::new(rv_raw.x, 0.0, rv_raw.z).normalized();
 
-        let mut mesh = self.body_mesh.clone();
-        mesh.clear_surfaces();
-        mesh.surface_begin(PrimitiveType::TRIANGLES);
+        let label = render::role_label(Role::HeroBody) as f32;
+        self.body_buf.clear();
         // small slim torso ending in a pelvis the legs grow out of
         let tc = Vector3::new(p.x, 0.0, p.z) - fw * 0.20;
         tube(
-            &mut mesh,
+            &mut self.body_buf,
             Vector3::new(tc.x, 0.90, tc.z),
             Vector3::new(tc.x, 1.28, tc.z),
             0.11,
             0.10,
+            label,
         );
-        sphere(&mut mesh, Vector3::new(tc.x, 1.28, tc.z), 0.10);
-        sphere(&mut mesh, Vector3::new(tc.x, 0.90, tc.z), 0.13);
+        sphere(
+            &mut self.body_buf,
+            Vector3::new(tc.x, 1.28, tc.z),
+            0.10,
+            label,
+        );
+        sphere(
+            &mut self.body_buf,
+            Vector3::new(tc.x, 0.90, tc.z),
+            0.13,
+            label,
+        );
         // full legs: thigh, knee, shin, round shoe — phase-mirrored walk
         // cycle from the pure module
         for s in [-1, 1] {
             let leg = viewmodel::leg_pose(p, fw, rv, pose.leg_phase, pose.walk_amp, s);
             self.shoes[if s < 0 { 0 } else { 1 }] = leg.shoe;
-            tube(&mut mesh, leg.hip, leg.knee, 0.06, 0.05);
-            sphere(&mut mesh, leg.knee, 0.055);
-            tube(&mut mesh, leg.knee, leg.ankle, 0.05, 0.04);
-            sphere(&mut mesh, leg.shoe, 0.08);
+            tube(&mut self.body_buf, leg.hip, leg.knee, 0.06, 0.05, label);
+            sphere(&mut self.body_buf, leg.knee, 0.055, label);
+            tube(&mut self.body_buf, leg.knee, leg.ankle, 0.05, 0.04, label);
+            sphere(&mut self.body_buf, leg.shoe, 0.08, label);
         }
-        mesh.surface_end();
+        render::paint::resize_triangle_surface(&mut self.body_mesh, &self.body_buf);
     }
 
     /// The viewmodel as data — `None` when `_ready` refused (uninjected)

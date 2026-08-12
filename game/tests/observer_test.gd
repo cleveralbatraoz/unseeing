@@ -401,9 +401,9 @@ func test_a_silenced_source_reports_no_next_emit() -> void:
 ## The pairs only carry the ids of boxes that MEET, so a solid standing alone
 ## in a room had a name in the report and no id anywhere — and "which id did
 ## this thing actually get?" is the first question after "which seams are
-## broken". Hand-derived: the floor slab's dedicated OID_FLOOR is 0.15
-## (rust/src/nodes/level.rs) and the cat's CAT_OID is 0.7
-## (rust/src/nodes/cat.rs).
+## broken". Hand-derived against the one role table
+## (render::labels::role_label, rust/src/render/labels.rs): the floor's
+## Role::Floor is 0.15, the cat's Role::Cat is 0.7.
 func test_the_oid_census_reports_the_id_of_every_box() -> void:
 	var level := _shipped_level(Pulses.new())
 	var obs := _observer()

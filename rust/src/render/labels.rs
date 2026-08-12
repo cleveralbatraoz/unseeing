@@ -87,7 +87,13 @@ pub enum Role {
 /// (pre-existing; grandfathered below the 0.15 sRGB comfort line and
 /// unchanged this stage), `Floor` 0.15, `Shell` 0.33, `Moving` 0.63, `Cat`
 /// 0.70, `HeroBody` 0.82, `Ceiling` 0.90, `HeroCane` 0.96.
-pub fn role_label(role: Role) -> f64 {
+///
+/// `const fn` on purpose (Task 7): every creature and source builds its
+/// own fixed `oids()`/`OIDS` table from this function at compile time
+/// now that the id constants that used to hold these numbers locally
+/// (`CAT_OID`, `FAN_OID`, `RADIO_CASE_OID`, ...) are gone — this is the
+/// one place any of them may be spelled again.
+pub const fn role_label(role: Role) -> f64 {
     match role {
         Role::Case => 0.05,
         Role::Floor => 0.15,

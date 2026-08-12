@@ -18,17 +18,17 @@
 //! for the silhouette. The clock is handed, never poked: the composition
 //! root will advance `tick(now)` like it does the player's.
 
-use godot::classes::mesh::PrimitiveType;
 use godot::classes::{
-    CapsuleShape3D, CharacterBody3D, CollisionShape3D, ICharacterBody3D, ImmediateMesh, Material,
+    ArrayMesh, CapsuleShape3D, CharacterBody3D, CollisionShape3D, ICharacterBody3D, Material,
     MeshInstance3D,
 };
 use godot::prelude::*;
 
-use super::limbs::{sphere, sphere_lod, tube, tube_res};
+use super::limbs::{LimbBuf, sphere, sphere_lod, tube, tube_res};
 use crate::cat_body::{self, CatPose, Tail};
 use crate::cat_brain::{CatBrain, RoamRect};
 use crate::cat_gait::{self, CatGait};
+use crate::render::{self, Role};
 use crate::reproduce::blob::CatCapture;
 use crate::sound_source::Cadence;
 
@@ -41,10 +41,6 @@ const COL_HEIGHT: f32 = 0.34;
 
 /// The sit blend's ease rate, 1/s — a cat settles, it does not snap.
 const SIT_EASE: f64 = 3.0;
-
-/// The cat's flat object id (the data pass's `u_oid`): one value across the
-/// whole silhouette so the outline post-pass draws it as a single contour.
-const CAT_OID: f64 = 0.7;
 
 /// The companion cat. Inject `pulses` and `data_mat` before adding to
 /// the tree (children run `_ready` first, and the cat refuses to build
@@ -70,8 +66,14 @@ pub struct WaveCat {
     #[export]
     #[init(val = Vector2::new(6.0, 6.0))]
     roam_size: Vector2,
-    #[init(val = ImmediateMesh::new_gd())]
-    mesh: Gd<ImmediateMesh>,
+    #[init(val = ArrayMesh::new_gd())]
+    mesh: Gd<ArrayMesh>,
+    /// The frame's raw triangle geometry — cleared and refilled every
+    /// rebuild rather than allocated fresh: `Vec::clear` keeps its
+    /// capacity, so once this has grown to the cat's steady-state
+    /// vertex count it never allocates again for the rest of its life.
+    #[init(val = Vec::new())]
+    tri_buf: LimbBuf,
     brain: Option<CatBrain>,
     gait: Option<CatGait>,
     tail: Option<Tail>,
@@ -117,9 +119,14 @@ impl ICharacterBody3D for WaveCat {
         let mut mi = MeshInstance3D::new_alloc();
         mi.set_mesh(&self.mesh.clone());
         mi.set_material_override(self.data_mat.as_ref());
-        // one flat object id for the whole cat: the outline post-pass draws
-        // it as a single unified silhouette, never a pile of joint circles
-        mi.set_instance_shader_parameter("u_oid", &CAT_OID.to_variant());
+        // one flat label for the whole cat: the outline post-pass draws it
+        // as a single unified silhouette, never a pile of joint circles.
+        // CUSTOM0 (baked below, every rebuild) is the new truth; this
+        // per-instance u_oid is the TEMPORARY BRIDGE the shader still
+        // reads until Task 8 flips it to CUSTOM0 directly — the two must
+        // always agree, or the game would render one thing today and
+        // another the instant that switch flips.
+        mi.set_instance_shader_parameter("u_oid", &render::role_label(Role::Cat).to_variant());
         // the mesh mutates every frame in world space; never frustum-cull
         // it by its stale local bounds
         mi.set_extra_cull_margin(16384.0);
@@ -308,9 +315,9 @@ impl WaveCat {
         }
     }
 
-    /// The silhouette's immediate mesh — observable for mesh-sanity pins.
+    /// The silhouette's baked mesh — observable for mesh-sanity pins.
     #[func]
-    fn cat_mesh(&self) -> Gd<ImmediateMesh> {
+    fn cat_mesh(&self) -> Gd<ArrayMesh> {
         self.mesh.clone()
     }
 
@@ -390,42 +397,47 @@ impl WaveCat {
     /// Small joints use the radius-tiered [`sphere_lod`] and whiskers the
     /// low-segment [`tube_res`]: the pea-sized parts read identically at a
     /// fraction of the per-vertex FFI cost the wasm build feels.
+    ///
+    /// Every vertex carries the SAME [`Role::Cat`] label in `CUSTOM0` — one
+    /// silhouette, the same law [`Self::ready`]'s `u_oid` bridge states for
+    /// the mesh instance as a whole. `tri_buf` is cleared and refilled here
+    /// rather than rebuilt fresh, so a cat that has been alive a few frames
+    /// allocates nothing more to keep drawing itself.
     fn build_mesh(&mut self, pose: &CatPose, tail: &Tail) {
         let sk = cat_body::skeleton(pose);
-        let mut mesh = self.mesh.clone();
-        mesh.clear_surfaces();
-        mesh.surface_begin(PrimitiveType::TRIANGLES);
+        let label = render::role_label(Role::Cat) as f32;
+        self.tri_buf.clear();
         // the torso line, chest proud of hip — the big shapes stay full-res
-        tube(&mut mesh, sk.chest, sk.hip, 0.068, 0.062);
-        sphere(&mut mesh, sk.chest, 0.072);
-        sphere(&mut mesh, sk.hip, 0.068);
+        tube(&mut self.tri_buf, sk.chest, sk.hip, 0.068, 0.062, label);
+        sphere(&mut self.tri_buf, sk.chest, 0.072, label);
+        sphere(&mut self.tri_buf, sk.hip, 0.068, label);
         // neck and head
-        tube(&mut mesh, sk.chest, sk.head, 0.045, 0.034);
-        sphere(&mut mesh, sk.head, 0.052);
-        sphere_lod(&mut mesh, sk.muzzle, 0.028);
+        tube(&mut self.tri_buf, sk.chest, sk.head, 0.045, 0.034, label);
+        sphere(&mut self.tri_buf, sk.head, 0.052, label);
+        sphere_lod(&mut self.tri_buf, sk.muzzle, 0.028, label);
         for (base, tip) in sk.ears {
-            tube(&mut mesh, base, tip, 0.016, 0.002);
+            tube(&mut self.tri_buf, base, tip, 0.016, 0.002, label);
         }
         for (root, tip) in sk.whiskers {
-            tube_res(&mut mesh, root, tip, 0.0012, 0.0006, 4);
+            tube_res(&mut self.tri_buf, root, tip, 0.0012, 0.0006, 4, label);
         }
         for leg in sk.legs {
-            tube(&mut mesh, leg.root, leg.mid, 0.030, 0.024);
-            sphere_lod(&mut mesh, leg.mid, 0.026);
-            tube(&mut mesh, leg.mid, leg.paw, 0.024, 0.020);
+            tube(&mut self.tri_buf, leg.root, leg.mid, 0.030, 0.024, label);
+            sphere_lod(&mut self.tri_buf, leg.mid, 0.026, label);
+            tube(&mut self.tri_buf, leg.mid, leg.paw, 0.024, 0.020, label);
             // the paw pad, seated ON the shin's end — no lift offset, so an
             // occluded far paw can't survive as a free-floating ball
-            sphere_lod(&mut mesh, leg.paw, 0.021);
+            sphere_lod(&mut self.tri_buf, leg.paw, 0.021, label);
         }
         let mut prev = sk.tail_root;
         for (i, node) in tail.nodes().iter().enumerate() {
             let r1 = 0.014 - 0.0018 * i as f32;
             let r2 = 0.014 - 0.0018 * (i + 1) as f32;
-            tube(&mut mesh, prev, *node, r1, r2);
-            sphere_lod(&mut mesh, *node, r2 * 0.9);
+            tube(&mut self.tri_buf, prev, *node, r1, r2, label);
+            sphere_lod(&mut self.tri_buf, *node, r2 * 0.9, label);
             prev = *node;
         }
-        mesh.surface_end();
+        render::paint::resize_triangle_surface(&mut self.mesh, &self.tri_buf);
     }
 }
 

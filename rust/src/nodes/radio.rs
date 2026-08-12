@@ -22,14 +22,16 @@
 use std::f32::consts::PI;
 
 use godot::classes::{
-    BoxMesh, BoxShape3D, CollisionShape3D, CylinderMesh, INode3D, Material, Mesh, Node3D,
-    RefCounted, StaticBody3D, TorusMesh,
+    ArrayMesh, BoxShape3D, CollisionShape3D, INode3D, Material, Mesh, Node3D, RefCounted,
+    StaticBody3D,
 };
 use godot::prelude::*;
 
 use super::source::{SoundSource, SourceRig, sound};
 use crate::radio_wave;
+use crate::render::{self, Role};
 use crate::sound_source::{Cadence, Spread, Voice, Volume};
+use crate::{prop_shape, source_shape};
 
 /// The case's full extent in meters: a set you could carry with one hand.
 const CASE: Vector3 = Vector3::new(0.44, 0.26, 0.20);
@@ -41,19 +43,18 @@ const CASE: Vector3 = Vector3::new(0.44, 0.26, 0.20);
 /// radio, not at its feet.
 const HUB: Vector3 = Vector3::new(-0.11, 0.14, -0.10);
 
-/// The case's flat object id — the source band's CASE id, the one worn by
-/// the part that stands on world geometry (see `oid_palette`'s budget).
-const RADIO_CASE_OID: f64 = 0.05;
-
-/// The fascia's flat object id: grille, tuning scale, dials and antenna
-/// read as one silhouette against the case. The source band's SHELL id,
-/// reused from the fan's housing under the palette's own law — two objects
-/// that can never touch may share an id, and these two stand rooms apart.
-const RADIO_FACE_OID: f64 = 0.33;
-
-/// Both ids the radio paints itself with, so the level can keep whatever
-/// it stands on clear of them.
-const OIDS: [f64; 2] = [RADIO_CASE_OID, RADIO_FACE_OID];
+/// Both labels the radio paints itself with, so the level can keep whatever
+/// it stands on clear of them: `Role::Case` (the CASE band, the part that
+/// stands on world geometry) and `Role::Shell`, reused from the fan's own
+/// housing under the palette's own law — two objects that can never touch
+/// may share a label, and these two stand rooms apart. Every limb bakes the
+/// SAME value into its mesh's `CUSTOM0` (the new truth) and into its
+/// per-instance `u_oid` (the TEMPORARY BRIDGE the shader still reads until
+/// Task 8 flips it to read `CUSTOM0` directly).
+const OIDS: [f64; 2] = [
+    render::role_label(Role::Case),
+    render::role_label(Role::Shell),
+];
 
 /// The radio node. Scene limbs are built in `_ready` from the injected
 /// acoustic-image skin; `update(t)` — driven by the level with the
@@ -147,12 +148,13 @@ impl SoundRadio {
         let mut node = body.clone().upcast::<Node3D>();
         let skin = self.data_mat.clone();
         let lift = Vector3::new(0.0, CASE.y * 0.5, 0.0);
+        let case_label = render::role_label(Role::Case);
         self.rig.limb(
             &mut node,
-            &boxm(CASE),
+            &labelled_boxm(CASE, case_label),
             lift,
             Vector3::ZERO,
-            RADIO_CASE_OID,
+            case_label,
             skin.as_ref(),
         );
         let mut shape = BoxShape3D::new_gd();
@@ -171,33 +173,31 @@ impl SoundRadio {
         let mut node = self.base().clone().upcast::<Node3D>();
         let face = -CASE.z * 0.5 - 0.001; // a hair proud of the front face
         let flat = Vector3::new(PI * 0.5, 0.0, 0.0); // a disc facing front
+        let shell = render::role_label(Role::Shell);
 
-        let mut grille = TorusMesh::new_gd();
-        grille.set_inner_radius(0.052);
-        grille.set_outer_radius(0.086);
         self.rig.limb(
             &mut node,
-            &grille.upcast::<Mesh>(),
+            &labelled_torus(0.052, 0.086, shell),
             Vector3::new(HUB.x, HUB.y, face),
             flat,
-            RADIO_FACE_OID,
+            shell,
             skin.as_ref(),
         );
         self.rig.limb(
             &mut node,
-            &boxm(Vector3::new(0.15, 0.05, 0.014)),
+            &labelled_boxm(Vector3::new(0.15, 0.05, 0.014), shell),
             Vector3::new(0.11, 0.195, face),
             Vector3::ZERO,
-            RADIO_FACE_OID,
+            shell,
             skin.as_ref(),
         );
         for x in [0.055_f32, 0.165] {
             self.rig.limb(
                 &mut node,
-                &cyl(0.030, 0.026),
+                &labelled_cyl(0.030, 0.026, shell),
                 Vector3::new(x, 0.075, face),
                 flat,
-                RADIO_FACE_OID,
+                shell,
                 skin.as_ref(),
             );
         }
@@ -206,14 +206,14 @@ impl SoundRadio {
         let half = 0.28_f32;
         self.rig.limb(
             &mut node,
-            &cyl(0.008, half * 2.0),
+            &labelled_cyl(0.008, half * 2.0, shell),
             Vector3::new(
                 CASE.x * 0.5 - 0.04,
                 CASE.y + half * tilt.cos(),
                 half * tilt.sin(),
             ),
             Vector3::new(tilt, 0.0, 0.0),
-            RADIO_FACE_OID,
+            shell,
             skin.as_ref(),
         );
     }
@@ -280,18 +280,47 @@ impl SoundSource for SoundRadio {
     }
 }
 
-/// A capped cylinder mesh with equal top and bottom radii.
-fn cyl(radius: f32, height: f32) -> Gd<Mesh> {
-    let mut c = CylinderMesh::new_gd();
-    c.set_top_radius(radius);
-    c.set_bottom_radius(radius);
-    c.set_height(height);
-    c.upcast()
+/// A capped cylinder, baked with a single constant label on every vertex —
+/// replaces the `CylinderMesh` engine primitive (Task 7), which carries no
+/// `CUSTOM0` channel to bake a label into. Reuses
+/// [`prop_shape::column_triangles`]'s already-tested geometry outright,
+/// discarding its bottom/top/flank ordinal (a source's own limb reads as
+/// ONE label, not three), so the winding this crate already proved outward
+/// for every column in the level comes along for free.
+fn labelled_cyl(radius: f32, height: f32, label: f64) -> Gd<Mesh> {
+    let label = label as f32;
+    let triangles: Vec<(Vector3, Vector3, f32)> =
+        prop_shape::column_triangles(radius, height * 0.5)
+            .into_iter()
+            .map(|(v, n, _ordinal)| (v, n, label))
+            .collect();
+    let mut mesh = ArrayMesh::new_gd();
+    render::paint::resize_triangle_surface(&mut mesh, &triangles);
+    mesh.upcast()
 }
 
-/// A box mesh of the given size.
-fn boxm(size: Vector3) -> Gd<Mesh> {
-    let mut b = BoxMesh::new_gd();
-    b.set_size(size);
-    b.upcast()
+/// A box, baked with a single constant label on every face — replaces the
+/// `BoxMesh` engine primitive the same way, as a thin wrapper over
+/// [`render::paint::labelled_box`] with all six faces given the one label.
+fn labelled_boxm(size: Vector3, label: f64) -> Gd<Mesh> {
+    let label = label as f32;
+    render::paint::labelled_box(size, Vector3::ZERO, [label; 6]).upcast()
+}
+
+/// A torus (donut), baked with a single constant label — replaces the
+/// `TorusMesh` engine primitive: [`source_shape::torus_triangles`] is the
+/// pure geometry, already proven to wind outward (load-bearing here, since
+/// a source's limbs render through the acoustic-image skin's `cull_back`,
+/// not the world skin's `cull_disabled` — see that module's own doc
+/// comment).
+fn labelled_torus(inner_radius: f32, outer_radius: f32, label: f64) -> Gd<Mesh> {
+    let label = label as f32;
+    let triangles: Vec<(Vector3, Vector3, f32)> =
+        source_shape::torus_triangles(inner_radius, outer_radius)
+            .into_iter()
+            .map(|(v, n)| (v, n, label))
+            .collect();
+    let mut mesh = ArrayMesh::new_gd();
+    render::paint::resize_triangle_surface(&mut mesh, &triangles);
+    mesh.upcast()
 }

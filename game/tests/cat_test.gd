@@ -80,14 +80,46 @@ func test_cat_wanders_and_paw_waves_sound() -> void:
 	assert_bool(found_presence).override_failure_message("no presence heartbeat pulse").is_true()
 
 
-## The silhouette exists: after a rendered frame the immediate mesh
-## carries one surface — the whole cat, tubes and spheres and whiskers.
+## The silhouette exists: after a rendered frame the baked mesh carries
+## one surface — the whole cat, tubes and spheres and whiskers.
 func test_cat_mesh_builds() -> void:
 	_add_floor()
 	_add_cat()
 	await get_tree().physics_frame
 	await get_tree().process_frame
 	assert_int(_cat.cat_mesh().get_surface_count()).is_equal(1)
+
+
+## Every vertex of the silhouette carries the SAME Cat label (0.70,
+## render::labels::role_label, rust/src/render/labels.rs) in its mesh's
+## CUSTOM0 — the new per-vertex truth — and the mesh instance's own u_oid
+## carries the identical value: the TEMPORARY BRIDGE the shader still reads
+## until Task 8 flips it to CUSTOM0 directly must never disagree with the
+## mesh underneath it.
+func test_cat_mesh_carries_the_cat_label_in_custom0_and_bridges_it() -> void:
+	_add_floor()
+	_add_cat()
+	await get_tree().physics_frame
+	await get_tree().process_frame
+	var mesh := _cat.cat_mesh()
+	assert_int(mesh.get_surface_count()).is_equal(1)
+	var custom: PackedFloat32Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	assert_int(custom.size()).is_greater(0)
+	for label: float in custom:
+		assert_float(label).is_equal_approx(0.70, 0.0001)
+	var skin := _mesh_instance_of(_cat)
+	assert_object(skin).is_not_null()
+	var oid: float = skin.get_instance_shader_parameter("u_oid")
+	assert_float(oid).is_equal_approx(0.70, 0.0001)
+
+
+## The first MeshInstance3D a node built for itself — the cat adds its own
+## directly, with no `Skin` indirection the way a solid or a source has.
+func _mesh_instance_of(node: Node) -> MeshInstance3D:
+	for child: Node in node.get_children():
+		if child is MeshInstance3D:
+			return child as MeshInstance3D
+	return null
 
 
 ## Four paws on the floor: the observable paw positions stay at ground

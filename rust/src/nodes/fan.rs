@@ -18,35 +18,35 @@
 use std::f32::consts::PI;
 
 use godot::classes::{
-    AnimatableBody3D, BoxMesh, CollisionShape3D, CylinderMesh, CylinderShape3D, INode3D, Material,
-    Mesh, Node3D, RefCounted, StaticBody3D, TorusMesh,
+    AnimatableBody3D, ArrayMesh, CollisionShape3D, CylinderShape3D, INode3D, Material, Mesh,
+    Node3D, RefCounted, StaticBody3D,
 };
 use godot::prelude::*;
 
 use super::source::{SoundSource, SourceRig, sound};
 use crate::fan_wave;
+use crate::render::{self, Role};
 use crate::sound_source::{Cadence, Spread, Voice, Volume};
+use crate::{prop_shape, source_shape};
 
 /// Hub height in meters: within the cane's reach. A build dimension the
 /// pivot and the collider both hang from — not a tuning knob.
 pub const HEAD_H: f32 = 1.15;
 
-/// The fan housing's flat object id: pedestal, head and guard ring read as
-/// one silhouette. The source band's SHELL id (see `oid_palette`).
-const FAN_OID: f64 = 0.33;
-
-/// The spinning blades' flat object id — the source band's MOVING id,
-/// distinct from the housing so the blades stay legible instead of merging
-/// into it.
-const FAN_BLADE_OID: f64 = 0.63;
-
 /// The guard ring's outer radius — the widest part of the swinging head,
 /// and so what decides how far the housing reaches as it sweeps.
 const GUARD_R: f32 = 0.44;
 
-/// Both ids the fan paints itself with, so the level can keep the walls and
-/// props it colours clear of whichever one they stand against.
-const OIDS: [f64; 2] = [FAN_OID, FAN_BLADE_OID];
+/// Both labels the fan paints itself with, so the level can keep the walls
+/// and props it colours clear of whichever one they stand against. Every
+/// limb bakes the SAME value into its mesh's `CUSTOM0` (the new truth) and
+/// into its per-instance `u_oid` (the TEMPORARY BRIDGE the shader still
+/// reads until Task 8 flips it to read `CUSTOM0` directly — see
+/// [`SourceRig::limb`]'s own doc comment for where that push happens).
+const OIDS: [f64; 2] = [
+    render::role_label(Role::Shell),
+    render::role_label(Role::Moving),
+];
 
 /// The pedestal fan node. Scene limbs are built in `_ready` from the
 /// injected acoustic-image skin; `update(t)` — driven by the level with the
@@ -172,20 +172,21 @@ impl SoundFan {
         self.base_mut().add_child(&pedestal);
         let mut body = pedestal.clone().upcast::<Node3D>();
         let skin = self.data_mat.clone();
+        let shell = render::role_label(Role::Shell);
         self.rig.limb(
             &mut body,
-            &cyl(0.22, 0.06),
+            &labelled_cyl(0.22, 0.06, shell),
             Vector3::new(0.0, 0.03, 0.0),
             Vector3::ZERO,
-            FAN_OID,
+            shell,
             skin.as_ref(),
         );
         self.rig.limb(
             &mut body,
-            &cyl(0.03, HEAD_H),
+            &labelled_cyl(0.03, HEAD_H, shell),
             Vector3::new(0.0, HEAD_H * 0.5, 0.0),
             Vector3::ZERO,
-            FAN_OID,
+            shell,
             skin.as_ref(),
         );
         let mut base_col = CollisionShape3D::new_alloc();
@@ -207,23 +208,21 @@ impl SoundFan {
         pivot.add_child(&head);
         let mut head_node = head.clone().upcast::<Node3D>();
         let skin = self.data_mat.clone();
+        let shell = render::role_label(Role::Shell);
         self.rig.limb(
             &mut head_node,
-            &boxm(0.16, 0.16, 0.24),
+            &labelled_boxm(0.16, 0.16, 0.24, shell),
             Vector3::new(0.0, 0.0, 0.10),
             Vector3::ZERO,
-            FAN_OID,
+            shell,
             skin.as_ref(),
         );
-        let mut torus = TorusMesh::new_gd();
-        torus.set_inner_radius(0.40);
-        torus.set_outer_radius(GUARD_R);
         self.rig.limb(
             &mut head_node,
-            &torus.upcast::<Mesh>(),
+            &labelled_torus(0.40, GUARD_R, shell),
             Vector3::new(0.0, 0.0, -0.10),
             Vector3::new(PI * 0.5, 0.0, 0.0),
-            FAN_OID,
+            shell,
             skin.as_ref(),
         );
         let mut head_col = CollisionShape3D::new_alloc();
@@ -250,12 +249,13 @@ impl SoundFan {
         spinner.set_position(Vector3::new(0.0, 0.0, -0.10));
         pivot.add_child(&spinner);
         let skin = self.data_mat.clone();
+        let moving = render::role_label(Role::Moving);
         self.rig.limb(
             &mut spinner,
-            &cyl(0.045, 0.08),
+            &labelled_cyl(0.045, 0.08, moving),
             Vector3::ZERO,
             Vector3::new(PI * 0.5, 0.0, 0.0),
-            FAN_BLADE_OID,
+            moving,
             skin.as_ref(),
         );
         for k in 0..3_i32 {
@@ -266,10 +266,10 @@ impl SoundFan {
             spinner.add_child(&arm);
             self.rig.limb(
                 &mut arm,
-                &boxm(0.32, 0.11, 0.016),
+                &labelled_boxm(0.32, 0.11, 0.016, moving),
                 Vector3::new(0.24, 0.0, 0.0),
                 Vector3::ZERO,
-                FAN_BLADE_OID,
+                moving,
                 skin.as_ref(),
             );
         }
@@ -352,18 +352,47 @@ impl SoundSource for SoundFan {
     }
 }
 
-/// A capped cylinder mesh with equal top and bottom radii.
-fn cyl(radius: f32, height: f32) -> Gd<Mesh> {
-    let mut c = CylinderMesh::new_gd();
-    c.set_top_radius(radius);
-    c.set_bottom_radius(radius);
-    c.set_height(height);
-    c.upcast()
+/// A capped cylinder, baked with a single constant label on every vertex —
+/// replaces the `CylinderMesh` engine primitive (Task 7), which carries no
+/// `CUSTOM0` channel to bake a label into. Reuses
+/// [`prop_shape::column_triangles`]'s already-tested geometry outright,
+/// discarding its bottom/top/flank ordinal (a source's own limb reads as
+/// ONE label, not three), so the winding this crate already proved outward
+/// for every column in the level comes along for free.
+fn labelled_cyl(radius: f32, height: f32, label: f64) -> Gd<Mesh> {
+    let label = label as f32;
+    let triangles: Vec<(Vector3, Vector3, f32)> =
+        prop_shape::column_triangles(radius, height * 0.5)
+            .into_iter()
+            .map(|(v, n, _ordinal)| (v, n, label))
+            .collect();
+    let mut mesh = ArrayMesh::new_gd();
+    render::paint::resize_triangle_surface(&mut mesh, &triangles);
+    mesh.upcast()
 }
 
-/// A box mesh of the given size.
-fn boxm(x: f32, y: f32, z: f32) -> Gd<Mesh> {
-    let mut b = BoxMesh::new_gd();
-    b.set_size(Vector3::new(x, y, z));
-    b.upcast()
+/// A box, baked with a single constant label on every face — replaces the
+/// `BoxMesh` engine primitive the same way, as a thin wrapper over
+/// [`render::paint::labelled_box`] with all six faces given the one label.
+fn labelled_boxm(x: f32, y: f32, z: f32, label: f64) -> Gd<Mesh> {
+    let label = label as f32;
+    render::paint::labelled_box(Vector3::new(x, y, z), Vector3::ZERO, [label; 6]).upcast()
+}
+
+/// A torus (donut), baked with a single constant label — replaces the
+/// `TorusMesh` engine primitive: [`source_shape::torus_triangles`] is the
+/// pure geometry, already proven to wind outward (load-bearing here, since
+/// a source's limbs render through the acoustic-image skin's `cull_back`,
+/// not the world skin's `cull_disabled` — see that module's own doc
+/// comment).
+fn labelled_torus(inner_radius: f32, outer_radius: f32, label: f64) -> Gd<Mesh> {
+    let label = label as f32;
+    let triangles: Vec<(Vector3, Vector3, f32)> =
+        source_shape::torus_triangles(inner_radius, outer_radius)
+            .into_iter()
+            .map(|(v, n)| (v, n, label))
+            .collect();
+    let mut mesh = ArrayMesh::new_gd();
+    render::paint::resize_triangle_surface(&mut mesh, &triangles);
+    mesh.upcast()
 }

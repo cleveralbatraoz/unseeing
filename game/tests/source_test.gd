@@ -235,6 +235,60 @@ func test_sources_paint_ids_the_world_colouring_must_avoid() -> void:
 		assert_bool(ids.size() >= 1 and ids.size() <= 3).is_true()
 
 
+## Every limb a source builds now carries its role label baked into its
+## mesh's per-vertex CUSTOM0 (Task 7's new truth) AND the per-instance
+## u_oid the shader still reads until Task 8 flips it to CUSTOM0 directly —
+## the TEMPORARY BRIDGE (rust/src/nodes/source.rs's `SourceRig::limb`) must
+## never disagree with the mesh underneath it, or the game would render one
+## thing today and a different one the instant that switch flips. Every
+## vertex of a limb's mesh carries the SAME label, since a source's own
+## body has no internal seams of its own — one label per limb, never split
+## across it. Hand-derived against render::labels::role_label
+## (rust/src/render/labels.rs): Shell 0.33, Moving 0.63, Case 0.05.
+func _assert_limbs_bridge_their_labels(source: Node3D, expected: Array[float]) -> void:
+	var seen: Array[float] = []
+	for limb: MeshInstance3D in _limbs(source, [] as Array[MeshInstance3D]):
+		var oid: float = limb.get_instance_shader_parameter("u_oid")
+		(
+			assert_bool(expected.has(oid))
+			. override_failure_message(
+				"limb carries an unexpected u_oid %.3f, not one of %s" % [oid, expected]
+			)
+			. is_true()
+		)
+		if not seen.has(oid):
+			seen.append(oid)
+		var mesh: ArrayMesh = limb.mesh
+		assert_int(mesh.get_surface_count()).is_equal(1)
+		var custom: PackedFloat32Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+		assert_int(custom.size()).is_greater(0)
+		for label: float in custom:
+			(
+				assert_float(label)
+				. append_failure_message(
+					"limb's u_oid bridge %.3f but a CUSTOM0 vertex carries %.3f" % [oid, label]
+				)
+				. is_equal_approx(oid, 0.0001)
+			)
+	assert_array(seen).contains_exactly_in_any_order(expected)
+
+
+func test_fan_limbs_carry_shell_and_moving_labels() -> void:
+	var fan: SoundFan = auto_free(SoundFan.new())
+	fan.pulses = Pulses.new()
+	fan.data_mat = ShaderMaterial.new()
+	add_child(fan)
+	_assert_limbs_bridge_their_labels(fan, [0.33, 0.63] as Array[float])
+
+
+func test_radio_limbs_carry_case_and_shell_labels() -> void:
+	var radio: SoundRadio = auto_free(SoundRadio.new())
+	radio.pulses = Pulses.new()
+	radio.data_mat = ShaderMaterial.new()
+	add_child(radio)
+	_assert_limbs_bridge_their_labels(radio, [0.05, 0.33] as Array[float])
+
+
 ## Nothing about a running source is frozen at build time. Volume, speed and
 ## cone width are re-read on every beat, and so is the CADENCE — a knob that
 ## stopped taking effect once the level was built would be exactly the hidden

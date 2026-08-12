@@ -57,6 +57,9 @@
 //!   the outline's G channel by construction. Mostly pure face/label law,
 //!   cargo-tested; [`render::paint`] is the one impure edge, the
 //!   derive-time pass that bakes a label into an `ArrayMesh`'s `CUSTOM0`.
+//! - [`source_shape`] — the one generated shape a sound source's limbs
+//!   need beyond a box or [`prop_shape::column_triangles`]: a torus, for
+//!   the fan's guard ring and the radio's speaker grille.
 //!
 //! Determinism is construction, not luck: no hashed iteration anywhere
 //! near an output (ordered containers only), no system time, no
@@ -91,4 +94,5 @@ pub mod reproduce;
 pub mod settings_menu;
 pub mod sight;
 pub mod sound_source;
+pub mod source_shape;
 pub mod viewmodel;

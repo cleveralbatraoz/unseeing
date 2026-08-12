@@ -3,8 +3,8 @@ extends GdUnitTestSuite
 ## the tree and driven through one scripted life — a nervous walk, a cane
 ## tap, a stop — with the envelope held on EVERY frame: the head-bob inside
 ## its amplitude, the look-sway inside its clamps, both shoes at or above
-## their floor, and both immediate meshes rebuilt with at least one surface
-## of all-finite vertices. The player's physics is switched off so the suite
+## their floor, and both baked meshes rebuilt with at least one surface of
+## all-finite vertices. The player's physics is switched off so the suite
 ## alone owns time and the scripted velocity.
 
 const DT := 1.0 / 60.0
@@ -52,9 +52,9 @@ func _assert_frame_envelope() -> void:
 	_assert_mesh_built_finite(_hero.body_mesh())
 
 
-## A rebuilt immediate mesh must be sane: at least one surface, vertices in
-## it, and not a single NaN or infinity among them.
-func _assert_mesh_built_finite(mesh: ImmediateMesh) -> void:
+## A rebuilt mesh must be sane: at least one surface, vertices in it, and
+## not a single NaN or infinity among them.
+func _assert_mesh_built_finite(mesh: ArrayMesh) -> void:
 	assert_int(mesh.get_surface_count()).is_greater(0)
 	for s: int in mesh.get_surface_count():
 		var arrays: Array = mesh.surface_get_arrays(s)
@@ -65,6 +65,37 @@ func _assert_mesh_built_finite(mesh: ImmediateMesh) -> void:
 			if not v.is_finite():
 				broken += 1
 		assert_int(broken).is_equal(0)
+
+
+## Both viewmodel layers carry their role label (HeroCane 0.96, HeroBody
+## 0.82 — render::labels::role_label, rust/src/render/labels.rs) on every
+## vertex of their baked mesh's CUSTOM0, and the mesh instance HeroBody adds
+## for each layer bridges the identical value onto its own u_oid — the
+## TEMPORARY BRIDGE the shader still reads until Task 8 flips it to CUSTOM0
+## directly must never disagree with the mesh underneath it.
+func test_viewmodel_layers_carry_their_role_labels_and_bridge_them() -> void:
+	_step(_walk_vel)
+	_assert_layer_labelled(_hero.cane_mesh(), 0.96)
+	_assert_layer_labelled(_hero.body_mesh(), 0.82)
+	var layers: Array[MeshInstance3D] = []
+	for child: Node in _hero.get_children():
+		if child is MeshInstance3D:
+			layers.append(child as MeshInstance3D)
+	# ready() adds the cane layer first, then the body layer
+	assert_int(layers.size()).is_equal(2)
+	var cane_oid: float = layers[0].get_instance_shader_parameter("u_oid")
+	var body_oid: float = layers[1].get_instance_shader_parameter("u_oid")
+	assert_float(cane_oid).is_equal_approx(0.96, 0.0001)
+	assert_float(body_oid).is_equal_approx(0.82, 0.0001)
+
+
+func _assert_layer_labelled(mesh: ArrayMesh, label: float) -> void:
+	assert_int(mesh.get_surface_count()).is_greater(0)
+	for s: int in mesh.get_surface_count():
+		var custom: PackedFloat32Array = mesh.surface_get_arrays(s)[Mesh.ARRAY_CUSTOM0]
+		assert_int(custom.size()).is_greater(0)
+		for v: float in custom:
+			assert_float(v).is_equal_approx(label, 0.0001)
 
 
 ## 2 s of walking under an aggressive look wander (the sway targets saturate
