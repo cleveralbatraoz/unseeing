@@ -58,6 +58,7 @@ use godot::prelude::*;
 
 use super::cat::WaveCat;
 use super::props::{WaveColumn, WaveProp, WaveWedge};
+use super::run::WaveRun;
 use super::solid::{
     SKIN_NAME, WaveSolid, basis_columns_f64, build_box, clear_limbs, mesh_first_label, to_f64_3,
 };
@@ -110,6 +111,7 @@ struct Census {
     walls: Vec<Gd<WaveWall>>,
     sources: Vec<DynGd<Node, dyn SoundSource>>,
     cats: Vec<Gd<WaveCat>>,
+    runs: Vec<Gd<WaveRun>>,
     /// Every typed datum in deterministic depth-first walk order.
     spawns: Vec<Gd<WaveSpawn>>,
 }
@@ -358,6 +360,9 @@ impl WaveLevel {
         let census = self.census();
         for mut solid in census.solids {
             solid.dyn_bind_mut().set_material(&data_mat);
+        }
+        for mut run in census.runs {
+            run.bind_mut().set_material(&data_mat);
         }
         for mut source in census.sources {
             source
@@ -1257,6 +1262,7 @@ impl WaveLevel {
     /// them.
     fn paint_entries(&self, census: &Census) -> Vec<PaintEntry> {
         let mut entries = Vec::new();
+        let root = self.base().clone().upcast::<Node>();
         for slab in &self.slabs {
             let Some(area) = mesh_world_box(&slab.skin.clone().upcast()) else {
                 continue; // a slab with no mesh draws no seam
@@ -1283,7 +1289,7 @@ impl WaveLevel {
             let Some(area) = mesh_world_box(&node) else {
                 continue; // draws nothing, so it can show no seam
             };
-            let name = node.get_name().to_string();
+            let name = root.get_path_to(&node).to_string();
             if let Ok(wall) = node.clone().try_cast::<WaveWall>() {
                 let shape = wall.bind().world_shape();
                 entries.push(PaintEntry {
@@ -1646,13 +1652,14 @@ impl WaveLevel {
     /// it would shift every name after it, which is the bug this exists to
     /// prevent.
     pub(super) fn wall_names(&self) -> Vec<String> {
+        let root = self.base().clone().upcast::<Node>();
         self.wall_children
             .iter()
             .take(self.occluders.len())
             .enumerate()
             .map(|(index, wall)| {
                 if wall.is_instance_valid() {
-                    wall.get_name().to_string()
+                    root.get_path_to(&wall.clone().upcast::<Node>()).to_string()
                 } else {
                     format!("<freed wall {index}>")
                 }
@@ -1831,6 +1838,8 @@ fn collect(node: &Gd<Node>, census: &mut Census) {
             census.cats.push(cat);
         } else if let Ok(spawn) = child.clone().try_cast::<WaveSpawn>() {
             census.spawns.push(spawn);
+        } else if let Ok(run) = child.clone().try_cast::<WaveRun>() {
+            census.runs.push(run);
         }
         collect(&child, census);
     }

@@ -1,0 +1,20 @@
+[gd_scene format=3]
+
+[node name="Room16x16" type="Node3D"]
+
+[node name="North" type="WaveRun" parent="."]
+from = Vector2(0, 0)
+to = Vector2(16, 0)
+
+[node name="East" type="WaveRun" parent="."]
+from = Vector2(16, 0)
+to = Vector2(16, 16)
+openings = PackedVector2Array(6.5, 3)
+
+[node name="South" type="WaveRun" parent="."]
+from = Vector2(0, 16)
+to = Vector2(16, 16)
+
+[node name="West" type="WaveRun" parent="."]
+from = Vector2(0, 0)
+to = Vector2(0, 16)

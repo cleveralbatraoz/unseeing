@@ -92,7 +92,7 @@ impl WaveWall {
     /// collider, an occluding centerline) and they answer a minus sign
     /// three different ways, so the sign never gets past here.
     #[func]
-    fn set_length(&mut self, length: f64) {
+    pub(crate) fn set_length(&mut self, length: f64) {
         self.length = self.fold.scalar("length", length);
         let size = level_plan::wall_box(self.length);
         if let Some(mesh) = self.mesh.as_mut() {

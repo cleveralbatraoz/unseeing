@@ -25,6 +25,7 @@ mod player;
 mod props;
 mod radio;
 mod restorer;
+mod run;
 mod settings;
 mod solid;
 mod source;

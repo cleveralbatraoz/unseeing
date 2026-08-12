@@ -28,7 +28,8 @@
 # belong here. Widening this to everything would make the cheapest gate
 # in the pipeline flaky, which is worse than the hole it used to have.
 #
-# WaveWall is here for a class that only WARNS today (wall.rs:135, the
+# WaveWall and WaveRun are here for classes that only WARN today (wall.rs,
+# run.rs). The
 # quarter-turn snap). That is on purpose and it is not speculative
 # widening: the volume a message is said at is a run-time choice —
 # level.rs:765-766 sends one level_plan Budget text to godot_error! or
@@ -36,4 +37,4 @@
 # fact the source can be asked. Godot prints warnings as "WARNING: ", which
 # no entry here matches, so this costs the boot check nothing and covers
 # WaveWall the day it raises its voice.
-BOOT_ERROR_PATTERN="SCRIPT ERROR|SHADER ERROR|Parse Error|ERROR: Failed to|ERROR: WaveLevel|ERROR: SoundFan|ERROR: SoundRadio|ERROR: WaveCat|ERROR: UnseeingPlayer|ERROR: WaveWall|ERROR: hero_body|ERROR: UnseeingGame"
+BOOT_ERROR_PATTERN="SCRIPT ERROR|SHADER ERROR|Parse Error|ERROR: Failed to|ERROR: WaveLevel|ERROR: SoundFan|ERROR: SoundRadio|ERROR: WaveCat|ERROR: UnseeingPlayer|ERROR: WaveWall|ERROR: WaveRun|ERROR: hero_body|ERROR: UnseeingGame"

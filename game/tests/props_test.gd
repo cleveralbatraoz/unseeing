@@ -30,6 +30,172 @@ func _spawn(at: Vector3) -> WaveSpawn:
 	return spawn
 
 
+func _run(from: Vector2, to: Vector2, openings: PackedVector2Array = []) -> WaveRun:
+	var run := WaveRun.new()
+	run.from = from
+	run.to = to
+	run.openings = openings
+	return run
+
+
+## A run injected before tree entry remembers the level skin, then emits the
+## same two shipped divider walls as ownerless typed children at ready time.
+func test_wave_run_emits_named_materialized_walls() -> void:
+	var material := ShaderMaterial.new()
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var run := _run(Vector2(6.4, 0.6), Vector2(6.4, 19.4), [Vector2(8.0, 4.4)])
+	level.add_child(run)
+	level.add_child(_spawn(Vector3(2, 0, 2)))
+	level.inject(material, ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_int(run.get_child_count()).is_equal(2)
+	assert_str(run.get_child(0).name).is_equal("RunSeg1")
+	assert_str(run.get_child(1).name).is_equal("RunSeg2")
+	assert_int(level.wall_segments().size()).is_equal(2)
+	for wall: WaveWall in run.get_children():
+		assert_object(_skin(wall).material_override).is_same(material)
+		assert_object(wall.owner).is_null()
+
+
+## Setter rebuilds clear their previous derived children before emitting the
+## new residuals, so Inspector edits and Ctrl+D ghosts cannot double walls.
+func test_wave_run_setters_rebuild_idempotently() -> void:
+	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(10, 0)))
+	add_child(run)
+	assert_int(run.get_child_count()).is_equal(1)
+	run.openings = [Vector2(4, 2)]
+	assert_int(run.get_child_count()).is_equal(2)
+	assert_str(run.get_child(0).name).is_equal("RunSeg1")
+	assert_str(run.get_child(1).name).is_equal("RunSeg2")
+	run.openings = [Vector2(4, 2)]
+	assert_int(run.get_child_count()).is_equal(2)
+
+
+## Openings are authored data, not a preview detail: packing and instantiating
+## a scene must retain every pair exactly. This is the Ctrl+S regression gate.
+func test_wave_run_openings_survive_scene_pack_and_reload() -> void:
+	var root: Node3D = auto_free(Node3D.new())
+	var run := _run(Vector2.ZERO, Vector2(10, 0), [Vector2(2, 1), Vector2(7, 2)])
+	run.name = "Run"
+	root.add_child(run)
+	root.scene_file_path = "res://tests/fixtures/wave_run_pack_probe.tscn"
+	run.owner = root
+	var packed := PackedScene.new()
+	assert_int(packed.pack(root)).is_equal(OK)
+	var copy: Node3D = auto_free(packed.instantiate() as Node3D)
+	var restored := copy.get_node("Run") as WaveRun
+	assert_array(restored.openings).is_equal([Vector2(2, 1), Vector2(7, 2)])
+
+
+## Rebuild owns only children it generated. A designer may use the same prefix
+## for an annotation or authored child without the engine deleting their work.
+func test_wave_run_rebuild_preserves_a_designer_owned_runseg_child() -> void:
+	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(10, 0)))
+	var note := Marker3D.new()
+	note.name = "RunSegReference"
+	run.add_child(note)
+	add_child(run)
+	assert_bool(is_instance_valid(note)).is_true()
+	run.openings = [Vector2(4, 2)]
+	assert_bool(is_instance_valid(note)).is_true()
+	assert_object(note.get_parent()).is_same(run)
+
+
+## Dragging an already-readied tool node is the ordinary editor gesture. Its
+## planar pose must become endpoint data and the node must return to identity.
+func test_wave_run_absorbs_a_planar_drag_after_ready() -> void:
+	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(4, 0)))
+	add_child(run)
+	run.position = Vector3(3, 0, 4)
+	run.rotation.y = PI * 0.5
+	await get_tree().process_frame
+	assert_bool(run.transform.is_equal_approx(Transform3D.IDENTITY)).is_true()
+	# The translation is applied first, then the quarter-turn Godot stores in
+	# the local basis: (0,0)->(4,-3), (4,0)->(4,-7).
+	assert_vector(run.from).is_equal_approx(Vector2(4, -3), Vector2.ONE * 0.0001)
+	assert_vector(run.to).is_equal_approx(Vector2(4, -7), Vector2.ONE * 0.0001)
+
+
+func test_wave_run_diagonal_warning_clears_with_the_endpoints() -> void:
+	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(4, 4)))
+	add_child(run)
+	var warnings := run.get_configuration_warnings()
+	assert_int(warnings.size()).is_equal(1)
+	if warnings.is_empty():
+		return
+	assert_str(warnings[0]).contains("dominant X axis")
+	run.to = Vector2(4, 0)
+	assert_array(run.get_configuration_warnings()).is_empty()
+
+
+## A placed run absorbs its own planar pose into parent-local endpoint data;
+## the plain room above it remains free to rotate as a normal prefab ancestor.
+func test_wave_run_absorbs_its_planar_transform() -> void:
+	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(4, 0), [Vector2(1, 2)]))
+	run.position = Vector3(3, 0, 4)
+	run.rotation.y = PI * 0.5
+	add_child(run)
+	assert_bool(run.transform.is_equal_approx(Transform3D.IDENTITY)).is_true()
+	assert_vector(run.from).is_equal_approx(Vector2(3, 4), Vector2.ONE * 0.0001)
+	assert_vector(run.to).is_equal_approx(Vector2(3, 0), Vector2.ONE * 0.0001)
+	assert_vector(run.openings[0]).is_equal_approx(Vector2(1, 2), Vector2.ONE * 0.0001)
+
+
+func test_wave_run_translates_opening_coordinates_with_its_pose() -> void:
+	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(8, 0), [Vector2(1, 2)]))
+	run.position = Vector3(3, 0, 4)
+	add_child(run)
+	assert_vector(run.openings[0]).is_equal_approx(Vector2(4, 2), Vector2.ONE * 0.0001)
+
+
+func test_wave_run_warns_when_y_scale_is_discarded() -> void:
+	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(4, 0)))
+	run.scale = Vector3(1, 2, 1)
+	add_child(run)
+	var warnings := run.get_configuration_warnings()
+	assert_int(warnings.size()).is_equal(1)
+	if warnings.is_empty():
+		return
+	assert_str(warnings[0]).contains("Y translation or tilt")
+
+
+## The opening is a true absence in the level's occluder table: neither
+## positive residual crosses its absolute axis-coordinate doorway.
+func test_wave_run_doorway_leaves_no_occluder_across_its_gap() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_run(Vector2(5, 1), Vector2(5, 9), [Vector2(4, 2)]))
+	level.add_child(_spawn(Vector3(2, 0, 5)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_int(level.wall_segments().size()).is_equal(2)
+	for segment: Vector4 in level.wall_segments():
+		var lo := minf(segment.y, segment.w)
+		var hi := maxf(segment.y, segment.w)
+		assert_bool(lo < 5.0 and hi > 5.0).is_false()
+
+
+## Generated leaf names repeat in every run, so the level-facing table must
+## expose paths. Otherwise an observer cannot tell which RunSeg1 occluded it.
+func test_wave_run_walls_are_exposed_by_level_relative_path() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var divider := _run(Vector2(5, 1), Vector2(5, 4))
+	divider.name = "Divider"
+	level.add_child(divider)
+	var east := _run(Vector2(9, 1), Vector2(9, 4))
+	east.name = "PartyEast"
+	level.add_child(east)
+	level.add_child(_spawn(Vector3(2, 0, 2)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var observer: WaveObserver = auto_free(WaveObserver.new())
+	var camera: Camera3D = auto_free(Camera3D.new())
+	observer.inject(level, camera)
+	var names: Array[String] = []
+	for wall: Dictionary in observer.explain_ray(Vector3.ZERO, Vector3.ONE)["walls"]:
+		names.append(wall["name"])
+	assert_array(names).contains(["Divider/RunSeg1", "PartyEast/RunSeg1"])
+
+
 ## A reusable prop is composition, not framework: its plain root lets the
 ## level recurse into every typed piece in each independent instance.
 func test_chair_prefab_instances_are_recursively_censused() -> void:

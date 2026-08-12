@@ -5,11 +5,17 @@ extends SceneTree
 ## global transforms without a script on the prefab root.
 
 const CHAIR := preload("res://scenes/props/chair.tscn")
+const TABLE := preload("res://scenes/props/table.tscn")
+const DOORWAY := preload("res://scenes/rooms/doorway_8m.tscn")
+const ROOM := preload("res://scenes/rooms/room_16x16.tscn")
 const READY_FRAMES := 30
 
 var _level: WaveLevel
 var _chair_a: Node3D
 var _chair_b: Node3D
+var _table: Node3D
+var _doorway: Node3D
+var _room: Node3D
 var _frames := 0
 var _checks := 0
 var _failed := 0
@@ -33,6 +39,14 @@ func _initialize() -> void:
 	turned.add_child(spawn)
 	_level.add_child(turned)
 	root.add_child(_level)
+	_table = TABLE.instantiate()
+	root.add_child(_table)
+	_doorway = DOORWAY.instantiate()
+	root.add_child(_doorway)
+	_room = ROOM.instantiate()
+	_room.position = Vector3(30, 0, 30)
+	_room.rotation.y = PI * 0.5
+	root.add_child(_room)
 
 
 func _process(_delta: float) -> bool:
@@ -62,6 +76,20 @@ func _judge() -> void:
 	_check(
 		"a nested spawn inherits the prefab quarter turn",
 		is_equal_approx(_level.spawn_yaw(), PI * 0.5)
+	)
+	_check("the table is a plain draggable root with five pieces", _pieces(_table).size() == 5)
+	_check(
+		"the doorway prefab emits two residual walls",
+		_doorway.find_children("*", "WaveWall", true, false).size() == 2
+	)
+	_check(
+		"the room prefab emits five border segments",
+		_room.find_children("*", "WaveWall", true, false).size() == 5
+	)
+	var north := _room.get_node("North/RunSeg1") as WaveWall
+	_check(
+		"a rotated room composes its ancestor transform",
+		not north.global_position.is_equal_approx(north.position)
 	)
 	copy.free()
 

@@ -51,6 +51,16 @@ func test_level_extents_is_a_bounded_vector_in_metres() -> void:
 	assert_str(p["hint_string"]).contains("suffix")
 
 
+func test_run_endpoints_and_openings_are_typed_editor_knobs() -> void:
+	for knob: String in ["from", "to"]:
+		var p := _hint_of("WaveRun", knob)
+		assert_int(p["type"]).is_equal(TYPE_VECTOR2)
+		assert_int(p["hint"]).is_equal(PROPERTY_HINT_RANGE)
+		assert_str(p["hint_string"]).contains("suffix")
+	var openings := _hint_of("WaveRun", "openings")
+	assert_int(openings["type"]).is_equal(TYPE_PACKED_VECTOR2_ARRAY)
+
+
 func test_cat_roam_size_is_a_bounded_vector_in_metres() -> void:
 	var p := _hint_of("WaveCat", "roam_size")
 	assert_int(p["hint"]).is_equal(PROPERTY_HINT_RANGE)

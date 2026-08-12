@@ -206,6 +206,20 @@ simulated clock + seeded randomness only).
   touching-pair colouring, and nested global spawn yaw. Changing the chair root
   to `WaveProp` produced three focused-suite failures, pinning the composition
   boundary. Counts at this gate are 332 Cargo and 279 gdUnit cases in 31 suites.
+- **WaveRun and rooms:** an opening pair means `(absolute start coordinate
+  on the selected parent-local axis, width)`, with width extending toward the
+  increasing coordinate. This resolves the wording against the frozen shipped
+  geometry: `(8, 4.4)` is exactly the gap 8.0..12.4 and reproduces divider
+  centres 4.3/15.9 at lengths 7.4/7.0. Rust normalizes endpoint order,
+  magnitudes, clamping, sorting, overlap and diagonal folding; X wins a
+  dominant-axis tie. The tool node owns only that data and emits ownerless
+  `RunSeg1…N` WaveWalls, clearing on every rebuild and retaining injected
+  material. Its own planar transform is folded into endpoints and openings;
+  ancestor prefab transforms remain ordinary composition. Y/tilt is projected
+  with a warning because the vocabulary is deliberately planar. Level 01's two
+  doorway pairs now derive the same four of its unchanged 19 segments. Added a
+  configured doorway and a plain-root 16×16 room whose east border has a 3 m
+  opening. Clear-removal and +1 m opening mutations failed their focused tests.
 
 - **Rebase erratum:** `WaveRestorer` was registered in Rust but omitted from
   both independently maintained engine rosters. The post-rebase baseline adds

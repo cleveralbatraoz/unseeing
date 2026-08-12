@@ -22,13 +22,10 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 14, 0, 27.4)
 length = 26.8
 transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 0.6, 0, 14)
 
-[node name="DividerNorth" type="WaveWall" parent="." unique_id=100000005]
-length = 7.4
-transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 6.4, 0, 4.3)
-
-[node name="DividerSouth" type="WaveWall" parent="." unique_id=100000006]
-length = 7.0
-transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 6.4, 0, 15.9)
+[node name="Divider" type="WaveRun" parent="."]
+from = Vector2(6.4, 0.6)
+to = Vector2(6.4, 19.4)
+openings = PackedVector2Array(8, 4.4)
 
 [node name="FanRoomSouth" type="WaveWall" parent="." unique_id=100000007]
 length = 7.6
@@ -46,13 +43,10 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 11.5, 0, 15.6)
 length = 3.4
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.3, 0, 13)
 
-[node name="PartyEastNorth" type="WaveWall" parent="." unique_id=100000011]
-length = 9.4
-transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 19.4, 0, 5.3)
-
-[node name="PartyEastSouth" type="WaveWall" parent="." unique_id=100000012]
-length = 6.4
-transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 19.4, 0, 16.2)
+[node name="PartyEast" type="WaveRun" parent="."]
+from = Vector2(19.4, 0.6)
+to = Vector2(19.4, 19.4)
+openings = PackedVector2Array(10, 3)
 
 [node name="RadioRoomWest" type="WaveWall" parent="." unique_id=100000013]
 length = 3.2

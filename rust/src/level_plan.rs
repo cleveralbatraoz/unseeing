@@ -20,7 +20,7 @@
 
 use std::f64::consts::FRAC_PI_2;
 
-use godot::builtin::{Basis, Vector3, Vector4};
+use godot::builtin::{Basis, Vector2, Vector3, Vector4};
 
 use crate::oid_palette::Box3;
 
@@ -59,6 +59,115 @@ pub const DEMO_TAP_MARGIN: f64 = 0.2;
 
 /// Two segment coordinates within this are the same axis line.
 pub const AXIS_EPS: f32 = 0.001;
+
+/// One positive wall left after carving openings from an authored run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RunSeg {
+    pub center: Vector2,
+    pub length: f32,
+    /// `true` means the segment runs along Z at a fixed X coordinate.
+    pub vertical: bool,
+}
+
+/// The total result of interpreting a run: every residual segment and the
+/// one editor-facing explanation needed when its endpoints were folded or
+/// rejected.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunPlan {
+    pub segments: Vec<RunSeg>,
+    pub complaint: Option<String>,
+}
+
+/// Cut openings whose first value is an absolute start coordinate on the
+/// selected axis out of an X/Z run. Reversed ends,
+/// negative widths, overlaps and out-of-range openings all normalize here so
+/// the engine node only has to instantiate the returned positive segments.
+#[must_use]
+pub fn run_segments(from: Vector2, to: Vector2, openings: &[(f64, f64)]) -> RunPlan {
+    let finite = [from.x, from.y, to.x, to.y].into_iter().all(f32::is_finite);
+    if !finite {
+        return RunPlan {
+            segments: vec![],
+            complaint: Some(
+                "WaveRun: from/to contain a non-finite coordinate — no walls were emitted; replace NaN or infinity with finite X/Z coordinates."
+                    .to_string(),
+            ),
+        };
+    }
+
+    let dx = (to.x - from.x).abs();
+    let dz = (to.y - from.y).abs();
+    let vertical = dz > dx; // X wins exact ties.
+    let (a, b, fixed) = if vertical {
+        (from.y, to.y, from.x)
+    } else {
+        (from.x, to.x, from.y)
+    };
+    let lo = a.min(b);
+    let hi = a.max(b);
+    if hi - lo <= AXIS_EPS {
+        return RunPlan {
+            segments: vec![],
+            complaint: Some(
+                "WaveRun: from/to describe a zero-length run — no walls were emitted; move either endpoint along X or Z."
+                    .to_string(),
+            ),
+        };
+    }
+
+    let diagonal = dx > AXIS_EPS && dz > AXIS_EPS;
+    let axis_name = if vertical { "Z" } else { "X" };
+    let complaint = diagonal.then(|| {
+        format!(
+            "WaveRun: diagonal endpoints folded onto the dominant {axis_name} axis — runs emit axis-aligned WaveWalls; move from/to onto one X or Z line to clear this warning."
+        )
+    });
+
+    let mut cuts: Vec<(f32, f32)> = openings
+        .iter()
+        .filter_map(|&(coordinate, width)| {
+            if !coordinate.is_finite() || !width.is_finite() {
+                return None;
+            }
+            let start = (coordinate as f32).clamp(lo, hi);
+            let end = ((coordinate + width.abs()) as f32).clamp(lo, hi);
+            (end - start > AXIS_EPS).then_some((start, end))
+        })
+        .collect();
+    cuts.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let mut merged: Vec<(f32, f32)> = Vec::with_capacity(cuts.len());
+    for cut in cuts {
+        if let Some(last) = merged.last_mut()
+            && cut.0 <= last.1 + AXIS_EPS
+        {
+            last.1 = last.1.max(cut.1);
+        } else {
+            merged.push(cut);
+        }
+    }
+
+    let mut segments = Vec::with_capacity(merged.len() + 1);
+    let mut cursor = lo;
+    for (start, end) in merged.into_iter().chain(std::iter::once((hi, hi))) {
+        if start - cursor > AXIS_EPS {
+            let along = (cursor + start) * 0.5;
+            segments.push(RunSeg {
+                center: if vertical {
+                    Vector2::new(fixed, along)
+                } else {
+                    Vector2::new(along, fixed)
+                },
+                length: start - cursor,
+                vertical,
+            });
+        }
+        cursor = cursor.max(end);
+    }
+    RunPlan {
+        segments,
+        complaint,
+    }
+}
 
 /// The box a wall segment occupies: the centerline padded by a wall
 /// half-thickness on every side, floor to ceiling — flanks AND run ends
@@ -924,6 +1033,142 @@ mod tests {
     use godot::builtin::EulerOrder;
 
     use super::*;
+
+    #[test]
+    fn divider_run_reproduces_both_shipped_segments() {
+        let plan = run_segments(
+            Vector2::new(6.4, 0.6),
+            Vector2::new(6.4, 19.4),
+            &[(8.0, 4.4)],
+        );
+        assert_eq!(plan.complaint, None);
+        assert_eq!(plan.segments.len(), 2);
+        assert_eq!(
+            plan.segments[0],
+            RunSeg {
+                center: Vector2::new(6.4, 4.3),
+                length: 7.4,
+                vertical: true
+            }
+        );
+        assert_eq!(
+            plan.segments[1],
+            RunSeg {
+                center: Vector2::new(6.4, 15.9),
+                length: 7.0,
+                vertical: true
+            }
+        );
+    }
+
+    #[test]
+    fn openings_are_absolute_axis_coordinates_and_negative_widths_are_magnitudes() {
+        let plan = run_segments(
+            Vector2::new(0.0, 2.0),
+            Vector2::new(10.0, 2.0),
+            &[(3.0, -2.0)],
+        );
+        assert_eq!(
+            plan.segments,
+            vec![
+                RunSeg {
+                    center: Vector2::new(1.5, 2.0),
+                    length: 3.0,
+                    vertical: false
+                },
+                RunSeg {
+                    center: Vector2::new(7.5, 2.0),
+                    length: 5.0,
+                    vertical: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn reversed_endpoints_and_unsorted_overlapping_openings_normalize() {
+        let plan = run_segments(
+            Vector2::new(10.0, 1.0),
+            Vector2::new(0.0, 1.0),
+            &[(7.0, 2.0), (4.0, 4.0)],
+        );
+        assert_eq!(
+            plan.segments,
+            vec![
+                RunSeg {
+                    center: Vector2::new(2.0, 1.0),
+                    length: 4.0,
+                    vertical: false
+                },
+                RunSeg {
+                    center: Vector2::new(9.5, 1.0),
+                    length: 1.0,
+                    vertical: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn openings_clamp_to_the_run_and_nonpositive_residue_disappears() {
+        let plan = run_segments(
+            Vector2::new(0.0, 0.0),
+            Vector2::new(5.0, 0.0),
+            &[(0.0, 4.0), (4.0, 6.0)],
+        );
+        assert!(plan.segments.is_empty());
+    }
+
+    #[test]
+    fn a_run_without_openings_is_one_positive_segment() {
+        let plan = run_segments(Vector2::new(2.0, 3.0), Vector2::new(2.0, 9.0), &[]);
+        assert_eq!(
+            plan.segments,
+            vec![RunSeg {
+                center: Vector2::new(2.0, 6.0),
+                length: 6.0,
+                vertical: true
+            }]
+        );
+    }
+
+    #[test]
+    fn a_diagonal_folds_to_the_dominant_axis_with_x_winning_ties() {
+        let plan = run_segments(Vector2::new(1.0, 2.0), Vector2::new(5.0, 6.0), &[]);
+        assert_eq!(
+            plan.segments[0],
+            RunSeg {
+                center: Vector2::new(3.0, 2.0),
+                length: 4.0,
+                vertical: false
+            }
+        );
+        assert_eq!(
+            plan.complaint.as_deref(),
+            Some(
+                "WaveRun: diagonal endpoints folded onto the dominant X axis — runs emit axis-aligned WaveWalls; move from/to onto one X or Z line to clear this warning."
+            )
+        );
+    }
+
+    #[test]
+    fn zero_and_nonfinite_runs_are_total_and_emit_nothing() {
+        assert!(
+            run_segments(Vector2::ZERO, Vector2::ZERO, &[])
+                .segments
+                .is_empty()
+        );
+        assert!(
+            run_segments(Vector2::new(f32::NAN, 0.0), Vector2::ONE, &[])
+                .segments
+                .is_empty()
+        );
+        assert!(
+            run_segments(Vector2::ZERO, Vector2::new(f32::INFINITY, 0.0), &[])
+                .segments
+                .is_empty()
+        );
+    }
 
     /// One solid at a named path filling one world box — the shape the
     /// level hands a placement law after walking its subtree.

@@ -82,6 +82,8 @@ must_catch "UnseeingPlayer injection error is caught (player.rs:161)" \
   "ERROR: UnseeingPlayer: pulses not injected — physics disabled"
 must_catch "hero_body injection error is caught (hero.rs:82 — snake_case, not \"HeroBody:\")" \
   "ERROR: hero_body: player/camera not injected"
+must_catch "WaveRun diagnostics are covered before their volume ever rises" \
+  "ERROR: WaveRun: diagonal endpoints folded onto the dominant X axis"
 
 # --- the patterns this gate already caught before #21, which must keep
 # catching — a real SCRIPT ERROR line, captured from a genuinely broken
@@ -158,7 +160,7 @@ literal_head() { # literal_head <file> <line>
 # cannot honestly be attributed to one of them. The rule is therefore flat:
 # an engine class that names itself in a diagnostic belongs in
 # BOOT_ERROR_PATTERN, whatever volume it happens to say it at today. That
-# costs exactly one entry — WaveWall, which only warns — and buys its
+# costs entries for WaveWall and WaveRun, which only warn — and buys their
 # coverage the day it starts erroring.
 #
 # The colon form requires the SPACE after it. Without that, "res://…"

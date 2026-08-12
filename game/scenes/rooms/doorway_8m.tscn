@@ -1,0 +1,8 @@
+[gd_scene format=3]
+
+[node name="Doorway" type="Node3D"]
+
+[node name="WallRun" type="WaveRun" parent="."]
+from = Vector2(-4, 0)
+to = Vector2(4, 0)
+openings = PackedVector2Array(-1.5, 3)

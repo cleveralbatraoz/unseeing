@@ -11,7 +11,7 @@ func test_icons_section_exists() -> void:
 	assert_bool(config.has_section("icons")).is_true()
 
 
-func test_icons_contains_exactly_nine_classes() -> void:
+func test_icons_contains_exactly_ten_classes() -> void:
 	var config := ConfigFile.new()
 	var err: int = config.load("res://unseeing.gdextension")
 	assert_int(err).is_equal(OK)
@@ -24,7 +24,8 @@ func test_icons_contains_exactly_nine_classes() -> void:
 		"SoundFan",
 		"SoundRadio",
 		"WaveCat",
-		"WaveSpawn"
+		"WaveSpawn",
+		"WaveRun"
 	]
 	var keys: PackedStringArray = config.get_section_keys("icons")
 	assert_array(keys).contains_exactly(expected_classes)
@@ -43,6 +44,7 @@ func test_all_icon_files_exist() -> void:
 	var sound_radio: String = config.get_value("icons", "SoundRadio")
 	var wave_cat: String = config.get_value("icons", "WaveCat")
 	var wave_spawn: String = config.get_value("icons", "WaveSpawn")
+	var wave_run: String = config.get_value("icons", "WaveRun")
 	assert_bool(FileAccess.file_exists(wave_level)).is_true()
 	assert_bool(FileAccess.file_exists(wave_wall)).is_true()
 	assert_bool(FileAccess.file_exists(wave_prop)).is_true()
@@ -52,3 +54,4 @@ func test_all_icon_files_exist() -> void:
 	assert_bool(FileAccess.file_exists(sound_radio)).is_true()
 	assert_bool(FileAccess.file_exists(wave_cat)).is_true()
 	assert_bool(FileAccess.file_exists(wave_spawn)).is_true()
+	assert_bool(FileAccess.file_exists(wave_run)).is_true()
