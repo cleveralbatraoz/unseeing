@@ -11,10 +11,12 @@
 //!
 //! - **Merge edge** (two faces become one class): normals parallel and
 //!   SAME direction (dot within [`PARALLEL_EPS`] of `+1.0`), plane offsets
-//!   within [`COPLANAR_EPS`], and — after projecting both polygons to the
-//!   shared plane's own two tangent axes — their exact convex intersection
-//!   exceeds [`PATCH_EPS`] in BOTH tangent extents. An edge-only touch (one
-//!   axis of the intersection has zero width) is a bend, not a melt.
+//!   within [`COPLANAR_EPS`], and — after projecting both polygons to a
+//!   valid 2-D representation of the shared plane — their exact convex
+//!   intersection's own minimum width, over every direction the
+//!   intersection's shape can be measured in (not just the two arbitrary
+//!   WORLD axes the projection happened to keep), exceeds [`PATCH_EPS`].
+//!   An edge-only touch, at any rotation, is a bend, not a melt.
 //! - **Separation edge** (two classes must take labels ≥ `MIN_SEP` apart,
 //!   `labels::MIN_SEP`, this module only builds the graph): three rules,
 //!   checked independently —
@@ -48,11 +50,15 @@ use super::faces::Face;
 /// depth code.
 pub const COPLANAR_EPS: f64 = 2e-3;
 
-/// Two polygons' tangent-plane intersection must exceed this — EXCLUSIVE —
-/// along BOTH principal extents to count as an overlapping patch rather
-/// than a bare edge. Also the threshold [`polygons_within_patch_eps`] uses
-/// for a general 3-D closeness test between non-coplanar faces (rule (b)):
-/// promoted unchanged from `observe::oids::PATCH_EPS`.
+/// One threshold, two directions, by design. The merge test
+/// ([`polygon_overlap_exceeds_patch`]) requires a coplanar overlap to
+/// EXCEED this — EXCLUSIVE — to count as a real patch rather than a bare
+/// edge: at exactly this width, that is still an edge, not a melt. Rule
+/// (b)'s closeness test ([`polygons_within_patch_eps`]) asks a different
+/// question — "are these two faces close enough that a bend might need a
+/// line" — and answers it INCLUSIVE: at exactly this distance, the seam
+/// still separates, erring toward drawing the line. Promoted unchanged
+/// from `observe::oids::PATCH_EPS`.
 pub const PATCH_EPS: f64 = 1e-3;
 
 /// Normals within this dot-product distance of exactly parallel (`+1.0`
@@ -84,9 +90,12 @@ pub struct Superfaces {
     /// Solid index -> cluster index: the connected components of the
     /// MERGE relation lifted to solids (two solids share a cluster iff
     /// some face of one merged with some face of the other, possibly
-    /// transitively). Sized to `max(face.solid) + 1`; a solid that
-    /// contributed no face to this call has no entry. Used by paint's
-    /// wall-merge warning and by this module's own tests.
+    /// transitively). Sized to `max(face.solid) + 1` — every index UP TO
+    /// that maximum gets an entry, including a solid that contributed no
+    /// face to this call (a trivial cluster of one, since it can never
+    /// have merged with anything); only a solid index ABOVE the maximum
+    /// (never referenced by any face) has no entry at all. Used by
+    /// paint's wall-merge warning and by this module's own tests.
     pub cluster_of_solid: Vec<usize>,
 }
 
@@ -184,7 +193,13 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
 }
 
 /// Record `(a, b)` as a separated class pair, normalized to `(min, max)`
-/// and deduplicated. A class never separates from itself.
+/// and deduplicated. A class never separates from itself — defensive
+/// totality, not a currently load-bearing branch: every call site already
+/// gates on `class_of[i] != class_of[j]` (rules (a) and (b) explicitly,
+/// rule (c) implicitly, since two faces in the same class imply their
+/// solids share a cluster, which rule (c)'s own branch has already
+/// excluded) before ever reaching here. Kept anyway, because this
+/// function's own contract should hold for ANY caller, not just today's.
 fn add_separation(seps: &mut Vec<(usize, usize)>, a: usize, b: usize) {
     if a == b {
         return;
@@ -351,16 +366,33 @@ fn points_close(a: [f64; 3], b: [f64; 3]) -> bool {
 
 /// Rule (b)'s closeness test: do `a` and `b`, as general (possibly
 /// non-coplanar) bounded polygons in 3-D, come within [`PATCH_EPS`] of
-/// each other anywhere? Computed as the minimum distance over every pair
-/// of BOUNDARY edges (segment-to-segment, exact for straight edges).
+/// each other anywhere, INCLUSIVE? Computed as the minimum distance over
+/// every pair of BOUNDARY edges (segment-to-segment, exact for straight
+/// edges). Deliberately inclusive, unlike the merge test's exclusive
+/// [`PATCH_EPS`]: this is asking "are these close enough that a seam
+/// might need a line", not "is there a real overlap patch" — erring
+/// toward drawing the separation at the exact threshold is the safe
+/// direction here.
 ///
-/// KNOWN LIMIT, accepted deliberately: this misses a hypothetical pair
-/// whose flat interiors cross far from either polygon's own boundary,
-/// with no edge coming close. Every real touch this vocabulary's convex,
-/// boundary-terminated faces produce — a shared corner, a crossing seam
-/// at a T-junction, an edge grazing another face — has its closest
-/// approach ON a boundary edge of at least one side, which the module's
-/// own tests confirm for the junction fixture rather than assume.
+/// KNOWN MISS, corrected after review — the precondition is narrower than
+/// it first looks: this test finds a touch ONLY when the two polygons'
+/// closest approach lands on a boundary EDGE of at least one side. That
+/// is true of every T-junction in the shipped map today, but not because
+/// "boundary-terminated convex faces always touch at a boundary" — that
+/// claim is false in general. It holds here for one concrete reason:
+/// `level_plan::wall_box` gives every wall the SAME height (`WALL_H`),
+/// so two junctioned walls' flank/cap faces always share the same y=0
+/// and y=`WALL_H` bounds, and the crossing line a perpendicular pair
+/// traces (see `superface::tests::perpendicular_junction_faces_separate`)
+/// always reaches one of those shared bounds. Break that precondition —
+/// a SHORTER or vertically offset arriving wall, crossing its taller
+/// partner's flank entirely within both polygons' INTERIORS, touching
+/// neither one's boundary — and this test would report no touch at all
+/// (truth distance 0, edge-only distance whatever the nearest edges
+/// actually are) for a seam that needs one. Unreachable today only
+/// because uniform wall height is enforced upstream, in the level
+/// authoring path, not in this module; a future variable-height wall
+/// vocabulary would need this test re-derived, not just re-used.
 fn polygons_within_patch_eps(a: &[[f64; 3]], b: &[[f64; 3]]) -> bool {
     min_polygon_distance(a, b) <= PATCH_EPS
 }
@@ -431,8 +463,17 @@ type Pt2 = (f64, f64);
 
 /// Which world axis to drop when projecting a face's polygon to 2-D: the
 /// one its normal has the LARGEST absolute component on. Dropping that
-/// axis keeps the projection well-conditioned for any plane orientation,
-/// not just the axis-aligned ones this vocabulary happens to ship today.
+/// axis keeps the PROJECTION well-conditioned for any plane orientation,
+/// not just the axis-aligned ones this vocabulary happens to ship today —
+/// but the two axes it keeps are still arbitrary WORLD directions, not
+/// the face's own. Measuring an overlap's size directly against them
+/// (a bounding box in u/v) is NOT itself rotation-invariant, which is
+/// exactly the bug a review caught: two coplanar faces rotated 45 degrees
+/// about the normal, sharing only a diagonal edge, have a bounding box
+/// spanning a full unit on BOTH world axes despite zero true overlap
+/// area. [`min_width`] is the fix — it measures against the
+/// INTERSECTION polygon's own edges, never the world axes this function
+/// picks.
 fn dominant_axis(normal: [f64; 3]) -> usize {
     let (ax, ay, az) = (normal[0].abs(), normal[1].abs(), normal[2].abs());
     if ax >= ay && ax >= az {
@@ -529,28 +570,72 @@ fn clip_convex(subject: &[Pt2], clip: &[Pt2]) -> Vec<Pt2> {
     output
 }
 
-fn bbox_extents(poly: &[Pt2]) -> (f64, f64) {
-    if poly.is_empty() {
-        return (0.0, 0.0);
+/// The minimum width of a convex 2-D polygon over EVERY direction, not
+/// just the two world axes the projection happened to keep. For a convex
+/// shape the narrowest direction is always perpendicular to one of its
+/// own edges (the standard rotating-calipers result), so checking the
+/// projected extent along each edge's own outward normal and taking the
+/// smallest is exact — and, critically, ROTATION-INVARIANT: it depends
+/// only on the polygon's own shape, never on which arbitrary pair of
+/// world axes [`project_to_plane`] happened to keep. A polygon with fewer
+/// than 3 points (empty or degenerate clip result) has no width at all.
+///
+/// This replaces an earlier WORLD-AXIS bounding-box measurement that a
+/// review caught being wrong: two coplanar squares turned 45 degrees
+/// about the shared normal, sharing exactly one full edge (a real overlap
+/// AREA of zero), had a shared-edge bounding box spanning a full unit on
+/// BOTH world axes — comfortably clearing `PATCH_EPS` on both — and so
+/// were reported as an overlapping patch and merged, melting a seam this
+/// campaign exists to keep drawn. Unreachable on the shipped map (every
+/// wall is axis-aligned or quarter-turned, where world axes and edge
+/// normals coincide) but reachable the moment a prop rotates freely,
+/// which this vocabulary allows by design.
+fn min_width(poly: &[Pt2]) -> f64 {
+    let n = poly.len();
+    if n < 3 {
+        return 0.0;
     }
-    let mut min_u = f64::INFINITY;
-    let mut max_u = f64::NEG_INFINITY;
-    let mut min_v = f64::INFINITY;
-    let mut max_v = f64::NEG_INFINITY;
-    for &(u, v) in poly {
-        min_u = min_u.min(u);
-        max_u = max_u.max(u);
-        min_v = min_v.min(v);
-        max_v = max_v.max(v);
+    let mut narrowest = f64::INFINITY;
+    for i in 0..n {
+        let (ax, ay) = poly[i];
+        let (bx, by) = poly[(i + 1) % n];
+        let (ex, ey) = (bx - ax, by - ay);
+        let len = (ex * ex + ey * ey).sqrt();
+        if len < 1e-15 {
+            continue; // a degenerate (zero-length) edge names no direction
+        }
+        // the outward normal of this edge, unit length
+        let (nx, ny) = (-ey / len, ex / len);
+        let mut min_p = f64::INFINITY;
+        let mut max_p = f64::NEG_INFINITY;
+        for &(px, py) in poly {
+            let projected = px * nx + py * ny;
+            min_p = min_p.min(projected);
+            max_p = max_p.max(projected);
+        }
+        let width = max_p - min_p;
+        if width < narrowest {
+            narrowest = width;
+        }
     }
-    (max_u - min_u, max_v - min_v)
+    if narrowest.is_finite() {
+        narrowest
+    } else {
+        0.0
+    }
 }
 
 /// The merge test's overlap half: project both (near-parallel) polygons
-/// to their shared tangent plane, clip one against the other to the exact
-/// convex intersection, and require that intersection to exceed
-/// [`PATCH_EPS`] along BOTH tangent axes — an edge-only touch fails one
-/// axis and is correctly refused.
+/// to a valid 2-D representation of their shared tangent plane (WORLD
+/// axes, chosen only to keep the projection well-conditioned — see
+/// [`dominant_axis`]; their orientation carries no other meaning), clip
+/// one against the other to the exact convex intersection, and require
+/// that intersection's OWN minimum width — over every direction, not just
+/// the two world axes the projection happened to keep — to exceed
+/// [`PATCH_EPS`]. An edge-only touch, at any rotation, has zero width in
+/// the direction perpendicular to the shared edge and is correctly
+/// refused; a genuine 2-D patch has a real minimum width in every
+/// direction and passes.
 fn polygon_overlap_exceeds_patch(a: &Face, b: &Face) -> bool {
     let axis = dominant_axis(a.normal);
     let pa = ensure_ccw(project_to_plane(&a.poly, axis));
@@ -559,8 +644,7 @@ fn polygon_overlap_exceeds_patch(a: &Face, b: &Face) -> bool {
         return false;
     }
     let inter = clip_convex(&pa, &pb);
-    let (du, dv) = bbox_extents(&inter);
-    du > PATCH_EPS && dv > PATCH_EPS
+    min_width(&inter) > PATCH_EPS
 }
 
 #[cfg(test)]
@@ -949,8 +1033,11 @@ mod tests {
         let sf = superfaces(&all, &[(0, 1)]);
         // global 4 (wall A's -Z) and 10 (wall B's -Z) are a DIFFERENT
         // solid pair that MERGES (same class) rather than an edge-share:
-        // rule (a) cannot have produced a separation for it, because a
-        // class never separates from itself.
+        // rule (a) cannot have produced a separation for it — its own
+        // `faces[i].solid == faces[j].solid` gate rules the pair out
+        // before it ever reaches `add_separation`'s own (defensive, and
+        // on this call path unreachable) refusal to separate a class
+        // from itself.
         assert!(
             !sf.separations
                 .contains(&ordered(sf.class_of[4], sf.class_of[10]))
@@ -1085,5 +1172,232 @@ mod tests {
             ..at_the_boundary
         };
         assert!(!is_merge_candidate(&a, &just_past));
+    }
+
+    /// Review finding (IMPORTANT 1): the merge test must be robust to
+    /// ROTATION, not just axis-aligned rectangles. Two coplanar diamonds
+    /// (unit squares turned 45 degrees about Y) sharing exactly one FULL
+    /// EDGE and nothing else — `b` is `a` reflected across the line
+    /// containing that shared edge, so their interiors sit on opposite
+    /// sides of it and the true overlap AREA is zero. Hand-derived: `a`'s
+    /// edge from (x,z) = (1,0) to (0,1) lies on the line x+z=1; reflecting
+    /// `a`'s center (0,0) across that line (`P' = P - 2*((P.n-c)/|n|^2)*n`
+    /// with n=(1,1), c=1) gives `(1,1)`, which is exactly `b`'s center
+    /// below — confirmed independently by checking `b`'s own edge (0,1)-
+    /// (1,0) is the identical segment, not by running the code.
+    ///
+    /// A world-axis bounding box of the shared edge's two points, (1,0)
+    /// and (0,1), spans x in [0,1] and z in [0,1] — BOTH exceed
+    /// `PATCH_EPS` — so measuring "both extents" against WORLD axes
+    /// reports a patch where there is only a bend, and melts a seam this
+    /// campaign exists to keep. Verified empirically before the fix: the
+    /// pre-fix `polygon_overlap_exceeds_patch` returned `du=1, dv=1`,
+    /// `is_merge_candidate` = true.
+    #[test]
+    fn a_45_degree_rotated_shared_edge_does_not_merge() {
+        let a = Face {
+            normal: [0.0, 1.0, 0.0],
+            offset: 5.0,
+            poly: vec![
+                [1.0, 5.0, 0.0],
+                [0.0, 5.0, 1.0],
+                [-1.0, 5.0, 0.0],
+                [0.0, 5.0, -1.0],
+            ],
+            solid: 0,
+        };
+        let b = Face {
+            normal: [0.0, 1.0, 0.0],
+            offset: 5.0,
+            poly: vec![
+                [2.0, 5.0, 1.0],
+                [1.0, 5.0, 2.0],
+                [0.0, 5.0, 1.0],
+                [1.0, 5.0, 0.0],
+            ],
+            solid: 1,
+        };
+        assert!(!is_merge_candidate(&a, &b));
+    }
+
+    /// The rotated-diamond fixture's positive control: shrink `b` so it
+    /// genuinely overlaps `a`'s interior (not just their shared edge) —
+    /// `b`'s center moved from (1,1) to (0.7,0.7), keeping the same
+    /// diamond shape and orientation, now overlapping `a` in a real 2-D
+    /// wedge near (1,0)-(0,1) rather than just touching there. This must
+    /// still merge, proving the rotation-invariant width fix does not
+    /// simply refuse every rotated pair.
+    #[test]
+    fn a_45_degree_rotated_genuine_overlap_still_merges() {
+        let a = Face {
+            normal: [0.0, 1.0, 0.0],
+            offset: 5.0,
+            poly: vec![
+                [1.0, 5.0, 0.0],
+                [0.0, 5.0, 1.0],
+                [-1.0, 5.0, 0.0],
+                [0.0, 5.0, -1.0],
+            ],
+            solid: 0,
+        };
+        let b_overlapping = Face {
+            normal: [0.0, 1.0, 0.0],
+            offset: 5.0,
+            poly: vec![
+                [1.7, 5.0, 0.7],
+                [0.7, 5.0, 1.7],
+                [-0.3, 5.0, 0.7],
+                [0.7, 5.0, -0.3],
+            ],
+            solid: 1,
+        };
+        assert!(is_merge_candidate(&a, &b_overlapping));
+    }
+
+    /// Review finding (IMPORTANT 2): mutating rule (b)'s buried-abutment
+    /// exclusion to a no-op (`is_opposite_facing_coplanar` never
+    /// consulted) left the full suite green, because neither existing
+    /// abutment fixture puts its pair in the SAME cluster — both land in
+    /// rule (c) instead, which never calls that exclusion at all. This
+    /// fixture forces rule (b) itself to make the call.
+    ///
+    /// Three solids, two genuine (same-direction, overlapping) merges and
+    /// one genuine (opposite-direction, overlapping) abutment:
+    /// - `slab` (0): x[-2,2], y[-1,1], z[-2,2].
+    /// - `post` (1): x[0,0.5], y[-1,2], z[-0.25,0.25] — tall enough to
+    ///   reach past `slab`'s own top; merges with `slab` via its OWN -Y
+    ///   face (offset 1, matching `slab`'s -Y, footprint [0,0.5]x[-0.25,
+    ///   0.25] fully inside `slab`'s [-2,2]x[-2,2]).
+    /// - `lid` (2): x[0,2], y[1,2], z[-1,1] — rests flush on `slab`'s top
+    ///   (its own -Y at y=1, offset -1, opposite `slab`'s +Y at offset 1,
+    ///   sum 0 — a genuine buried abutment, footprint [0,2]x[-1,1] fully
+    ///   inside `slab`'s own top); joins the CLUSTER only through `post`,
+    ///   via `lid`'s OWN -X face (offset 0, matching `post`'s -X,
+    ///   footprint y[1,2]xz[-0.25,0.25] genuinely inside `post`'s y[-1,2]
+    ///   xz[-0.25,0.25]) — `lid` never merges with `slab` directly, so
+    ///   this specifically exercises the SAME-CLUSTER-via-a-third-solid
+    ///   case, not a direct pairwise merge masking the abutment.
+    ///
+    /// `slab` and `lid` are TOUCHING (share the plane y=1 over a real
+    /// footprint) and, once `post` links them, in the SAME cluster — so
+    /// rule (b), not rule (c), decides their fate, and the buried
+    /// abutment between them (`slab`'s +Y class, `lid`'s -Y class) must
+    /// get NO separation entry.
+    #[test]
+    fn a_same_cluster_abutment_at_nonzero_offset_produces_no_separation() {
+        let slab = Shape::Box3d {
+            center: [0.0, 0.0, 0.0],
+            size: [4.0, 2.0, 4.0],
+            basis: IDENTITY,
+        };
+        let post = Shape::Box3d {
+            center: [0.25, 0.5, 0.0],
+            size: [0.5, 3.0, 0.5],
+            basis: IDENTITY,
+        };
+        let lid = Shape::Box3d {
+            center: [1.0, 1.5, 0.0],
+            size: [2.0, 1.0, 2.0],
+            basis: IDENTITY,
+        };
+        let mut all = faces(0, &slab);
+        all.extend(faces(1, &post));
+        all.extend(faces(2, &lid));
+
+        // slab's +Y (global 3) and lid's -Y (global 14: lid's local index
+        // 2 in -X,+X,-Y,+Y,-Z,+Z order, offset by post's 6 faces)
+        assert_eq!(all[3].normal, [0.0, 1.0, 0.0]);
+        assert_eq!(all[3].offset, 1.0);
+        assert_eq!(all[14].normal, [0.0, -1.0, 0.0]);
+        assert_eq!(all[14].offset, -1.0);
+        assert!(is_opposite_facing_coplanar(&all[3], &all[14]));
+
+        let touching = [(0, 1), (1, 2), (0, 2)];
+        let sf = superfaces(&all, &touching);
+
+        // the two merges that build the cluster: post~slab, lid~post
+        assert_eq!(sf.class_of[8], sf.class_of[2]); // post's -Y ~ slab's -Y
+        assert_eq!(sf.class_of[12], sf.class_of[6]); // lid's -X ~ post's -X
+        assert_eq!(sf.cluster_of_solid[0], sf.cluster_of_solid[2]);
+
+        // the abutment itself never merges...
+        assert_ne!(sf.class_of[3], sf.class_of[14]);
+        // ...and, because it's a buried abutment inside a same-cluster
+        // touching pair, rule (b) must not separate it either.
+        assert!(
+            !sf.separations
+                .contains(&ordered(sf.class_of[3], sf.class_of[14]))
+        );
+    }
+
+    /// Review finding (IMPORTANT 3): mutating the (b)/(c) dispatch so
+    /// every touching pair takes rule (c)'s blanket law (ignoring
+    /// `cluster_of_solid` entirely) left the full suite green, because
+    /// every existing separation assertion is a PRESENCE check — a
+    /// dispatch bug that separates MORE than it should never trips one.
+    /// This is the absence check: on the shipped map's own shape (the
+    /// 17-member wall network, junctioned end to end), rule (b) governs
+    /// almost every wall pair, and it must NOT blanket-separate class
+    /// combinations that never actually touch just because their SOLIDS
+    /// happen to share a cluster.
+    ///
+    /// The junction fixture's merged cap class (wall A's south flank,
+    /// wall B's south cap — global 4 and 10, the SAME class after the
+    /// merge test above) is nowhere near wall B's own far north cap
+    /// (global 11, z=4.15 — 4.3 m up wall B's own run) or wall A's own
+    /// far west end (global 0, x=-2.15). A blanket "every class of A
+    /// against every class of B" law would separate both pairs anyway;
+    /// the fine-grained rule (b) must not.
+    #[test]
+    fn same_cluster_pairs_that_never_touch_are_not_blanket_separated() {
+        let all = junction_faces();
+        let sf = superfaces(&all, &[(0, 1)]);
+        assert_eq!(sf.cluster_of_solid[0], sf.cluster_of_solid[1]);
+        assert_eq!(sf.class_of[4], sf.class_of[10]);
+
+        assert!(
+            !sf.separations
+                .contains(&ordered(sf.class_of[4], sf.class_of[11]))
+        );
+        assert!(
+            !sf.separations
+                .contains(&ordered(sf.class_of[0], sf.class_of[11]))
+        );
+    }
+
+    /// `polygons_within_patch_eps`'s own boundary, INCLUSIVE — the
+    /// mirror image of the merge test's EXCLUSIVE boundary
+    /// (`an_overlap_of_exactly_patch_eps_is_an_edge_not_a_patch`), pinned
+    /// directly on the private distance helper since the two uses of
+    /// `PATCH_EPS` now read oppositely and each needs its own witness.
+    /// Two directly-stacked unit squares, one at y=0 and one at
+    /// y=0.001 — footprints identical, so the closest boundary EDGES sit
+    /// directly above/below each other and the gap is exactly `0.001 -
+    /// 0.0`, exact by the same zero-subtraction argument the other
+    /// boundary tests use. At that exact gap the pair still counts as
+    /// close; one bit further (`0.0011`) it must not.
+    #[test]
+    fn polygons_within_patch_eps_is_inclusive_at_its_own_boundary() {
+        let a: Vec<[f64; 3]> = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let at_the_boundary: Vec<[f64; 3]> = vec![
+            [0.0, 0.001, 0.0],
+            [1.0, 0.001, 0.0],
+            [1.0, 0.001, 1.0],
+            [0.0, 0.001, 1.0],
+        ];
+        assert!(polygons_within_patch_eps(&a, &at_the_boundary));
+
+        let just_past: Vec<[f64; 3]> = vec![
+            [0.0, 0.0011, 0.0],
+            [1.0, 0.0011, 0.0],
+            [1.0, 0.0011, 1.0],
+            [0.0, 0.0011, 1.0],
+        ];
+        assert!(!polygons_within_patch_eps(&a, &just_past));
     }
 }
