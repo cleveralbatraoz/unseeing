@@ -86,6 +86,11 @@ const NO_RESTORER: &str = "the root holds no restorer — restore_blob has nothi
 #[derive(GodotClass)]
 #[class(init, base=Node3D)]
 pub struct UnseeingGame {
+    /// Optional authored world selected in the Inspector. Empty preserves the
+    /// exact shipped level-01 fallback; a set scene is the only scene tried.
+    #[export]
+    #[var]
+    level_scene: Option<Gd<PackedScene>>,
     /// The world skin — real depth, every solid and the hero's own body.
     #[init(val = ShaderMaterial::new_gd())]
     #[var]
@@ -209,15 +214,30 @@ impl INode3D for UnseeingGame {
         // tree (children run _ready first, and a source refuses to build
         // uninjected); the root distributes the materials and pool, then
         // reads back the derived contracts below.
-        let Ok(level_scene) = try_load::<PackedScene>("res://scenes/level_01.tscn") else {
-            godot_error!("UnseeingGame: failed to load res://scenes/level_01.tscn");
+        let level_scene = if let Some(scene) = self.level_scene.clone() {
+            scene
+        } else {
+            let Ok(scene) = try_load::<PackedScene>("res://scenes/level_01.tscn") else {
+                godot_error!("UnseeingGame: failed to load res://scenes/level_01.tscn");
+                return;
+            };
+            scene
+        };
+        let path = level_scene.get_path().to_string();
+        let Some(instance) = level_scene.instantiate() else {
+            godot_error!("UnseeingGame: {} could not be instantiated", path);
             return;
         };
-        let Some(mut level) = level_scene.try_instantiate_as::<WaveLevel>() else {
-            godot_error!(
-                "UnseeingGame: res://scenes/level_01.tscn did not instantiate as a WaveLevel"
-            );
-            return;
+        let mut level = match instance.try_cast::<WaveLevel>() {
+            Ok(level) => level,
+            Err(wrong_root) => {
+                wrong_root.free();
+                godot_error!(
+                    "UnseeingGame: {} did not instantiate as a WaveLevel — check the scene's root type",
+                    path
+                );
+                return;
+            }
         };
         level.bind_mut().inject(
             self.data_mat.clone().upcast::<Material>(),

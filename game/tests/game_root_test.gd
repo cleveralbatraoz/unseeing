@@ -22,6 +22,52 @@ func _game() -> UnseeingGame:
 	return game
 
 
+func test_level_scene_property_is_a_packed_scene_resource_picker() -> void:
+	var found := false
+	for property: Dictionary in ClassDB.class_get_property_list("UnseeingGame"):
+		if property["name"] == "level_scene":
+			found = true
+			assert_int(property["type"]).is_equal(TYPE_OBJECT)
+			assert_int(property["hint"]).is_equal(PROPERTY_HINT_RESOURCE_TYPE)
+			assert_str(property["hint_string"]).is_equal("PackedScene")
+	assert_bool(found).is_true()
+
+
+func test_empty_level_scene_keeps_the_exact_level_01_fallback() -> void:
+	var game := _game()
+	assert_object(game.level_scene).is_null()
+	assert_str(game.level.scene_file_path).is_equal("res://scenes/level_01.tscn")
+
+
+func test_level_scene_selects_level_02_before_tree_entry() -> void:
+	var game: UnseeingGame = auto_free(UnseeingGame.new())
+	game.level_scene = load("res://scenes/level_02.tscn")
+	add_child(game)
+	assert_object(game.level).is_not_null()
+	assert_vector(game.level.extents).is_equal(Vector2(16, 16))
+	assert_int(game.level.wall_segments().size()).is_equal(6)
+	assert_vector(game.level.spawn_pos()).is_equal(Vector3(4, 0.9, 8))
+	assert_bool(game.level.demo_tap() != Vector3.ZERO).is_true()
+	assert_object(game.level.get_node_or_null("Room/East/RunSeg2")).is_not_null()
+	assert_object(game.level.get_node_or_null("Interior/RunSeg1")).is_not_null()
+	assert_vector((game.level.get_node("Fan") as Node3D).position).is_equal(Vector3(12, 0, 8))
+	assert_vector((game.level.get_node("Chair") as Node3D).position).is_equal(Vector3(4, 0, 11))
+	assert_bool(game.observer.snapshot(0.0).has("unavailable")).is_false()
+
+
+func test_wrong_level_root_refuses_before_adding_a_world() -> void:
+	var game: UnseeingGame = auto_free(UnseeingGame.new())
+	game.level_scene = load("res://scenes/props/chair.tscn")
+	var enter := func() -> void: add_child(game)
+	await (assert_error(enter).is_push_error(
+		(
+			"UnseeingGame: res://scenes/props/chair.tscn did not instantiate as a WaveLevel"
+			+ " — check the scene's root type"
+		)
+	))
+	assert_object(game.level).is_null()
+
+
 ## Five materials wearing the shaders `main.gd` assigned them, stacked at
 ## the same perceptual-ladder priorities, the cane's standing floor intact.
 func test_five_materials_wear_the_right_shaders_and_priorities() -> void:

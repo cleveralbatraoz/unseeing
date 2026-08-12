@@ -220,6 +220,17 @@ simulated clock + seeded randomness only).
   doorway pairs now derive the same four of its unchanged 19 segments. Added a
   configured doorway and a plain-root 16×16 room whose east border has a 3 m
   opening. Clear-removal and +1 m opening mutations failed their focused tests.
+- **Level selection and level 02:** `UnseeingGame.level_scene` is an optional
+  PackedScene resource picker. Empty retains the exact level-01 load; a selected
+  scene is the only candidate and a wrong root is freed, reports its resource
+  path, and returns before adding any world. Both choices converge on the same
+  inject-before-add path. Level 02 is a 16×16 WaveLevel composed entirely in
+  scenes: the reusable room, spawn `(4,0,8)`, fan `(12,0,8)`, chair `(4,0,11)`,
+  and an interior run x=8 from z=2..14. Its split east border plus divider gives
+  six wall segments and a nonzero demo crossing. Skipping injection broke the
+  wiring fixture; removing the divider reduced the census to five and failed
+  the selector case. The resource hint, exact fallback and wrong-root refusal
+  are independently pinned.
 
 - **Rebase erratum:** `WaveRestorer` was registered in Rust but omitted from
   both independently maintained engine rosters. The post-rebase baseline adds
