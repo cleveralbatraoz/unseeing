@@ -451,7 +451,9 @@ func test_a_silenced_source_reports_no_next_emit() -> void:
 func test_the_oid_census_reports_the_id_of_every_box() -> void:
 	var level := _shipped_level(Pulses.new())
 	var cats := level.cats()
-	assert_array(cats).append_failure_message("the shipped map has lost its cat").is_not_empty()
+	if cats.is_empty():
+		fail("the shipped map has lost its cat")
+		return
 	var cat_name := str(cats[0].name)
 	var obs := _observer()
 	obs.inject(level, _eye())
@@ -480,7 +482,9 @@ func test_the_oid_census_reports_the_id_of_every_box() -> void:
 func test_the_oid_census_includes_the_levels_creatures() -> void:
 	var level := _shipped_level(Pulses.new())
 	var cats := level.cats()
-	assert_array(cats).append_failure_message("the shipped map has lost its cat").is_not_empty()
+	if cats.is_empty():
+		fail("the shipped map has lost its cat")
+		return
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var e: Dictionary = obs.explain_oids()

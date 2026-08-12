@@ -154,7 +154,7 @@ func test_the_acoustic_image_layer_is_a_band_ordered_by_distance() -> void:
 ## centerline (6.4, 0.6)-(6.4, 8.0) and every point below are lifted
 ## unchanged from sight.rs's own cargo fixtures —
 ## `endpoint_grazes_are_not_crossings` for the graze case and
-## `the_birth_wall_asymmetry_is_reported_not_hidden` for the birth-wall
+## `source_is_not_blocked_by_the_wall_it_is_born_in` for the birth-wall
 ## one — so the geometry each line proves is already hand-checked on the
 ## Rust side; this only pins that the boundary carries the same verdict.
 func _one_wall_level() -> WaveLevel:

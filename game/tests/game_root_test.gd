@@ -266,7 +266,9 @@ func test_process_feeds_tick_sources_the_camera_not_the_body() -> void:
 		if source.is_class("SoundFan"):
 			fan = source
 			break
-	assert_object(fan).append_failure_message("the level carries no SoundFan").is_not_null()
+	if fan == null:
+		fail("the level carries no SoundFan")
+		return
 	var hub: Vector3 = fan.global_position
 	var body_at: Vector3 = game.player.global_position
 	game.player.camera.global_position = hub + Vector3(0.3, 0.0, 0.0)  # the fan's own room
