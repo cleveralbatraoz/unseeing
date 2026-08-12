@@ -1000,7 +1000,6 @@ func test_a_resize_after_the_derive_keeps_the_painted_labels() -> void:
 	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
-
 	var painted: PackedFloat32Array = _skin(wall).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
 	assert_int(painted.size()).is_equal(24)
 	for label: float in painted:
@@ -1043,3 +1042,110 @@ func test_a_rebuilt_triangle_solid_keeps_the_painted_labels() -> void:
 	assert_int(resized.size()).is_equal(384)
 	for vertex: int in range(384):
 		assert_float(resized[vertex]).is_equal(painted[vertex])
+
+
+## Issue #35 (nesting inflation): mesh_world_box used to union EVERY
+## descendant MeshInstance3D under a node, including a CENSUSED child's own
+## skin — so grouping a prop under a crate for editor convenience silently
+## grew the crate's OWN colouring box past what it actually draws.
+##
+## Hand-derived: Crate (WaveProp, size 1x1x1) at (4, 0.5, 4) draws x
+## 3.50..4.50, y 0.00..1.00, z 3.50..4.50 — resting exactly on the floor.
+## NestedProp (size 0.2 cubed) is Crate's own CHILD, at LOCAL (3, 0, 0):
+## world (7, 0.5, 4), box x 6.90..7.10, y 0.40..0.60, z 3.90..4.10 — well
+## past Crate's own footprint on x. FarProp (size 0.2 cubed) sits at (6.5,
+## 0.5, 4), box x 6.40..6.60, y 0.40..0.60, z 3.90..4.10: clear of Crate's
+## OWN box by 1.90 m on x, and of NestedProp's own box by 0.30 m on x
+## (Box3::touches only grows a box by TOUCH_EPS = 0.01, so neither margin is
+## close) — but squarely inside the UNION of the two, x 3.50..7.10. Pre-fix
+## that union is exactly what the buggy recursion reported as Crate's own
+## box, so Crate and FarProp came back as a touching pair; post-fix they do
+## not.
+func test_mesh_world_box_stops_unioning_a_nested_censused_child() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = Vector2(20, 20)
+	var crate := WaveProp.new()
+	crate.name = "Crate"
+	crate.size = Vector3.ONE
+	crate.position = Vector3(4, 0.5, 4)
+	var nested := WaveProp.new()
+	nested.name = "NestedProp"
+	nested.size = Vector3(0.2, 0.2, 0.2)
+	nested.position = Vector3(3, 0, 0)  # local to Crate: world (7, 0.5, 4)
+	crate.add_child(nested)
+	level.add_child(crate)
+	var far := WaveProp.new()
+	far.name = "FarProp"
+	far.size = Vector3(0.2, 0.2, 0.2)
+	far.position = Vector3(6.5, 0.5, 4)
+	level.add_child(far)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var obs: WaveObserver = auto_free(WaveObserver.new())
+	obs.inject(level, null)
+	var e: Dictionary = obs.explain_oids()
+	var touching := false
+	for pair: Dictionary in e["pairs"]:
+		var a: String = pair["name_a"]
+		var b: String = pair["name_b"]
+		if (a == "Crate" and b == "FarProp") or (a == "FarProp" and b == "Crate"):
+			touching = true
+	(
+		assert_bool(touching)
+		. append_failure_message(
+			(
+				"'Crate' and 'FarProp' share a touch pair — a nested child that "
+				+ "neither box reaches is still inflating the crate's own colouring box"
+			)
+		)
+		. is_false()
+	)
+
+
+## The other consumer mesh_world_box feeds: placed_solids/report_placement.
+## Same law (issue #35), the placement half.
+##
+## ParentCrate (WaveProp, size 1x1x1) at (4, 0.5, 4) draws y 0.00..1.00 —
+## its underside exactly on the floor, the same boundary the shipped map's
+## own walls rest on without being flagged (test_the_shipped_map_keeps_
+## every_solid_above_its_floor). ChildProp (size 0.2 cubed) is ParentCrate's
+## own CHILD, at LOCAL (0, -0.5, 0): world (4, 0.0, 4), box y -0.10..0.10 —
+## straddling the floor on its own, regardless of any fix. Pre-fix,
+## mesh_world_box(parent) unioned the child's y range into the parent's OWN
+## report too (y -0.10..1.00), spuriously sinking a crate that never moved;
+## post-fix the parent reports only its own box and stays clean, while the
+## child keeps its fault — blame moves to whichever node actually sits
+## wrong, never to the parent for where the child sits.
+func test_a_nested_prop_keeps_its_own_placement_fault_off_its_parent() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = Vector2(20, 20)
+	var crate := WaveProp.new()
+	crate.name = "ParentCrate"
+	crate.size = Vector3.ONE
+	crate.position = Vector3(4, 0.5, 4)
+	var child := WaveProp.new()
+	child.name = "ChildProp"
+	child.size = Vector3(0.2, 0.2, 0.2)
+	child.position = Vector3(0, -0.5, 0)  # local to the crate: world (4, 0.0, 4)
+	crate.add_child(child)
+	level.add_child(crate)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	# exactly one solid may report a sunk fault here (the child); an
+	# unmatched second push_error (the parent's, wrongly inflated by the
+	# child's own y-range) fails the suite at teardown as a leftover Godot
+	# runtime error the two assertions below name precisely.
+	await assert_error(enter).is_push_error(any_string())
+	assert_int(level.sunken_solids()).is_equal(1)
+	(
+		assert_array(crate.get_configuration_warnings())
+		. append_failure_message(
+			"'ParentCrate' still carries a fault that belongs to its nested child"
+		)
+		. is_empty()
+	)
+	var child_warnings := child.get_configuration_warnings()
+	assert_int(child_warnings.size()).is_equal(1)
+	assert_str(child_warnings[0]).contains("is sunk through the floor")

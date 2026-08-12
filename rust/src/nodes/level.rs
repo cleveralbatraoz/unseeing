@@ -875,9 +875,10 @@ impl WaveLevel {
     /// there is nowhere for it to be misplaced. The box is
     /// [`mesh_world_box`]'s, the same measure the object-id colouring and
     /// the seam census take, so a complaint and a seam always describe the
-    /// same shape — including that measure's habit of unioning EVERY
-    /// descendant mesh, which makes a prop grouped under a crate part of
-    /// the crate's box and reports the parent for where the child sits.
+    /// same shape — including that measure's stop at a nested censused
+    /// child: a prop grouped under a crate keeps its OWN box here, so a
+    /// placement fault blames whichever of the two actually sits wrong,
+    /// never the parent for where the child sits.
     fn placed_solids(&self, census: &Census) -> Vec<level_plan::PlacedSolid> {
         let root = self.base().clone().upcast::<Node>();
         census
@@ -1852,15 +1853,53 @@ fn skin_local_aabb(node: &Gd<Node>) -> Option<[f32; 6]> {
     ])
 }
 
+/// Whether a CHILD is its own censused entity — a solid, a sound source, or
+/// the cat — the same vocabulary [`collect`] recognises, its two
+/// `try_dynify` arms and its `WaveCat` arm mirrored exactly (a `Marker3D`
+/// is deliberately not on this list: [`collect`] treats it as a spawn
+/// point, never as something with its own drawn box).
+///
+/// This is the STOP the recursion below reads: a node found here has its
+/// own [`mesh_world_box`] elsewhere in the same walk, so folding its mesh
+/// into the node asking the question would count it twice — once under its
+/// own name, once again inflating whatever it happens to be grouped under
+/// in the scene tree.
+fn is_censused_child(node: &Gd<Node>) -> bool {
+    node.clone().try_dynify::<dyn WaveSolid>().is_ok()
+        || node.clone().try_dynify::<dyn SoundSource>().is_ok()
+        || node.clone().try_cast::<WaveCat>().is_ok()
+}
+
 /// The world box a node's drawn geometry occupies — the union over every
-/// `MeshInstance3D` beneath it, the node itself included. `None` for a node
-/// that draws nothing, which can never show a seam with anything.
+/// `MeshInstance3D` beneath it, the node itself included, EXCEPT through a
+/// CHILD [`is_censused_child`] recognises: a prop nested under a crate, a
+/// source's own limbs rig, a cat sitting on a shelf — each is its own
+/// censused entity with its own box elsewhere in the level's walk, so
+/// recursion stops there instead of folding its geometry into the parent's
+/// (issue #35 — that folding used to inflate a solid's colouring box and
+/// its placement footprint past anything it actually draws, purely because
+/// a designer grouped a second prop under it in the Scene dock).
+///
+/// The check is never applied to `node` itself, only to its children:
+/// [`WaveLevel::paint_labels`] and [`WaveLevel::oid_census`] call this
+/// function DIRECTLY on a source's or a cat's own node, and a root that
+/// refused itself would report no box at all, dropping it from the
+/// labelling and the census entirely rather than measuring it. A plain
+/// grouping `Node3D`, a limb mesh, or a `Marker3D` is not on that list and
+/// still recurses — a solid's box is still its own skin child's box, and a
+/// source's box is still the union of its own limbs.
+///
+/// `None` for a node that draws nothing, which can never show a seam with
+/// anything.
 fn mesh_world_box(node: &Gd<Node>) -> Option<oid_palette::Box3> {
     let mut found: Option<oid_palette::Box3> = None;
     if let Ok(mesh) = node.clone().try_cast::<MeshInstance3D>() {
         found = Some(world_box(mesh.get_aabb(), mesh.get_global_transform()));
     }
     for child in node.get_children().iter_shared() {
+        if is_censused_child(&child) {
+            continue;
+        }
         if let Some(area) = mesh_world_box(&child) {
             found = Some(match found {
                 Some(acc) => acc.union(&area),
