@@ -233,7 +233,7 @@ impl UnseeingPlayer {
     /// the boot-time call plus every player `_ready` leave exactly one
     /// key event per action.
     #[func]
-    fn ensure_actions() {
+    pub(super) fn ensure_actions() {
         let mut map = InputMap::singleton();
         for (action, key) in MOVE_KEYS {
             if map.has_action(action) {
@@ -299,7 +299,7 @@ impl UnseeingPlayer {
     /// the simulated time here every frame — and the restorer places it
     /// back on the captured instant before the cane's own clocks land.
     #[func]
-    pub(crate) fn tick(&mut self, now_t: f64) {
+    pub(super) fn tick(&mut self, now_t: f64) {
         self.now = now_t;
     }
 

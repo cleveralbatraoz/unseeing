@@ -341,7 +341,12 @@ impl WaveLevel {
     /// [`SoundSource::inject`] door. A designer never assigns any of this:
     /// dropping a node under the level is enough.
     #[func]
-    fn inject(&mut self, data_mat: Gd<Material>, source_mat: Gd<Material>, pulses: Gd<RefCounted>) {
+    pub(super) fn inject(
+        &mut self,
+        data_mat: Gd<Material>,
+        source_mat: Gd<Material>,
+        pulses: Gd<RefCounted>,
+    ) {
         // Order is not a preference here, it is the whole contract. By the
         // time the level is in the tree, `derive` has already run: it pushed
         // an EMPTY wall table to skins that did not exist, and it coloured
@@ -448,13 +453,13 @@ impl WaveLevel {
     /// says out loud, because the strike then fires at the world origin —
     /// or when the level is silent, which is legal and says nothing.
     #[func]
-    fn demo_tap(&self) -> Vector3 {
+    pub(super) fn demo_tap(&self) -> Vector3 {
         self.tap_point
     }
 
     /// The demo-tapped wall's outward normal, toward the spawn side.
     #[func]
-    fn demo_tap_normal(&self) -> Vector3 {
+    pub(super) fn demo_tap_normal(&self) -> Vector3 {
         self.tap_normal
     }
 
@@ -523,7 +528,7 @@ impl WaveLevel {
     /// The level's companion creatures — the composition root drives each
     /// one's clock (`tick`) every frame.
     #[func]
-    fn cats(&self) -> Array<Gd<WaveCat>> {
+    pub(super) fn cats(&self) -> Array<Gd<WaveCat>> {
         self.cat_children.iter().cloned().collect()
     }
 
@@ -637,7 +642,7 @@ impl WaveLevel {
     /// uniform would make the quiet fan and the loud radio — which share
     /// one acoustic-image skin — dim and brighten together.
     #[func]
-    fn tick_sources(&mut self, t: f64, eye: Vector3) {
+    pub(super) fn tick_sources(&mut self, t: f64, eye: Vector3) {
         // cloned handles: the muffle reads the level's wall table while the
         // sources are being driven, and the two must not borrow it at once
         for mut source in self.source_children.clone() {

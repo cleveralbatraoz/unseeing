@@ -16,6 +16,7 @@
 
 mod cat;
 mod fan;
+mod game;
 mod hero;
 mod level;
 mod limbs;

@@ -112,7 +112,7 @@ impl WaveRestorer {
     /// only borrowed — and every handle is re-checked for validity on each
     /// call, because a freed node leaves a handle that still looks fine.
     #[func]
-    fn inject(
+    pub(super) fn inject(
         &mut self,
         level: Option<Gd<WaveLevel>>,
         player: Option<Gd<UnseeingPlayer>>,
@@ -140,7 +140,11 @@ impl WaveRestorer {
     /// comparing two measurements rather than one number with itself.
     /// Otherwise the one-key refusal every boundary here speaks.
     #[func]
-    fn restore(&mut self, blob: VarDictionary, env_after: VarDictionary) -> VarDictionary {
+    pub(super) fn restore(
+        &mut self,
+        blob: VarDictionary,
+        env_after: VarDictionary,
+    ) -> VarDictionary {
         match self.transact(&blob, &env_after) {
             Ok(hash) => {
                 let mut verdict = VarDictionary::new();

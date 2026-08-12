@@ -201,7 +201,7 @@ impl WaveObserver {
     /// not passed separately — the level was already injected with it, and
     /// two references to one pool could disagree.
     #[func]
-    fn inject(&mut self, level: Option<Gd<WaveLevel>>, camera: Option<Gd<Camera3D>>) {
+    pub(super) fn inject(&mut self, level: Option<Gd<WaveLevel>>, camera: Option<Gd<Camera3D>>) {
         self.level = level;
         self.camera = camera;
     }
@@ -210,7 +210,7 @@ impl WaveObserver {
     /// suite building a bare level has no hero, and that absence must be
     /// REPORTED (in `unknown`) rather than refusing the world around it.
     #[func]
-    fn inject_hero(&mut self, player: Option<Gd<UnseeingPlayer>>) {
+    pub(super) fn inject_hero(&mut self, player: Option<Gd<UnseeingPlayer>>) {
         self.player = player;
     }
 
@@ -219,7 +219,7 @@ impl WaveObserver {
     /// snapshot never has, so a suite that only snapshots may leave it
     /// unset exactly as before.
     #[func]
-    fn inject_body(&mut self, body: Option<Gd<HeroBody>>) {
+    pub(super) fn inject_body(&mut self, body: Option<Gd<HeroBody>>) {
         self.body = body;
     }
 

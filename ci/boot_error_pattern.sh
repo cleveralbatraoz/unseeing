@@ -7,8 +7,9 @@
 # refuses to run half-wired rather than limp: WaveLevel (level integrity —
 # starved object ids, no SpawnPoint marker, more walls than the sight
 # shaders have slots for), SoundFan/SoundRadio/WaveCat/UnseeingPlayer/
-# hero_body (composition-root injection). This is the set of message
-# openings under rust/src/ as of this writing.
+# hero_body (composition-root injection), UnseeingGame (the composition
+# root itself: a shader or the level scene that fails to load). This is
+# the set of message openings under rust/src/ as of this writing.
 #
 # Do NOT derive an addition by grepping `godot_error!`: the message text
 # usually is not there. The two-layer rule builds it in the pure,
@@ -35,4 +36,4 @@
 # fact the source can be asked. Godot prints warnings as "WARNING: ", which
 # no entry here matches, so this costs the boot check nothing and covers
 # WaveWall the day it raises its voice.
-BOOT_ERROR_PATTERN="SCRIPT ERROR|SHADER ERROR|Parse Error|ERROR: Failed to|ERROR: WaveLevel|ERROR: SoundFan|ERROR: SoundRadio|ERROR: WaveCat|ERROR: UnseeingPlayer|ERROR: WaveWall|ERROR: hero_body"
+BOOT_ERROR_PATTERN="SCRIPT ERROR|SHADER ERROR|Parse Error|ERROR: Failed to|ERROR: WaveLevel|ERROR: SoundFan|ERROR: SoundRadio|ERROR: WaveCat|ERROR: UnseeingPlayer|ERROR: WaveWall|ERROR: hero_body|ERROR: UnseeingGame"

@@ -104,7 +104,7 @@ impl HeroBody {
     /// Called by the composition root every frame after movement has
     /// settled.
     #[func]
-    fn update(&mut self, now: f64, dt: f64) {
+    pub(super) fn update(&mut self, now: f64, dt: f64) {
         let (Some(mut player), Some(camera)) = (self.player.clone(), self.camera.clone()) else {
             return; // _ready refused: nothing to pose
         };

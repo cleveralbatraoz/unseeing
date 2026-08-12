@@ -38,6 +38,7 @@ const REGISTERED_CLASSES: Array[String] = [
 	"SettingsMenu",
 	"SettingsFrame",
 	"WaveObserver",
+	"UnseeingGame",
 ]
 
 ## The remedy is identical in both failure modes -- a fresh build -- and is
