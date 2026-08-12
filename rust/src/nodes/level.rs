@@ -760,9 +760,21 @@ impl WaveLevel {
     /// play; [`Self::rederive`] is the manual replay of this same pass.
     ///
     /// The level's own icon is not the only one that can go stale: a fault
-    /// this pass pinned to one solid's path a moment ago may no longer
-    /// apply to it, so every censused solid is told to refresh its icon
-    /// too, right after the level tells the engine about its own.
+    /// this pass pinned to one solid's or one source's path a moment ago
+    /// may no longer apply to it, so every censused solid AND source is
+    /// told to refresh its icon too, right after the level tells the
+    /// engine about its own. Sources belong in that repaint for a specific
+    /// reason: `assign_oids` competes them for the same `WORLD_OIDS` slots
+    /// as every solid, so a fan dragged into an already-starved cluster
+    /// acquires a fresh starvation fault exactly as a crate would — and a
+    /// fan whose drag relieves one loses it the same way. Omit sources here
+    /// and the fault data is still correct (`node_faults` holds it either
+    /// way, read synchronously by `faults_for`), but the Scene dock's
+    /// triangle drifts from it until an unrelated repaint jars it loose —
+    /// a bug no headless probe can catch, since every probe reads the
+    /// fault store directly rather than the dock's cached icon. This
+    /// comment is the guard against the loop quietly going solids-only
+    /// again.
     ///
     /// Both refreshes are DEFERRED (`call_deferred`), never called
     /// straight — and now that [`INode3D::process`] can reach `derive`
@@ -807,6 +819,16 @@ impl WaveLevel {
         // deferred for the same reentrancy reason
         for solid in &census.solids {
             solid
+                .clone()
+                .into_gd()
+                .call_deferred("update_configuration_warnings", &[]);
+        }
+        // and every censused source alongside them — the only census
+        // members that can freshly ACQUIRE or SHED a starvation fault on
+        // this branch (see the doc comment above); `self.source_children`
+        // already holds them, moved out of `census` a few lines up
+        for source in &self.source_children {
+            source
                 .clone()
                 .into_gd()
                 .call_deferred("update_configuration_warnings", &[]);
