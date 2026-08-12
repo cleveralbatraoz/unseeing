@@ -356,8 +356,16 @@ fn add_sep(seps: &mut Vec<(usize, usize)>, a: usize, b: usize) {
     }
 }
 
-/// Extend `sf` with one extra, PERMANENTLY SINGLETON class per column
-/// flank.
+/// Extend `sf` with one extra class per column flank — PERMANENTLY
+/// SINGLETON, and thus separated, ONLY when the column's own solid
+/// belongs to a MULTI-MEMBER cluster; a column alone in its own cluster
+/// (its two rims never won a real merge — the ordinary case, since a
+/// rim resting on anything presents an OPPOSITE-facing surface, a buried
+/// abutment, never a same-direction coplanar overlap) instead JOINS its
+/// solid's own singleton-collapsed class, exactly as
+/// [`super::superface::superfaces`]'s own collapse now does for every
+/// other kind of solid: today's look, one uniform label across rim and
+/// flank alike.
 ///
 /// THE GAP this closes: [`super::faces::column_faces`] emits only a
 /// column's two flat rims — the curved flank has no plane at all, so it
@@ -365,11 +373,12 @@ fn add_sep(seps: &mut Vec<(usize, usize)>, a: usize, b: usize) {
 /// through the geometric law [`Superfaces`] implements. Left uncoloured, a
 /// column standing flush on the floor would draw its rim's label onto its
 /// own flank too (whatever placeholder ordinal the mesh still carried) and
+/// — for a column whose rims genuinely belong to a multi-member cluster —
 /// the rim/flank seam simply would not draw.
 ///
-/// THE RULE, and why it is sound: a flank never merges with anything (it
-/// has no polygon a merge or a distance test could run against), so it is
-/// always its own class, separated —
+/// THE RULE for a MULTI-MEMBER column, and why it is sound: a flank never
+/// merges with anything (it has no polygon a merge or a distance test
+/// could run against), so it is always its own class, separated —
 ///   - from every OTHER class that solid's own REAL faces (its two rims)
 ///     belong to: the same "a box's own corner never disappears" law
 ///     [`superface`]'s rule (a) states for two faces sharing a polygon
@@ -390,12 +399,24 @@ fn add_sep(seps: &mut Vec<(usize, usize)>, a: usize, b: usize) {
 ///     graph ([`crate::oid_palette::assign`]) already protected and this
 ///     campaign must not regress.
 ///
+/// THE RULE for a SINGLETON column: the flank ALIASES the class its own
+/// rims already collapsed to (`sf.class_of` of any of the solid's real
+/// faces — they are all the identical class by construction) rather than
+/// winning a fresh one. No separation is added for it at all: whatever
+/// `sf.separations` already gave that collapsed class — rule (c)'s
+/// blanket law against a touching neighbour in a DIFFERENT cluster, the
+/// only kind a singleton column can have — the flank now inherits simply
+/// by sharing the class number, exactly as its two rims already do.
+///
 /// `flank_solids` names which combined-census solid indices are columns —
 /// solids that contributed exactly two real faces (their rims) to `faces`
 /// — in the SAME order the caller reads the returned flank classes back in.
 /// Total: an empty `flank_solids` returns `sf`'s own class count and
 /// separations completely unchanged, so a level with no columns pays
-/// nothing extra.
+/// nothing extra. A `flank_solids` entry naming a solid with no real face
+/// in `faces` at all (never true of an actual column, which always
+/// contributes its two rims) falls back to a fresh, unconstrained class
+/// rather than panicking.
 pub fn add_flank_classes(
     sf: &Superfaces,
     faces: &[Face],
@@ -406,7 +427,48 @@ pub fn add_flank_classes(
     let mut separations = sf.separations.clone();
     let mut flank_class = Vec::with_capacity(flank_solids.len());
 
+    // singleton detection: the identical law `superface::superfaces`'s
+    // own collapse uses — a solid alone in its own cluster.
+    let cluster_span = sf
+        .cluster_of_solid
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |m| m + 1);
+    let mut cluster_size = vec![0usize; cluster_span];
+    for &c in &sf.cluster_of_solid {
+        cluster_size[c] += 1;
+    }
+    let is_singleton = |solid: usize| -> bool {
+        sf.cluster_of_solid
+            .get(solid)
+            .is_some_and(|&c| cluster_size[c] == 1)
+    };
+
     for &solid in flank_solids {
+        if is_singleton(solid) {
+            // a lone column's flank JOINS its solid's single collapsed
+            // class — today's look, one uniform label across rim and
+            // flank alike. Whatever rule (c) already separated that
+            // class from (a touching neighbour, in whatever DIFFERENT
+            // cluster a singleton's neighbour always is) the flank now
+            // inherits automatically, by aliasing rather than adding
+            // anything new.
+            let joined = faces.iter().position(|f| f.solid == solid);
+            flank_class.push(match joined {
+                Some(i) => sf.class_of[i],
+                None => {
+                    // total: no real face at all for this solid — never
+                    // true of an actual column, kept as a safe fallback
+                    // rather than a panic.
+                    let this_class = classes;
+                    classes += 1;
+                    this_class
+                }
+            });
+            continue;
+        }
+
         let this_class = classes;
         classes += 1;
         flank_class.push(this_class);
@@ -646,29 +708,21 @@ mod tests {
         assert_eq!(seps, sf.separations);
     }
 
-    /// THE case the brief names: a column standing flush on the floor.
-    /// Exercises the "own solid" half of `add_flank_classes` ONLY — the
-    /// flank's separation from its own two rim classes (`sf.class_of[6]`,
-    /// `sf.class_of[7]`, the column's bottom and top) — end to end through
-    /// `labels::assign`, the flank's FINAL label differs from both rims'
-    /// by at least MIN_SEP, so the rim/flank seam draws even for a column
-    /// touching nothing but the floor (a fixed-label singleton whose own
-    /// classes don't exist by the time this runs — [`WaveLevel::paint_labels`]).
-    /// It does NOT exercise the `touching` loop (the flank's separation
-    /// from a DIFFERENT, colourable touching solid's own classes) — that
-    /// half is proven by
-    /// `game/tests/map_test.gd::test_a_flank_separates_from_its_rims_and_a_touching_neighbour`,
-    /// which is the one that actually goes red if the `touching` block is
-    /// deleted. That gdUnit case is hand-built (a box with a column
-    /// standing flush on top) rather than reading the shipped map's own
-    /// StoveFlue-on-Stove pair: measured, the full map's Welsh–Powell
-    /// colouring dilutes the effect that deletion has enough — 125+ other
-    /// solids competing for the same five palette slots — that StoveFlue's
-    /// flank and Stove's touching face land on different slots even with
-    /// no edge between them, so a shipped-map version of this case does
-    /// NOT go red under the mutation.
+    /// Wave S: THE case the brief names, re-derived. A column standing
+    /// flush on the floor is an ABUTMENT, not a merge — the column's
+    /// bottom rim faces DOWN, the floor's top faces UP, opposite
+    /// directions — so the column stays alone in its own cluster exactly
+    /// as `superfaces`'s own singleton collapse defines one. The flank no
+    /// longer wins a fresh class separated from its own rims: it JOINS
+    /// the rim's already-collapsed class, and the whole column (rims and
+    /// flank alike, now one class) still separates from the FLOOR's own
+    /// class through rule (c)'s ordinary blanket law, since floor and
+    /// column are different clusters and touching — end to end through
+    /// `labels::assign`, exactly as `test_a_flank_separates_from_its_rims_and_a_touching_neighbour`
+    /// (`game/tests/map_test.gd`) now checks on the real node → mesh
+    /// pipeline.
     #[test]
-    fn a_column_flush_on_the_floor_separates_its_rim_from_its_flank() {
+    fn a_column_flush_on_the_floor_reads_as_one_uniform_class() {
         let floor = Shape::Box3d {
             center: [0.0, -0.05, 0.0],
             size: [10.0, 0.1, 10.0],
@@ -686,12 +740,17 @@ mod tests {
         // the column's two rims (global 6, 7 — after the floor's six faces)
         assert_eq!(all[6].normal, [0.0, -1.0, 0.0]);
         assert_eq!(all[7].normal, [0.0, 1.0, 0.0]);
+        // the abutment: never merged, so the rims collapsed to ONE class
+        assert_eq!(sf.class_of[6], sf.class_of[7]);
+        assert_ne!(sf.cluster_of_solid[0], sf.cluster_of_solid[1]);
 
         let (flank_class, classes, seps) = add_flank_classes(&sf, &all, &touching, &[1]);
-        assert_eq!(classes, sf.classes + 1);
+        // no new class allocated: the flank ALIASES the rims' own
+        assert_eq!(classes, sf.classes);
         let flank = flank_class[0];
-        assert!(seps.contains(&ordered(flank, sf.class_of[6])));
-        assert!(seps.contains(&ordered(flank, sf.class_of[7])));
+        assert_eq!(flank, sf.class_of[6]);
+        assert_eq!(flank, sf.class_of[7]);
+        assert_eq!(seps, sf.separations);
 
         let augmented = Superfaces {
             class_of: sf.class_of.clone(),
@@ -702,8 +761,12 @@ mod tests {
         let out = labels::assign(&augmented, &[], &PALETTE);
         assert_eq!(out.starved, 0);
         let flank_label = out.label_of_class[flank];
-        assert!(separated(flank_label, out.label_of_class[sf.class_of[6]]));
-        assert!(separated(flank_label, out.label_of_class[sf.class_of[7]]));
+        // no internal seam: rim and flank read the identical label
+        assert_eq!(flank_label, out.label_of_class[sf.class_of[6]]);
+        assert_eq!(flank_label, out.label_of_class[sf.class_of[7]]);
+        // the outer seam still draws: the column (rims+flank, one class)
+        // differs from the floor's own class
+        assert!(separated(flank_label, out.label_of_class[sf.class_of[0]]));
     }
 
     /// Two columns standing flush against each other must not let their
@@ -734,10 +797,14 @@ mod tests {
         assert!(seps.contains(&ordered(flank_class[0], flank_class[1])));
     }
 
-    /// A column with no neighbours at all: its flank still gets its own
-    /// class, separated from its own two rims, and nothing else.
+    /// Wave S: a column with no neighbours at all is alone in its own
+    /// cluster — its two rims already collapsed to ONE class by
+    /// `superfaces`'s own singleton law before this function ever runs —
+    /// and the flank JOINS that same class rather than winning a fresh,
+    /// separated one: today's look, a lone barrel with no internal seam
+    /// at all. No class allocated, no separation added.
     #[test]
-    fn an_isolated_columns_flank_separates_only_from_its_own_rims() {
+    fn an_isolated_columns_flank_joins_its_solids_singleton_class() {
         let f = faces(
             0,
             &Shape::Column {
@@ -747,11 +814,15 @@ mod tests {
             },
         );
         let sf = superfaces(&f, &[]);
+        assert_eq!(sf.classes, 1);
+        assert_eq!(sf.class_of[0], sf.class_of[1]);
+
         let (flank_class, classes, seps) = add_flank_classes(&sf, &f, &[], &[0]);
-        assert_eq!(classes, sf.classes + 1);
-        assert_eq!(seps.len(), sf.separations.len() + 2);
-        assert!(seps.contains(&ordered(flank_class[0], sf.class_of[0])));
-        assert!(seps.contains(&ordered(flank_class[0], sf.class_of[1])));
+        assert_eq!(classes, sf.classes);
+        assert_eq!(seps, sf.separations);
+        assert!(seps.is_empty());
+        assert_eq!(flank_class[0], sf.class_of[0]);
+        assert_eq!(flank_class[0], sf.class_of[1]);
     }
 
     fn ordered(a: usize, b: usize) -> (usize, usize) {

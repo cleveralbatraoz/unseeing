@@ -63,7 +63,7 @@ use godot::prelude::*;
 
 use super::cat::WaveCat;
 use super::props::{WaveColumn, WaveProp, WaveWedge};
-use super::solid::{OID_PARAM, WaveSolid, build_box, clear_limbs};
+use super::solid::{OID_PARAM, WaveSolid, basis_columns_f64, build_box, clear_limbs, to_f64_3};
 use super::source::SoundSource;
 use super::wall::WaveWall;
 use crate::level_plan;
@@ -151,14 +151,14 @@ impl PaintItem {
 /// reasons about — the SAME box [`oid_palette::assign`] used, measured the
 /// identical way.
 ///
-/// `shape` is `None` for a slab: a slab is never fed through
-/// `render::faces` at all (see [`WaveLevel::paint_labels`]'s own note on
-/// why), so building one for it here would be a value nothing ever reads —
-/// dead by construction, not merely unused today.
+/// A slab's `shape` is a real `Box3d` like any other box (Wave S) — it
+/// used to be `None`, back when a slab was fed through `render::faces` not
+/// at all; `superface::superfaces`'s own singleton collapse made that
+/// workaround unnecessary, so every entry now carries one.
 struct PaintEntry {
     name: String,
     area: oid_palette::Box3,
-    shape: Option<render::Shape>,
+    shape: render::Shape,
     item: PaintItem,
 }
 
@@ -681,27 +681,23 @@ impl WaveLevel {
         // contract: every builder emits its faces/triangles in the
         // identical order `render::faces` re-derives them in.
         //
-        // SLABS CONTRIBUTE NO FACES HERE, deliberately: a floor or ceiling
-        // is a fixed-label "singleton" by the spec's own law ("one label
-        // across the whole solid, one silhouette, no interior lines... for
-        // everything that overlaps nothing" — a slab only ever ABUTS,
-        // never merges) — but `superface`'s rule (a) has no concept of an
-        // anchor; it separates ANY two adjacent faces of one solid
-        // unconditionally. Feeding a slab's six faces through it and then
-        // anchoring all six to the SAME fixed label would ask the
-        // colouring for two contradictory things at once — six mutually
-        // adjacent faces that must differ, forced to the one value that
-        // cannot. Slabs are anchored purely through `extra_anchors` below
-        // instead (the same phantom-class mechanism a touching source
-        // uses), which bans neighbours without ever demanding the slab
-        // separate from itself.
+        // SLABS CONTRIBUTE REAL FACES HERE, same as any other box — the
+        // phantom-class workaround this comment used to describe is gone.
+        // `superface::superfaces`'s own SINGLETON COLLAPSE (Wave S) makes
+        // it safe: a floor or ceiling never genuinely MERGES with
+        // anything (anything resting on it presents an OPPOSITE-facing
+        // surface — a buried abutment, never a same-direction coplanar
+        // overlap), so it is alone in its own cluster and its six faces
+        // fold into ONE class before rule (a) ever runs, exactly as the
+        // spec's own law promises ("singletons keep today's exact look:
+        // one label across the whole solid"). That one real class is
+        // anchored to its role label through the NORMAL anchor path below
+        // — the same `(class, label)` mechanism any other fixed class
+        // takes — rather than a slab-specific phantom one.
         let mut faces: Vec<render::Face> = Vec::new();
         let mut ordinal_of_face: Vec<usize> = Vec::new();
         for (i, entry) in entries.iter().enumerate() {
-            let Some(shape) = &entry.shape else {
-                continue; // a slab — see the note above
-            };
-            let entry_faces = render::faces(i, shape);
+            let entry_faces = render::faces(i, &entry.shape);
             // THE ORDINAL CONTRACT'S OWN GUARD: `ordinal_of_face` below
             // trusts that `render::faces`' i-th entry for this solid IS
             // face ordinal i — true whenever every one of the shape's
@@ -776,16 +772,17 @@ impl WaveLevel {
             }
         }
 
-        // the floor and ceiling ban the world palette entries near their
-        // own fixed labels for whatever touches them — the SAME phantom
-        // mechanism a touching source uses below, chosen deliberately
-        // over anchoring the slab's own (nonexistent, per the note above)
-        // classes directly. Every solid's own AABB touches the floor by
-        // construction, and the floor's 0.15 sits far enough from every
-        // `WORLD_OIDS` entry (>= 0.08) that this never actually bans
-        // anything — same as `oid_palette::assign`'s own
-        // `a_floor_under_everything_constrains_nothing` law.
-        let mut extra_anchors: Vec<(f64, Vec<usize>)> = Vec::new();
+        // the floor and ceiling anchor their own REAL classes to their
+        // fixed role label directly — the NORMAL `(class, label)` anchor
+        // path any other fixed class takes, now that a slab is a boxed
+        // singleton like any other and contributes real classes of its
+        // own (Wave S) rather than none at all. A slab's own six faces
+        // all collapsed to the SAME one class (the singleton law), so
+        // this anchors that one class, once, per slab — not a phantom
+        // class banning neighbours the way a source's swept envelope
+        // still needs below, since a source contributes no real face to
+        // the census at all.
+        let mut direct_anchors: Vec<(usize, f64)> = Vec::new();
         for (i, entry) in entries.iter().enumerate() {
             let PaintItem::Slab { lid } = entry.item else {
                 continue;
@@ -795,18 +792,13 @@ impl WaveLevel {
             } else {
                 render::Role::Floor
             };
-            let mut touching_classes: Vec<usize> = Vec::new();
-            for (j, other) in entries.iter().enumerate() {
-                if j != i && entry.area.touches(&other.area) {
-                    for &c in &classes_of_entry[j] {
-                        if !touching_classes.contains(&c) {
-                            touching_classes.push(c);
-                        }
-                    }
+            let label = render::role_label(role);
+            let mut seen: Vec<usize> = Vec::new();
+            for &c in &classes_of_entry[i] {
+                if !seen.contains(&c) {
+                    seen.push(c);
+                    direct_anchors.push((c, label));
                 }
-            }
-            if !touching_classes.is_empty() {
-                extra_anchors.push((render::role_label(role), touching_classes));
             }
         }
 
@@ -817,6 +809,7 @@ impl WaveLevel {
         // envelope — `render::labels::role_label(Shell)` (0.33) sits a
         // centimetre from the world palette's own 0.34, and without a ban
         // a wall or a crate touching a source would be free to land there.
+        let mut extra_anchors: Vec<(f64, Vec<usize>)> = Vec::new();
         for source in &census.sources {
             let Some(source_area) = mesh_world_box(&source.clone().into_gd()) else {
                 continue; // a source that draws nothing can show no seam
@@ -840,8 +833,9 @@ impl WaveLevel {
                 extra_anchors.push((oid, touching_classes.clone()));
             }
         }
-        let (classes, separations, anchors) =
+        let (classes, separations, mut anchors) =
             render::paint::add_anchor_classes(classes1, &seps1, &extra_anchors);
+        anchors.extend(direct_anchors);
         let augmented = render::Superfaces {
             class_of: sf.class_of.clone(),
             classes,
@@ -849,57 +843,42 @@ impl WaveLevel {
             cluster_of_solid: sf.cluster_of_solid.clone(),
         };
         let out = render::assign(&augmented, &anchors, &WORLD_OIDS);
-        // `out.starved` is NOT reported to the designer yet, deliberately.
-        // Measured on the shipped map: `render::superface`'s rule (c) —
-        // "every face pair between two touching, un-merged solids
-        // separates, blanket" — asks each of the pair's OWN 3-colourable
-        // internal faces (rule a's own octahedral minimum) to take a
-        // FULLY DISJOINT triple from its neighbour's, i.e. 6 distinct
-        // labels for any two touching solids that never merge — and the
-        // 5-entry `WORLD_OIDS` band the sRGB/creature-band budget leaves
-        // room for cannot hold that for a densely furnished room (a table
-        // and its own legs, a crate against a wall). That is `starved`'s
-        // real count today, not a bug this task introduced: it is an
-        // honest, load-bearing gap between the "bends draw" law and the
-        // channel's budget that a wider investigation should close.
-        // It is silent here because it is provably NOT a rendering
-        // regression yet: the shader still reads the `u_oid` BRIDGE below
-        // (each solid's first face) until Task 8, never `CUSTOM0` directly,
-        // and the bridge's own correctness is what `game/tests/map_test.gd`'s
-        // `test_shipped_touching_boxes_draw_their_seam` and
-        // `test_shipped_level_has_no_coplanar_face_fights` hold — both
-        // green against the real per-face labels this pass just baked.
+        // Wave S: the singleton collapse (`render::superface::superfaces`)
+        // closed the gap that used to starve the palette here — a lone
+        // box now costs the world palette exactly what it always did
+        // before this campaign, and two touching, un-merged solids need
+        // ONE separation, not rule (a)'s old unscoped six. Loud again,
+        // matching the pre-superface `assign_oids` voice: a starved class
+        // is a seam that will not draw, and the shipped-map pin
+        // (`game/tests/map_test.gd::test_shipped_level_derives_with_no_starved_classes`)
+        // holds the count at zero.
+        if out.starved > 0 {
+            godot_error!(
+                "WaveLevel: {} superface class(es) could not take a label distinct from \
+                 everything they touch — those seams will not draw. Spread the geometry or \
+                 widen WORLD_OIDS.",
+                out.starved
+            );
+        }
 
         // bake: gather each entry's own labels by ordinal and rewrite its
         // mesh's CUSTOM0 (plus the u_oid bridge, dropped at Task 8)
         for (i, entry) in entries.iter().enumerate() {
             let n = render::paint::face_count(entry.item.kind());
-            let labels_by_ordinal: Vec<f32> = if let PaintItem::Slab { lid } = entry.item {
-                // a slab carries no real classes (see the note above) — one
-                // flat role label across every ordinal, directly
-                let role = if lid {
-                    render::Role::Ceiling
-                } else {
-                    render::Role::Floor
-                };
-                vec![render::role_label(role) as f32; n]
-            } else {
-                let mut labels_by_ordinal: Vec<f32> = vec![0.0; n];
-                for (fi, face) in faces.iter().enumerate() {
-                    if face.solid == i {
-                        let ord = ordinal_of_face[fi];
-                        if let Some(slot) = labels_by_ordinal.get_mut(ord) {
-                            *slot = out.label_of_class[sf.class_of[fi]] as f32;
-                        }
+            let mut labels_by_ordinal: Vec<f32> = vec![0.0; n];
+            for (fi, face) in faces.iter().enumerate() {
+                if face.solid == i {
+                    let ord = ordinal_of_face[fi];
+                    if let Some(slot) = labels_by_ordinal.get_mut(ord) {
+                        *slot = out.label_of_class[sf.class_of[fi]] as f32;
                     }
                 }
-                if let Some(flank) = flank_class_of[i]
-                    && let Some(slot) = labels_by_ordinal.get_mut(2)
-                {
-                    *slot = out.label_of_class[flank] as f32;
-                }
-                labels_by_ordinal
-            };
+            }
+            if let Some(flank) = flank_class_of[i]
+                && let Some(slot) = labels_by_ordinal.get_mut(2)
+            {
+                *slot = out.label_of_class[flank] as f32;
+            }
             self.paint_entry(&entry.item, &labels_by_ordinal);
         }
 
@@ -926,10 +905,20 @@ impl WaveLevel {
             let Some(area) = mesh_world_box(&slab.skin.clone().upcast()) else {
                 continue; // a slab with no mesh draws no seam
             };
+            // the same world-space Box3d shape a wall or a prop reads off
+            // its own node (`WaveWall::world_shape` et al.) — a slab's
+            // BODY carries its world position (built at lift ZERO, never
+            // rotated), and its own `BoxShape3D` carries the full extent.
+            let transform = slab.body.get_global_transform();
+            let shape = render::Shape::Box3d {
+                center: to_f64_3(transform.origin),
+                size: to_f64_3(slab.shape.get_size()),
+                basis: basis_columns_f64(transform.basis),
+            };
             entries.push(PaintEntry {
                 name: if slab.lid { "Ceiling" } else { "Floor" }.to_string(),
                 area,
-                shape: None,
+                shape,
                 item: PaintItem::Slab { lid: slab.lid },
             });
         }
@@ -944,7 +933,7 @@ impl WaveLevel {
                 entries.push(PaintEntry {
                     name,
                     area,
-                    shape: Some(shape),
+                    shape,
                     item: PaintItem::Wall(wall),
                 });
             } else if let Ok(prop) = node.clone().try_cast::<WaveProp>() {
@@ -952,7 +941,7 @@ impl WaveLevel {
                 entries.push(PaintEntry {
                     name,
                     area,
-                    shape: Some(shape),
+                    shape,
                     item: PaintItem::Prop(prop),
                 });
             } else if let Ok(column) = node.clone().try_cast::<WaveColumn>() {
@@ -960,7 +949,7 @@ impl WaveLevel {
                 entries.push(PaintEntry {
                     name,
                     area,
-                    shape: Some(shape),
+                    shape,
                     item: PaintItem::Column(column),
                 });
             } else if let Ok(wedge) = node.clone().try_cast::<WaveWedge>() {
@@ -968,7 +957,7 @@ impl WaveLevel {
                 entries.push(PaintEntry {
                     name,
                     area,
-                    shape: Some(shape),
+                    shape,
                     item: PaintItem::Wedge(wedge),
                 });
             }

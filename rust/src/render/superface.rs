@@ -17,19 +17,36 @@
 //!   intersection's shape can be measured in (not just the two arbitrary
 //!   WORLD axes the projection happened to keep), exceeds [`PATCH_EPS`].
 //!   An edge-only touch, at any rotation, is a bend, not a melt.
+//! - **The singleton collapse**: a solid alone in its own cluster — no
+//!   face of it ever won a cross-solid merge edge, so it stands exactly
+//!   as it always has — has ALL of its faces folded into ONE class,
+//!   restoring the spec's own law: "singletons keep today's exact look:
+//!   one label across the whole solid, one silhouette, no interior
+//!   lines." Without this, rule (a) demands a box's six mutually-adjacent
+//!   faces take its own three-colour minimum even when nothing ever
+//!   merges with it, and two ordinary touching boxes then need rule (c)
+//!   to separate six cross-pairs instead of one — measured cost: 93
+//!   superface classes starved on the shipped map before this law
+//!   landed.
 //! - **Separation edge** (two classes must take labels ≥ `MIN_SEP` apart,
 //!   `labels::MIN_SEP`, this module only builds the graph): three rules,
-//!   checked independently —
+//!   checked independently, (a) and (b) scoped to MULTI-MEMBER clusters
+//!   only (a singleton's faces are already one class by the time either
+//!   rule runs, so neither can act on it) —
 //!   (a) two faces of ONE solid sharing a polygon edge — a box's own
-//!   corner never disappears, merged cluster or not;
+//!   corner never disappears, inside any cluster with more than one
+//!   member;
 //!   (b) faces of two DIFFERENT, TOUCHING solids that ended up in the
-//!   SAME cluster (merged via some other face pair) whose polygons pass
-//!   within [`PATCH_EPS`] of each other in 3-D, excluding pairs already
-//!   merged and excluding a BURIED ABUTMENT — opposite-facing coplanar
-//!   contact, a crate's underside on the floor it stands on;
+//!   SAME multi-member cluster (merged via some other face pair) whose
+//!   polygons pass within [`PATCH_EPS`] of each other in 3-D, excluding
+//!   pairs already merged and excluding a BURIED ABUTMENT —
+//!   opposite-facing coplanar contact, a crate's underside on the floor
+//!   it stands on;
 //!   (c) every face pair between two touching solids that never merged at
 //!   all (different clusters) — the old per-solid law, blanket-applied:
-//!   all of one solid's classes separate from all of the other's.
+//!   all of one solid's classes separate from all of the other's. Two
+//!   touching singletons now see exactly one class each, restoring the
+//!   pre-superface two-label law exactly.
 //!
 //! # Determinism
 //!
@@ -120,19 +137,46 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
             }
         }
     }
-    let (class_of, classes) = normalize(&mut face_uf, n);
 
-    // --- solid-level clusters: the merge relation lifted to solids ---
+    // --- solid-level clusters: the merge relation lifted to solids, read
+    // directly off the union-find's own roots. `class_of` is not
+    // normalized yet at this point — root equality IS "same class" here,
+    // and normalizing twice (once now, once again after the singleton
+    // collapse below) would be wasted work for the same answer.
     let solid_count = faces.iter().map(|f| f.solid).max().map_or(0, |m| m + 1);
     let mut solid_uf = UnionFind::new(solid_count);
     for i in 0..n {
         for j in (i + 1)..n {
-            if class_of[i] == class_of[j] && faces[i].solid != faces[j].solid {
+            if faces[i].solid != faces[j].solid && face_uf.find(i) == face_uf.find(j) {
                 solid_uf.union(faces[i].solid, faces[j].solid);
             }
         }
     }
-    let (cluster_of_solid, _clusters) = normalize(&mut solid_uf, solid_count);
+    let (cluster_of_solid, clusters) = normalize(&mut solid_uf, solid_count);
+
+    // --- the singleton collapse: a solid alone in its own cluster (no
+    // face of it ever won a cross-solid merge edge) folds ALL its own
+    // faces into ONE class — see the module doc's own law statement.
+    // Determinism: each singleton solid's faces union onto its own FIRST
+    // face in input order, never a hash or a hunt for a "canonical" one.
+    let mut cluster_size = vec![0usize; clusters];
+    for &c in &cluster_of_solid {
+        cluster_size[c] += 1;
+    }
+    let is_singleton_solid: Vec<bool> = (0..solid_count)
+        .map(|s| cluster_size[cluster_of_solid[s]] == 1)
+        .collect();
+    let mut singleton_anchor: Vec<Option<usize>> = vec![None; solid_count];
+    for (i, f) in faces.iter().enumerate() {
+        if is_singleton_solid[f.solid] {
+            match singleton_anchor[f.solid] {
+                Some(anchor) => face_uf.union(anchor, i),
+                None => singleton_anchor[f.solid] = Some(i),
+            }
+        }
+    }
+
+    let (class_of, classes) = normalize(&mut face_uf, n);
 
     // faces grouped by solid, input order preserved within each group
     let mut faces_of_solid: Vec<Vec<usize>> = vec![Vec::new(); solid_count];
@@ -142,10 +186,19 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
 
     let mut separations: Vec<(usize, usize)> = Vec::new();
 
-    // rule (a): two faces of ONE solid sharing a polygon edge
+    // rule (a): two faces of ONE solid sharing a polygon edge — scoped to
+    // MULTI-MEMBER clusters, matching the spec's own text. The explicit
+    // `!is_singleton_solid[...]` guard is defense-in-depth rather than the
+    // sole mechanism: a singleton's own faces are already one class by
+    // the time this runs (the collapse above), so `class_of[i] !=
+    // class_of[j]` alone already refuses every same-singleton-solid pair;
+    // this guard states the scoping in the code the same way the law
+    // states it in words, rather than leaving it as an emergent property
+    // of the collapse alone.
     for i in 0..n {
         for j in (i + 1)..n {
             if faces[i].solid == faces[j].solid
+                && !is_singleton_solid[faces[i].solid]
                 && class_of[i] != class_of[j]
                 && polygons_share_an_edge(&faces[i].poly, &faces[j].poly)
             {
@@ -154,13 +207,19 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
         }
     }
 
-    // rules (b)/(c): touching solids
+    // rules (b)/(c): touching solids. Rule (b)'s branch below is likewise
+    // scoped to multi-member clusters, but needs no separate guard: a
+    // singleton solid's cluster has exactly one member (itself), so
+    // `cluster_of_solid[sa] == cluster_of_solid[sb]` for `sa != sb` is
+    // already impossible whenever either side is a singleton — every
+    // touching pair naming one takes rule (c)'s branch by construction.
     for &(sa, sb) in touching {
         if sa == sb || sa >= solid_count || sb >= solid_count {
             continue;
         }
         if cluster_of_solid[sa] == cluster_of_solid[sb] {
-            // (b): same cluster — fine-grained, per touching face pair
+            // (b): same MULTI-MEMBER cluster — fine-grained, per touching
+            // face pair
             for &i in &faces_of_solid[sa] {
                 for &j in &faces_of_solid[sb] {
                     if class_of[i] == class_of[j] {
@@ -175,7 +234,10 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
                 }
             }
         } else {
-            // (c): different clusters — the old law, blanket-applied
+            // (c): different clusters — the old law, blanket-applied. A
+            // singleton solid contributes exactly ONE class here (the
+            // collapse above), so two touching singletons see exactly
+            // one cross-pair — the pre-superface two-label law, restored.
             for &i in &faces_of_solid[sa] {
                 for &j in &faces_of_solid[sb] {
                     add_separation(&mut separations, class_of[i], class_of[j]);
@@ -884,15 +946,18 @@ mod tests {
         assert!(!is_opposite_facing_coplanar(&top, &bottom_different_plane));
     }
 
-    /// A standalone unit box, no partner at all: none of its six faces
-    /// can ever be a merge candidate with another (a convex box's six
-    /// planes are all distinct), so every face keeps its own class — and
-    /// two adjacent faces (-X and -Y share a corner edge) must still
-    /// separate. A box's own silhouette law survives inside multi-member
-    /// clusters is the point of the junction test above; this is the
-    /// same law's simplest possible witness, with no cluster at all.
+    /// Wave S: a standalone unit box, no partner at all, is alone in its
+    /// own cluster — the SINGLETON COLLAPSE folds all six of its faces
+    /// into ONE class, restoring the spec's own law ("singletons keep
+    /// today's exact look: one label across the whole solid, one
+    /// silhouette, no interior lines"). Before the collapse landed, this
+    /// exact fixture demanded six MUTUALLY SEPARATED classes — rule (a)
+    /// applied with no multi-member scoping at all — which is the shape
+    /// of the 93-class starvation measured on the shipped map, reproduced
+    /// at its simplest: a lone box that touches nothing still cost three
+    /// labels for itself.
     #[test]
-    fn edge_sharing_faces_of_one_solid_separate() {
+    fn a_lone_box_yields_one_class() {
         let f = faces(
             0,
             &Shape::Box3d {
@@ -902,11 +967,44 @@ mod tests {
             },
         );
         let sf = superfaces(&f, &[]);
-        assert_eq!(sf.classes, 6);
-        assert_ne!(sf.class_of[0], sf.class_of[2]);
-        assert!(
-            sf.separations
-                .contains(&ordered(sf.class_of[0], sf.class_of[2]))
+        assert_eq!(sf.classes, 1);
+        assert_eq!(sf.class_of, vec![0; 6]);
+        assert!(sf.separations.is_empty());
+    }
+
+    /// Wave S: two boxes standing side by side — touching (they share the
+    /// plane x=0.5) but never merging, since a's own +X face and b's own
+    /// -X face point OPPOSITE ways (an ordinary abutment, not a coplanar
+    /// same-direction overlap) — are each their own singleton cluster.
+    /// The pre-superface two-label law, restored exactly: two classes,
+    /// one separation between them, not the six-cross-pair demand an
+    /// unscoped rule (a) plus rule (c)'s blanket law would make.
+    #[test]
+    fn two_touching_singleton_boxes_yield_two_classes_and_one_separation() {
+        let a = Shape::Box3d {
+            center: [0.0, 0.0, 0.0],
+            size: [1.0, 1.0, 1.0],
+            basis: IDENTITY,
+        };
+        let b = Shape::Box3d {
+            center: [1.0, 0.0, 0.0],
+            size: [1.0, 1.0, 1.0],
+            basis: IDENTITY,
+        };
+        let mut all = faces(0, &a);
+        all.extend(faces(1, &b));
+        assert_eq!(all[1].normal, [1.0, 0.0, 0.0]);
+        assert_eq!(all[1].offset, 0.5);
+        assert_eq!(all[6].normal, [-1.0, 0.0, 0.0]);
+        assert_eq!(all[6].offset, -0.5);
+
+        let sf = superfaces(&all, &[(0, 1)]);
+        assert_eq!(sf.classes, 2);
+        assert_ne!(sf.cluster_of_solid[0], sf.cluster_of_solid[1]);
+        assert_ne!(sf.class_of[0], sf.class_of[6]);
+        assert_eq!(
+            sf.separations,
+            vec![ordered(sf.class_of[0], sf.class_of[6])]
         );
     }
 
@@ -1001,10 +1099,12 @@ mod tests {
     /// touch list built against the FULL census even when only some
     /// solids' faces are in scope for a given call. The out-of-range
     /// pairs must be pure no-ops: the result is identical to passing no
-    /// `touching` at all (rule (a)'s same-solid edge separations still
-    /// fire regardless — they never consult `touching` — so the box's
-    /// own six faces are not expected to come back with an EMPTY
-    /// separations list, only the SAME one an empty touch list gives).
+    /// `touching` at all. Wave S: this lone box is a singleton (nothing
+    /// merges with it), so both calls now collapse it to ONE class with
+    /// NO separations — the singleton collapse runs regardless of
+    /// `touching` (it depends only on cluster membership from the merge
+    /// pass), so the bogus pairs' no-op-ness is unaffected by the fix,
+    /// only the concrete numbers this test pins are.
     #[test]
     fn a_touching_pair_beyond_the_known_solids_does_not_panic() {
         let f = faces(
@@ -1017,7 +1117,8 @@ mod tests {
         );
         let with_bogus_pairs = superfaces(&f, &[(0, 7), (7, 0), (3, 9)]);
         let with_no_pairs = superfaces(&f, &[]);
-        assert_eq!(with_bogus_pairs.classes, 6);
+        assert_eq!(with_bogus_pairs.classes, 1);
+        assert!(with_bogus_pairs.separations.is_empty());
         assert_eq!(with_bogus_pairs.class_of, with_no_pairs.class_of);
         assert_eq!(with_bogus_pairs.separations, with_no_pairs.separations);
     }

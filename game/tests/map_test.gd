@@ -517,6 +517,25 @@ func test_shipped_level_has_no_coplanar_face_fights() -> void:
 	)
 
 
+## WAVE S'S ACCEPTANCE TEST. Before the singleton collapse
+## (`render::superface::superfaces`) landed, the shipped map measured 93
+## starved superface classes: rule (a) applied with no multi-member
+## scoping demanded every ordinary touching pair of un-merged solids take
+## SIX mutually-disjoint labels (three per side, its own octahedral
+## minimum) — far past what the five-entry WORLD_OIDS palette holds.
+## `WaveLevel::paint_labels` reports a starved count LOUDLY now, matching
+## the pre-superface `assign_oids` voice — this is the pin that message
+## never fires deriving the real, shipped level. Red against the
+## unfixed singleton law (93 starved, one `godot_error` naming the
+## count); green once the collapse restores the pre-superface two-label
+## law for every singleton pair.
+func test_shipped_level_derives_with_no_starved_classes() -> void:
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await assert_error(enter).is_success()
+
+
 ## The generalisation of `_face_nearest_world_z` to any axis — the fight
 ## census names its plane by axis LETTER ("x"/"y"/"z"), so verifying a
 ## fight against the real mesh has to read the matching component off
@@ -629,32 +648,26 @@ func _face_with_centroid_x_above(skin: MeshInstance3D, threshold: float) -> int:
 	return -1
 
 
-## THE FLANK'S OWN LAW, live: the shipped map's one column that touches
-## something besides a slab is StoveFlue, standing on Stove (its base at
-## y = 0.8 lands exactly on Stove's own top face) — but the FULL shipped
-## map's Welsh–Powell colouring dilutes the effect deleting
-## `add_flank_classes`'s touching-neighbour loop (rust/src/render/paint.rs)
-## has: with 125+ other solids competing for the same five slots,
-## StoveFlue's flank and Stove's touching face land on DIFFERENT slots
-## even without the separating edge between them — confirmed empirically,
-## not assumed, and the reason this fixture is hand-built instead. The
-## SAME topology (a column standing flush on a box, base = box's own top)
-## in ISOLATION removes that dilution: `render::paint`'s own palette is
-## exactly five entries spaced 0.09 apart (every entry > MIN_SEP from
-## every other), so two DIFFERENT slots always differ by ≥ MIN_SEP on
-## their own — the only way to violate the law at all is for two classes
-## to land on the IDENTICAL slot, which only happens when nothing
-## separates them. Base spans y 0..1 (size 1×1×1); Post radius 0.1,
-## height 1, at y = 1, so its base rim sits exactly on Base's own top.
+## THE FLANK'S OWN LAW, live, re-derived for Wave S. Base and Post never
+## genuinely MERGE: Post's base rim faces DOWN, Base's top face faces UP —
+## an ordinary ABUTMENT, not a same-direction coplanar overlap — so each
+## stays alone in its own singleton cluster
+## (`render::superface::superfaces`'s own collapse). Post's rims and
+## flank now read as ONE uniform label — no internal seam, today's look,
+## `render::paint::add_flank_classes`'s singleton branch aliasing the
+## flank onto the rims' own collapsed class rather than winning a fresh
+## one — while the OUTER seam against Base still draws, carried entirely
+## by rule (c)'s ordinary blanket law between two different, touching
+## clusters (the same law `an_abutment_through_the_coordinate_origin_still_does_not_merge`
+## and its siblings hold in `rust/src/render/superface.rs`), inherited by
+## the flank automatically since it now shares Post's own class number.
 ##
-## Checked against ALL SIX of Base's face labels, not only the +Y face
-## the rim physically rests on: the deleted loop is a BLANKET rule (no
-## polygon to test a specific contact against), so under the mutation the
-## flank collides with whichever of Base's face classes the greedy
-## colouring reaches first — empirically Base's −X/+X pair, not its
-## +Y top — and a test that only reads back +Y would pass right through
-## the mutation exactly as the shipped-map version above it did.
-func test_a_flank_separates_from_its_rims_and_a_touching_neighbour() -> void:
+## Base spans y 0..1 (size 1x1x1); Post radius 0.1, height 1, at y = 1, so
+## its base rim sits exactly on Base's own top — and, as a singleton
+## itself, ALL SIX of Base's own faces now read the identical label too;
+## checked directly rather than assumed, so this test's own premise is
+## self-verifying, not inherited from the fixture description alone.
+func test_a_lone_columns_flank_joins_its_rims_and_still_differs_from_its_neighbour() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	var base := WaveProp.new()
 	base.name = "Base"
@@ -678,28 +691,34 @@ func test_a_flank_separates_from_its_rims_and_a_touching_neighbour() -> void:
 
 	# a real palette value, never the freshly-allocated 0.0 default the
 	# flank slot starts at — catches the sibling mutation (skipping the
-	# flank-label write in `WaveLevel::paint_labels`), which the
-	# separation checks alone would pass vacuously (0.0 sits ≥ MIN_SEP
-	# from every real label too, just not for the reason under test).
+	# flank-label write in `WaveLevel::paint_labels`), which the equality
+	# checks alone would pass vacuously (0.0 would equal a 0.0 default
+	# on all three, not for the reason under test).
 	assert_float(flank).is_between(0.15, 0.96)
-	assert_float(absf(flank - bottom_rim)).is_greater_equal(0.08)
-	assert_float(absf(flank - top_rim)).is_greater_equal(0.08)
 
-	# EVERY one of Base's six real faces, not just the one its rim
-	# physically touches: `add_flank_classes`'s own doc calls the
-	# touching-neighbour rule BLANKET rather than fine-grained precisely
-	# because a flank has no polygon to test a specific contact against
-	# — so deleting that loop does not collide the flank with whichever
-	# face it happens to rest on, it collides it with whichever of
-	# Base's OWN merged face classes the greedy colouring reaches for
-	# first once the constraint is gone (Base's −X/+X pair here, not
-	# its +Y top) — checking only one face let the earlier version of
-	# this test pass right through the mutation.
+	# NO internal seam: rim and flank now read the SAME label — the
+	# mutation this catches is the singleton aliasing being removed
+	# (reverted to the old behaviour of a fresh, separated flank class),
+	# which is exactly what the OLD assertions here used to require.
+	assert_float(flank).is_equal(bottom_rim)
+	assert_float(flank).is_equal(top_rim)
+
+	# Base is ALSO a singleton: every one of its six real faces reads the
+	# identical label — the fixture's own premise, self-checked.
 	var base_custom: PackedFloat32Array = _skin(base).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	var base_label: float = base_custom[0]
 	for ord in 6:
 		var base_face: float = base_custom[ord * 4]
-		var msg := "flank %.3f vs Base ordinal %d = %.3f" % [flank, ord, base_face]
-		assert_float(absf(flank - base_face)).append_failure_message(msg).is_greater_equal(0.08)
+		var msg := (
+			"Base ordinal %d = %.3f, expected the uniform %.3f" % [ord, base_face, base_label]
+		)
+		assert_float(base_face).append_failure_message(msg).is_equal(base_label)
+
+	# the OUTER seam still draws: Post's whole class (rims+flank) differs
+	# from Base's own by at least MIN_SEP — carried by rule (c)'s blanket
+	# law between the two different, touching clusters, inherited by the
+	# flank purely by sharing Post's class number.
+	assert_float(absf(flank - base_label)).is_greater_equal(0.08)
 
 
 ## The label a shipped column's mesh carries at ordinal `ord` (0 bottom
