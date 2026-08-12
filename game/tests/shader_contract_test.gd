@@ -8,6 +8,7 @@ const INC_PATH := "res://shaders/pulse_pool.gdshaderinc"
 const DATA_PASS_PATH := "res://shaders/data_pass.gdshader"
 const XRAY_PATH := "res://shaders/data_xray.gdshader"
 const CORE_PATH := "res://shaders/data_core.gdshaderinc"
+const HEARING_POST_PATH := "res://shaders/hearing_post.gdshader"
 const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
 
@@ -168,6 +169,21 @@ func test_decode_expressions_are_literal() -> void:
 ## fine — and nothing else compares them.
 func test_dist_pack_range_matches_the_level_budget() -> void:
 	assert_float(_shader_const("DIST_PACK_RANGE")).is_equal(WaveLevel.pack_range())
+
+
+## The hearing pass's screen texture is sampled `filter_nearest`, and that is
+## load-bearing, not decorative: the data pass writes flat per-face labels
+## with a hard step at every seam (two overlapping faces melt to the SAME bit
+## pattern; two separate touching faces sit at least MIN_SEP = 0.08 apart),
+## and a bilinear tap landing at an unlucky sub-pixel phase would blend two
+## neighbouring labels together, halving a genuine 0.08 diff onto the dead
+## crease floor the hearing pass's `nrm` threshold (hearing_post.gdshader:76)
+## never crosses — the seam the label law exists to draw would vanish at
+## exactly the pixels where a wave revealed it. Pinned as source text so a
+## "harmless" filter cleanup cannot silently reopen it.
+func test_hearing_pass_reads_the_screen_texture_nearest() -> void:
+	var post := _read(HEARING_POST_PATH)
+	assert_str(post).contains("uniform sampler2D screen_tex : hint_screen_texture, filter_nearest;")
 
 
 ## Camera distance is packed into one color channel divided by
