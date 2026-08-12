@@ -29,20 +29,24 @@ const MAIN_SCENE := preload("res://scenes/main.tscn")
 ## own reach()/slot_pressure() #[func]s below: those compute with the
 ## identical formula the snapshot's own fields are filled from
 ## (`nodes/observer.rs::sources`), so calling them here would mirror the
-## code under test rather than check it. The fan's own volume and cadence
-## are knobs, not law, and are read straight off the live node instead of
-## duplicated as constants.
+## code under test rather than check it. The fan's own volume, wave_speed
+## and cadence are knobs, not law, and are read straight off the live node
+## instead of duplicated as constants.
 const SOURCE_THROUGH := 0.3
 ## HUM_THROUGH (0.55, level_plan.rs), the per-wall wave-transmission law
 ## explain_ray's own hum_transmission field reads through — the SOURCE
 ## occluder's counterpart to SOURCE_THROUGH above.
 const HUM_THROUGH := 0.55
 const FULL_REACH := 12.0
-## Ring time 9 m / 4.5 m/s = 2 s, plus the source kind's 2 s fade tail, a
-## wave every 0.4 s: (2 + 2) / 0.4 slots held at steady state — hand-derived
-## from the wave contract for the shipped fan's own 0.75 volume (9 m reach),
-## the one number here still tied to a knob rather than a pure engine law.
-const FAN_SLOT_PRESSURE := 10.0
+## Every world source is born at SOURCE_KIND = 3 (sound_source.rs), whose
+## fade tail — pulse_pool::fade_tail(3) — is a fixed 2 s: an engine law,
+## kept as the literal below. slot_pressure() itself
+## (sound_source.rs::Voice::slot_pressure) is ring time plus that tail,
+## divided by cadence: `(reach / speed + 2.0) / cadence`, with reach itself
+## FULL_REACH * volume — the formula the assertion below computes over the
+## fan's own live knobs rather than a baked constant, so retuning volume,
+## wave_speed or cadence in the Inspector tracks instead of reddening
+## the gate.
 ## A flicker value the composition root would have pushed to the world skin
 ## this frame. Nothing derives from it — it only has to be recognisable.
 const FLICK := 0.6
@@ -317,11 +321,14 @@ func test_snapshot_describes_the_levels_sound_sources() -> void:
 	# shipped fan's own volume and cadence, whatever a designer sets them to
 	assert_float(entry["volume"]).is_equal_approx(fan.volume, 0.0001)
 	assert_float(entry["cadence"]).is_equal_approx(fan.cadence, 0.0001)
-	# reach and slot pressure are FULL_REACH/the wave contract scaled by
-	# that same volume knob — hand-derived formulas, never fan.reach()/
-	# fan.slot_pressure() themselves (see the constants block above)
+	# reach and slot pressure are FULL_REACH/the wave contract scaled by the
+	# fan's own live knobs — hand-derived formulas, never fan.reach()/
+	# fan.slot_pressure() themselves (see the constants block above), so a
+	# knob turned in the Inspector moves both sides of the assertion together
 	assert_float(entry["reach"]).is_equal_approx(FULL_REACH * fan.volume, 0.0001)
-	assert_float(entry["slot_pressure"]).is_equal_approx(FAN_SLOT_PRESSURE, 0.0001)
+	assert_float(entry["slot_pressure"]).is_equal_approx(
+		(FULL_REACH * fan.volume / fan.wave_speed + 2.0) / fan.cadence, 0.0001
+	)
 	# the fan stands exactly one wall from the spawn — the map's own claim,
 	# the same doctrine map_test.gd's one-wall literals follow, and kept
 	# here rather than derived through level.source_muffle(eye, hub): that
