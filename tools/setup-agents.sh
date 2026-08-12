@@ -7,7 +7,7 @@ HOST="${1:-all}"
 [ "$#" -le 1 ] || { echo "usage: $0 [--migrate] [claude|codex|all]" >&2; exit 2; }
 case "$HOST" in claude|codex|all) ;; *) echo "usage: $0 [--migrate] [claude|codex|all]" >&2; exit 2 ;; esac
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 SUB="$ROOT/tools/superpowers"
 PIN=b36e0829c6d0140e93cfef2ca599b1b07d4a7797
 VERSION=6.3.0
