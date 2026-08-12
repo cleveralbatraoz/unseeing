@@ -231,6 +231,23 @@ simulated clock + seeded randomness only).
   wiring fixture; removing the divider reduced the census to five and failed
   the selector case. The resource hint, exact fallback and wrong-root refusal
   are independently pinned.
+- **Documentation close:** the in-repo authoring guide now teaches typed
+  spawns, plain-root prop/room prefabs, absolute-start WaveRun openings, the
+  level resource picker, and Godot's actual **Run Current Scene** / F6 loop.
+  Wiki changes remain debt only and the close checklist separates the human
+  editor, integration, wiki, deployment, and issue-closure authorizations.
+  Final automated milestone: 339 Cargo tests; 289/289 gdUnit cases in 31/31
+  suites; 19 registered classes; ten icons. The final full pipeline also built
+  the wasm side module, exported the Web build, and passed browser smoke
+  (`51730/184320` lit pixels) with `DEPLOY_DIR` set to the deliberately absent
+  `/tmp/unseeing-campaign-nondeployable`; the pipeline confirmed build-only and
+  copied nothing.
+- **Godot MCP setup:** the pinned addon installer initially found no Node.js.
+  Installed Homebrew `node@22` 22.23.2, reran `tools/setup-mcp.sh`, and installed
+  ignored addon 4.1.0. Enabling the editor plugin and reconnecting the MCP
+  transport remain the documented one-time interactive step; no shipped plugin
+  setting was changed. Headless editor probes cover every automatable editor
+  law meanwhile.
 
 - **Rebase erratum:** `WaveRestorer` was registered in Rust but omitted from
   both independently maintained engine rosters. The post-rebase baseline adds

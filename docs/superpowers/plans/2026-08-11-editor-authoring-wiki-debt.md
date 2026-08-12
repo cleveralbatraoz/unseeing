@@ -565,3 +565,55 @@ paragraph's citation moved — worth a full read-through rather than a
 mechanical find-replace, since several of its fifteen line hits sit
 inside prose written for a GDScript reader (e.g. "the reader who has to
 fix it is looking at `main.gd::capture_env`").
+
+---
+
+## 5. SP3 — authored vocabulary and reusable composition
+
+This section is debt only. Do not apply it to the wiki before the campaign's
+merge gate.
+
+### Mechanics — Levels and Objects
+
+- Replace every magic-name spawn recipe with `WaveSpawn`. The first typed
+  datum in depth-first scene order wins; an absent datum falls back to the
+  level origin with a warning, and every duplicate loser is warned. Its global
+  transform determines both position and facing, so a spawn nested in a
+  rotated room works without copied angle data (`rust/src/nodes/spawn.rs`,
+  `rust/src/nodes/level.rs`).
+- Add the prefab doctrine: reusable content has a plain `Node3D` root and is
+  composed from typed Rust nodes. Chair and table examples live under
+  `game/scenes/props/`; the configured doorway and 16×16 room live under
+  `game/scenes/rooms/`. Rust-generated preview limbs are ownerless derived
+  data, never authored children (`game/tests/probe/editor_prefab_probe.gd`).
+- Document `WaveRun.from`, `to`, and `openings`. Endpoints are parent-local
+  X/Z coordinates. Godot displays each `Vector2` as `x` and `y`; in this
+  planar authoring API that displayed `y` means world Z. Each opening is
+  `(absolute start coordinate on the selected axis, width)`, with negative
+  width treated by magnitude. Runs normalize reversed endpoints, choose the
+  dominant axis with X winning ties, warn while folding diagonals, merge/clamp
+  openings, and emit every positive residual as ownerless `RunSeg1…N` walls
+  (`rust/src/level_plan.rs`, `rust/src/nodes/run.rs`).
+- Add the level-selection recipe: `UnseeingGame.level_scene` is a PackedScene
+  picker; empty means the exact level-01 fallback, while a selected scene is
+  the only scene tried and must have a `WaveLevel` root. Level 02 demonstrates
+  the reusable room, typed spawn, fan, chair, and interior run entirely as
+  scene composition (`rust/src/nodes/game.rs`, `game/scenes/level_02.tscn`).
+- Correct the playable current-scene workflow: duplicate the small
+  `main.tscn` runner, choose the desired level in its `UnseeingGame` node's
+  **Level Scene** property, and press F6 while that configured runner is open.
+  A raw `WaveLevel` scene is authoring content, not a composition root, so it
+  intentionally refuses to run without the runner's material and pulse
+  injection. F5 runs the project main scene and its configured picker. Do not
+  call F6 “Run Custom Scene.”
+
+### Research — Editor Authoring corrections
+
+- Delete the stale `SpawnPoint` name-law passages and the old 16-class/eight-
+  icon counts. The corrected SP3 close is 19 registered classes and ten icons,
+  including the previously omitted `WaveRestorer`, `WaveSpawn`, and
+  `WaveRun`.
+- Replace the claim that room prefabs remain future scope: SP3 ships plain-root
+  chair, table, doorway, and `room_16x16` scenes and exercises drag, rotation,
+  repacking, recursive census, ownerless limbs, and inherited global heading in
+  the editor probe.

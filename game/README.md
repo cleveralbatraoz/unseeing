@@ -18,7 +18,8 @@ the visible game.
   Rust (`WaveCore` in `../rust/src/ffi.rs`, `../rust/src/flicker.rs`,
   `../rust/src/demo_tap.rs`); the only GDScript left in the project is
   test- and probe-facing, under `tests/`.
-- `scenes/level_01.tscn` — the level, authored in the editor: `WaveWall`
+- `scenes/level_01.tscn` and `scenes/level_02.tscn` — levels authored in the
+  editor: `WaveWall`
   and `WaveProp` boxes, the `SoundFan`, the companion `WaveCat`, and a
   typed `WaveSpawn` datum under a `WaveLevel` root that derives the technical
   contracts (wall centerlines and the occluder table sound is muffled
@@ -71,8 +72,11 @@ library yourself is the only way in today.
    shapes right there in the editor viewport, and a yellow triangle on a
    node means the level found a fault with it — hover the triangle to
    read why.
-2. Open `game/project.godot` in Godot and double-click
-   `scenes/level_01.tscn`.
+2. Open `game/project.godot` in Godot and double-click a level scene. To
+   make another level, create a `WaveLevel` scene; no code or GDScript belongs
+   in it. Select `UnseeingGame` in a copy of `main.tscn` and assign that scene
+   to its **Level Scene** resource picker. Leaving the picker empty is the
+   exact level-01 fallback.
 3. Walls: duplicate any `WaveWall` (Ctrl+D), drag it where you want,
    stretch it with its **Length** property. Walls must be axis-aligned:
    a wall's centerline is what the sight shaders count to decide what a
@@ -84,7 +88,11 @@ library yourself is the only way in today.
    reloaded — not while you're turning its gizmo in the viewport, so a
    wall you just rotated can sit at a free angle on screen for the rest
    of the session with no warning until the next reload.
-4. Furniture: duplicate a `WaveProp` and set its **Size**.
+4. Furniture: drag `scenes/props/chair.tscn` or `table.tscn` from the
+   FileSystem dock, or compose another plain `Node3D` scene from typed props.
+   A plain root is important: it groups content while Rust still recursively
+   discovers every solid beneath it. The engine-generated preview limbs are
+   deliberately ownerless and never become authored scene content.
 5. Sound sources: `SoundFan` and `SoundRadio` both have their voice in
    the Inspector — **Volume** (0 to 1, how loud and how far the waves
    reach), **Cadence** (seconds between waves) and **Wave Speed** (how
@@ -94,7 +102,17 @@ library yourself is the only way in today.
    radiates evenly in every direction instead of aiming one.
 6. The hero wakes at the first `WaveSpawn` in scene order — move or rotate it
    to edit the start; delete duplicates when their warning appears.
-7. Press play. The `WaveLevel` root derives everything technical from what
+7. For long walls and doorways, add `WaveRun`. **From** and **To** are X/Z
+   coordinates in its parent's local space. Each **Openings** pair is
+   `(absolute start coordinate on the selected axis, width)`; for example
+   `(6.5, 3)` removes 6.5..9.5 m. The dominant axis is used (X on a tie), a
+   diagonal warns and folds, and negative widths act as magnitudes. You can
+   also drag `scenes/rooms/doorway_8m.tscn` or `room_16x16.tscn` and rotate the
+   whole plain-root prefab normally.
+8. With a level scene open, use **Run Current Scene** (F6). This is the useful
+   authoring loop: Godot runs that `WaveLevel` directly. Use F5 only when you
+   want `main.tscn` and its **Level Scene** selection.
+9. The `WaveLevel` root derives everything technical from what
    you placed — wall centerlines and the occluder table every source's
    silhouette is muffled through, the demo tap, and the flat object id
    each box carries so its outline stays separate from whatever it
@@ -134,4 +152,4 @@ convenience, never a build dependency.
 | One outline per object, every seam drawn | done (`rust/src/oid_palette.rs` colours the touch graph; the shipped scene is pinned by `tests/level_test.gd`) |
 | gdUnit4 test framework migration | done (`tests/`, headless CLI in `ci/pipeline.sh`) |
 | Vendored framework pinned + reproducible | done (`ci/gdunit4.lock`, `ci/vendor-gdunit4.sh`; self-updater off) |
-| Editor-authored levels (the engine/content split) | done (`scenes/level_01.tscn` + WaveLevel-derived contracts; see Authoring levels) |
+| Editor-authored levels (the engine/content split) | done (two levels, reusable props/rooms, typed spawns/runs, and an Inspector level picker; see Authoring levels) |
