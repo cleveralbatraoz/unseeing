@@ -113,14 +113,43 @@ png = base64.b64decode(shot or "")
 _PNG_CHANNELS = {0: 1, 2: 3, 6: 4}
 
 
+def _paeth(a, b, c):
+    """The PNG Paeth predictor (spec §9.4): pick whichever of the left,
+    above, or above-left reconstructed byte is numerically closest to
+    a + b - c."""
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
 def decode_png(data):
-    """Minimal PNG reader: returns (width, height, raw scanline bytes,
-    channels, stride). Page.captureScreenshot does NOT always hand back
-    RGBA — Chrome drops the alpha channel (colour type 2, 3 bytes/pixel)
-    whenever the captured surface is fully opaque, which this game's
-    canvas always is (CSS pins its background to opaque black), so an
-    assumed 4-bytes/pixel stride silently misreads every row. Read the
-    real type instead of assuming one."""
+    """Minimal PNG reader: returns (width, height, DEFILTERED scanline
+    bytes — one leading zero byte per row, kept only so downstream slicing
+    stays `row * stride + 1 : (row + 1) * stride` — channels, stride).
+
+    Page.captureScreenshot does NOT always hand back RGBA — Chrome drops
+    the alpha channel (colour type 2, 3 bytes/pixel) whenever the captured
+    surface is fully opaque, which this game's canvas always is (CSS pins
+    its background to opaque black), so an assumed 4-bytes/pixel stride
+    silently misreads every row. Read the real type instead of assuming
+    one.
+
+    A PNG scanline also picks its OWN filter (spec §9, one of 5 types,
+    chosen per row to help compression) and is meaningless until that
+    filter is reversed. An earlier version of this reader skipped only the
+    leading filter-type byte and treated the rest as raw pixels — correct
+    only for filter 0 (None). Measured against real captures from this
+    exact gate: Chrome's encoder does NOT always choose 0 — a genuine
+    capture was seen using filter 3 (Average) — so every standard filter
+    (0-4) is reconstructed for real below, per the PNG spec's own
+    recurrence (each row references the row above it, both BEFORE this
+    row's own filter is applied). A filter byte outside 0-4 is invalid PNG
+    and fails loudly, naming the row and the byte found, rather than
+    guessing."""
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
     pos, w, h, colortype, idat = 8, 0, 0, None, b""
     while pos < len(data):
@@ -135,8 +164,40 @@ def decode_png(data):
         pos += 12 + ln
     assert colortype in _PNG_CHANNELS, f"unsupported PNG colour type {colortype}"
     channels = _PNG_CHANNELS[colortype]
-    raw = zlib.decompress(idat)
-    return w, h, raw, channels, w * channels + 1
+    filtered = zlib.decompress(idat)
+    row_bytes = w * channels
+    stride = row_bytes + 1
+    prev = bytearray(row_bytes)  # the "row above row 0" is defined as all zero
+    out = bytearray(stride * h)
+    for row in range(h):
+        base = row * stride
+        filt = filtered[base]
+        cur = bytearray(filtered[base + 1: base + stride])
+        if filt == 0:  # None
+            pass
+        elif filt == 1:  # Sub
+            for x in range(channels, row_bytes):
+                cur[x] = (cur[x] + cur[x - channels]) & 0xFF
+        elif filt == 2:  # Up
+            for x in range(row_bytes):
+                cur[x] = (cur[x] + prev[x]) & 0xFF
+        elif filt == 3:  # Average
+            for x in range(row_bytes):
+                a = cur[x - channels] if x >= channels else 0
+                cur[x] = (cur[x] + (a + prev[x]) // 2) & 0xFF
+        elif filt == 4:  # Paeth
+            for x in range(row_bytes):
+                a = cur[x - channels] if x >= channels else 0
+                c = prev[x - channels] if x >= channels else 0
+                cur[x] = (cur[x] + _paeth(a, prev[x], c)) & 0xFF
+        else:
+            raise AssertionError(
+                f"PNG row {row} carries filter byte {filt}, which is not a "
+                "valid PNG filter type (0-4) — corrupt or truncated data"
+            )
+        out[base + 1: base + stride] = cur
+        prev = cur
+    return w, h, bytes(out), channels, stride
 
 
 def count_lit(data):
