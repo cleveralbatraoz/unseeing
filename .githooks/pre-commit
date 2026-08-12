@@ -3,6 +3,9 @@
 # Checks only what is staged; the full-tree gate lives in ci/pipeline.sh.
 set -eu
 PATH="$PATH:$HOME/.local/bin"
+ROOT="$(git rev-parse --show-toplevel)"
+
+[ ! -x "$ROOT/ci/verify-superpowers.sh" ] || "$ROOT/ci/verify-superpowers.sh" metadata
 
 # Size guard. Git keeps every byte of every revision forever, so an accidental
 # export artifact is not a mistake you can take back — only rewrite history

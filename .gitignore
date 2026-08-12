@@ -12,6 +12,7 @@ game/override.cfg
 # Per-session agent worktrees. Unignored, `git add -A` stages these as
 # embedded-repo gitlinks with no .gitmodules — they clone as empty dirs.
 .claude/
+.worktrees/
 # Per-plan scratch for subagent-driven development: task briefs, implementer
 # reports, review packages, and the progress ledger. The skill self-ignores
 # only `.superpowers/sdd/`, and only once its first script has run — so the

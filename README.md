@@ -61,6 +61,11 @@ for the Web export. One-time setup: `git config core.hooksPath .githooks`
 and `pipx install "gdtoolkit==4.*"` — every commit is gated by `gdformat`
 and `gdlint`.
 
+Claude Code and Codex App/CLI contributors should follow the pinned,
+repository-local setup and upgrade guide in [docs/agent-workflow.md](docs/agent-workflow.md).
+The agent plugin is developer tooling and is excluded from game and deployment
+artifacts.
+
 - `rust/` — the wave/physics core as a GDExtension (godot-rust). Pure math
   lives in engine-free modules under plain `cargo test`; the `ffi` module is
   the only place engine types appear. `rust/build-wasm.sh` builds the

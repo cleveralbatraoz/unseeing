@@ -46,7 +46,7 @@ window/size/resizable=true
 ; first. NOTE this setting is absolute: --windowed and --resolution CANNOT
 ; override it (main.cpp reads this key after parsing them, and consumes the
 ; flags so no script can compensate). A windowed run — rendered probes,
-; --write-movie — needs game/override.cfg; see CLAUDE.md.
+; --write-movie — needs game/override.cfg; see AGENTS.md.
 window/size/mode=3
 ; ...but never in a browser, where the Fullscreen API is granted only
 ; inside a user gesture. A request at boot is silently denied — Godot's web

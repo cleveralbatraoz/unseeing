@@ -32,6 +32,10 @@ fi
 # stray export binary or an unignored worktree fails in milliseconds.
 echo "ci: repository hygiene"
 "$DIR/test/repo_hygiene.sh" || exit 1
+echo "ci: pinned Superpowers metadata"
+"$DIR/ci/verify-superpowers.sh" metadata || exit 1
+echo "ci: Superpowers verifier self-test"
+"$DIR/test/verify_superpowers_test.sh" || exit 1
 
 # Self-tests for two gates further down (#21, #28) — pure shell, no
 # Godot, so they belong up here with the other cheap invariant checks

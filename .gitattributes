@@ -11,3 +11,5 @@
 *.png binary
 *.wav binary
 *.ogg binary
+.gitmodules export-ignore
+tools/superpowers export-ignore
