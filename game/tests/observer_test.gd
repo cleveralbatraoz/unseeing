@@ -731,7 +731,7 @@ func test_wall_names_stay_pinned_to_the_table_they_name() -> void:
 ## answers rather than refusing. Read back from the real main scene — a
 ## window wired to nothing looks exactly like a working one until asked.
 func test_the_composition_root_injects_the_observer() -> void:
-	var main: UnseeingMain = auto_free(MAIN_SCENE.instantiate() as UnseeingMain)
+	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
 	add_child(main)
 	var snap: Dictionary = main.observer.snapshot(0.0)
 	assert_bool(snap.has("unavailable")).is_false()
@@ -1085,7 +1085,7 @@ func test_a_freed_hero_reports_unknown_rather_than_crashing() -> void:
 ## The composition root hands the observer the hero it built, exactly as
 ## it hands it the level and the eye.
 func test_the_composition_root_injects_the_hero() -> void:
-	var main: UnseeingMain = auto_free(MAIN_SCENE.instantiate() as UnseeingMain)
+	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
 	add_child(main)
 	var snap: Dictionary = main.observer.snapshot(0.0)
 	var hero: Dictionary = snap["hero"]

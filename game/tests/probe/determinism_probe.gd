@@ -32,7 +32,7 @@ const _PACKED_ARRAY_TYPES := [
 	TYPE_PACKED_COLOR_ARRAY,
 ]
 
-var _main: UnseeingMain
+var _main: UnseeingGame
 var _frames_left := FRAMES
 
 
@@ -43,7 +43,7 @@ func _initialize() -> void:
 		push_error("determinism probe: refusing an unseeded run — set UNSEEING_SEED=1")
 		quit(2)
 		return
-	_main = MAIN_SCENE.instantiate() as UnseeingMain
+	_main = MAIN_SCENE.instantiate() as UnseeingGame
 	root.add_child(_main)
 	process_frame.connect(_on_frame)
 

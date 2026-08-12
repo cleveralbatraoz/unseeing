@@ -38,7 +38,7 @@ var _failed := 0
 
 
 func _ready() -> void:
-	var main: UnseeingMain = MAIN.instantiate() as UnseeingMain
+	var main: UnseeingGame = MAIN.instantiate() as UnseeingGame
 	add_child(main)
 	var menu: SettingsMenu = main.settings
 	var screen := DisplayServer.screen_get_size(0)

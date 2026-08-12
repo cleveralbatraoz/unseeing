@@ -15,15 +15,15 @@ func after_test() -> void:
 	OS.set_environment("UNSEEING_DEMO", "")
 
 
-func _boot() -> UnseeingMain:
-	var main: UnseeingMain = auto_free(MAIN_SCENE.instantiate() as UnseeingMain)
+func _boot() -> UnseeingGame:
+	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
 	add_child(main)
 	return main
 
 
 ## Advance the simulated clock past the demo-arming checkpoint (now >= 0.5,
-## main.gd::_demo_tap) and let one _process run it.
-func _run_arming_check(main: UnseeingMain) -> void:
+## UnseeingGame::fire_demo_tap) and let one process() run it.
+func _run_arming_check(main: UnseeingGame) -> void:
 	main.now = 1.0
 	await get_tree().process_frame
 	await get_tree().process_frame
@@ -32,21 +32,21 @@ func _run_arming_check(main: UnseeingMain) -> void:
 func test_unseeing_seed_seeds_without_arming_the_demo() -> void:
 	OS.set_environment("UNSEEING_SEED", "1")
 	var main := _boot()
-	assert_int(main._flicker._rng.seed).is_equal(SEED_VALUE)
+	assert_int(main.flicker_seed()).is_equal(SEED_VALUE)
 	await _run_arming_check(main)
-	assert_bool(main._demo.armed).is_false()
+	assert_bool(main.demo_armed()).is_false()
 
 
 func test_unseeing_demo_still_seeds_and_arms() -> void:
 	OS.set_environment("UNSEEING_DEMO", "1")
 	var main := _boot()
-	assert_int(main._flicker._rng.seed).is_equal(SEED_VALUE)
+	assert_int(main.flicker_seed()).is_equal(SEED_VALUE)
 	await _run_arming_check(main)
-	assert_bool(main._demo.armed).is_true()
+	assert_bool(main.demo_armed()).is_true()
 
 
 func test_an_unswitched_boot_stays_unseeded_and_unarmed() -> void:
 	var main := _boot()
-	assert_int(main._flicker._rng.seed).is_not_equal(SEED_VALUE)
+	assert_int(main.flicker_seed()).is_not_equal(SEED_VALUE)
 	await _run_arming_check(main)
-	assert_bool(main._demo.armed).is_false()
+	assert_bool(main.demo_armed()).is_false()

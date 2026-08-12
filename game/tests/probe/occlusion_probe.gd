@@ -41,7 +41,7 @@ func _ready() -> void:
 	# readback below then starves; on top it renders at full rate.
 	DisplayServer.window_set_flag(DisplayServer.WINDOW_FLAG_ALWAYS_ON_TOP, true)
 	DisplayServer.window_move_to_foreground()
-	var main: UnseeingMain = MAIN.instantiate() as UnseeingMain
+	var main: UnseeingGame = MAIN.instantiate() as UnseeingGame
 	add_child(main)
 	await _settle(35)
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
@@ -75,7 +75,7 @@ func _ready() -> void:
 
 ## Peak brightness over `pts` (each with a small pixel tolerance, to catch
 ## a thin outline) across `frames` frames.
-func _peak_r(main: UnseeingMain, pts: Array[Vector3], frames: int) -> float:
+func _peak_r(main: UnseeingGame, pts: Array[Vector3], frames: int) -> float:
 	var cam := main.player.camera
 	var view := cam.get_viewport().get_visible_rect().size
 	var peak := 0.0
@@ -95,7 +95,7 @@ func _peak_r(main: UnseeingMain, pts: Array[Vector3], frames: int) -> float:
 	return peak
 
 
-func _hide_quad(main: UnseeingMain) -> void:
+func _hide_quad(main: UnseeingGame) -> void:
 	for c: Node in main.player.camera.get_children():
 		if c is MeshInstance3D and (c as MeshInstance3D).material_override == main.post_mat:
 			(c as MeshInstance3D).visible = false

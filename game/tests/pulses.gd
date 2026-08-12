@@ -1,5 +1,7 @@
 class_name Pulses
 extends RefCounted
+## Test-facing shim: the engine talks to WaveCore directly.
+##
 ## The wave system's GDScript face — a thin shim over the Rust WaveCore.
 ## A pulse is an expanding spherical wavefront in a fixed pool of 64 slots
 ## shared with BOTH shaders as uniform arrays; shaders derive everything

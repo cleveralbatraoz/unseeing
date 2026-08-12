@@ -200,8 +200,8 @@ func _lively_game() -> UnseeingGame:
 ## its own freshly-computed hash echoed back in the verdict — and the same
 ## blob with a doctored `hash` key is refused with a one-key `unavailable`
 ## naming both numbers. `restore_transaction_test.gd`'s round-trip and
-## lying-hash assertions, against the root directly rather than
-## `UnseeingMain`.
+## lying-hash assertions, against a directly-built root rather than one
+## loaded through `main.tscn`.
 func test_restore_blob_restores_a_fresh_capture_and_refuses_a_doctored_hash() -> void:
 	var game := await _lively_game()
 	var blob: Dictionary = game.observer.capture(game.now, game.capture_env())

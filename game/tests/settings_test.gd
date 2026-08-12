@@ -11,11 +11,11 @@ extends GdUnitTestSuite
 
 const MAIN_SCENE := preload("res://scenes/main.tscn")
 
-var _main: UnseeingMain
+var _main: UnseeingGame
 
 
 func before_test() -> void:
-	_main = auto_free(MAIN_SCENE.instantiate() as UnseeingMain)
+	_main = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
 	add_child(_main)
 
 

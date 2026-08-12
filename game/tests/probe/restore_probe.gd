@@ -38,7 +38,7 @@ const _PACKED_ARRAY_TYPES := [
 	TYPE_PACKED_COLOR_ARRAY,
 ]
 
-var _main: UnseeingMain
+var _main: UnseeingGame
 var _mode := ""
 var _blob_path := ""
 var _frames := 0
@@ -56,7 +56,7 @@ func _initialize() -> void:
 		push_error("restore probe: UNSEEING_RESTORE_MODE must be capture|restore")
 		quit(2)
 		return
-	_main = MAIN_SCENE.instantiate() as UnseeingMain
+	_main = MAIN_SCENE.instantiate() as UnseeingGame
 	root.add_child(_main)
 	process_frame.connect(_on_frame)
 

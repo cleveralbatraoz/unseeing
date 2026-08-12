@@ -12,8 +12,8 @@ const XRAY_SHADER := preload("res://shaders/data_xray.gdshader")
 const POST_SHADER := preload("res://shaders/hearing_post.gdshader")
 
 
-func _main() -> UnseeingMain:
-	var main: UnseeingMain = auto_free(MAIN_SCENE.instantiate() as UnseeingMain)
+func _main() -> UnseeingGame:
+	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
 	add_child(main)
 	return main
 
@@ -22,7 +22,7 @@ func _main() -> UnseeingMain:
 ## u_time/u_flick and the pulse arrays to every skin each frame.
 func test_five_wave_materials_share_pool_and_globals() -> void:
 	var main := _main()
-	var mats := main.wave_mats
+	var mats := main.wave_mats()
 	assert_int(mats.size()).is_equal(5)
 	assert_object(mats[0]).is_same(main.data_mat)
 	assert_object(mats[1]).is_same(main.source_mat)

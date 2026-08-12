@@ -69,16 +69,26 @@ else
   echo "gdscript-lint-scope: SKIP game/.godot/ exclusion (no import cache present — run godot --import first)"
 fi
 
-# --- the scope this gate always had must survive the widening ---
-if printf '%s\n' "$FOUND" | grep -q '/game/scripts/main\.gd$'; then
-  ok "game/scripts/ is still covered"
+# --- the scope this gate always had must survive the widening. This used
+# to prove BOTH game/scripts/ and game/tests/ with one sentinel file apiece;
+# game/scripts/main.gd is gone now that main.tscn boots the Rust
+# UnseeingGame node directly (the composition root left GDScript entirely),
+# and game/scripts/ carries no obligation to keep a permanent sentinel of
+# its own — it may legitimately shrink further as more of it moves into
+# rust/src/nodes/. What must still hold is game/tests/, proven here by two
+# different files so a directory-level regression can't hide behind one
+# coincidentally-untouched name: pulses.gd (the wave pool's test-facing
+# shim, relocated from game/scripts/ in the same change that retired
+# main.gd) and wiring_test.gd (a suite that was always here). ---
+if printf '%s\n' "$FOUND" | grep -q '/game/tests/pulses\.gd$'; then
+  ok "game/tests/ is still covered (pulses.gd)"
 else
-  bad "game/scripts/ dropped out of scope"
+  bad "game/tests/ dropped out of scope (pulses.gd)"
 fi
 if printf '%s\n' "$FOUND" | grep -q '/game/tests/wiring_test\.gd$'; then
-  ok "game/tests/ is still covered"
+  ok "game/tests/ is still covered (wiring_test.gd)"
 else
-  bad "game/tests/ dropped out of scope"
+  bad "game/tests/ dropped out of scope (wiring_test.gd)"
 fi
 
 exit "$FAIL"

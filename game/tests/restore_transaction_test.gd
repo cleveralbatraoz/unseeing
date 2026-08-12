@@ -15,8 +15,8 @@ const MAIN_SCENE := preload("res://scenes/main.tscn")
 ##
 ## Duplicated from `restore_test.gd::_boot_ticked`, which is where this
 ## idiom lives — the two suites are one story told from two sides.
-func _boot_ticked() -> UnseeingMain:
-	var main: UnseeingMain = auto_free(MAIN_SCENE.instantiate() as UnseeingMain)
+func _boot_ticked() -> UnseeingGame:
+	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
 	add_child(main)
 	# one real process frame so sources book appointments and the viewmodel
 	# exists — capture refuses an unticked world by design
@@ -53,7 +53,7 @@ func _boot_ticked() -> UnseeingMain:
 ## without this carries an empty queue, and the restore's replay of it would
 ## be covered by nothing at all. The three float arguments are deliberately
 ## unequal, so a transposed pair cannot restore to the same numbers.
-func _lively(main: UnseeingMain) -> void:
+func _lively(main: UnseeingGame) -> void:
 	main.now += 1.0
 	await _one_frame()
 	main.player.look(Vector2(0.0, 100.0))
@@ -65,13 +65,13 @@ func _lively(main: UnseeingMain) -> void:
 
 ## One wave asked for and not yet emitted — a sound that WILL happen, which
 ## is why a blob carries the out-tray at all. Distinct values in every lane.
-func _queue_one(main: UnseeingMain, at: Vector3) -> void:
+func _queue_one(main: UnseeingGame, at: Vector3) -> void:
 	main.player.queue_wave(2, at, 6.25, 5.5, 0.75, 3, Vector3.UP)
 
 
 ## One process frame and one physics frame — the pair every clock in the
 ## game needs to see a change. The composition root advances `now` in
-## `_process` and hands it to the hero and the cats there; the cane, the
+## `process()` and hands it to the hero and the cats there; the cane, the
 ## footsteps and every reflection cast run on the PHYSICS tick, off the copy
 ## that frame left them.
 func _one_frame() -> void:

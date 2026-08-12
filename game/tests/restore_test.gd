@@ -1,16 +1,16 @@
 extends GdUnitTestSuite
 ## The restore doors against the live scene. Each test freezes nothing —
-## it awaits real process/physics frames and lets `main._process` drive
-## the clock, never a hand-stepped one.
+## it awaits real process/physics frames and lets `UnseeingGame::process`
+## drive the clock, never a hand-stepped one.
 
 const MAIN_SCENE := preload("res://scenes/main.tscn")
 
 
 func test_a_restored_cat_resumes_the_same_life() -> void:
-	var main: UnseeingMain = auto_free(MAIN_SCENE.instantiate() as UnseeingMain)
+	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
 	add_child(main)
-	var cat: WaveCat = main.cats[0]
-	# let the cat live a little, on real physics — main's own _process
+	var cat: WaveCat = main.cats()[0]
+	# let the cat live a little, on real physics — main's own process()
 	# advances the clock and ticks every cat in the tree each frame, so
 	# no manual clock-driving is needed here (see observer_test's helpers
 	# for the same idiom)
@@ -30,8 +30,8 @@ func test_a_restored_cat_resumes_the_same_life() -> void:
 ## A world that has actually run: sources hold appointments, the hero body
 ## has built its viewmodel, and every clock has a reading. Capture refuses
 ## an unticked world by design, so every capture test starts here.
-func _boot_ticked() -> UnseeingMain:
-	var main: UnseeingMain = auto_free(MAIN_SCENE.instantiate() as UnseeingMain)
+func _boot_ticked() -> UnseeingGame:
+	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
 	add_child(main)
 	# one real process frame so sources book appointments and the
 	# viewmodel exists — capture refuses an unticked world by design
@@ -51,7 +51,7 @@ func test_capture_is_total_and_carries_its_own_hash() -> void:
 	assert_bool(blob.has("unavailable")).is_false()
 	assert_int(blob["format_version"]).is_equal(1)
 	assert_int((blob["slots"] as Array).size()).is_equal(64)
-	assert_int((blob["cats"] as Array).size()).is_equal(main.cats.size())
+	assert_int((blob["cats"] as Array).size()).is_equal(main.cats().size())
 	assert_str(blob["hash"]).has_length(16)
 	# hero group carries the viewmodel clocks snapshot() never had
 	var vm: Dictionary = blob["hero"]["viewmodel"]

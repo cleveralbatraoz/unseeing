@@ -31,9 +31,8 @@
 //! and is internally consistent — it simply is not the instant the file
 //! claims to hold.
 //!
-//! `main.tscn` still boots `main.gd`, unchanged: this class exists in the
-//! tree of registered classes but nothing in the shipped path instantiates
-//! it. That switch is a later step.
+//! `main.tscn` boots this class directly; the retired GDScript composition
+//! root is gone, so the shipped path has one owner for this wiring.
 //!
 //! Loud totality on every resource load: a shader or the level scene that
 //! fails to load prints `"UnseeingGame: …"` and `ready()` returns, wiring
@@ -636,7 +635,10 @@ impl UnseeingGame {
 
     /// The "hearing" pass: a fullscreen quad glued to the camera. It
     /// edge-detects the data the world pass wrote and ray-traces the wave
-    /// shells — the only two ways anything becomes visible.
+    /// shells — the only two ways anything becomes visible. The browser
+    /// smoke's `?gprobe` switch hides this quad so its screenshot can read
+    /// the raw data pass (reveal/label/distance), matching the native GPU
+    /// probe's own temporary hide.
     fn setup_post_quad(&self, mut camera: Gd<Camera3D>) {
         let mut quad = MeshInstance3D::new_alloc();
         let mut mesh = QuadMesh::new_gd();
@@ -648,8 +650,21 @@ impl UnseeingGame {
         // thinks this is.
         quad.set_extra_cull_margin(16384.0);
         quad.set_position(Vector3::new(0.0, 0.0, -1.0));
+        let web = Os::singleton().has_feature("web");
+        let search = web.then(web_location_search).flatten();
+        quad.set_visible(post_quad_visible(web, search.as_deref()));
         camera.add_child(&quad);
     }
+}
+
+/// Whether the hearing-pass quad should be shown for this launch. Only the
+/// browser gate's explicit `gprobe` query hides it; the same spelling on a
+/// native run is inert, and a missing bridge/search is the safe visible
+/// default. Kept pure so deleting the switchover's old GDScript cannot
+/// silently delete this web-only contract with it.
+#[must_use]
+fn post_quad_visible(web: bool, search: Option<&str>) -> bool {
+    !web || !search.is_some_and(|query| query.contains("gprobe"))
 }
 
 /// `window.location.search`, read through the JavaScriptBridge singleton —
@@ -692,4 +707,17 @@ fn dict_i64(env: &VarDictionary, key: &str) -> i64 {
     env.get(key)
         .and_then(|v| v.try_to::<i64>().ok())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::post_quad_visible;
+
+    #[test]
+    fn gprobe_hides_only_the_web_post_quad() {
+        assert!(!post_quad_visible(true, Some("?demo&gprobe")));
+        assert!(post_quad_visible(true, Some("?demo")));
+        assert!(post_quad_visible(true, None));
+        assert!(post_quad_visible(false, Some("?gprobe")));
+    }
 }
