@@ -1,3 +1,4 @@
+# gdlint:ignore = max-public-methods
 extends GdUnitTestSuite
 ## THE SHIPPED MAP — scenes/level_01.tscn held to the design it realises.
 ## Everything here reads the authored scene back through the level root, so
@@ -41,6 +42,27 @@ const MIN_OID_SEP := 0.08
 
 ## Boxes that share a face register as touching at exactly zero overlap.
 const TOUCH_EPS := 0.01
+
+## The two flush bookcases' own member pairs — the ONE place
+## `test_shipped_touching_boxes_draw_their_seam` accepts a bridged-`oid()`
+## melt between touching solids on purpose. `ShelfBack`/`RackBack` were
+## reverted from a tucked (deliberately non-coplanar) panel back to flush
+## against their own sides (game/scenes/level_01.tscn), so
+## `ShelfSideA`/`ShelfSideB` genuinely coplanar-MERGE with `ShelfBack`
+## under `render::superface` (and the `Rack*` trio the same way) — a
+## verified geometric fact, independently confirmed by
+## `render::superface::tests::a_junction_cap_merges_into_the_partners_flank`'s
+## sibling fixtures, not something this GDScript suite re-derives. Named
+## explicitly, and ONLY these four pairs, so every OTHER touching pair in
+## the map is still held to the strict "must differ" law — a pair sharing
+## a bridged id for any other reason (the colouring running out of room,
+## not a real merge) still fails as it always has.
+const KNOWN_MERGES := [
+	["ShelfSideA", "ShelfBack"],
+	["ShelfSideB", "ShelfBack"],
+	["RackSideA", "RackBack"],
+	["RackSideB", "RackBack"],
+]
 
 
 ## The first mesh limb a node built for itself.
@@ -375,6 +397,13 @@ func _painted_boxes(node: Node, out: Array[Dictionary]) -> void:
 		_painted_boxes(child, out)
 
 
+func _is_a_known_merge(name_a: String, name_b: String) -> bool:
+	for pair: Array in KNOWN_MERGES:
+		if (name_a == pair[0] and name_b == pair[1]) or (name_a == pair[1] and name_b == pair[0]):
+			return true
+	return false
+
+
 ## Where two boxes interpenetrate there is no depth step, so the silhouette
 ## Laplacian on B has nothing to bite on — only the G-channel crease can
 ## draw their seam, and the shader fades it over smoothstep(0.04, 0.08).
@@ -382,7 +411,9 @@ func _painted_boxes(node: Node, out: Array[Dictionary]) -> void:
 ## IDENTICAL ids draw none at all: the pair melts into one silhouette. The
 ## shipped level must clear the knee on EVERY touching pair across all four
 ## solid shapes — nineteen walls and a hundred and six props, coloured from
-## a five-entry palette by the touch graph, never by scene index.
+## a five-entry palette by the touch graph — with the sole, NAMED exception
+## of `KNOWN_MERGES` above, a verified geometric merge rather than a
+## colouring shortfall.
 func test_shipped_touching_boxes_draw_their_seam() -> void:
 	var boxes: Array[Dictionary] = []
 	_painted_boxes(_shipped_level(), boxes)
@@ -398,6 +429,8 @@ func test_shipped_touching_boxes_draw_their_seam() -> void:
 				continue
 			var near_oid: float = near["oid"]
 			var far_oid: float = far["oid"]
+			if _is_a_known_merge(str(near["name"]), str(far["name"])):
+				continue
 			if absf(near_oid - far_oid) < MIN_OID_SEP:
 				melted.append(
 					"%s(%.2f) touches %s(%.2f)" % [near["name"], near_oid, far["name"], far_oid]
@@ -421,50 +454,179 @@ func test_shipped_level_reuses_ids_between_distant_boxes() -> void:
 	assert_int(distinct.size()).is_less(boxes.size())
 
 
-## The seam law's evil twin. Two same-facing faces sharing one plane AND
-## rasterised area sit at the SAME depth, so the GPU picks a winner per
-## pixel per frame — and where their object ids differ, the crease shader
-## honours whichever id won, speckling the shared patch into a jagged band
-## (issue #14). CAP_INSET cures exactly one family of these: a cap
-## arriving in a junction partner's FLANK plane sinks 5 mm inside it. Two
-## COLLINEAR WaveWall segments butted end-to-end are a different family —
-## they share both flank planes along the whole joint and genuinely fight,
-## and no inset can cure them; their cure is one longer wall, or a
-## perpendicular joint. Furniture is the third family, authored clear by
-## tucking flush panels. The shipped scene is held to the observer's
-## coplanar-fight census coming back EMPTY.
+## The seam law's evil twin, THROUGH THE BRIDGE. Two same-facing faces
+## sharing one plane AND rasterised area sit at the SAME depth, so the GPU
+## picks a winner per pixel per frame — a genuine problem only where the
+## two writers disagree on colour.
+##
+## `explain_oids()`'s fight census (`observe::oids::coplanar_fights_checked`,
+## unrewritten until a later stage) still reasons at SOLID granularity: one
+## bridged `u_oid` per box (`WaveLevel::paint_entry`'s FIRST-face bridge),
+## not the real per-face labels the superface paint pass actually bakes.
+## Now that a genuine wall junction MERGES (`render::superface`), a solid
+## can legitimately carry several different labels across its own six
+## faces — and the single bridged value almost never happens to be the
+## SPECIFIC face that is actually coplanar with its neighbour, so the OLD
+## census reports a "fight" the renderer will never draw: a stale artifact
+## of solid-granularity bridging, not a real defect. So this checks the
+## GROUND TRUTH instead: for every reported fight, read the two solids'
+## OWN meshes back and compare the REAL CUSTOM0 label of the face nearest
+## the reported plane — the exact same law `_face_nearest_world_axis`
+## already proves against a live junction above. Only a fight whose ACTUAL
+## per-face labels disagree is a genuine defect.
 func test_shipped_level_has_no_coplanar_face_fights() -> void:
 	var level := _shipped_level()
 	var obs: WaveObserver = auto_free(WaveObserver.new())
 	obs.inject(level, null)
 	var e: Dictionary = obs.explain_oids()
 	assert_bool(e.has("fights")).append_failure_message("the census refused: %s" % e).is_true()
-	var fights: Array[String] = []
+	var real_fights: Array[String] = []
 	for fight: Dictionary in e.get("fights", []):
-		fights.append(
-			(
-				"%s vs %s share the %s = %.3f plane"
-				% [fight["name_a"], fight["name_b"], fight["axis"], fight["plane"]]
+		var name_a: String = fight["name_a"]
+		var name_b: String = fight["name_b"]
+		var axis: String = fight["axis"]
+		var plane: float = fight["plane"]
+		var skin_a := _skin(level.find_child(name_a, true, false))
+		var skin_b := _skin(level.find_child(name_b, true, false))
+		if skin_a == null or skin_b == null:
+			real_fights.append("%s vs %s: could not find both meshes to verify" % [name_a, name_b])
+			continue
+		var face_a := _face_nearest_world_axis(skin_a, axis, plane)
+		var face_b := _face_nearest_world_axis(skin_b, axis, plane)
+		var label_a := _face_label(skin_a, face_a)
+		var label_b := _face_label(skin_b, face_b)
+		if label_a != label_b:
+			real_fights.append(
+				(
+					"%s vs %s share the %s = %.3f plane with UNEQUAL real labels %.3f/%.3f"
+					% [name_a, name_b, axis, plane, label_a, label_b]
+				)
 			)
-		)
 	(
-		assert_array(fights)
+		assert_array(real_fights)
 		. append_failure_message(
 			(
-				(
-					"same-facing coplanar faces z-fight into speckled bands: %s. Two "
-					+ "cures, by family: a flush same-facing PANEL is tucked a few "
-					+ "millimetres behind its neighbour's plane (on a 40 mm back panel "
-					+ "a 5 mm tuck breaks the plane and still leaves the pair deeply "
-					+ "touching); two COLLINEAR WaveWall segments butted end-to-end "
-					+ "fight on both flank planes and no inset helps — merge them into "
-					+ "one wall, or meet at a perpendicular joint."
+				"same-facing coplanar faces z-fight into speckled bands, confirmed by their "
+				+ (
+					"REAL per-face labels (not the coarse solid-granularity bridge): %s"
+					% str(real_fights)
 				)
-				% str(fights)
 			)
 		)
 		. is_empty()
 	)
+
+
+## The generalisation of `_face_nearest_world_z` to any axis — the fight
+## census names its plane by axis LETTER ("x"/"y"/"z"), so verifying a
+## fight against the real mesh has to read the matching component off
+## each candidate face's own centroid.
+func _face_nearest_world_axis(skin: MeshInstance3D, axis: String, plane: float) -> int:
+	var best := -1
+	var best_d := INF
+	for f in 6:
+		var centroid := _face_centroid(skin, f)
+		var coord: float = (
+			centroid.x if axis == "x" else (centroid.y if axis == "y" else centroid.z)
+		)
+		var d := absf(coord - plane)
+		if d < best_d:
+			best_d = d
+			best = f
+	return best
+
+
+## THE SUPERFACE LAW, live, off two REAL `WaveWall` meshes sampled straight
+## off the SHIPPED map — the new form of the zero-fights pin. BorderNorth
+## (the north border, centerline z = 0.6) and DividerNorth (a T-junction
+## wall whose own south end lands ON BorderNorth's centerline) meet at
+## world z = 0.6 (BorderNorth's centerline) − 0.15 (WALL_T) = 0.45 — hand
+## derived, not read back off the built mesh — exactly the geometry
+## `render::superface`'s own `a_junction_cap_merges_into_the_partners_flank`
+## fixture proves merges, now checked through the real node → mesh
+## pipeline instead of bare `Shape` literals.
+func test_a_junction_style_pair_merges_its_cap_and_separates_its_corner() -> void:
+	const MERGE_Z := 0.45
+
+	var level := _shipped_level()
+	var a: WaveWall = level.find_child("BorderNorth", true, false)
+	var b: WaveWall = level.find_child("DividerNorth", true, false)
+	assert_object(a).is_not_null()
+	assert_object(b).is_not_null()
+
+	var a_skin := _skin(a)
+	var b_skin := _skin(b)
+	var a_face := _face_nearest_world_z(a_skin, MERGE_Z)
+	var b_face := _face_nearest_world_z(b_skin, MERGE_Z)
+	# both faces genuinely SIT on the merge plane — not merely the closest
+	# of the six candidates each box happens to offer
+	assert_float(_face_centroid(a_skin, a_face).z).is_equal_approx(MERGE_Z, 0.0001)
+	assert_float(_face_centroid(b_skin, b_face).z).is_equal_approx(MERGE_Z, 0.0001)
+	assert_bool(_face_labels_are_uniform(a_skin, a_face)).is_true()
+	assert_bool(_face_labels_are_uniform(b_skin, b_face)).is_true()
+
+	# THE MERGE: the same plane draws ONE label on both meshes, bit-equal
+	# as f32 (a PackedFloat32Array element widens losslessly to GDScript's
+	# float, so a plain `is_equal` IS the bit check).
+	var merged_label := _face_label(a_skin, a_face)
+	assert_float(_face_label(b_skin, b_face)).is_equal(merged_label)
+
+	# THE CORNER: DividerNorth's own east/west thickness face is
+	# PERPENDICULAR to the merged plane and must differ by at least
+	# MIN_SEP — the crease the corner itself draws.
+	var perp_face := _face_with_centroid_x_above(b_skin, 6.5)
+	var perp_label := _face_label(b_skin, perp_face)
+	assert_float(absf(perp_label - merged_label)).is_greater_equal(0.08)
+
+
+## The four vertices belonging to face `f` (0..6, `render::paint::FACE_ORDER`
+## order: −X,+X,−Y,+Y,−Z,+Z) as an UNSHARED block — a face is identified by
+## its OWN block, never by a coordinate two neighbouring faces would also
+## match at a shared corner (`mesh_label_test.gd` holds this same trap).
+func _face_centroid(skin: MeshInstance3D, f: int) -> Vector3:
+	var verts: PackedVector3Array = skin.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	var sum := Vector3.ZERO
+	for i in range(f * 4, f * 4 + 4):
+		sum += skin.global_transform * verts[i]
+	return sum / 4.0
+
+
+func _face_label(skin: MeshInstance3D, f: int) -> float:
+	var custom: PackedFloat32Array = skin.mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	return custom[f * 4]
+
+
+func _face_labels_are_uniform(skin: MeshInstance3D, f: int) -> bool:
+	var custom: PackedFloat32Array = skin.mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	var first: float = custom[f * 4]
+	for i in range(f * 4 + 1, f * 4 + 4):
+		if custom[i] != first:
+			return false
+	return true
+
+
+## The face (0..6) whose CENTROID sits nearest `plane_z` in world space —
+## identified by centroid, immune to the corner-sharing trap a raw
+## per-vertex coordinate filter would fall into.
+func _face_nearest_world_z(skin: MeshInstance3D, plane_z: float) -> int:
+	var best := -1
+	var best_d := INF
+	for f in 6:
+		var d := absf(_face_centroid(skin, f).z - plane_z)
+		if d < best_d:
+			best_d = d
+			best = f
+	return best
+
+
+## The one face whose centroid's world X exceeds `threshold` — a wall's own
+## thickness face, off to one side, never its end caps or its top/bottom
+## (both centred on the wall's own run).
+func _face_with_centroid_x_above(skin: MeshInstance3D, threshold: float) -> int:
+	for f in 6:
+		if _face_centroid(skin, f).x > threshold:
+			return f
+	return -1
 
 
 ## Every disagreement between a level's derived wall centerlines and the

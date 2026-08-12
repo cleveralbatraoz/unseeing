@@ -96,17 +96,20 @@ where
 }
 
 /// What the level needs of any solid, whatever shape it is.
+///
+/// Used to carry `set_oid`/`oid` too — the per-instance flat object id the
+/// old colouring painted every solid with. The derive-time superface paint
+/// pass (`render::paint`) replaced that with a real per-face label baked
+/// into each mesh's `CUSTOM0` channel, read back off the mesh itself
+/// (`Skin::oid`/`Skin::set_oid`, still the one source of truth for the
+/// `u_oid` bridge every solid still carries until the shader stops reading
+/// it), so the trait no longer needs to speak for it at all — every solid's
+/// own `#[func] oid()` reads its `Skin` directly instead of going through
+/// this trait.
 pub trait WaveSolid {
     /// Take the world skin — the data-writing material the level deals to
     /// everything that renders at real depth.
     fn set_material(&mut self, mat: &Gd<Material>);
-
-    /// Take the flat object id the colouring chose for this solid.
-    fn set_oid(&mut self, oid: f64);
-
-    /// The id this solid currently carries, read back off its skin.
-    /// [`oid_palette::NO_OID`] before a level has painted it.
-    fn oid(&self) -> f64;
 }
 
 /// The half of every solid that is identical: the one mesh limb the data
@@ -300,6 +303,44 @@ pub(crate) struct BuiltBox {
 
 /// Build the mesh + collider pair for a box of `size` centered `lift`
 /// above the owner's origin.
+/// A Godot vector's three f32 lanes, widened to the `[f64; 3]` triples
+/// `render::faces` speaks — the one conversion boundary between the engine
+/// layer's f32 geometry and the pure render subsystem's f64 vocabulary.
+pub(crate) fn to_f64_3(v: Vector3) -> [f64; 3] {
+    [f64::from(v.x), f64::from(v.y), f64::from(v.z)]
+}
+
+/// A basis's three columns, widened the same way — the world-space
+/// `render::Shape::Box3d` basis every static solid's `world_shape` builds.
+pub(crate) fn basis_columns_f64(b: Basis) -> [[f64; 3]; 3] {
+    [
+        to_f64_3(b.col_a()),
+        to_f64_3(b.col_b()),
+        to_f64_3(b.col_c()),
+    ]
+}
+
+/// Bake the derive-time paint pass's chosen labels onto one solid: rewrite
+/// its mesh's placeholder CUSTOM0 ordinals with the real per-face labels
+/// ([`render::paint::relabel`]), and bridge the FIRST of them onto the
+/// per-instance `u_oid` uniform the shader still reads until a later stage
+/// flips it to read `CUSTOM0` directly — so the game keeps rendering
+/// identically at every step of the migration. `mesh` is `None` for a
+/// solid whose knob was dragged before `_ready` built one; a no-op, the
+/// same as every other builder call in this module.
+pub(crate) fn paint_solid(
+    skin: &mut Skin,
+    mesh: Option<&mut Gd<ArrayMesh>>,
+    labels_by_ordinal: &[f32],
+) {
+    if let Some(mesh) = mesh {
+        render::paint::relabel(mesh, labels_by_ordinal);
+    }
+    if let Some(&first) = labels_by_ordinal.first() {
+        skin.set_oid(f64::from(first));
+    }
+}
+
 pub(crate) fn build_box(size: Vector3, lift: Vector3, mat: Option<&Gd<Material>>) -> BuiltBox {
     let mesh = render::paint::labelled_box(size, Vector3::ZERO, BOX_ORDINALS);
     let mut shape = BoxShape3D::new_gd();

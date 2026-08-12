@@ -79,12 +79,11 @@ func _world_box(body: Node) -> AABB:
 
 
 ## The centerline the DRAWN box implies: its long horizontal axis pulled in
-## by the buried-cap run pad at each end — a half-thickness minus the 5 mm
-## cap inset that keeps a wall's end faces out of its neighbours' planes —
-## laid down the middle of its short one. A wall's occluder and its box are
-## the same object seen twice, so this is what wall_segments() has to say.
+## by a half-thickness at each end, laid down the middle of its short one.
+## A wall's occluder and its box are the same object seen twice, so this is
+## what wall_segments() has to say.
 func _drawn_centerline(box: AABB) -> Vector4:
-	const END_PAD := 0.145
+	const END_PAD := 0.15
 	var lo := box.position
 	var hi := box.position + box.size
 	if box.size.x >= box.size.z:
@@ -137,16 +136,17 @@ func _slabs(level: WaveLevel) -> Array[StaticBody3D]:
 	return out
 
 
-## A wall is its centerline padded by a half-thickness on each flank and by
-## a half-thickness MINUS the 5 mm cap inset past each end — the end caps
-## sit buried inside their corner partners instead of flush in their
-## planes, so coplanar same-facing faces cannot z-fight — floor to ceiling,
-## mesh and collider the same box, risen from the floor node.
+## A wall is its centerline padded by a half-thickness on every side —
+## flanks AND run ends alike — floor to ceiling, mesh and collider the
+## same box, risen from the floor node. A junction cap therefore lands
+## exactly flush in a partner's flank plane; that coincidence is now the
+## superface merge law's own MERGE candidate (`render::superface`), not a
+## z-fight to dodge.
 func test_wall_builds_box_and_collider_from_length() -> void:
 	var wall: WaveWall = auto_free(_wall(7.4, Vector3(2, 0, 3), false))
 	add_child(wall)
-	assert_vector(_box(wall)).is_equal(Vector3(7.69, 3, 0.3))
-	assert_vector(_box_shape(wall).size).is_equal(Vector3(7.69, 3, 0.3))
+	assert_vector(_box(wall)).is_equal(Vector3(7.7, 3, 0.3))
+	assert_vector(_box_shape(wall).size).is_equal(Vector3(7.7, 3, 0.3))
 	assert_vector(_skin(wall).position).is_equal(Vector3(0, 1.5, 0))
 
 
@@ -235,7 +235,7 @@ func test_a_scaled_room_cannot_stretch_a_wall_past_its_occluder() -> void:
 		. append_failure_message("segment %s vs drawn box %s" % [level.wall_segments()[0], box])
 		. is_equal_approx(_drawn_centerline(box), Vector4.ONE * 0.001)
 	)
-	assert_vector(box.size).is_equal_approx(Vector3(0.3, 3, 4.29), Vector3.ONE * 0.001)
+	assert_vector(box.size).is_equal_approx(Vector3(0.3, 3, 4.3), Vector3.ONE * 0.001)
 	assert_float(box.position.y).is_equal_approx(0.0, 0.001)
 
 
@@ -261,9 +261,9 @@ func test_a_duplicated_wall_does_not_double_its_geometry() -> void:
 	(
 		assert_vector(_box(copy))
 		. append_failure_message("a ghost mesh is drawn ahead of the one the knob reshapes")
-		. is_equal(Vector3(9.29, 3, 0.3))
+		. is_equal(Vector3(9.3, 3, 0.3))
 	)
-	assert_vector(_box(wall)).is_equal(Vector3(4.29, 3, 0.3))
+	assert_vector(_box(wall)).is_equal(Vector3(4.3, 3, 0.3))
 
 
 ## The length knob reshapes a placed wall live — mesh and collider
@@ -272,8 +272,8 @@ func test_wall_length_knob_reshapes_live() -> void:
 	var wall: WaveWall = auto_free(_wall(4.0, Vector3.ZERO, false))
 	add_child(wall)
 	wall.length = 9.0
-	assert_vector(_box(wall)).is_equal(Vector3(9.29, 3, 0.3))
-	assert_vector(_box_shape(wall).size).is_equal(Vector3(9.29, 3, 0.3))
+	assert_vector(_box(wall)).is_equal(Vector3(9.3, 3, 0.3))
+	assert_vector(_box_shape(wall).size).is_equal(Vector3(9.3, 3, 0.3))
 
 
 ## A wall's one knob answers a minus sign the way every prop knob does.
@@ -286,11 +286,11 @@ func test_a_negative_wall_length_folds_instead_of_inverting_the_wall() -> void:
 	var wall := _wall(-4.0, Vector3(3, 0, 1), false)
 	var level := _level_holding(wall)
 	assert_float(wall.length).is_equal_approx(4.0, 0.001)
-	assert_vector(_box(wall)).is_equal(Vector3(4.29, 3, 0.3))
+	assert_vector(_box(wall)).is_equal(Vector3(4.3, 3, 0.3))
 	(
 		assert_vector(_box_shape(wall).size)
 		. append_failure_message("the collider kept its own size while the mesh was reshaped")
-		. is_equal(Vector3(4.29, 3, 0.3))
+		. is_equal(Vector3(4.3, 3, 0.3))
 	)
 	(
 		assert_vector(level.wall_segments()[0])
@@ -838,3 +838,51 @@ func test_the_shipped_map_keeps_every_solid_above_its_floor() -> void:
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
 	assert_int(level.sunken_solids()).is_equal(0)
+
+
+## THE WALL-MERGE VOICE: a crate meant to stand flush against a wall's own
+## south face, but built 2 cm deeper than the wall is thick — so instead of
+## stopping at the wall's near flank it reaches exactly through to the far
+## one and pokes 2 cm out the other side. Its south face lands EXACTLY on
+## the wall's own south face (same plane the T-junction cap merge uses:
+## `render::superface`'s merge law needs millimetre precision, not a bare
+## "2 cm into the wall" — a face merely nudged 2 cm off a wall's plane is
+## no longer coplanar with anything and would NOT merge at all), which is
+## what actually shares its cluster with the wall and triggers the voice.
+##
+## Wall: length 4, non-vertical (runs along X, position (0,0,0)) — its
+## thickness spans z −0.15..0.15 (WALL_T = 0.15, rust/src/level_plan.rs).
+## Crate: size (0.4, 0.4, 0.32), position (0, 0.5, 0.01) — z spans
+## −0.15..0.17, its own south face landing exactly at z = −0.15.
+func test_a_solid_merged_into_a_wall_warns_naming_it() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_wall(4.0, Vector3.ZERO, false))
+	var crate := WaveProp.new()
+	crate.name = "WallCrate"
+	crate.size = Vector3(0.4, 0.4, 0.32)
+	crate.position = Vector3(0.0, 0.5, 0.01)
+	level.add_child(crate)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await (assert_error(enter).is_push_warning(
+		(
+			"WaveLevel: 'WallCrate' overlaps the wall structure and is drawn as part of it — "
+			+ "its faces take the walls' labels and its pierce lines draw. Pull it clear of the "
+			+ "wall if that was a nudge, or leave it if the bump is authored."
+		)
+	))
+
+
+## The silence half: the shipped map furnishes 72 props, 27 columns and 7
+## wedges around 19 walls, and none of them is authored to poke through a
+## wall's own plane — entering the tree says nothing about a merge (a
+## stricter pin than the general shader-ceiling silence test above: this
+## one is about the wall-merge voice specifically, and would catch a
+## regression there even if some future map earns a legitimate warning
+## elsewhere).
+func test_the_shipped_level_says_nothing_about_wall_merges() -> void:
+	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await assert_error(enter).is_success()

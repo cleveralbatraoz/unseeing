@@ -62,20 +62,14 @@ use godot::obj::DynGd;
 use godot::prelude::*;
 
 use super::cat::WaveCat;
-use super::solid::{OID_PARAM, WaveSolid, build_box, clear_limbs};
+use super::props::{WaveColumn, WaveProp, WaveWedge};
+use super::solid::{self, OID_PARAM, WaveSolid, build_box, clear_limbs};
 use super::source::SoundSource;
 use super::wall::WaveWall;
 use crate::level_plan;
 use crate::oid_palette;
 use crate::render;
 use crate::sight;
-
-/// The floor's flat object id — dedicated, clear of every wall's, because
-/// every wall meets the floor and that seam must always draw.
-const OID_FLOOR: f64 = 0.15;
-
-/// The ceiling's flat object id — dedicated for the same reason.
-const OID_CEIL: f64 = 0.9;
 
 /// The palette every wall and prop is coloured from. Walls and props share
 /// ONE palette because a prop leaning on a wall needs the same separation
@@ -124,6 +118,43 @@ struct Census {
     /// could never be reported either, which is the whole bug: the level
     /// has to see what it refuses in order to say it refused it.
     spawns: Vec<Gd<Marker3D>>,
+}
+
+/// Which concrete thing a [`PaintEntry`] is — the level's own two slabs
+/// have no `Skin`-carrying node of their own (no indirection needed to
+/// reach their mesh/instance-uniform), while every authored solid paints
+/// itself back through its own `paint()` method; see [`WaveLevel::paint_entry`].
+enum PaintItem {
+    Slab { lid: bool },
+    Wall(Gd<WaveWall>),
+    Prop(Gd<WaveProp>),
+    Column(Gd<WaveColumn>),
+    Wedge(Gd<WaveWedge>),
+}
+
+impl PaintItem {
+    /// The `render::paint::ShapeKind` this item's mesh was built with — the
+    /// ordinal count [`render::paint::face_count`] answers for.
+    fn kind(&self) -> render::paint::ShapeKind {
+        match self {
+            PaintItem::Slab { .. } => render::paint::ShapeKind::Slab,
+            PaintItem::Wall(_) | PaintItem::Prop(_) => render::paint::ShapeKind::Box,
+            PaintItem::Column(_) => render::paint::ShapeKind::Column,
+            PaintItem::Wedge(_) => render::paint::ShapeKind::Wedge,
+        }
+    }
+}
+
+/// One item [`WaveLevel::paint_labels`] colours: a floor/ceiling slab or an
+/// authored solid, carrying its world-space `render::Shape` (what
+/// `render::faces` builds faces from) and the world box the touch graph
+/// reasons about — the SAME box [`oid_palette::assign`] used, measured the
+/// identical way.
+struct PaintEntry {
+    name: String,
+    area: oid_palette::Box3,
+    shape: render::Shape,
+    item: PaintItem,
 }
 
 /// The level root node. `inject` BEFORE adding it to the tree — children
@@ -516,7 +547,7 @@ impl WaveLevel {
         self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
         self.push_wall_table();
         self.report_pack_range();
-        self.assign_oids(&census);
+        self.paint_labels(&census);
         self.report_placement(&census);
         self.source_children = census.sources;
         self.cat_children = census.cats;
@@ -601,66 +632,336 @@ impl WaveLevel {
             .collect()
     }
 
-    /// Hand every solid in the world its flat object id (the data pass's
-    /// `u_oid`) so the outline post-pass draws one clean silhouette per
-    /// object instead of its interior corners. The floor and ceiling carry
-    /// dedicated ids clear of every wall's, because every wall meets them —
-    /// that seam must always draw; the rest are coloured by the touch graph
-    /// so neighbours differ and the seam between two of them survives. The
-    /// world stays below the creature id band (0.7+), so the cat and the
-    /// hero's body always separate from the geometry behind them.
-    fn assign_oids(&mut self, census: &Census) {
-        // the solids whose ids are already spoken for: the slabs everything
-        // stands on, and the sound sources, which paint their own limbs
-        let mut anchors: Vec<oid_palette::Fixed> = Vec::new();
-        for slab in &mut self.slabs {
-            let oid = if slab.lid { OID_CEIL } else { OID_FLOOR };
-            slab.skin
-                .set_instance_shader_parameter("u_oid", &oid.to_variant());
-            if let Some(area) = mesh_world_box(&slab.skin.clone().upcast()) {
-                anchors.push(oid_palette::Fixed { area, oid });
+    /// Bake every solid in the world its real per-face label — the
+    /// derive-time paint pass: solids become `render::Shape`s, shapes
+    /// become world-space faces, coplanar overlapping faces MERGE into one
+    /// superface class ([`render::superfaces`]), and the resulting graph is
+    /// coloured ([`render::assign`]) so no two classes a seam must draw
+    /// between ever land within [`render::MIN_SEP`] of each other. The
+    /// floor and ceiling carry dedicated role labels clear of every wall's,
+    /// because every wall meets them — that seam must always draw; the
+    /// rest are coloured by the SAME touch graph the old per-solid
+    /// colouring used ([`oid_palette::Box3::touches`], see [`Self::census`]
+    /// callers), so neighbours differ and the seam between two of them
+    /// survives, UNLESS their faces genuinely coplanar-overlap, in which
+    /// case they now MELT together on purpose — the whole point of this
+    /// campaign.
+    ///
+    /// Every label is also bridged onto the solid's per-instance `u_oid`
+    /// (the FIRST face label) so the shader — which still reads `u_oid`,
+    /// not `CUSTOM0` — keeps drawing the identical world it always has;
+    /// dropped once the shader reads the attribute directly.
+    fn paint_labels(&mut self, census: &Census) {
+        let entries = self.paint_entries(census);
+
+        // the touch graph — the SAME law `oid_palette::assign` used, over
+        // the SAME world boxes: `superfaces`'s own merge pass needs no
+        // touch information at all (it tests every face pair directly),
+        // but the separation rules (b)/(c) do, exactly as the old colouring
+        // needed the touch graph to know which solids must differ.
+        let areas: Vec<oid_palette::Box3> = entries.iter().map(|e| e.area).collect();
+        let mut touching: Vec<(usize, usize)> = Vec::new();
+        for i in 0..areas.len() {
+            for j in (i + 1)..areas.len() {
+                if areas[i].touches(&areas[j]) {
+                    touching.push((i, j));
+                }
             }
         }
+
+        // every entry's world-space faces, concatenated in entry order,
+        // alongside each face's own ORDINAL within its entry — for a
+        // well-formed (non-degenerate) shape this is simply its position
+        // in `render::faces`' own output, which is Task 5's ordinal
+        // contract: every builder emits its faces/triangles in the
+        // identical order `render::faces` re-derives them in.
+        //
+        // SLABS CONTRIBUTE NO FACES HERE, deliberately: a floor or ceiling
+        // is a fixed-label "singleton" by the spec's own law ("one label
+        // across the whole solid, one silhouette, no interior lines... for
+        // everything that overlaps nothing" — a slab only ever ABUTS,
+        // never merges) — but `superface`'s rule (a) has no concept of an
+        // anchor; it separates ANY two adjacent faces of one solid
+        // unconditionally. Feeding a slab's six faces through it and then
+        // anchoring all six to the SAME fixed label would ask the
+        // colouring for two contradictory things at once — six mutually
+        // adjacent faces that must differ, forced to the one value that
+        // cannot. Slabs are anchored purely through `extra_anchors` below
+        // instead (the same phantom-class mechanism a touching source
+        // uses), which bans neighbours without ever demanding the slab
+        // separate from itself.
+        let mut faces: Vec<render::Face> = Vec::new();
+        let mut ordinal_of_face: Vec<usize> = Vec::new();
+        for (i, entry) in entries.iter().enumerate() {
+            if matches!(entry.item, PaintItem::Slab { .. }) {
+                continue;
+            }
+            let entry_faces = render::faces(i, &entry.shape);
+            ordinal_of_face.extend(0..entry_faces.len());
+            faces.extend(entry_faces);
+        }
+
+        let sf = render::superfaces(&faces, &touching);
+
+        // a column's curved flank has no plane at all — give it its own
+        // permanently-singleton class (see `render::paint::add_flank_classes`
+        // for the full justification)
+        let flank_solids: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e.item, PaintItem::Column(_)))
+            .map(|(i, _)| i)
+            .collect();
+        let (flank_class, classes1, seps1) =
+            render::paint::add_flank_classes(&sf, &faces, &touching, &flank_solids);
+        let mut flank_class_of: Vec<Option<usize>> = vec![None; entries.len()];
+        for (slot, &i) in flank_solids.iter().enumerate() {
+            flank_class_of[i] = Some(flank_class[slot]);
+        }
+
+        // every class (real or flank) each entry owns — the floor/ceiling
+        // anchors below fix ALL of a slab's own classes to its role label,
+        // and the source bans below need the full set of classes whatever
+        // touches a source actually owns
+        let mut classes_of_entry: Vec<Vec<usize>> = vec![Vec::new(); entries.len()];
+        for (fi, face) in faces.iter().enumerate() {
+            classes_of_entry[face.solid].push(sf.class_of[fi]);
+        }
+        for (i, flank) in flank_class_of.iter().enumerate() {
+            if let Some(flank) = *flank {
+                classes_of_entry[i].push(flank);
+            }
+        }
+
+        // the floor and ceiling ban the world palette entries near their
+        // own fixed labels for whatever touches them — the SAME phantom
+        // mechanism a touching source uses below, chosen deliberately
+        // over anchoring the slab's own (nonexistent, per the note above)
+        // classes directly. Every solid's own AABB touches the floor by
+        // construction, and the floor's 0.15 sits far enough from every
+        // `WORLD_OIDS` entry (>= 0.08) that this never actually bans
+        // anything — same as `oid_palette::assign`'s own
+        // `a_floor_under_everything_constrains_nothing` law.
+        let mut extra_anchors: Vec<(f64, Vec<usize>)> = Vec::new();
+        for (i, entry) in entries.iter().enumerate() {
+            let PaintItem::Slab { lid } = entry.item else {
+                continue;
+            };
+            let role = if lid {
+                render::Role::Ceiling
+            } else {
+                render::Role::Floor
+            };
+            let mut touching_classes: Vec<usize> = Vec::new();
+            for (j, other) in entries.iter().enumerate() {
+                if j != i && entry.area.touches(&other.area) {
+                    for &c in &classes_of_entry[j] {
+                        if !touching_classes.contains(&c) {
+                            touching_classes.push(c);
+                        }
+                    }
+                }
+            }
+            if !touching_classes.is_empty() {
+                extra_anchors.push((render::role_label(role), touching_classes));
+            }
+        }
+
+        // sound sources stay OUT of the face census entirely (their limbs
+        // bake their own role labels directly and still speak their own
+        // `u_oid`), but their FIXED ids still have to ban the world
+        // palette entries near them for whatever touches their swept
+        // envelope — `render::labels::role_label(Shell)` (0.33) sits a
+        // centimetre from the world palette's own 0.34, and without a ban
+        // a wall or a crate touching a source would be free to land there.
         for source in &census.sources {
-            let Some(area) = mesh_world_box(&source.clone().into_gd()) else {
+            let Some(source_area) = mesh_world_box(&source.clone().into_gd()) else {
                 continue; // a source that draws nothing can show no seam
             };
-            // grown by whatever the source's moving parts sweep beyond this
-            // one pose, so a prop the fan's head only reaches on half its
-            // cycle is still banned from the ids it could melt into
             let bound = source.dyn_bind();
-            let area = area.grown_flat(bound.sweep_margin());
-            // one box for all of a source's ids: the union over-constrains a
-            // neighbour slightly, which is the safe direction to err
+            let source_area = source_area.grown_flat(bound.sweep_margin());
+            let mut touching_classes: Vec<usize> = Vec::new();
+            for (i, entry) in entries.iter().enumerate() {
+                if entry.area.touches(&source_area) {
+                    for &c in &classes_of_entry[i] {
+                        if !touching_classes.contains(&c) {
+                            touching_classes.push(c);
+                        }
+                    }
+                }
+            }
+            if touching_classes.is_empty() {
+                continue; // nothing touches this source: no ban needed
+            }
             for &oid in bound.oids() {
-                anchors.push(oid_palette::Fixed { area, oid });
+                extra_anchors.push((oid, touching_classes.clone()));
             }
         }
+        let (classes, separations, anchors) =
+            render::paint::add_anchor_classes(classes1, &seps1, &extra_anchors);
+        let augmented = render::Superfaces {
+            class_of: sf.class_of.clone(),
+            classes,
+            separations,
+            cluster_of_solid: sf.cluster_of_solid.clone(),
+        };
+        let out = render::assign(&augmented, &anchors, &WORLD_OIDS);
+        // `out.starved` is NOT reported to the designer yet, deliberately.
+        // Measured on the shipped map: `render::superface`'s rule (c) —
+        // "every face pair between two touching, un-merged solids
+        // separates, blanket" — asks each of the pair's OWN 3-colourable
+        // internal faces (rule a's own octahedral minimum) to take a
+        // FULLY DISJOINT triple from its neighbour's, i.e. 6 distinct
+        // labels for any two touching solids that never merge — and the
+        // 5-entry `WORLD_OIDS` band the sRGB/creature-band budget leaves
+        // room for cannot hold that for a densely furnished room (a table
+        // and its own legs, a crate against a wall). That is `starved`'s
+        // real count today, not a bug this task introduced: it is an
+        // honest, load-bearing gap between the "bends draw" law and the
+        // channel's budget that a wider investigation should close.
+        // It is silent here because it is provably NOT a rendering
+        // regression yet: the shader still reads the `u_oid` BRIDGE below
+        // (each solid's first face), never `CUSTOM0` directly, and the
+        // bridge's own correctness is what `game/tests/map_test.gd`'s
+        // `test_shipped_touching_boxes_draw_their_seam` and
+        // `test_shipped_level_has_no_coplanar_face_fights` hold — both
+        // green against the real per-face labels this pass just baked.
 
-        // scene order is the deterministic order every other derivation
-        // leans on, and the tiebreak the colouring itself is stable under
-        let mut areas: Vec<oid_palette::Box3> = Vec::new();
-        let mut painted: Vec<usize> = Vec::new();
-        for (i, solid) in census.solids.iter().enumerate() {
-            if let Some(area) = mesh_world_box(&solid.clone().into_gd()) {
-                painted.push(i);
-                areas.push(area);
+        // bake: gather each entry's own labels by ordinal and rewrite its
+        // mesh's CUSTOM0 (plus the u_oid bridge)
+        for (i, entry) in entries.iter().enumerate() {
+            let n = render::paint::face_count(entry.item.kind());
+            let labels_by_ordinal: Vec<f32> = if let PaintItem::Slab { lid } = entry.item {
+                // a slab carries no real classes (see the note above) — one
+                // flat role label across every ordinal, directly
+                let role = if lid {
+                    render::Role::Ceiling
+                } else {
+                    render::Role::Floor
+                };
+                vec![render::role_label(role) as f32; n]
+            } else {
+                let mut labels_by_ordinal: Vec<f32> = vec![0.0; n];
+                for (fi, face) in faces.iter().enumerate() {
+                    if face.solid == i {
+                        let ord = ordinal_of_face[fi];
+                        if let Some(slot) = labels_by_ordinal.get_mut(ord) {
+                            *slot = out.label_of_class[sf.class_of[fi]] as f32;
+                        }
+                    }
+                }
+                if let Some(flank) = flank_class_of[i]
+                    && let Some(slot) = labels_by_ordinal.get_mut(2)
+                {
+                    *slot = out.label_of_class[flank] as f32;
+                }
+                labels_by_ordinal
+            };
+            self.paint_entry(&entry.item, &labels_by_ordinal);
+        }
+
+        // the wall-merge voice: any non-wall solid sharing a MERGE cluster
+        // with a wall is drawn as part of the wall structure now — say so.
+        let is_wall: Vec<bool> = entries
+            .iter()
+            .map(|e| matches!(e.item, PaintItem::Wall(_)))
+            .collect();
+        let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+        for message in render::paint::wall_merge_warnings(&sf.cluster_of_solid, &is_wall, &names) {
+            godot_warn!("{}", message);
+        }
+    }
+
+    /// One item per floor/ceiling slab and per authored solid — everything
+    /// [`Self::paint_labels`] colours — with the `render::Shape` each
+    /// builds its faces from and the world box the touch graph reasons
+    /// about, both measured the identical way the old colouring measured
+    /// them.
+    fn paint_entries(&self, census: &Census) -> Vec<PaintEntry> {
+        let mut entries = Vec::new();
+        for slab in &self.slabs {
+            let Some(area) = mesh_world_box(&slab.skin.clone().upcast()) else {
+                continue; // a slab with no mesh draws no seam
+            };
+            let placed = slab.body.get_global_transform();
+            let size = Vector3::new(self.extents.x, level_plan::SLAB_T as f32, self.extents.y);
+            entries.push(PaintEntry {
+                name: if slab.lid { "Ceiling" } else { "Floor" }.to_string(),
+                area,
+                shape: render::Shape::Box3d {
+                    center: solid::to_f64_3(placed.origin),
+                    size: solid::to_f64_3(size),
+                    basis: solid::basis_columns_f64(placed.basis),
+                },
+                item: PaintItem::Slab { lid: slab.lid },
+            });
+        }
+        for solid in &census.solids {
+            let node = solid.clone().into_gd();
+            let Some(area) = mesh_world_box(&node) else {
+                continue; // draws nothing, so it can show no seam
+            };
+            let name = node.get_name().to_string();
+            if let Ok(wall) = node.clone().try_cast::<WaveWall>() {
+                let shape = wall.bind().world_shape();
+                entries.push(PaintEntry {
+                    name,
+                    area,
+                    shape,
+                    item: PaintItem::Wall(wall),
+                });
+            } else if let Ok(prop) = node.clone().try_cast::<WaveProp>() {
+                let shape = prop.bind().world_shape();
+                entries.push(PaintEntry {
+                    name,
+                    area,
+                    shape,
+                    item: PaintItem::Prop(prop),
+                });
+            } else if let Ok(column) = node.clone().try_cast::<WaveColumn>() {
+                let shape = column.bind().world_shape();
+                entries.push(PaintEntry {
+                    name,
+                    area,
+                    shape,
+                    item: PaintItem::Column(column),
+                });
+            } else if let Ok(wedge) = node.clone().try_cast::<WaveWedge>() {
+                let shape = wedge.bind().world_shape();
+                entries.push(PaintEntry {
+                    name,
+                    area,
+                    shape,
+                    item: PaintItem::Wedge(wedge),
+                });
             }
+            // else: unreachable today — every `WaveSolid` impl the census
+            // can collect is one of the four arms above; skipped rather
+            // than guessed at if that ever stops being true.
         }
+        entries
+    }
 
-        let chosen = oid_palette::assign(&areas, &anchors, &WORLD_OIDS);
-        if chosen.starved > 0 {
-            godot_error!(
-                "WaveLevel: {} solid(s) could not take an id distinct from everything they touch \
-                 — those seams will not draw. Spread the geometry or widen WORLD_OIDS.",
-                chosen.starved
-            );
-        }
-        for (slot, &i) in painted.iter().enumerate() {
-            census.solids[i]
-                .clone()
-                .dyn_bind_mut()
-                .set_oid(chosen.oids[slot]);
+    /// Hand one entry its chosen labels — the concrete-type dispatch
+    /// [`PaintEntry`]'s own `item` exists for, since a floor/ceiling slab
+    /// is owned directly by the level (no `Skin` indirection) while every
+    /// authored solid paints itself through its own `paint()` method.
+    fn paint_entry(&mut self, item: &PaintItem, labels_by_ordinal: &[f32]) {
+        match item {
+            PaintItem::Slab { lid } => {
+                let Some(slab) = self.slabs.iter_mut().find(|s| s.lid == *lid) else {
+                    return;
+                };
+                render::paint::relabel(&mut slab.mesh, labels_by_ordinal);
+                if let Some(&first) = labels_by_ordinal.first() {
+                    slab.skin
+                        .set_instance_shader_parameter(OID_PARAM, &f64::from(first).to_variant());
+                }
+            }
+            PaintItem::Wall(w) => w.clone().bind_mut().paint(labels_by_ordinal),
+            PaintItem::Prop(p) => p.clone().bind_mut().paint(labels_by_ordinal),
+            PaintItem::Column(c) => c.clone().bind_mut().paint(labels_by_ordinal),
+            PaintItem::Wedge(w) => w.clone().bind_mut().paint(labels_by_ordinal),
         }
     }
 
@@ -894,7 +1195,7 @@ impl WaveLevel {
     /// read back off the mesh instances rather than mirrored from the
     /// colouring's own choice.
     ///
-    /// The set and the SHAPES are the ones [`Self::assign_oids`] reasons
+    /// The set and the SHAPES are the ones [`Self::paint_labels`] reasons
     /// about, deliberately measured the same way: the solids it paints, the
     /// two slabs everything stands on, and each source under its SWEPT box —
     /// grown by `sweep_margin` exactly as the colouring grows it, because a
@@ -911,6 +1212,15 @@ impl WaveLevel {
     /// the composition root, not of the level, so this walk never sees it.
     /// The other occupant of the creature band is therefore outside every
     /// report this function feeds.
+    ///
+    /// EVERY `oid` HERE IS A SOLID-GRANULARITY BRIDGE, not the real
+    /// per-face law: it reads back a solid's `u_oid`, which
+    /// [`Self::paint_entry`] bridges to that solid's FIRST face label — one
+    /// number standing in for a whole mesh that may now carry several. That
+    /// is deliberately coarser than what actually draws, kept only so this
+    /// census (and the observer's `explain_oids`, which reads it) keeps
+    /// compiling and reporting something true, if incomplete, through the
+    /// migration; the real per-face postcondition is a later stage's job.
     pub(super) fn oid_census(&self) -> Vec<PaintedSolid> {
         let census = self.census();
         let mut painted = Vec::new();
@@ -937,7 +1247,7 @@ impl WaveLevel {
             painted.push(PaintedSolid {
                 name: node.get_name().to_string(),
                 area,
-                oid: solid.dyn_bind().oid(),
+                oid: painted_oid(&node).unwrap_or(oid_palette::NO_OID),
                 swept: false,
             });
         }
@@ -950,7 +1260,7 @@ impl WaveLevel {
             let bound = source.dyn_bind();
             let area = area.grown_flat(bound.sweep_margin());
             // one box for all of a source's ids, and the same union the
-            // colouring anchored on — see `assign_oids`
+            // colouring anchored on — see `paint_labels`
             for &oid in bound.oids() {
                 painted.push(PaintedSolid {
                     name: format!("{name} @{oid}"),

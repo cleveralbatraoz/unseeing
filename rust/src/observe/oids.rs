@@ -96,10 +96,12 @@ fn explain_oids(boxes: &[Box3], oids: &[f64]) -> OidExplanation {
 /// longest sightline is 34.0 m — a 1.38 mm tie band — and the
 /// [`crate::level_plan::DIST_PACK_RANGE`] ceiling (40 m) admits maps
 /// whose band reaches 1.9 mm, so the census draws its line at 2 mm:
-/// nothing above this gap can tie on any map the pack range admits. The
-/// wall fix — [`crate::level_plan::CAP_INSET`], which buries every
-/// arriving wall cap 5 mm inside its junction partner — stands 2.5 of
-/// these clear of the band.
+/// nothing above this gap can tie on any map the pack range admits. This
+/// module's own census still treats an exact wall-junction coincidence as
+/// a FIGHT (a same-facing coplanar pair with unequal ids); the
+/// `render::superface` merge law, promoted from this exact predicate,
+/// reads the identical coincidence as the intended MELT instead — the two
+/// laws describe the same geometry from either side of the migration.
 pub const COPLANAR_EPS: f64 = 2e-3;
 
 /// The crease floor: `smoothstep(0.04, 0.08, nrm)` in

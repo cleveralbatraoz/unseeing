@@ -53,6 +53,26 @@ const TAP_AT := Vector3(3.0, 0.9, 4.0)
 const TAP_MAX_R := 6.0
 const TAP_SPEED := 5.5
 
+## The two flush bookcases' own member pairs — the same verified geometric
+## merge `map_test.gd`'s `KNOWN_MERGES` names, duplicated here rather than
+## shared: `ShelfSideA`/`ShelfSideB` genuinely coplanar-merge with
+## `ShelfBack` under `render::superface` (the `Rack*` trio the same way),
+## so their bridged `u_oid`s legitimately agree — the ONE pair this suite's
+## violation check accepts on purpose.
+const KNOWN_MERGES := [
+	["ShelfSideA", "ShelfBack"],
+	["ShelfSideB", "ShelfBack"],
+	["RackSideA", "RackBack"],
+	["RackSideB", "RackBack"],
+]
+
+
+func _is_a_known_merge(name_a: String, name_b: String) -> bool:
+	for pair: Array in KNOWN_MERGES:
+		if (name_a == pair[0] and name_b == pair[1]) or (name_a == pair[1] and name_b == pair[0]):
+			return true
+	return false
+
 
 func test_uninjected_observer_refuses_rather_than_reporting_zeros() -> void:
 	var obs := _observer()
@@ -303,7 +323,11 @@ func test_snapshot_describes_the_levels_sound_sources() -> void:
 
 ## The id budget over the SHIPPED map, checked by the same Rust the renderer
 ## colours with. Pairs must not be empty: a check that found no touching
-## boxes at all would pass vacuously on a map where everything melts.
+## boxes at all would pass vacuously on a map where everything melts. The
+## sole exception is `KNOWN_MERGES` — the two bookcases' own flush panels,
+## a verified geometric MERGE (`render::superface`) rather than a colouring
+## shortfall; see `map_test.gd`'s identical exception for the full
+## derivation.
 func test_the_shipped_level_has_no_object_id_violations() -> void:
 	var level := _shipped_level(Pulses.new())
 	var obs := _observer()
@@ -311,7 +335,16 @@ func test_the_shipped_level_has_no_object_id_violations() -> void:
 	var e: Dictionary = obs.explain_oids()
 	assert_bool(e.has("unavailable")).is_false()
 	assert_array(e["pairs"]).is_not_empty()
-	assert_array(e["violations"]).is_empty()
+	var pairs: Array = e["pairs"]
+	var real_violations: Array[String] = []
+	for idx: int in e["violations"]:
+		var p: Dictionary = pairs[idx]
+		if _is_a_known_merge(str(p["name_a"]), str(p["name_b"])):
+			continue
+		real_violations.append(
+			"%s(%.3f) vs %s(%.3f)" % [p["name_a"], p["oid_a"], p["name_b"], p["oid_b"]]
+		)
+	assert_array(real_violations).is_empty()
 	assert_float(e["min_sep"]).is_equal_approx(0.08, 0.0001)
 	# the whole picture, named: the solids the colouring paints, the slabs
 	# everything stands on, and one entry per id a source paints its own
@@ -399,7 +432,13 @@ func test_the_oid_census_includes_the_levels_creatures() -> void:
 	obs.inject(level, _eye())
 	var e: Dictionary = obs.explain_oids()
 	assert_array(e["names"]).contains(["Cat"])
-	assert_array(e["violations"]).is_empty()
+	var pairs: Array = e["pairs"]
+	var real_violations: Array[String] = []
+	for idx: int in e["violations"]:
+		var p: Dictionary = pairs[idx]
+		if not _is_a_known_merge(str(p["name_a"]), str(p["name_b"])):
+			real_violations.append("%s vs %s" % [p["name_a"], p["name_b"]])
+	assert_array(real_violations).is_empty()
 
 
 ## The census measures a source by the box it SWEEPS, exactly as the colouring
@@ -445,19 +484,25 @@ func test_the_oid_census_measures_a_source_by_what_it_sweeps() -> void:
 	assert_array(e["violations"]).is_empty()
 
 
-## The coplanar-fight census, through the boundary. The shelf spans
-## x -1..1, y 0..1, z -0.5..0.5; the crate embedded in its front half
-## spans x -0.1..0.9, y 0..1, z -0.3..0.5 — so TWO patches rasterise
-## twice at one depth. Their front faces share the plane z = 0.5, and
-## their flush TOPS share y = 1, a metre under the shipped 1.6 m eye,
-## which looks down onto that tabletop speckle. (The bottoms share y = 0
-## too, but a downward pair fights only for an eye BELOW its plane, and
-## no eye stands underground — that pair must NOT census.) Both axes
-## cross the wire spelled out — "y" and "z", a contract like the slot
-## states, so a renumbered axis enum cannot silently move a fight to
-## another wall. The ids are the level's own colouring, which hands two
-## touching solids ids at least min_sep = 0.08 apart — over the 0.04
-## crease floor, so the speckles this predicts actually draw.
+## THE OLD z-fight census's own proof object, now read the other way.
+## The shelf spans x -1..1, y 0..1, z -0.5..0.5; the crate embedded in its
+## front half spans x -0.1..0.9, y 0..1, z -0.3..0.5 — so TWO patches
+## rasterise twice at one depth: their front faces share the plane
+## z = 0.5 (each solid's own +Z face, `render::paint::FACE_ORDER` ordinal
+## 5), and their flush TOPS share y = 1 (ordinal 3). Before the superface
+## paint pass this WAS the issue-14 z-fight (two DIFFERENT flat ids tying
+## on one plane, `explain_oids`'s `fights` reporting both); NOW it is
+## exactly the geometry `render::superface`'s merge law exists to catch —
+## same-direction, coplanar, genuinely overlapping — so the two faces
+## MERGE into one label, bit-equal, and the OLD whole-box census (which
+## can only compare one bridged id per box) finds nothing to report: the
+## bridge and the real per-face law agree there is no fight, because
+## there is no longer a colouring gap for one to speckle through. Checked
+## both ways — the OLD census's own key stays present and empty, and the
+## REAL per-face labels at both known planes are read back and proven
+## bit-equal, so a regression that silently stopped merging this geometry
+## (and left the OLD census blind to it some other way) would still fail
+## here.
 func test_two_flush_props_report_their_fight() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_spawn_marker())
@@ -478,22 +523,41 @@ func test_two_flush_props_report_their_fight() -> void:
 	var e: Dictionary = obs.explain_oids()
 	assert_bool(e.has("fights")).is_true()
 	var fights: Array = e.get("fights", [])
-	assert_int(fights.size()).is_equal(2)
-	var axes: Array[String] = []
-	for fight: Dictionary in fights:
-		var seam: Array[String] = []
-		seam.append(fight["name_a"])
-		seam.append(fight["name_b"])
-		seam.sort()
-		assert_array(seam).is_equal(["Crate", "Shelf"])
-		assert_float(fight["delta"]).is_greater_equal(0.08)
-		if fight["axis"] == "y":
-			assert_float(fight["plane"]).is_equal_approx(1.0, 0.0001)
-		else:
-			assert_float(fight["plane"]).is_equal_approx(0.5, 0.0001)
-		axes.append(fight["axis"])
-	axes.sort()
-	assert_array(axes).is_equal(["y", "z"])
+	(
+		assert_array(fights)
+		. append_failure_message(
+			(
+				"the OLD whole-box census still finds a fight — the merge did not resolve it: %s"
+				% fights
+			)
+		)
+		. is_empty()
+	)
+
+	# THE GROUND TRUTH: the real per-face label at each known merge plane,
+	# read straight off the two props' own built meshes — ordinal 5 (+Z)
+	# for the z = 0.5 front-face merge, ordinal 3 (+Y) for the y = 1 top
+	# merge, `render::paint::FACE_ORDER`'s own −X,+X,−Y,+Y,−Z,+Z order.
+	var shelf_custom: PackedFloat32Array = _skin_of(shelf).mesh.surface_get_arrays(0)[
+		Mesh.ARRAY_CUSTOM0
+	]
+	var crate_custom: PackedFloat32Array = _skin_of(crate).mesh.surface_get_arrays(0)[
+		Mesh.ARRAY_CUSTOM0
+	]
+	for ordinal: int in [3, 5]:
+		(
+			assert_float(shelf_custom[ordinal * 4])
+			. append_failure_message("ordinal %d (shelf vs crate)" % ordinal)
+			. is_equal(crate_custom[ordinal * 4])
+		)
+
+
+## The first mesh limb a node built for itself.
+func _skin_of(body: Node) -> MeshInstance3D:
+	for child: Node in body.get_children():
+		if child is MeshInstance3D:
+			return child as MeshInstance3D
+	return null
 
 
 ## The shipped map answers the census too. The KEY is the contract here,

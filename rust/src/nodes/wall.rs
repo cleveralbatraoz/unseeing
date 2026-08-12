@@ -27,7 +27,7 @@
 use godot::classes::{ArrayMesh, BoxShape3D, IStaticBody3D, Material, StaticBody3D};
 use godot::prelude::*;
 
-use super::solid::{BOX_ORDINALS, LIMBS, SignFold, Skin, WaveSolid, build_box, clear_limbs};
+use super::solid::{self, BOX_ORDINALS, LIMBS, SignFold, Skin, WaveSolid, build_box, clear_limbs};
 use crate::level_plan;
 use crate::render;
 
@@ -99,12 +99,38 @@ impl WaveWall {
         self.length
     }
 
-    /// The id this wall carries — the engine-facing read-back of
-    /// [`WaveSolid::oid`], so the suites can hold the seam law against a
-    /// scene without binding Rust traits.
+    /// The id this wall carries — the engine-facing read-back of its own
+    /// [`Skin`], the `u_oid` bridge the derive-time paint pass still keeps
+    /// alive, so the suites can hold the seam law against a scene without
+    /// binding Rust traits.
     #[func]
     fn oid(&self) -> f64 {
-        WaveSolid::oid(self)
+        self.skin.oid()
+    }
+
+    /// This wall's box as `render::Shape`, in world space — the geometry
+    /// the derive-time paint pass folds into the superface graph. Mirrors
+    /// exactly what `ready()` builds: [`level_plan::wall_box`], centered at
+    /// the same lift the mesh is drawn at (`(0, WALL_H/2, 0)` local),
+    /// carried into world space by the wall's own global transform —
+    /// [`Self::snap_to_axis`] has already collapsed that transform's basis
+    /// to an exact quadrant by the time `ready` calls this, so no further
+    /// snapping happens here.
+    pub(crate) fn world_shape(&self) -> render::Shape {
+        let placed = self.base().get_global_transform();
+        let size = level_plan::wall_box(self.length);
+        let lift = Vector3::new(0.0, (level_plan::WALL_H * 0.5) as f32, 0.0);
+        render::Shape::Box3d {
+            center: solid::to_f64_3(placed * lift),
+            size: solid::to_f64_3(size),
+            basis: solid::basis_columns_f64(placed.basis),
+        }
+    }
+
+    /// Bake the derive-time paint pass's labels onto this wall — see
+    /// [`solid::paint_solid`].
+    pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
+        solid::paint_solid(&mut self.skin, self.mesh.as_mut(), labels_by_ordinal);
     }
 
     /// This wall's centerline as the classic (x1, z1, x2, z2) segment —
@@ -148,14 +174,6 @@ impl WaveWall {
 impl WaveSolid for WaveWall {
     fn set_material(&mut self, mat: &Gd<Material>) {
         self.skin.set_material(mat);
-    }
-
-    fn set_oid(&mut self, oid: f64) {
-        self.skin.set_oid(oid);
-    }
-
-    fn oid(&self) -> f64 {
-        self.skin.oid()
     }
 }
 

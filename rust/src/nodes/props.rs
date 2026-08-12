@@ -49,7 +49,7 @@ use godot::prelude::*;
 use godot::classes::MeshInstance3D;
 
 use super::solid::{
-    BOX_ORDINALS, LIMBS, SignFold, Skin, WaveSolid, build_body, build_box, clear_limbs,
+    self, BOX_ORDINALS, LIMBS, SignFold, Skin, WaveSolid, build_body, build_box, clear_limbs,
 };
 use crate::prop_shape;
 use crate::render;
@@ -120,11 +120,29 @@ impl WaveProp {
         self.size
     }
 
-    /// The id this prop carries — the engine-facing read-back of
-    /// [`WaveSolid::oid`].
+    /// The id this prop carries — the engine-facing read-back of its own
+    /// [`Skin`], the `u_oid` bridge the derive-time paint pass keeps alive.
     #[func]
     fn oid(&self) -> f64 {
-        WaveSolid::oid(self)
+        self.skin.oid()
+    }
+
+    /// This prop's box as `render::Shape`, in world space — a box prop is
+    /// CENTRED on its node (`ready()` builds it at lift `Vector3::ZERO`),
+    /// so the box's world center is simply the node's own global origin.
+    pub(crate) fn world_shape(&self) -> render::Shape {
+        let placed = self.base().get_global_transform();
+        render::Shape::Box3d {
+            center: solid::to_f64_3(placed.origin),
+            size: solid::to_f64_3(self.size),
+            basis: solid::basis_columns_f64(placed.basis),
+        }
+    }
+
+    /// Bake the derive-time paint pass's labels onto this prop — see
+    /// [`solid::paint_solid`].
+    pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
+        solid::paint_solid(&mut self.skin, self.mesh.as_mut(), labels_by_ordinal);
     }
 }
 
@@ -132,14 +150,6 @@ impl WaveProp {
 impl WaveSolid for WaveProp {
     fn set_material(&mut self, mat: &Gd<Material>) {
         self.skin.set_material(mat);
-    }
-
-    fn set_oid(&mut self, oid: f64) {
-        self.skin.set_oid(oid);
-    }
-
-    fn oid(&self) -> f64 {
-        self.skin.oid()
     }
 }
 
@@ -251,11 +261,41 @@ impl WaveColumn {
         self.height
     }
 
-    /// The id this column carries — the engine-facing read-back of
-    /// [`WaveSolid::oid`].
+    /// The id this column carries — the engine-facing read-back of its own
+    /// [`Skin`], the `u_oid` bridge the derive-time paint pass keeps alive.
     #[func]
     fn oid(&self) -> f64 {
-        WaveSolid::oid(self)
+        self.skin.oid()
+    }
+
+    /// This column's rims as `render::Shape::Column`, in world space —
+    /// upright only, matching the shape `render::faces::column_faces`
+    /// itself models: the world CENTER is the node's own global origin
+    /// lifted by [`prop_shape::cylinder_lift`]'s own `underhang`, exactly
+    /// as [`Self::relift`] positions the drawn mesh, so a level-tilted or
+    /// laid-down column's TRUE geometry is approximated by the nearest
+    /// upright cylinder at its standing height rather than represented
+    /// exactly — the same scope this render vocabulary's `Shape::Column`
+    /// variant is written for (no basis of its own), and every shipped
+    /// column and wedge stands upright in practice
+    /// (`prop_shape::tests::an_upright_shape_lifts_exactly_half_its_height`'s
+    /// own doc comment).
+    pub(crate) fn world_shape(&self) -> render::Shape {
+        let placed = self.base().get_global_transform();
+        let radius = self.radius as f32;
+        let height = self.height as f32;
+        let lift = prop_shape::cylinder_lift(placed.basis, radius, height);
+        render::Shape::Column {
+            center: solid::to_f64_3(placed * lift),
+            radius: self.radius,
+            half_height: self.height * 0.5,
+        }
+    }
+
+    /// Bake the derive-time paint pass's labels onto this column — see
+    /// [`solid::paint_solid`].
+    pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
+        solid::paint_solid(&mut self.skin, self.mesh.as_mut(), labels_by_ordinal);
     }
 
     /// Mesh, collider and lift together, so a knob dragged in the
@@ -297,14 +337,6 @@ impl WaveColumn {
 impl WaveSolid for WaveColumn {
     fn set_material(&mut self, mat: &Gd<Material>) {
         self.skin.set_material(mat);
-    }
-
-    fn set_oid(&mut self, oid: f64) {
-        self.skin.set_oid(oid);
-    }
-
-    fn oid(&self) -> f64 {
-        self.skin.oid()
     }
 }
 
@@ -402,11 +434,30 @@ impl WaveWedge {
         self.size
     }
 
-    /// The id this wedge carries — the engine-facing read-back of
-    /// [`WaveSolid::oid`].
+    /// The id this wedge carries — the engine-facing read-back of its own
+    /// [`Skin`], the `u_oid` bridge the derive-time paint pass keeps alive.
     #[func]
     fn oid(&self) -> f64 {
-        WaveSolid::oid(self)
+        self.skin.oid()
+    }
+
+    /// This wedge's hull as `render::Shape::Wedge`, in world space: the
+    /// same six local points [`prop_shape::wedge_hull`] gives `ready()`,
+    /// lifted by [`prop_shape::wedge_lift`] exactly as the drawn mesh is,
+    /// then carried into world space by the node's own global transform.
+    pub(crate) fn world_shape(&self) -> render::Shape {
+        let placed = self.base().get_global_transform();
+        let lift = prop_shape::wedge_lift(placed.basis, self.size);
+        let hull = prop_shape::wedge_hull(self.size);
+        render::Shape::Wedge {
+            hull: hull.map(|p| solid::to_f64_3(placed * (p + lift))),
+        }
+    }
+
+    /// Bake the derive-time paint pass's labels onto this wedge — see
+    /// [`solid::paint_solid`].
+    pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
+        solid::paint_solid(&mut self.skin, self.mesh.as_mut(), labels_by_ordinal);
     }
 
     /// Rebuild the surface and the hull from the size knob, and re-lift the
@@ -435,14 +486,6 @@ impl WaveWedge {
 impl WaveSolid for WaveWedge {
     fn set_material(&mut self, mat: &Gd<Material>) {
         self.skin.set_material(mat);
-    }
-
-    fn set_oid(&mut self, oid: f64) {
-        self.skin.set_oid(oid);
-    }
-
-    fn oid(&self) -> f64 {
-        self.skin.oid()
     }
 }
 
