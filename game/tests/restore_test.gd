@@ -9,7 +9,11 @@ const MAIN_SCENE := preload("res://scenes/main.tscn")
 func test_a_restored_cat_resumes_the_same_life() -> void:
 	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
 	add_child(main)
-	var cat: WaveCat = main.cats()[0]
+	var cats := main.cats()
+	if cats.is_empty():
+		fail("the shipped map has lost its cat")
+		return
+	var cat: WaveCat = cats[0]
 	# let the cat live a little, on real physics — main's own process()
 	# advances the clock and ticks every cat in the tree each frame, so
 	# no manual clock-driving is needed here (see observer_test's helpers

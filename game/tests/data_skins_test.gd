@@ -9,7 +9,7 @@ extends GdUnitTestSuite
 ## transliteration to the reference's constants, the way shader_contract_test
 ## pins the pulse-pool protocol. ONE case,
 ## test_explain_ray_matches_the_pinned_crossing_counts, is a second, narrower
-## idiom: it instantiates the shipped level scene and calls
+## idiom: it instantiates a one-wall level built in code and calls
 ## WaveObserver.explain_ray on it, pinning what the RUST SIDE believes about
 ## a handful of sight lines. It reads no shader text, executes no GLSL, and
 ## proves nothing about the shader — see its own doc comment for exactly
@@ -20,7 +20,6 @@ const XRAY_PATH := "res://shaders/data_xray.gdshader"
 const CORE_PATH := "res://shaders/data_core.gdshaderinc"
 const POOL_PATH := "res://shaders/pulse_pool.gdshaderinc"
 const POST_PATH := "res://shaders/hearing_post.gdshader"
-const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
 
 func _text(path: String) -> String:
@@ -150,24 +149,44 @@ func test_the_acoustic_image_layer_is_a_band_ordered_by_distance() -> void:
 	assert_bool(xray.contains("DEPTH = ALWAYS_ON_TOP;")).is_false()
 
 
-## `explain_ray`, pinned against hand-derived crossing counts on the REAL
-## shipped scene (level_01.tscn, the current 28x28 map, 19 walls) — not
-## against sight.rs's own retired_map_rects() cargo fixture, which models a
-## retired 20x20/10-wall map that predates PartyEast, RadioRoom, Store and
-## Workshop. Every count below was checked against the shipped scene's own
-## wall table; it agrees with the retired fixture's cargo tests only
-## because these five lines happen to cross nothing but DividerNorth and
-## FanRoomSouth, unchanged between the two maps.
+## One wall, built in code rather than pinned to level_01.tscn's own
+## layout, which is free to change census underneath this law. The
+## centerline (6.4, 0.6)-(6.4, 8.0) and every point below are lifted
+## unchanged from sight.rs's own cargo fixtures —
+## `endpoint_grazes_are_not_crossings` for the graze case and
+## `the_birth_wall_asymmetry_is_reported_not_hidden` for the birth-wall
+## one — so the geometry each line proves is already hand-checked on the
+## Rust side; this only pins that the boundary carries the same verdict.
+func _one_wall_level() -> WaveLevel:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var marker := Marker3D.new()
+	marker.name = "SpawnPoint"
+	level.add_child(marker)
+	var wall := WaveWall.new()
+	wall.name = "TheWall"
+	wall.length = 7.4
+	wall.position = Vector3(6.4, 0, 4.3)
+	wall.rotation.y = PI * 0.5  # a z-run wall at x = 6.4, spanning z 0.6..8.0
+	level.add_child(wall)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	return level
+
+
+## `explain_ray`, pinned against hand-derived crossing counts on a one-wall
+## level built in code — not the shipped scene, whose census is free to
+## change underneath this law, and not sight.rs's own retired_map_rects()
+## cargo fixture either, kept a deliberate duplicate there for its own
+## reason (see that module's doc comment).
 ##
 ## What this pins: what RUST BELIEVES about these lines, via WaveObserver
-## -> rust/src/nodes/observer.rs -> sight.rs, over the level the game
-## actually ships. What it does NOT pin: that the GLSL agrees.
-## `explain_ray` never touches the shader, and no case in this gdUnit4
-## suite executes GLSL — so a shader-only edit that leaves sight.rs
-## untouched (say, pulse_pool.gdshaderinc's slab loop narrowed from
-## `k < 3` to `k < 2`, turning every wall's Z bound infinite) would pass
-## this case, cargo, and the whole gate, while the picture on screen is
-## wrong. `test_pool_slab_test_mirrors_the_rust_reference` above catches
+## -> rust/src/nodes/observer.rs -> sight.rs. What it does NOT pin: that
+## the GLSL agrees. `explain_ray` never touches the shader, and no case in
+## this gdUnit4 suite executes GLSL — so a shader-only edit that leaves
+## sight.rs untouched (say, pulse_pool.gdshaderinc's slab loop narrowed
+## from `k < 3` to `k < 2`, turning every wall's Z bound infinite) would
+## pass this case, cargo, and the whole gate, while the picture on screen
+## is wrong. `test_pool_slab_test_mirrors_the_rust_reference` above catches
 ## PART of that risk, as a literal substring pin (it would catch a removed
 ## birth-wall skip or a changed graze window) but not all of it (an added
 ## early return, a narrowed loop bound, or the unpinned Z half of
@@ -176,29 +195,22 @@ func test_the_acoustic_image_layer_is_a_band_ordered_by_distance() -> void:
 ## shader pin exists, read a pass here as "Rust still believes this", not
 ## as "the shader still draws this".
 func test_explain_ray_matches_the_pinned_crossing_counts() -> void:
-	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
-	add_child(level)
+	var level := _one_wall_level()
 	var obs := auto_free(WaveObserver.new()) as WaveObserver
 	obs.inject(level, null)
-	# spawn to fan head: DividerNorth alone stands between them
-	var spawn_to_fan: Dictionary = obs.explain_ray(Vector3(3.0, 0.9, 4.0), Vector3(8.6, 1.15, 4.4))
-	assert_int(spawn_to_fan["camera_crossings"]).is_equal(1)
-	# a same-room line: nothing stands between two points inside one room
-	var same_room: Dictionary = obs.explain_ray(Vector3(8.0, 1.0, 4.0), Vector3(12.0, 1.5, 6.0))
-	assert_int(same_room["camera_crossings"]).is_equal(0)
-	# the diagonal into the far corridor: the divider and the fan room's
-	# south wall, two crossings
-	var diagonal: Dictionary = obs.explain_ray(Vector3(3.0, 0.9, 4.0), Vector3(10.0, 0.9, 10.0))
-	assert_int(diagonal["camera_crossings"]).is_equal(2)
-	# an endpoint landing exactly on the divider's shrunk west face: GRAZE_EPS
+	# a straight line through the wall, born well clear of it: one crossing
+	# either occluder counts the same way
+	var through: Dictionary = obs.explain_ray(Vector3(3.0, 0.9, 4.0), Vector3(10.0, 0.9, 4.0))
+	assert_int(through["camera_crossings"]).is_equal(1)
+	assert_int(through["source_crossings"]).is_equal(1)
+	# an endpoint landing exactly on the wall's shrunk west face: GRAZE_EPS
 	# is what keeps this at zero rather than counting the touch as a crossing
 	var graze: Dictionary = obs.explain_ray(Vector3(3.0, 0.9, 4.0), Vector3(6.27, 0.9, 4.0))
 	assert_int(graze["camera_crossings"]).is_equal(0)
-	# the birth-wall asymmetry: a source standing on the divider centerline
-	# lighting an open point skips the wall it is born in (the SOURCE
-	# occluder), while the CAMERA occluder still counts the same wall it
-	# exits — the one pair of numbers where the two occluders diverge
+	# the birth-wall asymmetry: a source standing on the wall's own
+	# centerline lighting an open point skips the wall it is born in (the
+	# SOURCE occluder), while the CAMERA occluder still counts the same
+	# wall it exits — the one pair of numbers where the two occluders diverge
 	var birth_wall: Dictionary = obs.explain_ray(Vector3(6.4, 0.9, 4.0), Vector3(10.0, 0.9, 4.0))
 	assert_int(birth_wall["source_crossings"]).is_equal(0)
 	assert_int(birth_wall["camera_crossings"]).is_equal(1)

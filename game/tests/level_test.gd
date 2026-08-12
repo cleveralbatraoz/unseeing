@@ -715,7 +715,9 @@ func test_the_shipped_level_says_nothing_about_either_shader_ceiling() -> void:
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	var enter := func() -> void: add_child(level)
 	await assert_error(enter).is_success()
-	assert_int(level.wall_segments().size()).is_equal(19)
+	# non-vacuity: a level that silently dropped its own wall table would
+	# pass the silence gate above just as cleanly as a healthy one
+	assert_array(level.wall_segments()).is_not_empty()
 
 
 ## Injection is ordered, and the order is the contract: by the time the

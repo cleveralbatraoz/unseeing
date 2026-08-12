@@ -23,23 +23,26 @@ extends GdUnitTestSuite
 const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 const MAIN_SCENE := preload("res://scenes/main.tscn")
 
-## The fan's shipped voice, from rust/src/fan_wave.rs: volume 0.75, cadence
-## 0.4 s, wavefront 4.5 m/s. Everything the snapshot reports about it is
-## derived here by hand rather than read from the code under test.
-const FAN_VOLUME := 0.75
-## FULL_REACH (12 m, sound_source.rs) x volume.
-const FAN_REACH := 9.0
-## Seconds between whooshes (FAN_CADENCE, rust/src/fan_wave.rs). A fresh gate
-## books its first wave one interval out, so on a level driven only at t = 0
-## the appointment still standing is at 0.4.
-const FAN_CADENCE := 0.4
-## Ring time 9 / 4.5 = 2 s, plus the source kind's 2 s fade tail, a wave
-## every 0.4 s: (2 + 2) / 0.4 slots held at steady state.
+## SOURCE_THROUGH (0.3, level_plan.rs), the per-wall silhouette muffle, and
+## FULL_REACH (12 m, sound_source.rs), the reach a source's wave carries at
+## full volume — engine laws quoted by hand. Never read through SoundFan's
+## own reach()/slot_pressure() #[func]s below: those compute with the
+## identical formula the snapshot's own fields are filled from
+## (`nodes/observer.rs::sources`), so calling them here would mirror the
+## code under test rather than check it. The fan's own volume and cadence
+## are knobs, not law, and are read straight off the live node instead of
+## duplicated as constants.
+const SOURCE_THROUGH := 0.3
+## HUM_THROUGH (0.55, level_plan.rs), the per-wall wave-transmission law
+## explain_ray's own hum_transmission field reads through — the SOURCE
+## occluder's counterpart to SOURCE_THROUGH above.
+const HUM_THROUGH := 0.55
+const FULL_REACH := 12.0
+## Ring time 9 m / 4.5 m/s = 2 s, plus the source kind's 2 s fade tail, a
+## wave every 0.4 s: (2 + 2) / 0.4 slots held at steady state — hand-derived
+## from the wave contract for the shipped fan's own 0.75 volume (9 m reach),
+## the one number here still tied to a knob rather than a pure engine law.
 const FAN_SLOT_PRESSURE := 10.0
-## SOURCE_THROUGH (0.3, level_plan.rs) per wall between the eye and the hub:
-## the standing image of a 0.75-loud fan one wall away, which is what the
-## level pushes to the fan's limbs and what the observer reads back.
-const FAN_FLOOR_ONE_WALL := 0.225
 ## A flicker value the composition root would have pushed to the world skin
 ## this frame. Nothing derives from it — it only has to be recognisable.
 const FLICK := 0.6
@@ -304,22 +307,33 @@ func test_explain_eviction_reads_the_injected_pool() -> void:
 ## actually holding is what the agent is told.
 func test_snapshot_describes_the_levels_sound_sources() -> void:
 	var level := _shipped_level(Pulses.new(), _eye())
+	var fan := _source_named(level, "Fan", "SoundFan") as SoundFan
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var sources: Array = obs.snapshot(0.0)["sources"]
-	assert_int(sources.size()).is_equal(2)
-	var fan: Dictionary = sources[0]
-	assert_str(fan["name"]).is_equal("Fan")
-	assert_float(fan["volume"]).is_equal_approx(FAN_VOLUME, 0.0001)
-	assert_float(fan["reach"]).is_equal_approx(FAN_REACH, 0.0001)
-	assert_float(fan["slot_pressure"]).is_equal_approx(FAN_SLOT_PRESSURE, 0.0001)
-	assert_int(fan["walls_to_eye"]).is_equal(1)
-	assert_float(fan["source_floor"]).is_equal_approx(FAN_FLOOR_ONE_WALL, 0.0001)
+	assert_array(sources).is_not_empty()
+	var entry := _source_entry(sources, str(fan.name))
+	# knobs read straight off the live node, not duplicated as census: the
+	# shipped fan's own volume and cadence, whatever a designer sets them to
+	assert_float(entry["volume"]).is_equal_approx(fan.volume, 0.0001)
+	assert_float(entry["cadence"]).is_equal_approx(fan.cadence, 0.0001)
+	# reach and slot pressure are FULL_REACH/the wave contract scaled by
+	# that same volume knob — hand-derived formulas, never fan.reach()/
+	# fan.slot_pressure() themselves (see the constants block above)
+	assert_float(entry["reach"]).is_equal_approx(FULL_REACH * fan.volume, 0.0001)
+	assert_float(entry["slot_pressure"]).is_equal_approx(FAN_SLOT_PRESSURE, 0.0001)
+	# the fan stands exactly one wall from the spawn — the map's own claim,
+	# the same doctrine map_test.gd's one-wall literals follow, and kept
+	# here rather than derived through level.source_muffle(eye, hub): that
+	# would call the identical function tick_sources used to WRITE
+	# source_floor in the first place, with the identical eye and hub, and
+	# so would mirror the code under test rather than check it
+	assert_int(entry["walls_to_eye"]).is_equal(1)
+	assert_float(entry["source_floor"]).is_equal_approx(SOURCE_THROUGH * fan.volume, 0.0001)
 	# the clockwork, not only the voice: "the fan has gone quiet" is a whole
 	# question class, and a snapshot that carried neither the interval nor the
 	# standing appointment could only answer it by waiting to see
-	assert_float(fan["cadence"]).is_equal_approx(FAN_CADENCE, 0.0001)
-	assert_float(fan["next_emit"]).is_equal_approx(FAN_CADENCE, 0.0001)
+	assert_float(entry["next_emit"]).is_equal_approx(fan.cadence, 0.0001)
 
 
 ## The id budget over the SHIPPED map as `explain_oids`' SOLID-granularity
@@ -359,10 +373,24 @@ func test_the_shipped_level_has_no_object_id_violations() -> void:
 		)
 	assert_array(real_violations).is_empty()
 	assert_float(e["min_sep"]).is_equal_approx(0.08, 0.0001)
-	# the whole picture, named: the solids the colouring paints, the slabs
-	# everything stands on, and one entry per id a source paints its own
-	# limbs with — each of which a wall or a crate may melt into
-	assert_array(e["names"]).contains(["Floor", "Ceiling", "DividerNorth", "Fan @0.33"])
+	# the whole picture, named: the engine's own slabs ("Floor"/"Ceiling",
+	# built by every level regardless of what a designer authored), and one
+	# entry per id a source paints its own limbs with — each of which a
+	# wall or a crate may melt into. WHICH wall stands there is this map's
+	# own census, not this law, so it is not named here.
+	var names: Array = e["names"]
+	assert_array(names).contains(["Floor", "Ceiling"])
+	var has_fan_limb := false
+	for n: String in names:
+		if n.begins_with("Fan @"):
+			has_fan_limb = true
+	# T4 law-shapes the id half of this naming too, once source colouring
+	# lands ("Fan @0.33" is the current scheme, not this suite's to rewrite)
+	(
+		assert_bool(has_fan_limb)
+		. append_failure_message("no 'Fan @<oid>' entry in %s" % [names])
+		. is_true()
+	)
 
 
 ## Where the hero woke. Every position in a snapshot is a world coordinate,
@@ -372,17 +400,18 @@ func test_the_shipped_level_has_no_object_id_violations() -> void:
 ## authored anywhere an agent can read, so a snapshot without it leaves the
 ## reader unable to place anything else it reports.
 ##
-## Hand-derived from the shipped scene: the SpawnPoint marker stands at
-## (3, 0, 4) and the level lifts it to capsule height, SPAWN_LIFT = 0.9
-## (rust/src/level_plan.rs). The yaw is checked against the level's own
-## accessor — two independent surfaces onto one derivation, which is what
-## catches the boundary inventing a heading rather than carrying one.
+## Checked against the level's own accessors, never a literal SpawnPoint
+## coordinate: this is a read-back law (did the boundary carry the value
+## through, not invent or drop it), and level_test.gd already hand-derives
+## spawn_pos()/spawn_yaw() themselves on levels built in code. Both halves
+## checked is what catches the boundary inventing one of the two rather
+## than carrying it.
 func test_the_snapshot_says_where_the_hero_woke() -> void:
 	var level := _shipped_level(Pulses.new())
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var spawn: Dictionary = obs.snapshot(0.0)["spawn"]
-	assert_vector(spawn["position"]).is_equal_approx(Vector3(3.0, 0.9, 4.0), Vector3.ONE * 0.0001)
+	assert_vector(spawn["position"]).is_equal_approx(level.spawn_pos(), Vector3.ONE * 0.0001)
 	assert_float(spawn["yaw"]).is_equal_approx(level.spawn_yaw(), 0.0001)
 
 
@@ -416,9 +445,14 @@ func test_a_silenced_source_reports_no_next_emit() -> void:
 ## this thing actually get?" is the first question after "which seams are
 ## broken". Hand-derived against the one role table
 ## (render::labels::role_label, rust/src/render/labels.rs): the floor's
-## Role::Floor is 0.15, the cat's Role::Cat is 0.7.
+## Role::Floor is 0.15, the cat's Role::Cat is 0.7. The cat is found by
+## whatever name its scene actually carries, never the literal "Cat" — the
+## same doctrine _source_named applies to a renamed source.
 func test_the_oid_census_reports_the_id_of_every_box() -> void:
 	var level := _shipped_level(Pulses.new())
+	var cats := level.cats()
+	assert_array(cats).append_failure_message("the shipped map has lost its cat").is_not_empty()
+	var cat_name := str(cats[0].name)
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var e: Dictionary = obs.explain_oids()
@@ -426,7 +460,11 @@ func test_the_oid_census_reports_the_id_of_every_box() -> void:
 	var oids: PackedFloat64Array = e["oids"]
 	assert_int(oids.size()).is_equal(names.size())
 	assert_float(oids[names.find("Floor")]).is_equal_approx(0.15, 0.0001)
-	assert_float(oids[names.find("Cat")]).is_equal_approx(0.7, 0.0001)
+	var cat_idx := names.find(cat_name)
+	if cat_idx < 0:
+		fail("no census entry named '%s'" % cat_name)
+		return
+	assert_float(oids[cat_idx]).is_equal_approx(0.7, 0.0001)
 
 
 ## The creatures are IN the report. WaveCat and the hero's body occupy the
@@ -441,10 +479,12 @@ func test_the_oid_census_reports_the_id_of_every_box() -> void:
 ## discovered.
 func test_the_oid_census_includes_the_levels_creatures() -> void:
 	var level := _shipped_level(Pulses.new())
+	var cats := level.cats()
+	assert_array(cats).append_failure_message("the shipped map has lost its cat").is_not_empty()
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var e: Dictionary = obs.explain_oids()
-	assert_array(e["names"]).contains(["Cat"])
+	assert_array(e["names"]).contains([str(cats[0].name)])
 	var pairs: Array = e["pairs"]
 	var real_violations: Array[String] = []
 	for idx: int in e["violations"]:
@@ -492,7 +532,10 @@ func test_the_oid_census_measures_a_source_by_what_it_sweeps() -> void:
 	for pair: Dictionary in e["pairs"]:
 		seams.append("%s|%s" % [pair["name_a"], pair["name_b"]])
 	# pairs come back in ascending census order, and the census lists the
-	# painted solids before the sources — so the prop is the a side
+	# painted solids before the sources — so the prop is the a side.
+	# T4 rewrites these to read ids off the fan's own limbs instead of the
+	# current fixed "Fan @0.33"/"@0.63" scheme — a CODE-BUILT fixture, not
+	# shipped census, but one that still pins today's constants until then.
 	assert_array(seams).contains(["SweptNeighbour|Fan @0.33", "SweptNeighbour|Fan @0.63"])
 	assert_array(e["violations"]).is_empty()
 
@@ -682,23 +725,44 @@ func test_superfaces_groups_a_genuine_wall_junction_under_one_class() -> void:
 	)
 
 
-## Occlusion, answerable. Spawn to fan head crosses exactly one wall on the
-## shipped map — DividerNorth, at x = 6.4 — so the fan's WAVE arrives at
-## HUM_THROUGH (0.55) and its silhouette at SOURCE_THROUGH (0.3).
-func test_explain_ray_names_the_wall_between_spawn_and_fan() -> void:
-	var level := _shipped_level(Pulses.new())
+## One wall, built in code rather than pinned to the shipped map's own
+## layout, which is free to change census underneath this law. The
+## centerline (6.4, 0.6)-(6.4, 8.0) is lifted unchanged from sight.rs's own
+## `endpoint_grazes_are_not_crossings` cargo fixture, so the geometry is
+## already hand-checked on the Rust side; this only pins that the boundary
+## carries the same verdict.
+func _one_wall_level() -> WaveLevel:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var wall := WaveWall.new()
+	wall.name = "TheWall"
+	wall.length = 7.4
+	wall.position = Vector3(6.4, 0, 4.3)
+	wall.rotation.y = PI * 0.5  # a z-run wall at x = 6.4, spanning z 0.6..8.0
+	level.add_child(wall)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	return level
+
+
+## Occlusion, answerable. The line crosses the one wall this fixture holds
+## exactly once, born well clear of it, so the fan's WAVE arrives at
+## HUM_THROUGH and its silhouette at SOURCE_THROUGH — the engine law, not
+## a fact about any one map's layout.
+func test_explain_ray_names_the_wall_it_crosses() -> void:
+	var level := _one_wall_level()
 	var obs := _observer()
 	obs.inject(level, _eye())
-	var e: Dictionary = obs.explain_ray(Vector3(3.0, 0.9, 4.0), Vector3(8.6, 1.15, 4.4))
+	var e: Dictionary = obs.explain_ray(Vector3(3.0, 0.9, 4.0), Vector3(10.0, 0.9, 4.0))
 	assert_int(e["camera_crossings"]).is_equal(1)
 	assert_int(e["source_crossings"]).is_equal(1)
-	assert_float(e["hum_transmission"]).is_equal_approx(0.55, 0.0001)
-	assert_float(e["source_transmission"]).is_equal_approx(0.3, 0.0001)
+	assert_float(e["hum_transmission"]).is_equal_approx(HUM_THROUGH, 0.0001)
+	assert_float(e["source_transmission"]).is_equal_approx(SOURCE_THROUGH, 0.0001)
 	var crossed: Array[String] = []
 	for wall: Dictionary in e["walls"]:
 		if wall["crossed"]:
 			crossed.append(wall["name"])
-	assert_array(crossed).is_equal(["DividerNorth"])
+	assert_array(crossed).is_equal(["TheWall"])
 
 
 ## The wall names are pinned to the table they name, not to whatever the
@@ -740,7 +804,7 @@ func test_the_composition_root_injects_the_observer() -> void:
 	# the eye's own projection, read off the live camera: without it a
 	# reader cannot turn a world position into a screen position at all
 	assert_float(snap["camera"]["fov"]).is_equal_approx(main.player.camera.fov, 0.0001)
-	assert_int((snap["sources"] as Array).size()).is_equal(2)
+	assert_array(snap["sources"] as Array).is_not_empty()
 
 
 ## Asking why a wall stayed silent must not make it speak. The explanation
@@ -907,6 +971,30 @@ func _wall_names(obs: WaveObserver) -> Array[String]:
 
 func _observer() -> WaveObserver:
 	return auto_free(WaveObserver.new()) as WaveObserver
+
+
+## A level's sound source, found by the NAME its scene gives it AND the
+## class it is, rather than by where it sits in scene order — map_test.gd's
+## own `_source_named` doctrine, needed here too: a snapshot dictionary
+## carries no class of its own, so identity has to be settled on the real
+## node before the snapshot's own entry can be found by name alone.
+func _source_named(level: WaveLevel, node_name: String, kind: String) -> Node3D:
+	for source: Node3D in level.sources():
+		if str(source.name) == node_name and source.is_class(kind):
+			return source
+	fail("the level carries no %s named '%s'" % [kind, node_name])
+	return null
+
+
+## The snapshot's own entry for a source already confirmed by class through
+## `_source_named` — matched here by name alone, which is all a source
+## dictionary carries.
+func _source_entry(sources: Array, node_name: String) -> Dictionary:
+	for entry: Dictionary in sources:
+		if entry["name"] == node_name:
+			return entry
+	fail("the snapshot carries no source named '%s'" % node_name)
+	return {}
 
 
 ## An observer standing in the same world as the level it reads. Reflection

@@ -120,6 +120,19 @@ func _one_frame() -> void:
 	await get_tree().physics_frame
 
 
+## Whether a source's FIRST-EVER appointment has already arrived by `now`.
+## `next_emit()` itself is a trait method with no `#[func]` surface, so this
+## derives from the cadence knob instead, which is exported and readable off
+## any source's class: a fresh `Cadence` gate books its first wave exactly
+## one interval out (`Cadence::every`, sound_source.rs, pinned there by
+## `one_beat_per_cadence`), and a non-positive cadence never fires at all
+## (the same gate's own refusal). Valid only for a level's FIRST tick ever —
+## which is exactly what the test below drives.
+func _due_at(source: Node3D, now: float) -> bool:
+	var cadence: float = source.get("cadence")
+	return cadence > 0.0 and cadence <= now
+
+
 ## Two real process frames: `now` strictly increases both times, and every
 ## one of the five wave materials carries `u_time` equal to `now` — the
 ## push `process()` makes each frame, not a value set once at boot and
@@ -242,8 +255,18 @@ func test_restore_blob_restores_a_fresh_capture_and_refuses_a_doctored_hash() ->
 ## spawn, and the final assertion would fail.
 func test_process_feeds_tick_sources_the_camera_not_the_body() -> void:
 	var game := _game()
-	var fan: Node3D = game.level.sources()[0]
-	assert_str(str(fan.name)).is_equal("Fan")
+	# A fan, by class rather than by scene position or name — the law needs
+	# ONE fan standing behind a wall from the spawn, not this map's own
+	# node called "Fan": if a level ever furnished more than one, or moved
+	# it into the spawn's own room, the discrimination assert two lines
+	# down (body_muffle < eye_muffle) is what would catch that and name it
+	# as a fixture-shaped failure rather than a silently wrong pass.
+	var fan: Node3D = null
+	for source: Node3D in game.level.sources():
+		if source.is_class("SoundFan"):
+			fan = source
+			break
+	assert_object(fan).append_failure_message("the level carries no SoundFan").is_not_null()
 	var hub: Vector3 = fan.global_position
 	var body_at: Vector3 = game.player.global_position
 	game.player.camera.global_position = hub + Vector3(0.3, 0.0, 0.0)  # the fan's own room
@@ -254,7 +277,7 @@ func test_process_feeds_tick_sources_the_camera_not_the_body() -> void:
 	await _one_frame()
 	var fan_entry: Dictionary
 	for s: Dictionary in game.observer.snapshot(game.now)["sources"]:
-		if s["name"] == "Fan":
+		if s["name"] == str(fan.name):
 			fan_entry = s
 	var source_floor: float = fan_entry["source_floor"]
 	var volume: float = fan_entry["volume"]
@@ -266,11 +289,13 @@ func test_process_feeds_tick_sources_the_camera_not_the_body() -> void:
 ## loop, in the SAME `process()` frame — a source whose appointment first
 ## comes due THIS frame must already be counted in this frame's materials,
 ## not next frame's. Adapted from `source_test.gd`'s
-## `test_one_tick_drives_every_source_on_its_own_voice`: both shipped
-## sources' very first appointment (fan 0.4 s, radio 0.7 s) is overdue the
-## instant `now` reaches 1.0, and the pool is provably empty going into
-## this one frame — boot alone never ticks anything — so 2 is the only
-## frame-consistent count.
+## `test_one_tick_drives_every_source_on_its_own_voice`: the pool is
+## provably empty going into this one frame — boot alone never ticks
+## anything — so `u_count` must equal exactly the sources whose first
+## appointment (its own cadence — `_due_at` above) has already arrived by
+## the time this frame's `now` lands. Derived rather than pinned as a
+## literal: the shipped map's own count and mix of sources is census, not
+## this law.
 ##
 ## Deliberately NOT `_one_frame()`: that helper awaits `process_frame` THEN
 ## `physics_frame`, and measured here (`game.now` moves between the two
@@ -284,6 +309,14 @@ func test_process_pushes_this_frames_new_source_waves_into_the_materials() -> vo
 	var game := _game()
 	game.now = 1.0
 	await get_tree().process_frame
+	var due := 0
+	for source: Node3D in game.level.sources():
+		if _due_at(source, game.now):
+			due += 1
+	# non-vacuity: a level whose sources never come due would pass a u_count
+	# of 0 just as cleanly as a healthy one — the shipped map's own sources
+	# fire well inside 1 s, so this is a fixture-shaped guard, not census
+	assert_int(due).is_greater(0)
 	for mat: ShaderMaterial in game.wave_mats():
 		var count: int = mat.get_shader_parameter("u_count")
-		assert_int(count).is_equal(2)
+		assert_int(count).is_equal(due)

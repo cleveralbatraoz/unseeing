@@ -48,8 +48,11 @@ func test_priorities_stack_the_perceptual_ladder() -> void:
 ## each source carries its own per instance.
 func test_wall_table_reaches_every_occluding_skin() -> void:
 	var main := _main()
-	var walls := main.level.wall_segments().size()
-	assert_int(walls).is_equal(19)
+	var wall_segs := main.level.wall_segments()
+	# non-vacuity: an empty wall table would let every read-back count
+	# below agree with itself trivially, at zero
+	assert_array(wall_segs).is_not_empty()
+	var walls := wall_segs.size()
 	assert_float(main.cane_mat.get_shader_parameter("u_base")).is_equal(0.85)
 	for m: ShaderMaterial in [main.data_mat, main.source_mat, main.post_mat]:
 		var rects: PackedVector4Array = m.get_shader_parameter("u_walls")
@@ -66,7 +69,7 @@ func test_wall_table_reaches_every_occluding_skin() -> void:
 func test_skin_identities() -> void:
 	var main := _main()
 	var sources := main.level.sources()
-	assert_int(sources.size()).is_equal(2)
+	assert_array(sources).is_not_empty()
 	# read by name, not by cast: the point is that the level dressed BOTH
 	# sources without knowing either class. The abstraction is a Rust trait,
 	# so GDScript has no common base type to declare here.
