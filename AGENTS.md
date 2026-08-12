@@ -236,3 +236,11 @@ class graph, so what reached the GPU is pinned by the tests that read mesh
 last resort and reveal a missing observability surface. `explain_ray` reports
 Rust's belief and cannot prove GLSL agrees. Keep `game/addons/godot_mcp/`
 ignored and untracked because it must not reach the export.
+
+## In-flight work
+
+- **Editor-authoring campaign** (branch `worktree-editor-authoring-campaign`):
+  state, remaining tasks, gates, and traps are in
+  `docs/superpowers/handoffs/2026-08-12-editor-authoring-campaign-handoff.md`.
+  Read it before touching that branch. Delete the handoff and this temporary
+  section when the campaign merges.
