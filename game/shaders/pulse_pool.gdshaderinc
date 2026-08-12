@@ -11,7 +11,8 @@ const int MAXP = 64;
 
 // Camera distance is packed into the data pass's BLUE channel divided by
 // this range; the hearing pass multiplies it back. Camera far (60) exceeds
-// it, which is safe only because the room is 20 m across.
+// it, which is safe only because the map is 28 m across, keeping the
+// floor-and-ceiling slab pair's own diagonal under this range.
 const float DIST_PACK_RANGE = 40.0;
 
 // How much a constant source's hum survives crossing ONE wall — the one

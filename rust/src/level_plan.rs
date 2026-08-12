@@ -753,26 +753,20 @@ pub fn wall_budget(walls: usize, slots: usize) -> Option<Budget> {
     })
 }
 
-/// The longest sight line the authored map allows: the diagonal of the
-/// wall-centerline footprint, floor to ceiling.
+/// The XZ bounding box of every wall centerline, standing floor to ceiling
+/// (`y` 0..[`WALL_H`]) — belt-and-braces geometry for [`slab_diagonal`],
+/// never the measure on its own. `None` for an empty table: a level with no
+/// walls contributes no wall footprint, and a caller must not read that as
+/// a real box at the origin.
 ///
-/// The WALL CENTERLINES are the measure, and deliberately so — it is the
-/// one `game/tests/shader_contract_test.gd` already holds DIST_PACK_RANGE
-/// against, so the level's own report and that suite's assertion can never
-/// describe the same map two different ways. It is also a slight
-/// UNDERSTATEMENT: the floor and ceiling slabs span the whole `extents`
-/// knob, which on the shipped map reaches about a metre past the border
-/// walls' centerlines. That is why [`pack_range_budget`] refuses equality
-/// rather than only excess.
-///
-/// Total on any table, the empty one included: a level with no walls has no
-/// footprint, and answering with the difference of two infinities would
-/// poison every comparison downstream.
-#[must_use]
-pub fn map_diagonal(segments: &[Vector4]) -> f64 {
-    let Some(first) = segments.first() else {
-        return 0.0; // no walls, no footprint, nothing to outgrow
-    };
+/// A centerline is a QUAD, not an ordered pair, and BOTH ends of both axes
+/// have to be read — [`wall_segment`] happens to sweep its ends in
+/// ascending order today, which is exactly what makes the other half easy
+/// to lose: a walk that read only `x` and `y` would still measure a
+/// same-handed table correctly and would silently shrink any table whose
+/// quads arrived the other way round.
+fn wall_footprint(segments: &[Vector4]) -> Option<Box3> {
+    let first = segments.first()?;
     let (mut lo_x, mut hi_x) = (first.x.min(first.z), first.x.max(first.z));
     let (mut lo_z, mut hi_z) = (first.y.min(first.w), first.y.max(first.w));
     for s in segments {
@@ -781,14 +775,47 @@ pub fn map_diagonal(segments: &[Vector4]) -> f64 {
         lo_z = lo_z.min(s.y).min(s.w);
         hi_z = hi_z.max(s.y).max(s.w);
     }
-    let (across, along) = (f64::from(hi_x - lo_x), f64::from(hi_z - lo_z));
-    (across * across + WALL_H * WALL_H + along * along).sqrt()
+    Some(Box3 {
+        min: [f64::from(lo_x), 0.0, f64::from(lo_z)],
+        max: [f64::from(hi_x), WALL_H, f64::from(hi_z)],
+    })
+}
+
+/// The longest sight line the authored map allows: the full 3D diagonal of
+/// the drawn world's own outer shell.
+///
+/// THE HONEST MEASURE IS THE SLAB PAIR, not the wall centerlines
+/// [`wall_footprint`] alone used to stand for the whole map. The floor and
+/// ceiling slabs span the whole `extents` knob whether or not a single wall
+/// stands on them — issue #45's courtyard blind spot was exactly this: a
+/// large, sparsely walled room whose few short wall centerlines measured a
+/// tiny footprint while the slab underfoot, which is what every silhouette
+/// and every footstep actually draws against, reached far past shader
+/// range in silence. So `floor` and `ceiling` — read off where the slabs
+/// actually stand, in world space, never the raw `extents` knob a level
+/// dropped off-origin would desync from — are unioned first and are never
+/// optional: a level always has both slabs once built, so there is no
+/// empty case to special-case away.
+///
+/// The wall footprint is unioned in on top, belt-and-braces: a wall is
+/// authored to stand on its level's slab, but nothing stops one from
+/// reaching past its edge, and drawn geometry outside the slab is still
+/// geometry a sight line can reach. On every map that behaves — walls
+/// resting within their own slab — this union changes nothing, since the
+/// slab pair already contains it.
+#[must_use]
+pub fn slab_diagonal(floor: Box3, ceiling: Box3, walls: &[Vector4]) -> f64 {
+    let mut extent = floor.union(&ceiling);
+    if let Some(wall_box) = wall_footprint(walls) {
+        extent = extent.union(&wall_box);
+    }
+    extent.diagonal()
 }
 
 /// What the level must say about its own size against the range the sight
 /// shaders pack camera distance into ([`DIST_PACK_RANGE`]). `None` while
 /// the range strictly exceeds the diagonal, which is the shipped map's
-/// state — 38.02 m against 40 — and must stay silent.
+/// state — 39.73 m against 40, 0.27 m of headroom — and must stay silent.
 ///
 /// WHAT ACTUALLY BREAKS, since the packed value does NOT alias: the data
 /// core writes `clamp(vd / DIST_PACK_RANGE, 0, 1)` into B, so a point
@@ -814,9 +841,9 @@ pub fn map_diagonal(segments: &[Vector4]) -> f64 {
 ///
 /// EQUALITY ALREADY COUNTS. At `vd == range` the packed value is 1.0, the
 /// top of the band and the first value indistinguishable from everything
-/// past it; and [`map_diagonal`] understates the map, since the slabs reach
-/// past the wall centerlines it measures. The existing shader contract
-/// demands `range > diagonal` for the same reason, and the two must agree.
+/// past it — a map that JUST reaches the range is already indistinguishable
+/// from one that has outgrown it. The existing shader contract demands
+/// `range > diagonal` for the same reason, and the two must agree.
 #[must_use]
 pub fn pack_range_budget(diagonal: f64, range: f64) -> Option<Budget> {
     if diagonal < range {
@@ -1827,48 +1854,47 @@ mod tests {
         ]
     }
 
-    /// The map's diagonal is the longest sight line the level allows,
-    /// measured across the WALL CENTERLINES and floor to ceiling — the same
-    /// measure `game/tests/shader_contract_test.gd` already holds
-    /// DIST_PACK_RANGE against, so the level's own report and that suite's
-    /// assertion can never disagree about the same map.
-    ///
-    /// The shipped 28 × 28 map borders its walls at 0.6 and 27.4, a 26.8 m
-    /// span each way: sqrt(26.8² + 3² + 26.8²) = sqrt(1445.48) = 38.019 m.
-    /// Widen it to 32 × 28, the reproduction the issue names, and the walls
-    /// border at 0.6/31.4 and 0.6/27.4: sqrt(30.8² + 3² + 26.8²) =
-    /// sqrt(1675.88) = 40.938 m, past the shaders' 40.
-    #[test]
-    fn the_map_diagonal_spans_the_wall_centerlines_floor_to_ceiling() {
-        let shipped = map_diagonal(&border(0.6, 0.6, 27.4, 27.4));
-        assert!((shipped - 38.0195).abs() < 1e-3, "{shipped}");
-        let widened = map_diagonal(&border(0.6, 0.6, 31.4, 27.4));
-        assert!((widened - 40.9375).abs() < 1e-3, "{widened}");
+    /// The floor and ceiling slab boxes a level of `x` by `z` extents
+    /// builds (`rust/src/nodes/level.rs`'s `slab_center`/`build_slabs`,
+    /// hand-transcribed rather than called into): both slabs span `0..x` by
+    /// `0..z` in the horizontal plane, the floor's top sits at `y = 0` and
+    /// the ceiling's underside at `y = WALL_H`, each [`SLAB_T`] thick on
+    /// the far side of that face from the room.
+    fn slab_boxes(x: f64, z: f64) -> (Box3, Box3) {
+        let floor = Box3 {
+            min: [0.0, -SLAB_T, 0.0],
+            max: [x, 0.0, z],
+        };
+        let ceiling = Box3 {
+            min: [0.0, WALL_H, 0.0],
+            max: [x, WALL_H + SLAB_T, z],
+        };
+        (floor, ceiling)
     }
 
-    /// A level with no walls has no footprint to measure, and answering
-    /// with the difference of two infinities would poison the very
-    /// comparison that decides whether to shout.
+    /// `None` for an empty table: a level with no walls contributes no wall
+    /// footprint, and a caller must not read that as a real box at the
+    /// origin.
     #[test]
-    fn a_level_with_no_walls_has_no_diagonal() {
-        assert_eq!(map_diagonal(&[]), 0.0);
+    fn wall_footprint_is_none_for_an_empty_table() {
+        assert_eq!(wall_footprint(&[]), None);
     }
 
     /// A centerline is a QUAD, not an ordered pair, and BOTH ends of both
     /// axes have to be read. [`wall_segment`] happens to sweep its ends in
     /// ascending order today, which is exactly what makes the other half
     /// easy to lose: a walk that read only `x` and `y` would still measure
-    /// the shipped map correctly and would silently shrink any table whose
-    /// quads arrived the other way round — the failure mode `sight::wall_rect`
-    /// normalises against and the `wall_segment` doc warns about.
+    /// a same-handed table correctly and would silently shrink any table
+    /// whose quads arrived the other way round — the failure mode
+    /// `sight::wall_rect` normalises against and the `wall_segment` doc
+    /// warns about.
     ///
     /// So the same footprint is measured twice, once with every quad
     /// reversed. The stub first is not decoration: the walk seeds itself
     /// from the first quad, so an extreme that lives there would be found
-    /// by the seeding whatever the loop dropped. sqrt(8² + 3² + 5²) =
-    /// sqrt(98) = 9.8994949366.
+    /// by the seeding whatever the loop dropped.
     #[test]
-    fn both_ends_of_a_centerline_are_read_whichever_way_round_it_arrives() {
+    fn wall_footprint_reads_both_ends_of_a_centerline_whichever_way_round_it_arrives() {
         let forward = [
             Vector4::new(4.0, 4.0, 4.0, 5.0), // a stub in the middle, seeding the walk
             Vector4::new(1.0, 2.0, 9.0, 7.0), // the whole footprint, ends ascending
@@ -1880,44 +1906,112 @@ mod tests {
         // the literal twice over, never one measure against the other: an
         // expectation computed by the function under test would hold on any
         // footprint it happened to return, including a wrong one
-        assert!(
-            (map_diagonal(&forward) - 9.899_494_936_611_665).abs() < 1e-12,
-            "{}",
-            map_diagonal(&forward)
-        );
-        assert!(
-            (map_diagonal(&flipped) - 9.899_494_936_611_665).abs() < 1e-12,
-            "{}",
-            map_diagonal(&flipped)
-        );
+        let want = Box3 {
+            min: [1.0, 0.0, 2.0],
+            max: [9.0, WALL_H, 7.0],
+        };
+        assert_eq!(wall_footprint(&forward), Some(want));
+        assert_eq!(wall_footprint(&flipped), Some(want));
     }
 
-    /// One wall is a footprint too, and the height is never dropped: a 4 m
-    /// segment with no depth still spans floor to ceiling, so the diagonal
-    /// is the 3-4-5 triangle's 5 m exactly.
+    /// The shipped 28 × 28 map: its slab pair alone spans
+    /// sqrt(28² + 3.2² + 28²) = sqrt(1578.24) = 39.727 m — the 3.2 m height
+    /// is WALL_H's 3.0 plus a SLAB_T of 0.1 past the floor's top and
+    /// another past the ceiling's underside. The walls border at 0.6 and
+    /// 27.4, fully inside the slab on every side, so unioning them in
+    /// changes nothing. 0.27 m of headroom under the shaders' 40, and
+    /// silence: the shipped scene must keep emitting zero WaveLevel
+    /// messages.
     #[test]
-    fn a_single_wall_still_measures_floor_to_ceiling() {
-        assert_eq!(map_diagonal(&[Vector4::new(1.0, 2.0, 5.0, 2.0)]), 5.0);
+    fn the_slab_diagonal_spans_the_shipped_maps_floor_and_ceiling() {
+        let (floor, ceiling) = slab_boxes(28.0, 28.0);
+        let walls = border(0.6, 0.6, 27.4, 27.4);
+        let diagonal = slab_diagonal(floor, ceiling, &walls);
+        assert!(
+            (diagonal - 39.727_068_857_392_44).abs() < 1e-9,
+            "{diagonal}"
+        );
+        assert_eq!(pack_range_budget(diagonal, DIST_PACK_RANGE), None);
     }
 
-    /// The shipped map's 38.02 m against the shaders' 40 m range: nearly
-    /// two metres of headroom, and silence. The shipped scene emits zero
-    /// WaveLevel messages today and must keep emitting zero.
+    /// ISSUE #45's own reproduction, and the RED this fix exists to turn
+    /// green: an 80 × 80 courtyard with one small 6 × 6 walled room. The
+    /// OLD wall-centerline measure saw only that room's short walls and
+    /// reported a tiny, harmless footprint — silence, while the slab
+    /// underfoot, which is what every silhouette and every footstep
+    /// actually draws against, spans sqrt(80² + 3.2² + 80²) =
+    /// sqrt(12810.24) = 113.182 m, nearly three times the shaders' 40 m
+    /// range. The room's walls sit fully inside the slab, so they change
+    /// nothing; the slab alone was always the whole story, and the bug was
+    /// never asking it.
+    #[test]
+    fn a_courtyard_with_one_small_room_still_saturates_the_pack_range() {
+        let (floor, ceiling) = slab_boxes(80.0, 80.0);
+        let walls = border(10.0, 10.0, 16.0, 16.0); // the one 6 × 6 room
+        let diagonal = slab_diagonal(floor, ceiling, &walls);
+        assert!(
+            (diagonal - 113.182_330_776_495_32).abs() < 1e-9,
+            "{diagonal}"
+        );
+        assert_eq!(
+            pack_range_budget(diagonal, DIST_PACK_RANGE).map(|b| b.severity),
+            Some(Severity::Error)
+        );
+    }
+
+    /// The short-circuit this fix removes: the OLD `map_diagonal` returned
+    /// 0.0 for an empty wall table, so a bare courtyard with not one wall
+    /// in it reported NOTHING — silence on a level whose floor alone was
+    /// already far past shader range. The slab pair is never optional now,
+    /// so a wall-less level still measures: sqrt(50² + 3.2² + 50²) =
+    /// 70.783 m.
+    #[test]
+    fn a_wall_less_courtyard_still_measures_off_its_slabs() {
+        let (floor, ceiling) = slab_boxes(50.0, 50.0);
+        let diagonal = slab_diagonal(floor, ceiling, &[]);
+        assert!(
+            (diagonal - 70.783_048_818_202_23).abs() < 1e-9,
+            "{diagonal}"
+        );
+        assert_eq!(
+            pack_range_budget(diagonal, DIST_PACK_RANGE).map(|b| b.severity),
+            Some(Severity::Error)
+        );
+    }
+
+    /// Belt-and-braces: a wall is authored to stand on its level's slab,
+    /// but nothing enforces it, and drawn geometry outside the slab is
+    /// still geometry a sight line can reach. A 10 × 10 slab with one wall
+    /// poking clean through both its x-edges (from x = −2 to x = 12) grows
+    /// the union from a 10 m span to a 14 m one: sqrt(14² + 3.2² + 10²) =
+    /// sqrt(306.24) = 17.500 m, wider than the slab alone would ever
+    /// report.
+    #[test]
+    fn a_wall_reaching_past_the_slab_edge_still_widens_the_diagonal() {
+        let (floor, ceiling) = slab_boxes(10.0, 10.0);
+        let walls = [Vector4::new(-2.0, 5.0, 12.0, 5.0)];
+        let diagonal = slab_diagonal(floor, ceiling, &walls);
+        assert!(
+            (diagonal - 17.499_714_283_381_888).abs() < 1e-9,
+            "{diagonal}"
+        );
+    }
+
+    /// The shipped map's 39.73 m against the shaders' 40 m range: 0.27 m
+    /// of headroom, and silence. The shipped scene emits zero WaveLevel
+    /// messages today and must keep emitting zero.
     #[test]
     fn a_map_inside_the_packing_range_says_nothing() {
-        assert_eq!(pack_range_budget(38.02, 40.0), None);
+        assert_eq!(pack_range_budget(39.73, 40.0), None);
         assert_eq!(pack_range_budget(39.99, 40.0), None);
         assert_eq!(pack_range_budget(0.0, 40.0), None);
     }
 
     /// EQUALITY IS ALREADY TOO FAR, and this is what keeps the level's own
     /// report in step with `game/tests/shader_contract_test.gd`, which
-    /// demands the range be strictly GREATER than the diagonal. Two reasons
-    /// the law is strict: at vd == range the packed value is already 1.0,
-    /// the top of the band and the first value that cannot be told from
-    /// anything beyond it; and the diagonal is measured across the wall
-    /// centerlines while the floor and ceiling slabs span the whole extents
-    /// knob, so real drawn geometry reaches further than the number checked.
+    /// demands the range be strictly GREATER than the diagonal: at
+    /// vd == range the packed value is already 1.0, the top of the band
+    /// and the first value that cannot be told from anything beyond it.
     #[test]
     fn a_diagonal_that_exactly_reaches_the_range_is_already_reported() {
         assert_eq!(
@@ -1926,8 +2020,8 @@ mod tests {
         );
     }
 
-    /// The issue's reproduction, and the message it must produce: widening
-    /// the shipped map to 32 × 28 pushes the diagonal to 40.94 m.
+    /// Issue #45's own reproduction, and the message it must produce: the
+    /// 80 × 80 courtyard's slab pair pushes the diagonal to 113.18 m.
     ///
     /// The message says SATURATES, not aliases, because that is what the
     /// GLSL does: data_core.gdshaderinc:149 packs
@@ -1941,18 +2035,19 @@ mod tests {
     /// is not where it says it is.
     #[test]
     fn a_map_past_the_packing_range_names_the_diagonal_and_what_saturates() {
-        let budget = pack_range_budget(40.9375, 40.0).expect("a report");
+        let budget = pack_range_budget(113.182_330_776_495_32, 40.0).expect("a report");
         assert_eq!(budget.severity, Severity::Error);
         assert_eq!(
             budget.text,
-            "WaveLevel: the map's 40.94 m diagonal reaches the sight shaders' DIST_PACK_RANGE of \
-             40 m. Packed camera distance SATURATES there, it does not wrap: the data core packs \
-             clamp(vd / DIST_PACK_RANGE, 0, 1) into B, so everything past 40 m reads a flat 1.0 — \
-             its silhouette Laplacian is zero and it draws no outline at all, and the hearing pass \
-             cuts player-sound rings against a world it believes is exactly 40 m away. Shrink the \
-             map, or raise DIST_PACK_RANGE in game/shaders/pulse_pool.gdshaderinc — a measured \
-             decision and not a free one: it rescales every packed distance, and the outline \
-             thresholds in hearing_post are tuned against this range."
+            "WaveLevel: the map's 113.18 m diagonal reaches the sight shaders' DIST_PACK_RANGE \
+             of 40 m. Packed camera distance SATURATES there, it does not wrap: the data core \
+             packs clamp(vd / DIST_PACK_RANGE, 0, 1) into B, so everything past 40 m reads a \
+             flat 1.0 — its silhouette Laplacian is zero and it draws no outline at all, and the \
+             hearing pass cuts player-sound rings against a world it believes is exactly 40 m \
+             away. Shrink the map, or raise DIST_PACK_RANGE in \
+             game/shaders/pulse_pool.gdshaderinc — a measured decision and not a free one: it \
+             rescales every packed distance, and the outline thresholds in hearing_post are tuned \
+             against this range."
         );
     }
 

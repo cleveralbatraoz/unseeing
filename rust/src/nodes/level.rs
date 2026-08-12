@@ -868,6 +868,14 @@ impl WaveLevel {
         mesh_world_box(&floor.skin.clone().upcast())
     }
 
+    /// The world box of the ceiling slab — symmetric with [`Self::floor_box`],
+    /// and the other half of the pair [`Self::report_pack_range`] measures
+    /// the map's own diagonal against. `None` before the slabs are built.
+    fn ceiling_box(&self) -> Option<oid_palette::Box3> {
+        let ceiling = self.slabs.iter().find(|slab| slab.lid)?;
+        mesh_world_box(&ceiling.skin.clone().upcast())
+    }
+
     /// Every painted solid with the world box it fills and the path a
     /// designer finds it at — the shape the placement laws read.
     ///
@@ -1348,13 +1356,25 @@ impl WaveLevel {
     /// pack camera distance into ([`level_plan::pack_range_budget`]) — a
     /// ceiling on the map's SIZE rather than on its wall count, and one a
     /// designer meets by widening a room rather than by adding geometry.
-    /// Measured off the derived centerlines, so it moves when a border wall
-    /// moves; the words and the verdict are pure, and cargo holds them.
+    ///
+    /// Measured off the floor and ceiling slab boxes — read where they
+    /// actually stand in world space, never the raw `extents` knob a level
+    /// dropped off-origin would desync from — with the wall table unioned
+    /// in belt-and-braces ([`level_plan::slab_diagonal`]). The slabs are
+    /// what moves this number on every real map: they span the whole
+    /// footprint whether or not a wall stands on any of it, which is
+    /// exactly the courtyard a sparse room's short wall centerlines used to
+    /// hide (issue #45). The words and the verdict are pure, and cargo
+    /// holds them; this end only measures.
     fn report_pack_range(&mut self, editor: bool) {
-        let budget = level_plan::pack_range_budget(
-            level_plan::map_diagonal(&self.segments),
-            level_plan::DIST_PACK_RANGE,
-        );
+        let diagonal = match (self.floor_box(), self.ceiling_box()) {
+            (Some(floor), Some(ceiling)) => {
+                level_plan::slab_diagonal(floor, ceiling, &self.segments)
+            }
+            // slabs not yet built: nothing drawn to measure, nothing to say
+            _ => 0.0,
+        };
+        let budget = level_plan::pack_range_budget(diagonal, level_plan::DIST_PACK_RANGE);
         self.say(editor, budget);
     }
 

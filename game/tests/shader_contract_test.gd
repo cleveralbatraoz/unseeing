@@ -205,19 +205,28 @@ func test_hearing_pass_reads_the_screen_texture_nearest() -> void:
 ## world that is not there.
 ##
 ## The range must therefore exceed the longest sight line the map allows:
-## the full 3D diagonal of the wall-centerline extents, floor to ceiling —
-## derived from the shipped level scene, the one map that ever renders.
-## Derived HERE independently of the level's own arithmetic, on purpose: an
-## expectation computed by the code under test would pass whatever that code
-## did, and WaveLevel now measures this same diagonal itself.
+## the full 3D diagonal of the SLAB PAIR'S union, floor to ceiling — the
+## drawn world's own outer shell, not just the wall centerlines standing on
+## it (issue #45: a large, sparsely walled room's short wall centerlines
+## measured a tiny footprint while the slab underfoot, which is what every
+## silhouette and every footstep actually draws against, reached far past
+## shader range in silence) — derived from the shipped level scene, the one
+## map that ever renders.
+##
+## Derived HERE from `level.extents` and the slab placement law
+## (`rust/src/nodes/level.rs`'s `slab_center`: the floor's top sits at
+## y = 0, the ceiling's underside at y = WALL_H, each slab SLAB_T thick on
+## the far side of that face) rather than from a new WaveLevel accessor,
+## which would just mirror `rust/src/level_plan.rs`'s own arithmetic and
+## pass whatever that arithmetic did, including a wrong one. The shipped
+## map's walls border fully inside its slab, so the wall table WaveLevel
+## unions in belt-and-braces never widens the footprint past it — extents
+## alone are already the whole story here.
 func test_dist_pack_range_covers_the_map_diagonal() -> void:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
-	var lo := Vector2(INF, INF)
-	var hi := Vector2(-INF, -INF)
-	for s: Vector4 in level.wall_segments():
-		lo = Vector2(minf(lo.x, minf(s.x, s.z)), minf(lo.y, minf(s.y, s.w)))
-		hi = Vector2(maxf(hi.x, maxf(s.x, s.z)), maxf(hi.y, maxf(s.y, s.w)))
-	var diagonal := Vector3(hi.x - lo.x, WaveLevel.wall_height(), hi.y - lo.y).length()
+	const SLAB_T := 0.1  # rust/src/level_plan.rs SLAB_T, hand-transcribed
+	var height := WaveLevel.wall_height() + 2.0 * SLAB_T
+	var diagonal := Vector3(level.extents.x, height, level.extents.y).length()
 	assert_float(_shader_const("DIST_PACK_RANGE")).is_greater(diagonal)

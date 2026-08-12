@@ -83,6 +83,22 @@ impl Box3 {
         Self { min, max }
     }
 
+    /// The full 3D diagonal across this box's own extents — the longest
+    /// straight line between two of its corners. What `WaveLevel` measures
+    /// its slab pair's union against, since that union IS the drawn world's
+    /// outer shell and the honest ceiling to check a shader packing range
+    /// against ([`crate::level_plan::slab_diagonal`]).
+    #[must_use]
+    pub fn diagonal(&self) -> f64 {
+        (0..3)
+            .map(|axis| {
+                let d = self.max[axis] - self.min[axis];
+                d * d
+            })
+            .sum::<f64>()
+            .sqrt()
+    }
+
     /// This box grown by `margin` on the HORIZONTAL axes only — how a
     /// source whose head sweeps reports the volume it can actually reach,
     /// where the level samples a single pose. A negative margin is ignored:
