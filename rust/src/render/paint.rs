@@ -415,8 +415,35 @@ fn add_sep(seps: &mut Vec<(usize, usize)>, a: usize, b: usize) {
 /// separations completely unchanged, so a level with no columns pays
 /// nothing extra. A `flank_solids` entry naming a solid with no real face
 /// in `faces` at all (never true of an actual column, which always
-/// contributes its two rims) falls back to a fresh, unconstrained class
-/// rather than panicking.
+/// contributes its two rims) falls back to a fresh class — SAFE rather
+/// than merely non-panicking: separated from every touching neighbour's
+/// real classes the identical way a multi-member flank always is, so an
+/// orphan flank cannot silently melt into whatever it stands beside.
+fn separate_from_touching_neighbours(
+    separations: &mut Vec<(usize, usize)>,
+    this_class: usize,
+    solid: usize,
+    faces: &[Face],
+    sf: &Superfaces,
+    touching: &[(usize, usize)],
+) {
+    for &(a, b) in touching {
+        let other = if a == solid {
+            Some(b)
+        } else if b == solid {
+            Some(a)
+        } else {
+            None
+        };
+        let Some(other) = other else { continue };
+        for (i, face) in faces.iter().enumerate() {
+            if face.solid == other {
+                add_sep(separations, this_class, sf.class_of[i]);
+            }
+        }
+    }
+}
+
 pub fn add_flank_classes(
     sf: &Superfaces,
     faces: &[Face],
@@ -458,11 +485,30 @@ pub fn add_flank_classes(
             flank_class.push(match joined {
                 Some(i) => sf.class_of[i],
                 None => {
-                    // total: no real face at all for this solid — never
-                    // true of an actual column, kept as a safe fallback
-                    // rather than a panic.
+                    // total, and SAFE in the constraining direction: no
+                    // real face at all for this solid — never true of an
+                    // actual column (`render::faces::column_faces` always
+                    // emits its two rims, degenerate radius/height and
+                    // all), but a caller could still hand `flank_solids`
+                    // an index nothing built faces for. Nothing to alias
+                    // onto, so this wins a fresh class — but a FRESH,
+                    // UNCONSTRAINED class would be free to land on
+                    // whatever slot a touching neighbour already uses,
+                    // silently melting into it. Give it the same blanket
+                    // "separate from everything touching" rule the
+                    // multi-member branch's own touching bullet applies
+                    // below, erring toward drawing a line rather than
+                    // risking that melt.
                     let this_class = classes;
                     classes += 1;
+                    separate_from_touching_neighbours(
+                        &mut separations,
+                        this_class,
+                        solid,
+                        faces,
+                        sf,
+                        touching,
+                    );
                     this_class
                 }
             });
@@ -479,21 +525,7 @@ pub fn add_flank_classes(
             }
         }
 
-        for &(a, b) in touching {
-            let other = if a == solid {
-                Some(b)
-            } else if b == solid {
-                Some(a)
-            } else {
-                None
-            };
-            let Some(other) = other else { continue };
-            for (i, face) in faces.iter().enumerate() {
-                if face.solid == other {
-                    add_sep(&mut separations, this_class, sf.class_of[i]);
-                }
-            }
-        }
+        separate_from_touching_neighbours(&mut separations, this_class, solid, faces, sf, touching);
     }
 
     for (a_idx, &solid_a) in flank_solids.iter().enumerate() {
@@ -795,6 +827,143 @@ mod tests {
         let sf = superfaces(&all, &touching);
         let (flank_class, _classes, seps) = add_flank_classes(&sf, &all, &touching, &[0, 1]);
         assert!(seps.contains(&ordered(flank_class[0], flank_class[1])));
+    }
+
+    /// Wave S review finding (IMPORTANT): the MULTI-MEMBER branch (lines
+    /// above, a column whose rim genuinely coplanar-MERGES with a
+    /// partner rather than merely abutting one) was mutation-dead — every
+    /// other flank fixture in this file ends up a SINGLETON, since a
+    /// column resting ON anything presents an opposite-facing surface (a
+    /// buried abutment, never a same-direction merge). This fixture
+    /// forces a genuine merge instead: `post`'s TOP rim is flush with,
+    /// and faces the SAME way as, `block`'s own top face, entirely
+    /// inside its footprint — a coplanar overlap that MERGES them,
+    /// putting `block` and `post` in the SAME multi-member cluster.
+    /// `post`'s bottom rim stays clear (y=0, strictly inside `block`'s
+    /// own y-range, matching none of its six faces), so exactly one
+    /// merge edge exists — the minimal case that still makes the cluster
+    /// multi-member.
+    ///
+    /// The two assertions are chosen to be independently diagnostic:
+    /// `post`'s own bottom rim (global 6) is never one of `block`'s real
+    /// faces, so that pair can ONLY come from the own-rim loop (476-480);
+    /// `block`'s own -X face (global 0) is never one of `post`'s real
+    /// faces, so that pair can ONLY come from the touching-neighbour loop
+    /// (`separate_from_touching_neighbours`, formerly inlined at
+    /// 482-496) — deleting either loop alone, or both together, must
+    /// fail at least one.
+    #[test]
+    fn a_columns_flank_separates_from_a_genuinely_merged_rim_and_its_partner() {
+        let block = Shape::Box3d {
+            center: [0.0, 0.0, 0.0],
+            size: [6.0, 2.0, 6.0],
+            basis: IDENTITY,
+        };
+        let post = Shape::Column {
+            center: [0.0, 0.5, 0.0],
+            radius: 0.3,
+            half_height: 0.5,
+        };
+        let mut all = faces(0, &block);
+        all.extend(faces(1, &post));
+
+        // the merge premise, hand-derived: post's top rim (global 7,
+        // y=1) is flush with and faces the same way as block's own top
+        // (global 3, y=1) — block spans y in [-1,1], post spans y in
+        // [0,1], so post's bottom rim (global 6, y=0) matches neither
+        // block's own -Y (y=-1) nor any other block face.
+        assert_eq!(all[3].normal, [0.0, 1.0, 0.0]);
+        assert_eq!(all[3].offset, 1.0);
+        assert_eq!(all[7].normal, [0.0, 1.0, 0.0]);
+        assert_eq!(all[7].offset, 1.0);
+        assert_eq!(all[6].normal, [0.0, -1.0, 0.0]);
+        assert_eq!(all[6].offset, 0.0);
+        assert_eq!(all[0].normal, [-1.0, 0.0, 0.0]);
+
+        let touching = [(0, 1)];
+        let sf = superfaces(&all, &touching);
+        // the merge actually happened: block and post share ONE
+        // multi-member cluster now, neither is a singleton
+        assert_eq!(sf.class_of[3], sf.class_of[7]);
+        assert_eq!(sf.cluster_of_solid[0], sf.cluster_of_solid[1]);
+
+        let (flank_class, classes, seps) = add_flank_classes(&sf, &all, &touching, &[1]);
+        let flank = flank_class[0];
+        // own-rim loop: post's bottom rim, never one of block's faces
+        assert!(seps.contains(&ordered(flank, sf.class_of[6])));
+        // touching-neighbour loop: block's own -X, never one of post's
+        assert!(seps.contains(&ordered(flank, sf.class_of[0])));
+
+        let augmented = Superfaces {
+            class_of: sf.class_of.clone(),
+            classes,
+            separations: seps,
+            cluster_of_solid: sf.cluster_of_solid.clone(),
+        };
+        let out = labels::assign(&augmented, &[], &PALETTE);
+        assert_eq!(out.starved, 0);
+        let flank_label = out.label_of_class[flank];
+        assert!(separated(flank_label, out.label_of_class[sf.class_of[6]]));
+        assert!(separated(flank_label, out.label_of_class[sf.class_of[0]]));
+    }
+
+    /// Wave S review finding (MINOR 1): a `flank_solids` entry naming a
+    /// solid with no real face in `faces` at all — never true of an
+    /// actual column today (`column_faces` has no degeneracy guard of
+    /// its own and always emits its two rims), but a defensive property
+    /// of THIS function's own contract, not a currently-reachable path —
+    /// used to fall back to a fresh, wholly UNCONSTRAINED class: free to
+    /// land on whatever slot a touching neighbour already uses, a silent
+    /// melt. `far` (solid 2) exists only to push `solid_count` past
+    /// index 1, so solid 1 still gets a valid (trivial, singleton)
+    /// cluster entry rather than an out-of-range one — the exact
+    /// shape `is_singleton`'s `.get(solid)` needs to read `true` and
+    /// reach the orphan-fallback arm at all.
+    #[test]
+    fn a_flank_naming_a_faceless_solid_still_separates_from_its_touching_neighbours() {
+        let block = Shape::Box3d {
+            center: [0.0, 0.0, 0.0],
+            size: [1.0, 1.0, 1.0],
+            basis: IDENTITY,
+        };
+        let far = Shape::Box3d {
+            center: [50.0, 0.0, 0.0],
+            size: [1.0, 1.0, 1.0],
+            basis: IDENTITY,
+        };
+        let mut all = faces(0, &block);
+        all.extend(faces(2, &far)); // solid 1 deliberately absent
+        let touching = [(0, 1)];
+        let sf = superfaces(&all, &touching);
+        assert_eq!(sf.cluster_of_solid.len(), 3);
+        // solid 1 got a real, trivial singleton cluster despite
+        // contributing no face at all — the premise the fallback branch
+        // needs to even be reached
+        assert_ne!(sf.cluster_of_solid[0], sf.cluster_of_solid[1]);
+
+        let (flank_class, classes, seps) = add_flank_classes(&sf, &all, &touching, &[1]);
+        let flank = flank_class[0];
+        assert_eq!(classes, sf.classes + 1);
+        // separated from EVERY class block's six real faces belong to —
+        // the fix; the unfixed fallback added no separation at all
+        for (i, face) in all.iter().enumerate() {
+            if face.solid == 0 {
+                assert!(seps.contains(&ordered(flank, sf.class_of[i])));
+            }
+        }
+
+        let augmented = Superfaces {
+            class_of: sf.class_of.clone(),
+            classes,
+            separations: seps,
+            cluster_of_solid: sf.cluster_of_solid.clone(),
+        };
+        let out = labels::assign(&augmented, &[], &PALETTE);
+        assert_eq!(out.starved, 0);
+        let flank_label = out.label_of_class[flank];
+        for &c in &sf.class_of[0..6] {
+            assert!(separated(flank_label, out.label_of_class[c]));
+        }
     }
 
     /// Wave S: a column with no neighbours at all is alone in its own

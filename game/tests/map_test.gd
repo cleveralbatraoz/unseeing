@@ -536,6 +536,62 @@ func test_shipped_level_derives_with_no_starved_classes() -> void:
 	await assert_error(enter).is_success()
 
 
+## Wave S fix round 2 (MINOR 2): the wall<->slab seam has no OTHER
+## shipped-map pin now that the slab is a real singleton graph member,
+## not a phantom class `_painted_boxes` could ignore — that walk only
+## ever reads a wall's BRIDGED first-face `oid()`, never checks it
+## against a slab's label at all. Every wall's OWN six face labels — read
+## straight off each wall's own mesh CUSTOM0 channel, the real per-face
+## ground truth, not the coarser bridge — must clear BOTH Floor (0.15)
+## and Ceiling (0.90) by at least MIN_OID_SEP. Hand-derived: every wall
+## takes its label from the five-entry WORLD_OIDS palette
+## ([0.25, 0.34, 0.43, 0.52, 0.61], `rust/src/nodes/level.rs`) — walls
+## are never anchored, only slabs and sources are — and every one of
+## those five sits comfortably clear of both role labels
+## (`render::labels::role_label`) already; this is the wiring pin that
+## would catch a wall ever inheriting 0.15/0.90 directly, the way it
+## could if a wall's own cluster were ever silently merged into a slab's
+## (the ledgered, currently-unreachable anchor-conflict case).
+func _collect_walls(node: Node, out: Array[WaveWall]) -> void:
+	for child: Node in node.get_children():
+		if child is WaveWall:
+			out.append(child as WaveWall)
+		_collect_walls(child, out)
+
+
+func test_shipped_walls_clear_the_floor_and_ceiling_labels() -> void:
+	const FLOOR_LABEL := 0.15
+	const CEILING_LABEL := 0.90
+	var level := _shipped_level()
+	var walls: Array[WaveWall] = []
+	_collect_walls(level, walls)
+	assert_int(walls.size()).is_equal(19)
+	var violations: Array[String] = []
+	for wall: WaveWall in walls:
+		var custom: PackedFloat32Array = _skin(wall).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+		for f in 6:
+			var label: float = custom[f * 4]
+			if absf(label - FLOOR_LABEL) < MIN_OID_SEP:
+				violations.append(
+					(
+						"%s face %d = %.3f too close to Floor (%.2f)"
+						% [wall.name, f, label, FLOOR_LABEL]
+					)
+				)
+			if absf(label - CEILING_LABEL) < MIN_OID_SEP:
+				violations.append(
+					(
+						"%s face %d = %.3f too close to Ceiling (%.2f)"
+						% [wall.name, f, label, CEILING_LABEL]
+					)
+				)
+	(
+		assert_array(violations)
+		. append_failure_message("wall labels too close to a slab role label: %s" % str(violations))
+		. is_empty()
+	)
+
+
 ## The generalisation of `_face_nearest_world_z` to any axis — the fight
 ## census names its plane by axis LETTER ("x"/"y"/"z"), so verifying a
 ## fight against the real mesh has to read the matching component off
