@@ -71,11 +71,17 @@ setup_claude() {
     [ -n "$old_root" ] || claude plugin marketplace add "$SUB" --scope user >/dev/null
     claude plugin install superpowers@superpowers-dev --scope user >/dev/null
   fi
-  claude plugin enable superpowers@superpowers-dev --scope user >/dev/null
   record="$(claude plugin list --json | installed_record)"
   IFS='|' read -r version enabled install_path <<EOF
 $record
 EOF
+  if [ "$enabled" != true ]; then
+    claude plugin enable superpowers@superpowers-dev --scope user >/dev/null
+    record="$(claude plugin list --json | installed_record)"
+    IFS='|' read -r version enabled install_path <<EOF
+$record
+EOF
+  fi
   [ "$version" = "$VERSION" ] && [ "$enabled" = true ] || { echo "setup-agents: Claude verification failed" >&2; exit 1; }
   [ "$(hash_tree "$SUB/skills")" = "$(hash_tree "$install_path/skills")" ] || { echo "setup-agents: Claude skill cache differs from repository pin" >&2; exit 1; }
   echo "setup-agents: Claude Code enabled superpowers@superpowers-dev v$VERSION"
