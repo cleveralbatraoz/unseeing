@@ -397,7 +397,8 @@ fn add_sep(seps: &mut Vec<(usize, usize)>, a: usize, b: usize) {
 ///   - from every OTHER column's flank it touches: two barrels standing
 ///     flush would otherwise be free to land on the identical label where
 ///     their curves meet, which is exactly the seam the whole-box touch
-///     graph ([`crate::oid_palette::assign`]) already protected and this
+///     graph (the retired `oid_palette::assign`, superseded by this
+///     module and [`super::labels::assign`]) already protected and this
 ///     campaign must not regress.
 ///
 /// THE RULE for a SINGLETON column: the flank ALIASES the class its own
@@ -544,11 +545,11 @@ pub fn add_flank_classes(
 }
 
 /// Extend a class/separation graph with one extra, FIXED-label class per
-/// entry of `extra_anchors` — the mechanism that preserves
-/// [`crate::oid_palette::Fixed`]'s old law (a sound source's own ids ban
-/// the world palette entries near them for whatever touches it) now that a
-/// source contributes no real face to the census at all (its limbs bake
-/// their role labels directly into `CUSTOM0`, never through the census):
+/// entry of `extra_anchors` — the mechanism that preserves the retired
+/// `oid_palette::Fixed`'s old law (a sound source's own ids ban the world
+/// palette entries near them for whatever touches it) now that a source
+/// contributes no real face to the census at all (its limbs bake their
+/// role labels directly into `CUSTOM0`, never through the census):
 /// `render::labels::role_label` puts the world palette's 0.34 within a
 /// centimetre of `Role::Shell`'s 0.33, and without a ban a wall or a crate
 /// touching a source's swept envelope would be free to land there.

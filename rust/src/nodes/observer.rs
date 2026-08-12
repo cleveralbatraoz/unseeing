@@ -30,8 +30,8 @@ use godot::classes::{
 use godot::prelude::*;
 
 use super::hero::HeroBody;
-use super::level::WaveLevel;
-use super::player::{EYE, UnseeingPlayer};
+use super::level::{FaceCensusEntry, WaveLevel};
+use super::player::UnseeingPlayer;
 use super::source;
 use crate::cat_body::{CatPose, TAIL_N};
 use crate::cat_brain::{BrainCapture, BrainState, RoamRect};
@@ -41,7 +41,7 @@ use crate::ffi::{WaveCore, cast_reflection_fan};
 use crate::level_plan;
 use crate::observe::evict::{EvictionPlan, EvictionRule, explain_eviction};
 use crate::observe::oids::{
-    EyeBand, Fight, OidExplanation, coplanar_fights_checked, explain_oids_checked,
+    LabelFault, OidExplanation, coplanar_label_faults, explain_oids_checked,
 };
 use crate::observe::pool::{SlotObservation, SlotState};
 use crate::observe::ray::{self, RayExplanation};
@@ -55,11 +55,12 @@ use crate::observe::{
 };
 use crate::pulse_pool::{MAXP, SlotCapture};
 use crate::ray_fan;
+use crate::render::Face;
 use crate::reproduce::{
     CaptureState, CatCapture, EnvCapture, FORMAT_VERSION, HeroCapture, SourceCapture,
     first_divergence, state_hash,
 };
-use crate::viewmodel::{BOB_AMP, ViewmodelCapture};
+use crate::viewmodel::ViewmodelCapture;
 
 /// No level: the observer was never handed the world to read.
 const NO_LEVEL: &str = "observer was never injected a level";
@@ -396,42 +397,36 @@ impl WaveObserver {
         ray_dict(&explanation, &level.wall_names())
     }
 
-    /// The touch graph and its colouring, over every painted box in the
-    /// level: which seams the flat object ids actually draw. `fights`
-    /// carries the coplanar-fight census over the same boxes and ids —
-    /// every pair of same-facing coplanar faces sharing rasterised area,
-    /// where the depth buffer picks a winner per pixel and speckles the
-    /// packed id between the two wherever a wave reveals the patch. Each
-    /// entry names both solids, the shared plane's axis as the string
-    /// "x", "y" or "z" (horizontal planes census only where the walking
-    /// eye's band — `EYE ± BOB_AMP` — can face them; see
-    /// `observe::oids::Fight`), the plane coordinate, and the id step
-    /// that draws the speckle. An empty `fights` always means "no
-    /// fights": a census that could not run is refused with the one-key
-    /// `unavailable` grammar, never reported empty.
+    /// The touch graph and its colouring, plus the merge law's own
+    /// postcondition.
     ///
-    /// The fight census skips boxes without drawn faces IN PLACE. A
-    /// sound source enters the census as a swept ENVELOPE — its limbs'
-    /// union grown by the sweep margin, once per id — whose planes
-    /// rasterise nothing, so censusing it reported every source
-    /// z-fighting itself. The envelope stays in `pairs`, `violations`
-    /// and `names` exactly as before (the colouring anchors on it; the
-    /// seam law is about reach, not rasterised faces), and its census
-    /// entry is skip-MARKED rather than removed, so a fight's indices
-    /// name solids off the same list `pairs` and `names` index into —
-    /// no re-keying anywhere. Two misses are accepted and NAMED rather
-    /// than papered over: what a source's real limbs do to each other
-    /// (outside the census, like the hero's body), and freely-rotated
-    /// flush assemblies — the census compares axis-aligned world-box
-    /// faces, so a rotated pair's oblique shared plane is invisible to
-    /// it.
+    /// `pairs`/`violations` stay the SOLID-granularity law over every
+    /// painted box (`WaveLevel::oid_census`, still a first-face bridged
+    /// read) — legitimate for what it answers, because it only ever
+    /// reasons about two SEPARATE (never coplanar-merged) solids, and the
+    /// merge law's own singleton collapse guarantees such a solid carries
+    /// one uniform label across every face.
+    ///
+    /// `superfaces` and `faults` are the campaign's own addition, read off
+    /// `WaveLevel::face_census` — the rendering subsystem's own per-face
+    /// census, not re-derived here. `superfaces` lists every superface
+    /// class the last derive coloured, each entry naming the class index
+    /// and the DISTINCT solids whose faces belong to it (a merged wall
+    /// junction reports both wall names under one class). `faults` is the
+    /// postcondition itself: same-facing, coplanar, genuinely overlapping
+    /// face pairs whose labels are NOT bit-identical — any plane, no eye
+    /// band, no crease threshold. It should always be empty; an entry in
+    /// it names a real defect, never a stale read. An empty `faults`
+    /// always means "no faults": a census that could not run is refused
+    /// with the one-key `unavailable` grammar, never reported empty.
     #[func]
     fn explain_oids(&self) -> VarDictionary {
         let level = match self.live_level() {
             Ok(level) => level,
             Err(reason) => return unavailable(reason),
         };
-        let painted = level.bind().oid_census();
+        let bound = level.bind();
+        let painted = bound.oid_census();
         let boxes: Vec<_> = painted.iter().map(|solid| solid.area).collect();
         let ids: Vec<f64> = painted.iter().map(|solid| solid.oid).collect();
         let names: Vec<&str> = painted.iter().map(|solid| solid.name.as_str()).collect();
@@ -441,21 +436,16 @@ impl WaveObserver {
             // check that found no violations is a vacuous pass
             return unavailable("the level's painted boxes and their ids do not line up");
         };
-        // only the boxes with drawn faces can z-fight; the swept source
-        // envelopes are skip-marked in place so every fight's indices
-        // stay indices into `names`
-        let swept: Vec<bool> = painted.iter().map(|solid| solid.swept).collect();
-        let band = EyeBand {
-            low: EYE - BOB_AMP,
-            high: EYE + BOB_AMP,
-        };
-        let Some(fights) = coplanar_fights_checked(&boxes, &ids, band, &swept) else {
+        let census = bound.face_census();
+        let faces: Vec<Face> = census.iter().map(|entry| entry.face.clone()).collect();
+        let labels: Vec<f64> = census.iter().map(|entry| entry.label).collect();
+        let Some(faults) = coplanar_label_faults(&faces, &labels) else {
             // the same impossible misalignment, refused the same way: an
-            // empty fights array must always mean "no fights", never
+            // empty faults array must always mean "no faults", never
             // "could not check"
-            return unavailable("the level's painted boxes and their ids do not line up");
+            return unavailable("the level's face census and its labels do not line up");
         };
-        oid_dict(&explanation, &fights, &names, &ids)
+        oid_dict(&explanation, &faults, census, &names, &ids)
     }
 
     /// Which slot the next sound would claim, and by which rule. Eviction
@@ -1118,15 +1108,22 @@ fn wall_name(names: &[String], index: usize) -> String {
         .unwrap_or_else(|| format!("<unnamed wall {index}>"))
 }
 
-/// The touch graph, plus the census it was built over.
+/// The touch graph, plus the census it was built over, plus the merge
+/// law's own postcondition.
 ///
 /// `names` and `oids` are parallel and complete, because the pairs alone are
 /// not a census: a solid standing clear of everything appears in no pair at
 /// all, and "which id did this thing actually get?" is the question that
 /// follows "which seams are broken" — often about exactly that solid.
+///
+/// `census` is [`WaveLevel::face_census`]'s own output — `superfaces` and
+/// `faults` are both read off it, never off `names`/`oids`, because those
+/// two describe the SOLID-granularity census while `census` describes
+/// individual FACES.
 fn oid_dict(
     explanation: &OidExplanation,
-    fights: &[Fight],
+    faults: &[LabelFault],
+    census: &[FaceCensusEntry],
     names: &[&str],
     oids: &[f64],
 ) -> VarDictionary {
@@ -1146,30 +1143,19 @@ fn oid_dict(
             entry
         })
         .collect();
-    let fights: Array<VarDictionary> = fights
-        .iter()
-        .map(|fight| {
-            let mut entry = VarDictionary::new();
-            entry.set("name_a", &box_name(names, fight.a));
-            entry.set("name_b", &box_name(names, fight.b));
-            entry.set("axis", &axis_name(fight.axis));
-            entry.set("plane", fight.plane);
-            entry.set("delta", fight.delta);
-            entry
-        })
-        .collect();
-    let census: Array<GString> = names.iter().map(|&name| GString::from(name)).collect();
+    let census_names: Array<GString> = names.iter().map(|&name| GString::from(name)).collect();
     let violations: Array<i64> = explanation
         .violations
         .iter()
         .map(|&index| index as i64)
         .collect();
     let mut entry = VarDictionary::new();
-    entry.set("names", &census);
+    entry.set("names", &census_names);
     entry.set("oids", &PackedFloat64Array::from(oids));
     entry.set("pairs", &pairs);
     entry.set("violations", &violations);
-    entry.set("fights", &fights);
+    entry.set("superfaces", &superfaces_array(census));
+    entry.set("faults", &faults_array(faults, census));
     entry.set("min_sep", explanation.min_sep);
     entry
 }
@@ -1183,18 +1169,56 @@ fn box_name(names: &[&str], index: usize) -> GString {
     )
 }
 
-/// The wire name of a fight's plane axis. Spelled out rather than shipped
-/// as the raw index, because an agent's parser is a contract and a
-/// renumbering must not silently move a fight onto another wall. Total,
-/// like [`box_name`]: any value beyond the three world axes is named as
-/// the anomaly it is rather than mapped onto a real axis.
-fn axis_name(axis: usize) -> GString {
-    match axis {
-        0 => GString::from("x"),
-        1 => GString::from("y"),
-        2 => GString::from("z"),
-        other => GString::from(&format!("<axis {other}>")),
+/// Every superface class the last derive coloured, by the DISTINCT names
+/// of the solids whose faces belong to it — a merged wall junction reports
+/// both wall names under the one class they share. First-appearance
+/// order, walked once over `census` (itself in deterministic scene
+/// order), never a set's own iteration order.
+fn superfaces_array(census: &[FaceCensusEntry]) -> VarArray {
+    let mut members: Vec<Vec<&str>> = Vec::new();
+    for entry in census {
+        if entry.class >= members.len() {
+            members.resize(entry.class + 1, Vec::new());
+        }
+        let bucket = &mut members[entry.class];
+        if !bucket.contains(&entry.name.as_str()) {
+            bucket.push(entry.name.as_str());
+        }
     }
+    let mut out = VarArray::new();
+    for (class, names) in members.iter().enumerate() {
+        let mut dict = VarDictionary::new();
+        dict.set("class", class as i64);
+        let members_arr: Array<GString> = names.iter().map(|&n| GString::from(n)).collect();
+        dict.set("members", &members_arr);
+        out.push(&dict.to_variant());
+    }
+    out
+}
+
+/// The postcondition itself, named: every same-facing, coplanar,
+/// genuinely overlapping face pair whose labels disagree — always empty
+/// on a healthy level.
+fn faults_array(faults: &[LabelFault], census: &[FaceCensusEntry]) -> VarArray {
+    let mut out = VarArray::new();
+    for fault in faults {
+        let mut entry = VarDictionary::new();
+        entry.set("name_a", &face_name(census, fault.a));
+        entry.set("name_b", &face_name(census, fault.b));
+        entry.set("label_a", fault.label_a);
+        entry.set("label_b", fault.label_b);
+        out.push(&entry.to_variant());
+    }
+    out
+}
+
+/// The name of the solid face `index` belongs to. Total, for the same
+/// reason as [`box_name`].
+fn face_name(census: &[FaceCensusEntry], index: usize) -> GString {
+    census.get(index).map_or_else(
+        || GString::from(&format!("<unnamed face {index}>")),
+        |entry| GString::from(entry.name.as_str()),
+    )
 }
 
 /// The wire name of a slot's state. Spelled out rather than derived from

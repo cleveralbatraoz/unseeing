@@ -150,8 +150,8 @@ impl PaintItem {
 /// One item [`WaveLevel::paint_labels`] colours: a floor/ceiling slab or an
 /// authored solid, carrying its world-space `render::Shape` (what
 /// `render::faces` builds faces from) and the world box the touch graph
-/// reasons about — the SAME box [`oid_palette::assign`] used, measured the
-/// identical way.
+/// reasons about — the SAME box the retired per-solid `oid_palette::assign`
+/// used, measured the identical way.
 ///
 /// A slab's `shape` is a real `Box3d` like any other box (Wave S) — it
 /// used to be `None`, back when a slab was fed through `render::faces` not
@@ -162,6 +162,24 @@ struct PaintEntry {
     area: oid_palette::Box3,
     shape: render::Shape,
     item: PaintItem,
+}
+
+/// One face of the real per-face label census [`WaveLevel::paint_labels`]
+/// derives and bakes, kept so [`super::observer::WaveObserver::explain_oids`]
+/// reads the rendering subsystem's own census rather than re-deriving (and
+/// risking a second, possibly-drifting copy of) the merge law. `label` and
+/// `class` are read straight off the SAME `out`/`sf` values `paint_labels`
+/// bakes into `CUSTOM0` — not recomputed a second time, so the two can
+/// never disagree with each other by construction.
+pub(super) struct FaceCensusEntry {
+    /// The named solid this face belongs to.
+    pub(super) name: String,
+    /// The face's own world-space geometry.
+    pub(super) face: render::Face,
+    /// The label actually baked onto every vertex of this face.
+    pub(super) label: f64,
+    /// The superface class this face was coloured as part of.
+    pub(super) class: usize,
 }
 
 /// The level root node. `inject` BEFORE adding it to the tree — children
@@ -201,6 +219,11 @@ pub struct WaveLevel {
     /// How many solids the last derivation found crossing or hiding under
     /// the floor plane. Zero on a healthy level, same as above.
     sunken: i64,
+    /// The real per-face label census the last `paint_labels` baked — see
+    /// [`FaceCensusEntry`] and [`Self::face_census`]. Empty before the
+    /// first successful `derive()` (the editor, or a level never added to
+    /// the tree), exactly as `segments`/`occluders` start empty.
+    face_census: Vec<FaceCensusEntry>,
     base: Base<Node3D>,
 }
 
@@ -660,11 +683,12 @@ impl WaveLevel {
     fn paint_labels(&mut self, census: &Census) {
         let entries = self.paint_entries(census);
 
-        // the touch graph — the SAME law `oid_palette::assign` used, over
-        // the SAME world boxes: `superfaces`'s own merge pass needs no
-        // touch information at all (it tests every face pair directly),
-        // but the separation rules (b)/(c) do, exactly as the old colouring
-        // needed the touch graph to know which solids must differ.
+        // the touch graph — the SAME law the retired per-solid
+        // `oid_palette::assign` used, over the SAME world boxes:
+        // `superfaces`'s own merge pass needs no touch information at all
+        // (it tests every face pair directly), but the separation rules
+        // (b)/(c) do, exactly as the old colouring needed the touch graph
+        // to know which solids must differ.
         let areas: Vec<oid_palette::Box3> = entries.iter().map(|e| e.area).collect();
         let mut touching: Vec<(usize, usize)> = Vec::new();
         for i in 0..areas.len() {
@@ -882,6 +906,25 @@ impl WaveLevel {
             }
             self.paint_entry(&entry.item, &labels_by_ordinal);
         }
+
+        // record what actually got baked, by FACE — not the ordinal-baked
+        // mesh bytes, but the exact `(class, label)` pair every face above
+        // was baked from, so the debug census reads the rendering
+        // subsystem's own numbers rather than a second derivation of them.
+        // Column flanks are deliberately absent: they have no polygon at
+        // all (`render::faces::column_faces` never emits one for the
+        // curved flank), so they can never enter a coplanar-overlap
+        // predicate in the first place.
+        self.face_census = faces
+            .iter()
+            .enumerate()
+            .map(|(fi, f)| FaceCensusEntry {
+                name: entries[f.solid].name.clone(),
+                face: f.clone(),
+                label: out.label_of_class[sf.class_of[fi]],
+                class: sf.class_of[fi],
+            })
+            .collect();
 
         // the wall-merge voice: any non-wall solid sharing a MERGE cluster
         // with a wall is drawn as part of the wall structure now — say so.
@@ -1121,20 +1164,22 @@ fn say(budget: Option<level_plan::Budget>) {
 
 /// One painted box as the object-id colouring sees it: what it is called,
 /// the world box it fills, and the flat id it actually carries.
+///
+/// Used to also carry a `swept` flag marking a sound source's box as a
+/// SWEPT ENVELOPE (limbs' union grown by `sweep_margin`) rather than drawn
+/// faces, so the OLD fight census could skip it — an envelope's planes
+/// rasterise nothing, and every per-id copy of one union box was
+/// coplanar-same-facing with its siblings on all six faces, so a census
+/// fed the envelope reported each source z-fighting itself. The new
+/// per-face postcondition ([`FaceCensusEntry`], `observe::oids::
+/// coplanar_label_faults`) never sees a source at all — a source's limbs
+/// bake their role labels directly and contribute no `render::Face` to
+/// the census in the first place — so the skip flag had nothing left to
+/// guard and is gone with it.
 pub(super) struct PaintedSolid {
     pub(super) name: String,
     pub(super) area: oid_palette::Box3,
     pub(super) oid: f64,
-    /// True when `area` is a SWEPT ENVELOPE rather than drawn faces: a
-    /// sound source's census box is its limbs' union grown by
-    /// `sweep_margin`, entered once per id it paints. The seam/touch
-    /// census WANTS that box — the colouring anchors on it, so a crate
-    /// the fan's guard ring reaches on half of every cycle still needs a
-    /// clear id — but the fight census must not see it: an envelope's
-    /// planes rasterise nothing, and every per-id copy of one union box
-    /// is coplanar-same-facing with its siblings on all six faces, so a
-    /// census fed the envelope reports each source z-fighting itself.
-    pub(super) swept: bool,
 }
 
 /// What the debug observer ([`super::observer`]) reads back off a level.
@@ -1236,14 +1281,19 @@ impl WaveLevel {
     /// The other occupant of the creature band is therefore outside every
     /// report this function feeds.
     ///
-    /// EVERY `oid` HERE IS STILL A SOLID-GRANULARITY READ, not the real
-    /// per-face law: it reads a mesh's FIRST `CUSTOM0` vertex
-    /// ([`mesh_first_label`]) — one number standing in for a whole mesh
-    /// that may now carry several. That is deliberately coarser than what
-    /// actually draws, kept only so this census (and the observer's
-    /// `explain_oids`, which reads it) keeps compiling and reporting
-    /// something true, if incomplete; the real per-face postcondition is
-    /// Task 10's job.
+    /// EVERY `oid` HERE IS STILL A SOLID-GRANULARITY READ: it reads a
+    /// mesh's FIRST `CUSTOM0` vertex ([`mesh_first_label`]), one number
+    /// standing in for a whole mesh. That stays legitimate ON PURPOSE for
+    /// what THIS census feeds — `WaveObserver::explain_oids`'s `pairs`/
+    /// `violations`, which only ever reasons about two SEPARATE (never
+    /// coplanar-merged) solids — because `render::superface::superfaces`'s
+    /// own SINGLETON COLLAPSE guarantees a solid that never merged with
+    /// anything carries exactly ONE label across every one of its own
+    /// faces, so its first face genuinely speaks for the whole solid here.
+    /// It is NOT a stand-in for the real per-face law anymore: that now
+    /// lives in [`Self::face_census`], read straight off what
+    /// `paint_labels` actually baked, and `explain_oids`'s `faults` census
+    /// reads THAT instead of this coarser one.
     pub(super) fn oid_census(&self) -> Vec<PaintedSolid> {
         let census = self.census();
         let mut painted = Vec::new();
@@ -1259,7 +1309,6 @@ impl WaveLevel {
                 name: if slab.lid { "Ceiling" } else { "Floor" }.to_string(),
                 area,
                 oid: read_oid(&slab.skin),
-                swept: false,
             });
         }
         for solid in &census.solids {
@@ -1271,7 +1320,6 @@ impl WaveLevel {
                 name: node.get_name().to_string(),
                 area,
                 oid: painted_oid(&node).unwrap_or(oid_palette::NO_OID),
-                swept: false,
             });
         }
         for source in &census.sources {
@@ -1289,7 +1337,6 @@ impl WaveLevel {
                     name: format!("{name} @{oid}"),
                     area,
                     oid,
-                    swept: true,
                 });
             }
         }
@@ -1302,10 +1349,27 @@ impl WaveLevel {
                 name: node.get_name().to_string(),
                 area,
                 oid,
-                swept: false,
             });
         }
         painted
+    }
+
+    /// The real per-face label census the last `derive()` baked — every
+    /// face this level's meshes actually carry, with the SOLID it belongs
+    /// to, the label baked onto every one of its vertices, and the
+    /// superface CLASS that label came from.
+    ///
+    /// This is what [`Self::paint_labels`] computed and wrote, read back
+    /// rather than re-derived a second time: the debug layer's own
+    /// postcondition (`WaveObserver::explain_oids`'s `superfaces`/
+    /// `faults`) reads the rendering subsystem's own census instead of
+    /// risking a second, possibly-drifting copy of the merge law.
+    ///
+    /// Empty before the first successful `derive()` — the editor, or a
+    /// level never added to the tree — exactly as every other derived
+    /// table on this struct (`segments`, `occluders`) starts empty.
+    pub(super) fn face_census(&self) -> &[FaceCensusEntry] {
+        &self.face_census
     }
 }
 

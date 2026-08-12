@@ -454,64 +454,31 @@ func test_shipped_level_reuses_ids_between_distant_boxes() -> void:
 	assert_int(distinct.size()).is_less(boxes.size())
 
 
-## The seam law's evil twin, THROUGH THE BRIDGE. Two same-facing faces
-## sharing one plane AND rasterised area sit at the SAME depth, so the GPU
-## picks a winner per pixel per frame — a genuine problem only where the
-## two writers disagree on colour.
+## The seam law's evil twin. Two same-facing faces sharing one plane AND
+## rasterised area sit at the SAME depth, so the GPU picks a winner per
+## pixel per frame — a genuine problem only where the two writers disagree
+## on colour.
 ##
-## `explain_oids()`'s fight census (`observe::oids::coplanar_fights_checked`,
-## unrewritten until a later stage) still reasons at SOLID granularity: one
-## value per box, the FIRST face's own CUSTOM0 label (`WaveLevel::oid_census`),
-## not the real per-face labels the superface paint pass actually bakes.
-## Now that a genuine wall junction MERGES (`render::superface`), a solid
-## can legitimately carry several different labels across its own six
-## faces — and the single first-face value almost never happens to be the
-## SPECIFIC face that is actually coplanar with its neighbour, so the OLD
-## census reports a "fight" the renderer will never draw: a stale artifact
-## of solid-granularity reading, not a real defect. So this checks the
-## GROUND TRUTH instead: for every reported fight, read the two solids'
-## OWN meshes back and compare the REAL CUSTOM0 label of the face nearest
-## the reported plane — the exact same law `_face_nearest_world_axis`
-## already proves against a live junction above. Only a fight whose ACTUAL
-## per-face labels disagree is a genuine defect.
-func test_shipped_level_has_no_coplanar_face_fights() -> void:
+## `explain_oids()`'s `faults` census (`observe::oids::coplanar_label_faults`)
+## now reasons at real FACE granularity, over the exact per-face labels
+## `WaveLevel::paint_labels` baked (`WaveLevel::face_census`) — not the
+## solid-granularity bridge the old fight census read, which this suite
+## used to have to cross-check against the raw mesh bytes by hand to tell
+## a genuine defect from a stale artifact of that bridging. The merge law
+## (`render::superface`) and this postcondition share one predicate
+## (`is_merge_candidate`), so a genuine wall junction that MERGES reports
+## no fault at all — the two faces are bit-identical by construction — and
+## the pin is simply `faults == []`.
+func test_shipped_level_has_no_label_faults() -> void:
 	var level := _shipped_level()
 	var obs: WaveObserver = auto_free(WaveObserver.new())
 	obs.inject(level, null)
 	var e: Dictionary = obs.explain_oids()
-	assert_bool(e.has("fights")).append_failure_message("the census refused: %s" % e).is_true()
-	var real_fights: Array[String] = []
-	for fight: Dictionary in e.get("fights", []):
-		var name_a: String = fight["name_a"]
-		var name_b: String = fight["name_b"]
-		var axis: String = fight["axis"]
-		var plane: float = fight["plane"]
-		var skin_a := _skin(level.find_child(name_a, true, false))
-		var skin_b := _skin(level.find_child(name_b, true, false))
-		if skin_a == null or skin_b == null:
-			real_fights.append("%s vs %s: could not find both meshes to verify" % [name_a, name_b])
-			continue
-		var face_a := _face_nearest_world_axis(skin_a, axis, plane)
-		var face_b := _face_nearest_world_axis(skin_b, axis, plane)
-		var label_a := _face_label(skin_a, face_a)
-		var label_b := _face_label(skin_b, face_b)
-		if label_a != label_b:
-			real_fights.append(
-				(
-					"%s vs %s share the %s = %.3f plane with UNEQUAL real labels %.3f/%.3f"
-					% [name_a, name_b, axis, plane, label_a, label_b]
-				)
-			)
+	assert_bool(e.has("faults")).append_failure_message("the census refused: %s" % e).is_true()
 	(
-		assert_array(real_fights)
+		assert_array(e.get("faults", []))
 		. append_failure_message(
-			(
-				"same-facing coplanar faces z-fight into speckled bands, confirmed by their "
-				+ (
-					"REAL per-face labels (not the coarse solid-granularity bridge): %s"
-					% str(real_fights)
-				)
-			)
+			"same-facing coplanar faces z-fight into speckled bands: %s" % str(e.get("faults"))
 		)
 		. is_empty()
 	)
@@ -590,25 +557,6 @@ func test_shipped_walls_clear_the_floor_and_ceiling_labels() -> void:
 		. append_failure_message("wall labels too close to a slab role label: %s" % str(violations))
 		. is_empty()
 	)
-
-
-## The generalisation of `_face_nearest_world_z` to any axis — the fight
-## census names its plane by axis LETTER ("x"/"y"/"z"), so verifying a
-## fight against the real mesh has to read the matching component off
-## each candidate face's own centroid.
-func _face_nearest_world_axis(skin: MeshInstance3D, axis: String, plane: float) -> int:
-	var best := -1
-	var best_d := INF
-	for f in 6:
-		var centroid := _face_centroid(skin, f)
-		var coord: float = (
-			centroid.x if axis == "x" else (centroid.y if axis == "y" else centroid.z)
-		)
-		var d := absf(coord - plane)
-		if d < best_d:
-			best_d = d
-			best = f
-	return best
 
 
 ## THE SUPERFACE LAW, live, off two REAL `WaveWall` meshes sampled straight

@@ -173,11 +173,19 @@ impl Skin {
 /// channel at all — a caller decides its own "nothing painted" answer
 /// rather than this function folding one in.
 ///
-/// This is still a SOLID-granularity read — the first face standing in for
-/// a mesh that may carry several different labels across its own faces —
-/// exactly the coarseness `WaveLevel::oid_census` (`super::level`) accepts
-/// for the identical reason, until Task 10's real per-face law replaces
-/// both call sites at once.
+/// This stays a SOLID-granularity read — the first face standing in for a
+/// mesh that may carry several different labels across its own faces —
+/// legitimately so for the callers still using it: exact for a solid that
+/// never coplanar-MERGED with anything (`render::superface::superfaces`'s
+/// own singleton collapse folds every one of its faces to one class, so
+/// the first genuinely speaks for the whole mesh), approximate for one
+/// that did (a merged solid's bridged value names only its OWN first
+/// face's class, never the partner's it fused with). `WaveLevel::oid_census`
+/// (`super::level`) accepts the identical trade for the identical reason,
+/// and every remaining caller of a solid's own `.oid()` already knows and
+/// names the exception (`game/tests/map_test.gd`'s `KNOWN_MERGES`). The
+/// real per-face truth — every face, its own label, no bridging — lives in
+/// `WaveLevel::face_census` instead.
 pub(crate) fn mesh_first_label(limb: &Gd<MeshInstance3D>) -> Option<f64> {
     let mesh = limb.get_mesh()?;
     if mesh.get_surface_count() == 0 {

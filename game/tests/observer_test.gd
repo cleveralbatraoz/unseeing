@@ -526,26 +526,24 @@ func test_a_swept_neighbours_own_faces_all_clear_the_sources_oids() -> void:
 			)
 
 
-## THE OLD z-fight census's own proof object, now read the other way.
-## The shelf spans x -1..1, y 0..1, z -0.5..0.5; the crate embedded in its
-## front half spans x -0.1..0.9, y 0..1, z -0.3..0.5 — so TWO patches
-## rasterise twice at one depth: their front faces share the plane
-## z = 0.5 (each solid's own +Z face, `render::paint::FACE_ORDER` ordinal
-## 5), and their flush TOPS share y = 1 (ordinal 3). Before the superface
-## paint pass this WAS the issue-14 z-fight (two DIFFERENT flat ids tying
-## on one plane, `explain_oids`'s `fights` reporting both); NOW it is
+## THE issue-14 z-fight's own proof object, now read through the real
+## per-face law. The shelf spans x -1..1, y 0..1, z -0.5..0.5; the crate
+## embedded in its front half spans x -0.1..0.9, y 0..1, z -0.3..0.5 — so
+## TWO patches rasterise twice at one depth: their front faces share the
+## plane z = 0.5 (each solid's own +Z face, `render::paint::FACE_ORDER`
+## ordinal 5), and their flush TOPS share y = 1 (ordinal 3). This is
 ## exactly the geometry `render::superface`'s merge law exists to catch —
 ## same-direction, coplanar, genuinely overlapping — so the two faces
-## MERGE into one label, bit-equal, and the OLD whole-box census (which
-## can only compare one bridged id per box) finds nothing to report: the
-## bridge and the real per-face law agree there is no fight. Checked both
-## ways — the OLD census's key stays present and empty, and the REAL
-## per-face labels at both known planes are proven bit-equal AND distinct
-## from their own placeholder ordinal (see the ground truth block below
-## for why the placeholder check is load-bearing on its own) — so a
-## regression that stopped merging this geometry, or stopped painting it
-## at all, still fails here.
-func test_two_flush_props_report_their_fight() -> void:
+## MERGE into one label, bit-equal, and `explain_oids`'s `faults` census
+## (`observe::oids::coplanar_label_faults`, the identical predicate the
+## merge law itself used) finds nothing to report. Checked both ways — the
+## `faults` key stays present and empty, and the REAL per-face labels at
+## both known planes are proven bit-equal AND distinct from their own
+## placeholder ordinal (see the ground truth block below for why the
+## placeholder check is load-bearing on its own) — so a regression that
+## stopped merging this geometry, or stopped painting it at all, still
+## fails here.
+func test_two_flush_props_report_no_fault() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_spawn_marker())
 	var shelf := WaveProp.new()
@@ -563,14 +561,14 @@ func test_two_flush_props_report_their_fight() -> void:
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var e: Dictionary = obs.explain_oids()
-	assert_bool(e.has("fights")).is_true()
-	var fights: Array = e.get("fights", [])
+	assert_bool(e.has("faults")).is_true()
+	var faults: Array = e.get("faults", [])
 	(
-		assert_array(fights)
+		assert_array(faults)
 		. append_failure_message(
 			(
-				"the OLD whole-box census still finds a fight — the merge did not resolve it: %s"
-				% fights
+				"the real per-face census still finds a fault — the merge did not resolve it: %s"
+				% faults
 			)
 		)
 		. is_empty()
@@ -616,19 +614,59 @@ func _skin_of(body: Node) -> MeshInstance3D:
 
 
 ## The shipped map answers the census too. The KEY is the contract here,
-## never the count: the shipped level's zero-fights invariant is pinned in
+## never the count: the shipped level's zero-faults invariant is pinned in
 ## map_test.gd, beside the geometry it constrains, and this case holds
-## only the boundary's grammar — `fights` present, and an Array. An empty
-## array must always mean "no fights" — a census that could not run is a
+## only the boundary's grammar — `faults` present, and an Array. An empty
+## array must always mean "no faults" — a census that could not run is a
 ## one-key refusal, which the uninjected and freed-level tests above
 ## already hold explain_oids to.
-func test_the_shipped_level_reports_its_fights_key() -> void:
+func test_the_shipped_level_reports_its_faults_key() -> void:
 	var level := _shipped_level(Pulses.new())
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var e: Dictionary = obs.explain_oids()
-	assert_bool(e.has("fights")).is_true()
-	assert_bool(e.get("fights") is Array).is_true()
+	assert_bool(e.has("faults")).is_true()
+	assert_bool(e.get("faults") is Array).is_true()
+
+
+## `superfaces` reports the class graph the last derive coloured, by name.
+## BorderNorth (the north border) and DividerNorth (a T-junction wall whose
+## own south end lands on BorderNorth's centerline) genuinely coplanar-MERGE
+## at that junction (`render::superface`, and
+## `map_test.gd::test_a_junction_style_pair_merges_its_cap_and_separates_its_corner`
+## proves it off the real mesh) — so some class in `superfaces` must list
+## BOTH names among its members. Every class also carries at least one
+## member, and no member name is ever repeated within its own class (a face
+## of DividerNorth's own corner sharing the SAME class as the merged cap
+## would be exactly the bug a missing dedupe misses).
+func test_superfaces_groups_a_genuine_wall_junction_under_one_class() -> void:
+	var level := _shipped_level(Pulses.new())
+	var obs := _observer()
+	obs.inject(level, _eye())
+	var e: Dictionary = obs.explain_oids()
+	var superfaces: Array = e.get("superfaces", [])
+	assert_array(superfaces).is_not_empty()
+	var junction_class: Variant = null
+	for entry: Dictionary in superfaces:
+		var members: Array = entry["members"]
+		assert_array(members).is_not_empty()
+		var seen := {}
+		for member: String in members:
+			(
+				assert_bool(seen.has(member))
+				. append_failure_message("class %d lists '%s' twice" % [entry["class"], member])
+				. is_false()
+			)
+			seen[member] = true
+		if members.has("BorderNorth") and members.has("DividerNorth"):
+			junction_class = entry["class"]
+	(
+		assert_bool(junction_class != null)
+		. append_failure_message(
+			"no superface class lists both BorderNorth and DividerNorth as members"
+		)
+		. is_true()
+	)
 
 
 ## Occlusion, answerable. Spawn to fan head crosses exactly one wall on the

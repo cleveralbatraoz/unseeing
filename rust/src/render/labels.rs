@@ -26,27 +26,27 @@
 //!
 //! Greedy Welsh–Powell over the superface class graph — most-constrained
 //! class first, ties by class index — reusing
-//! [`oid_palette::welsh_powell`], the exact algorithm
-//! [`oid_palette::assign`] has used for the per-solid id crease since
-//! before this campaign. Two colouring call sites, one greedy/ban
-//! implementation: this module borrows that function rather than forking
-//! a second copy that could silently drift from the first. It stays
+//! [`oid_palette::welsh_powell`], the exact algorithm this crate's
+//! per-solid id crease used before this campaign, through its own
+//! `oid_palette::assign`. That per-solid colouring is GONE (Task 10
+//! retired it: `assign`/`Fixed` had no caller left once every touch-graph
+//! anchor here migrated to this module's own `anchors`), and
+//! `render::labels::assign` is `welsh_powell`'s only caller now. It stays
 //! borrowed from `oid_palette` — not copied into `render/` — only because
-//! `oid_palette`, not this module, is still the WRITTEN-DOWN home of the
-//! algorithm today; Task 10 retires `oid_palette`, and the algorithm's
-//! true home becomes this subsystem then, a mechanical follow-up this task
-//! does not need to pre-empt.
+//! `oid_palette` is still the WRITTEN-DOWN home of the algorithm itself;
+//! moving it would be a pure relocation with no behaviour riding on it, so
+//! it was left alone rather than forced.
 //!
-//! `anchors` play the role [`oid_palette::Fixed`] plays for
-//! [`oid_palette::assign`] today: a class whose label is already
+//! `anchors` play the role `oid_palette::Fixed` used to play for the
+//! retired `oid_palette::assign`: a class whose label is already
 //! decided — a slab, a source's swept neighbourhood — bans any palette
 //! slot within [`MIN_SEP`] of its own label for every class
-//! [`Superfaces::separations`] pairs it with. Unlike [`oid_palette::Fixed`],
+//! [`Superfaces::separations`] pairs it with. Unlike that old `Fixed`,
 //! though, an anchor's class is itself a member of the SAME class space
 //! [`Labelling::label_of_class`] answers for — a superface class can
 //! belong to a slab exactly as easily as to a wall, so there is no
-//! separate "boxes" array holding only the colourable ones the way
-//! `oid_palette::assign`'s `boxes` parameter does. An anchored class is
+//! separate "boxes" array holding only the colourable ones the way the
+//! old `assign`'s `boxes` parameter needed. An anchored class is
 //! therefore excluded from Welsh–Powell entirely and takes its given
 //! label directly rather than being coloured.
 //!

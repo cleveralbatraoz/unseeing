@@ -59,12 +59,13 @@
 use super::faces::Face;
 
 /// Faces whose planes sit within this of each other are coplanar,
-/// INCLUSIVE — promoted unchanged from the fight census's own derivation
-/// (`observe::oids::COPLANAR_EPS`): one 24-bit depth code spans about
-/// 1.191e-6·w² m at eye distance w, and the shipped map's longest
-/// sightline (34 m, under the 40 m pack-range ceiling) never needs more
-/// than 2 mm of slack to keep every same-facing coincidence inside one
-/// depth code.
+/// INCLUSIVE — promoted from the fight census's own derivation, back when
+/// `observe::oids` kept an independent copy of this constant. The census
+/// now reuses this exact one (via [`is_merge_candidate`]) instead of
+/// shadowing it: one 24-bit depth code spans about 1.191e-6·w² m at eye
+/// distance w, and the shipped map's longest sightline (34 m, under the
+/// 40 m pack-range ceiling) never needs more than 2 mm of slack to keep
+/// every same-facing coincidence inside one depth code.
 pub const COPLANAR_EPS: f64 = 2e-3;
 
 /// One threshold, two directions, by design. The merge test
@@ -74,8 +75,10 @@ pub const COPLANAR_EPS: f64 = 2e-3;
 /// (b)'s closeness test ([`polygons_within_patch_eps`]) asks a different
 /// question — "are these two faces close enough that a bend might need a
 /// line" — and answers it INCLUSIVE: at exactly this distance, the seam
-/// still separates, erring toward drawing the line. Promoted unchanged
-/// from `observe::oids::PATCH_EPS`.
+/// still separates, erring toward drawing the line. Promoted from
+/// `observe::oids::PATCH_EPS`, back when that module kept its own copy;
+/// the fight census now reuses this one directly (see [`COPLANAR_EPS`]'s
+/// own note).
 pub const PATCH_EPS: f64 = 1e-3;
 
 /// Normals within this dot-product distance of exactly parallel (`+1.0`
@@ -381,7 +384,15 @@ fn opposite_direction(a: [f64; 3], b: [f64; 3]) -> bool {
 
 /// The merge predicate: same-direction normals, coplanar offsets, and a
 /// genuine tangent-plane overlap beyond [`PATCH_EPS`] in both extents.
-fn is_merge_candidate(a: &Face, b: &Face) -> bool {
+///
+/// `pub(crate)` rather than private: [`crate::observe::oids::coplanar_label_faults`]
+/// reuses this EXACT test as its own postcondition — "would these two
+/// faces merge" and "do these two faces actually z-fight" are the same
+/// question asked from either side of the campaign, and a second,
+/// hand-rolled copy of "coplanar and overlapping" in the observe layer is
+/// exactly the kind of drift this crate's pure-module doctrine exists to
+/// prevent when the two questions are this literally the same one.
+pub(crate) fn is_merge_candidate(a: &Face, b: &Face) -> bool {
     same_direction(a.normal, b.normal)
         && (a.offset - b.offset).abs() <= COPLANAR_EPS
         && polygon_overlap_exceeds_patch(a, b)
