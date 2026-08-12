@@ -15,6 +15,244 @@ import urllib.request
 import zlib
 from urllib.parse import urlsplit, urlunsplit
 
+## Bytes per pixel for each PNG colour type this reader accepts (0 = grey,
+## 2 = truecolor RGB, 6 = truecolor+alpha RGBA) — indexed by the IHDR byte.
+_PNG_CHANNELS = {0: 1, 2: 3, 6: 4}
+
+
+def _paeth(a, b, c):
+    """The PNG Paeth predictor (spec §9.4): pick whichever of the left,
+    above, or above-left reconstructed byte is numerically closest to
+    a + b - c."""
+    p = a + b - c
+    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+    if pa <= pb and pa <= pc:
+        return a
+    if pb <= pc:
+        return b
+    return c
+
+
+def decode_png(data):
+    """Minimal PNG reader: returns (width, height, DEFILTERED scanline
+    bytes — one leading zero byte per row, kept only so downstream slicing
+    stays `row * stride + 1 : (row + 1) * stride` — channels, stride).
+
+    Page.captureScreenshot does NOT always hand back RGBA — Chrome drops
+    the alpha channel (colour type 2, 3 bytes/pixel) whenever the captured
+    surface is fully opaque, which this game's canvas always is (CSS pins
+    its background to opaque black), so an assumed 4-bytes/pixel stride
+    silently misreads every row. Read the real type instead of assuming
+    one.
+
+    A PNG scanline also picks its OWN filter (spec §9, one of 5 types,
+    chosen per row to help compression) and is meaningless until that
+    filter is reversed. An earlier version of this reader skipped only the
+    leading filter-type byte and treated the rest as raw pixels — correct
+    only for filter 0 (None). Measured against real captures from this
+    exact gate: Chrome's encoder does NOT always choose 0 — a genuine
+    capture was seen using filter 3 (Average) — so every standard filter
+    (0-4) is reconstructed for real below, per the PNG spec's own
+    recurrence (each row references the row above it, both BEFORE this
+    row's own filter is applied). A filter byte outside 0-4 is invalid PNG
+    and fails loudly, naming the row and the byte found, rather than
+    guessing."""
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    pos, w, h, colortype, idat = 8, 0, 0, None, b""
+    while pos < len(data):
+        ln = struct.unpack("!I", data[pos:pos + 4])[0]
+        typ = data[pos + 4:pos + 8]
+        body = data[pos + 8:pos + 8 + ln]
+        if typ == b"IHDR":
+            w, h = struct.unpack("!II", body[:8])
+            colortype = body[9]
+        elif typ == b"IDAT":
+            idat += body
+        pos += 12 + ln
+    assert colortype in _PNG_CHANNELS, f"unsupported PNG colour type {colortype}"
+    channels = _PNG_CHANNELS[colortype]
+    filtered = zlib.decompress(idat)
+    row_bytes = w * channels
+    stride = row_bytes + 1
+    prev = bytearray(row_bytes)  # the "row above row 0" is defined as all zero
+    out = bytearray(stride * h)
+    for row in range(h):
+        base = row * stride
+        filt = filtered[base]
+        cur = bytearray(filtered[base + 1: base + stride])
+        if filt == 0:  # None
+            pass
+        elif filt == 1:  # Sub
+            for x in range(channels, row_bytes):
+                cur[x] = (cur[x] + cur[x - channels]) & 0xFF
+        elif filt == 2:  # Up
+            for x in range(row_bytes):
+                cur[x] = (cur[x] + prev[x]) & 0xFF
+        elif filt == 3:  # Average
+            for x in range(row_bytes):
+                a = cur[x - channels] if x >= channels else 0
+                cur[x] = (cur[x] + (a + prev[x]) // 2) & 0xFF
+        elif filt == 4:  # Paeth
+            for x in range(row_bytes):
+                a = cur[x - channels] if x >= channels else 0
+                c = prev[x - channels] if x >= channels else 0
+                cur[x] = (cur[x] + _paeth(a, prev[x], c)) & 0xFF
+        else:
+            raise AssertionError(
+                f"PNG row {row} carries filter byte {filt}, which is not a "
+                "valid PNG filter type (0-4) — corrupt or truncated data"
+            )
+        out[base + 1: base + stride] = cur
+        prev = cur
+    return w, h, bytes(out), channels, stride
+
+
+# --- decode_png/_paeth self-test -----------------------------------------
+#
+# decode_png reconstructs the PNG filters that back every pixel assertion
+# this suite makes (count_lit, g_channel_levels), and nothing else in the
+# repo touches it: cargo and gdUnit never run Python, so a regression here
+# has no other net under it. That is exactly the gap the strict-TDD rule
+# for gate code exists to close.
+#
+# Every expected byte list below was HAND-DERIVED from the PNG spec's own
+# recurrence — Recon(x) = Filt(x) + f(a, b, c), where f depends on the
+# filter type and a/b/c (left, above, above-left) are 0 at an edge — and
+# cross-checked against an independent, differently-shaped reimplementation
+# before being hardcoded here, never computed by calling decode_png itself
+# (a mirror assertion passes no matter what the code under test does).
+
+def _png_chunk(typ, body):
+    """One PNG chunk: length, type, body, and a zeroed CRC. decode_png does
+    not validate the CRC (nor does extracting pixel data require it), so a
+    real CRC32 implementation is not a dependency this self-test needs."""
+    return struct.pack("!I", len(body)) + typ + body + b"\x00\x00\x00\x00"
+
+
+def _build_png(colortype, width, rows):
+    """Hand-encode a minimal, valid PNG from (filter_byte, [filtered pixel
+    bytes]) rows — the exact wire format decode_png parses."""
+    height = len(rows)
+    ihdr = struct.pack("!IIBBBBB", width, height, 8, colortype, 0, 0, 0)
+    raw = b"".join(bytes([filt]) + bytes(pixels) for filt, pixels in rows)
+    idat = zlib.compress(raw)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", idat)
+        + _png_chunk(b"IEND", b"")
+    )
+
+
+def _rows_from_decoded(w, h, raw, channels, stride):
+    """Peel decode_png's own leading-byte-per-row convention back into a
+    plain list of pixel-byte lists, one per row."""
+    return [list(raw[r * stride + 1:(r + 1) * stride]) for r in range(h)]
+
+
+## (name, colour type, width, filtered rows, expected reconstructed rows).
+_SELFTEST_FIXTURES = [
+    # Sub (filter 1): left-neighbour recurrence, including the column-0
+    # edge (no left neighbour, so a = 0).
+    ("filter_sub_1ch", 0, 3,
+     [(1, [5, 3, 2])],
+     [[5, 8, 10]]),
+    # Up (filter 2) on ROW 0 ITSELF: the "row above row 0" is defined as
+    # all-zero, so this exercises that edge directly, then a second row
+    # against a real previous row.
+    ("filter_up_1ch_row0_edge", 0, 2,
+     [(2, [7, 9]), (2, [3, 4])],
+     [[7, 9], [10, 13]]),
+    # Average (filter 3) on row 0: both edges at once (a = 0 at column 0,
+    # b = 0 for the whole row since there is no row above).
+    ("filter_average_1ch_row0_and_col0_edges", 0, 3,
+     [(3, [10, 10, 10])],
+     [[10, 15, 17]]),
+    # Paeth (filter 4): one fixture per predictor branch, so a mutated
+    # comparison operator is caught by SOME case even though the branches
+    # a mutation could shift between are otherwise adjacent.
+    ("paeth_a_wins", 0, 2,
+     [(0, [90, 100]), (4, [176, 45])],
+     [[90, 100], [10, 55]]),
+    ("paeth_b_wins", 0, 2,
+     [(0, [90, 10]), (4, [10, 67])],
+     [[90, 10], [100, 77]]),
+    ("paeth_c_wins", 0, 2,
+     [(0, [83, 85]), (4, [253, 7])],
+     [[83, 85], [80, 90]]),
+    # The canonical Paeth tie-break case (a == b == c exactly, at x=1):
+    # every implementation of the predictor must resolve this without
+    # crashing or picking an out-of-range byte, per the spec's own
+    # tie-break order (a, then b, then c).
+    ("paeth_tie_a_eq_b_eq_c", 0, 3,
+     [(0, [50, 50, 50]), (4, [0, 7, 3])],
+     [[50, 50, 50], [50, 57, 60]]),
+    # Multi-channel: Sub across a 3-channel (RGB, colour type 2) row —
+    # the left neighbour is bpp=3 bytes back, not 1, so a per-channel
+    # stride bug would only show up here.
+    ("rgb_3channel_sub", 2, 2,
+     [(1, [10, 20, 30, 5, 6, 7])],
+     [[10, 20, 30, 15, 26, 37]]),
+    # Multi-channel: Up across a 4-channel (RGBA, colour type 6) row.
+    ("rgba_4channel_up", 6, 2,
+     [(0, [1, 2, 3, 4, 5, 6, 7, 8]), (2, [10, 10, 10, 10, 1, 1, 1, 1])],
+     [[1, 2, 3, 4, 5, 6, 7, 8], [11, 12, 13, 14, 6, 7, 8, 9]]),
+    # All five filter types, mixed across consecutive rows of ONE image —
+    # the shape a real screenshot actually takes (Chrome picks a filter
+    # per row independently), not five isolated single-row PNGs.
+    ("mixed_all_five_filters_per_row", 0, 3,
+     [(0, [100, 110, 120]), (1, [5, 3, 2]), (2, [1, 1, 1]),
+      (3, [2, 2, 2]), (4, [3, 3, 3])],
+     [[100, 110, 120], [5, 8, 10], [6, 9, 11], [5, 9, 12], [8, 12, 15]]),
+]
+
+
+def _self_test_decode_png():
+    """Run every fixture above plus the invalid-filter-byte raise path.
+    Prints one ok/not ok line per case (TAP-ish, matching this repo's
+    native probes) and returns True only if every case passed."""
+    passed = failed = 0
+    for name, colortype, width, filt_rows, expected in _SELFTEST_FIXTURES:
+        fixture_png = _build_png(colortype, width, filt_rows)
+        try:
+            w, h, raw, channels, stride = decode_png(fixture_png)
+            got = _rows_from_decoded(w, h, raw, channels, stride)
+        except Exception as exc:
+            print(f"not ok - {name}: decode_png raised unexpectedly: {exc}")
+            failed += 1
+            continue
+        if got == expected:
+            print(f"ok - {name}")
+            passed += 1
+        else:
+            print(f"not ok - {name}: expected {expected}, got {got}")
+            failed += 1
+
+    # A filter byte outside 0-4 is invalid PNG and MUST raise loudly,
+    # naming the row and the byte found — never silently misdecode.
+    bad_png = _build_png(0, 2, [(5, [1, 2])])
+    try:
+        decode_png(bad_png)
+        print("not ok - invalid_filter_byte_raises: decode_png did not raise")
+        failed += 1
+    except AssertionError as exc:
+        if "row 0" in str(exc) and "filter byte 5" in str(exc):
+            print("ok - invalid_filter_byte_raises")
+            passed += 1
+        else:
+            print(f"not ok - invalid_filter_byte_raises: wrong message: {exc}")
+            failed += 1
+    except Exception as exc:
+        print(f"not ok - invalid_filter_byte_raises: wrong exception type: {exc!r}")
+        failed += 1
+
+    print(f"self-test: {passed} ok, {failed} failed")
+    return failed == 0
+
+
+if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
+    sys.exit(0 if _self_test_decode_png() else 1)
+
 port, wait_s = int(sys.argv[1]), float(sys.argv[2])
 
 target = None
@@ -106,98 +344,6 @@ while (status is None or shot is None) and time.time() < deadline:
         shot = msg["result"]["data"]
 
 png = base64.b64decode(shot or "")
-
-
-## Bytes per pixel for each PNG colour type this reader accepts (0 = grey,
-## 2 = truecolor RGB, 6 = truecolor+alpha RGBA) — indexed by the IHDR byte.
-_PNG_CHANNELS = {0: 1, 2: 3, 6: 4}
-
-
-def _paeth(a, b, c):
-    """The PNG Paeth predictor (spec §9.4): pick whichever of the left,
-    above, or above-left reconstructed byte is numerically closest to
-    a + b - c."""
-    p = a + b - c
-    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
-    if pa <= pb and pa <= pc:
-        return a
-    if pb <= pc:
-        return b
-    return c
-
-
-def decode_png(data):
-    """Minimal PNG reader: returns (width, height, DEFILTERED scanline
-    bytes — one leading zero byte per row, kept only so downstream slicing
-    stays `row * stride + 1 : (row + 1) * stride` — channels, stride).
-
-    Page.captureScreenshot does NOT always hand back RGBA — Chrome drops
-    the alpha channel (colour type 2, 3 bytes/pixel) whenever the captured
-    surface is fully opaque, which this game's canvas always is (CSS pins
-    its background to opaque black), so an assumed 4-bytes/pixel stride
-    silently misreads every row. Read the real type instead of assuming
-    one.
-
-    A PNG scanline also picks its OWN filter (spec §9, one of 5 types,
-    chosen per row to help compression) and is meaningless until that
-    filter is reversed. An earlier version of this reader skipped only the
-    leading filter-type byte and treated the rest as raw pixels — correct
-    only for filter 0 (None). Measured against real captures from this
-    exact gate: Chrome's encoder does NOT always choose 0 — a genuine
-    capture was seen using filter 3 (Average) — so every standard filter
-    (0-4) is reconstructed for real below, per the PNG spec's own
-    recurrence (each row references the row above it, both BEFORE this
-    row's own filter is applied). A filter byte outside 0-4 is invalid PNG
-    and fails loudly, naming the row and the byte found, rather than
-    guessing."""
-    assert data[:8] == b"\x89PNG\r\n\x1a\n"
-    pos, w, h, colortype, idat = 8, 0, 0, None, b""
-    while pos < len(data):
-        ln = struct.unpack("!I", data[pos:pos + 4])[0]
-        typ = data[pos + 4:pos + 8]
-        body = data[pos + 8:pos + 8 + ln]
-        if typ == b"IHDR":
-            w, h = struct.unpack("!II", body[:8])
-            colortype = body[9]
-        elif typ == b"IDAT":
-            idat += body
-        pos += 12 + ln
-    assert colortype in _PNG_CHANNELS, f"unsupported PNG colour type {colortype}"
-    channels = _PNG_CHANNELS[colortype]
-    filtered = zlib.decompress(idat)
-    row_bytes = w * channels
-    stride = row_bytes + 1
-    prev = bytearray(row_bytes)  # the "row above row 0" is defined as all zero
-    out = bytearray(stride * h)
-    for row in range(h):
-        base = row * stride
-        filt = filtered[base]
-        cur = bytearray(filtered[base + 1: base + stride])
-        if filt == 0:  # None
-            pass
-        elif filt == 1:  # Sub
-            for x in range(channels, row_bytes):
-                cur[x] = (cur[x] + cur[x - channels]) & 0xFF
-        elif filt == 2:  # Up
-            for x in range(row_bytes):
-                cur[x] = (cur[x] + prev[x]) & 0xFF
-        elif filt == 3:  # Average
-            for x in range(row_bytes):
-                a = cur[x - channels] if x >= channels else 0
-                cur[x] = (cur[x] + (a + prev[x]) // 2) & 0xFF
-        elif filt == 4:  # Paeth
-            for x in range(row_bytes):
-                a = cur[x - channels] if x >= channels else 0
-                c = prev[x - channels] if x >= channels else 0
-                cur[x] = (cur[x] + _paeth(a, prev[x], c)) & 0xFF
-        else:
-            raise AssertionError(
-                f"PNG row {row} carries filter byte {filt}, which is not a "
-                "valid PNG filter type (0-4) — corrupt or truncated data"
-            )
-        out[base + 1: base + stride] = cur
-        prev = cur
-    return w, h, bytes(out), channels, stride
 
 
 def count_lit(data):

@@ -20,6 +20,15 @@ fi
 [ -n "$CHROME" ] || { echo "smoke: no chrome/chromium found — skipping"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo "smoke: no python3 — skipping"; exit 0; }
 
+# Fast preflight, no Chrome, no network: web_probe.py's decode_png reverses
+# real PNG scanline filtering to read the pixels every assertion below
+# relies on, and nothing else in the repo (cargo, gdUnit) ever touches this
+# file — so a regression here has no other net under it. Fail before paying
+# for a browser boot if the decoder itself is wrong.
+echo "smoke: PNG decoder self-test"
+python3 "$DIR/web_probe.py" --selftest \
+  || { echo "smoke: FAIL — PNG decoder self-test"; exit 1; }
+
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$BUILD" >/dev/null 2>&1 &
 SRV=$!
 PROFILE="$(mktemp -d)"
