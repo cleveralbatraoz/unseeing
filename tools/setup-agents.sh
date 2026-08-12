@@ -117,6 +117,9 @@ setup_codex() {
   IFS='|' read -r version enabled install_path <<EOF
 $record
 EOF
+  if [ -z "$install_path" ]; then
+    install_path="${CODEX_HOME:-$HOME/.codex}/plugins/cache/superpowers-dev/superpowers/$VERSION"
+  fi
   [ "$version" = "$VERSION" ] && [ "$enabled" = true ] || { echo "setup-agents: Codex verification failed" >&2; exit 1; }
   [ "$(hash_tree "$SUB/skills")" = "$(hash_tree "$install_path/skills")" ] || { echo "setup-agents: Codex skill cache differs from repository pin" >&2; exit 1; }
   echo "setup-agents: Codex App/CLI enabled superpowers@superpowers-dev v$VERSION"
