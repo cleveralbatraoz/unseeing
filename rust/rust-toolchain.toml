@@ -1,6 +1,6 @@
 # Native builds (desktop + tests + clippy) pin to this stable release so every
 # machine — laptop, droplet, CI — compiles the identical compiler. The wasm
-# build overrides with the pinned nightly via build-wasm.sh (see CLAUDE.md:
+# build overrides with the pinned nightly via build-wasm.sh (see AGENTS.md:
 # gdext wasm needs -Zbuild-std and -Zemscripten-wasm-eh, nightly-only).
 [toolchain]
 channel = "1.97.1"

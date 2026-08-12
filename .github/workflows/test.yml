@@ -12,6 +12,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Validate pinned Superpowers metadata
+        run: ci/verify-superpowers.sh metadata
+      - name: Fetch the exact Superpowers gitlink
+        run: |
+          git submodule sync -- tools/superpowers
+          git -c protocol.version=2 submodule update --init --depth 1 -- tools/superpowers
+          ci/verify-superpowers.sh full
       - name: Install gdtoolkit (gdformat + gdlint)
         run: pipx install "gdtoolkit==4.*"
       - name: Cache cargo + rust target

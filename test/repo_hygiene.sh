@@ -80,6 +80,7 @@ if [ "$HAVE_INDEX" = 0 ]; then
   skip "ignore rules (no git metadata — deploy work tree is a tar extract)"
 else
   for p in .claude/settings.json .claude/worktrees/some-task/README.md \
+           .worktrees/some-task/README.md \
            game/override.cfg .superpowers/sdd/a-plan/progress.md \
            game/addons/godot_mcp/plugin.cfg; do
     if git -C "$DIR" check-ignore -q "$p" 2>/dev/null; then
@@ -88,6 +89,32 @@ else
       bad "$p is NOT ignored (no .gitignore rule covers it)"
     fi
   done
+fi
+
+# --- shared agent contract and the sole sanctioned gitlink -----------------
+if [ "${HYGIENE_NESTED:-0}" = 1 ]; then
+  skip "agent contract (nested self-check carries only test infrastructure)"
+elif [ "$HAVE_INDEX" = 0 ]; then
+  [ -s "$DIR/AGENTS.md" ] && ok "AGENTS.md is present in exported tree" || bad "AGENTS.md is missing or empty"
+  [ ! -e "$DIR/.gitmodules" ] && [ ! -e "$DIR/tools/superpowers" ] \
+    && ok "developer agent tooling is absent from exported tree" \
+    || bad "developer agent tooling leaked into exported tree"
+else
+  if git -C "$DIR" ls-files --error-unmatch AGENTS.md >/dev/null 2>&1 \
+     && [ -s "$DIR/AGENTS.md" ] && [ "$(wc -c < "$DIR/AGENTS.md" | tr -d ' ')" -le 24576 ]; then
+    ok "AGENTS.md is tracked, nonempty, and at most 24 KiB"
+  else
+    bad "AGENTS.md must be tracked, nonempty, and at most 24 KiB"
+  fi
+  expected_adapter='# Claude Code instructions
+
+@AGENTS.md'
+  [ "$(cat "$DIR/CLAUDE.md" 2>/dev/null || true)" = "$expected_adapter" ] \
+    && ok "CLAUDE.md is the approved import adapter" \
+    || bad "CLAUDE.md contains policy instead of the approved @AGENTS.md adapter"
+  "$DIR/ci/verify-superpowers.sh" metadata >/dev/null 2>&1 \
+    && ok "Superpowers metadata and gitlink are pinned" \
+    || bad "Superpowers metadata or gitlink violates the pin"
 fi
 
 # --- the one addon that must stay out --------------------------------------
