@@ -115,6 +115,14 @@ func test_maxp_matches_the_pool() -> void:
 	assert_float(_shader_const("MAXP")).is_equal(float(Pulses.MAXP))
 
 
+## The WaveCore instance mirrors the pulse pool's MAXP constant through a
+## #[func] so that Godot code can query the pool size without keeping a
+## duplicate constant. This assertion verifies the new WaveCore.max_pulses()
+## method returns the same value as the shader constant.
+func test_wavecore_max_pulses_mirrors_the_pool() -> void:
+	assert_float(_shader_const("MAXP")).is_equal(float(WaveCore.new().max_pulses()))
+
+
 ## MAXW lives in two languages: rust/src/sight.rs owns it and the include
 ## pins it for the two occluding skins' uniform arrays. The level now READS
 ## the Rust copy and tells a designer how many free slots are left, so a

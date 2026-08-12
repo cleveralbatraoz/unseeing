@@ -187,6 +187,14 @@ impl WaveCore {
     fn ray_fan_size(&self) -> i64 {
         ray_fan::RAYS as i64
     }
+
+    /// The pulse pool's capacity, exposed for Godot code to query the
+    /// maximum number of concurrent sounds without keeping a duplicate
+    /// constant. Mirrors `pulse_pool::MAXP` from the Rust core.
+    #[func]
+    fn max_pulses(&self) -> i64 {
+        MAXP as i64
+    }
 }
 
 impl WaveCore {
