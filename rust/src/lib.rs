@@ -38,6 +38,9 @@
 //!   EVEN source, and the pinned ladder between the two.
 //! - [`viewmodel`] — the hero's own body as the camera sees it: head-bob
 //!   and sway curves, the cane's carry and strike, the footstep cadence.
+//! - [`flicker`] — the mood's nervous light: the reveal intensity's eased
+//!   envelope and its rare brief dropouts, generic over a [`flicker::Randf`]
+//!   source so a seeded stream replays bit-identically.
 //! - [`settings_menu`] — the settings overlay's model: its rows, its
 //!   cursor, what a key press means, and the exact text each row shows.
 //! - [`level_plan`] — the level's derived technical contracts: wall box
@@ -81,6 +84,7 @@ pub mod display_plan;
 pub mod echo_queue;
 pub mod fan_wave;
 mod ffi;
+pub mod flicker;
 pub mod level_plan;
 mod nodes;
 pub mod observe;

@@ -5,14 +5,33 @@
 //! rule it enforces — packing, eviction, clustering, appointments — lives
 //! below in the pure crate; this file only carries values across.
 
-use godot::classes::{PhysicsDirectSpaceState3D, PhysicsRayQueryParameters3D};
+use godot::classes::{
+    PhysicsDirectSpaceState3D, PhysicsRayQueryParameters3D, RandomNumberGenerator,
+};
 use godot::prelude::*;
 
 use crate::clustering::{self, RayHit};
 use crate::echo_queue::{ECHO_KIND, ECHO_MAX_R, ECHO_SPEED, EchoQueue, PendingEcho};
+use crate::flicker::{Flicker, Randf};
 use crate::observe::reflect::ReflectionRequest;
 use crate::pulse_pool::{MAXP, PulsePool, REFUSAL_MESSAGE, SlotCapture};
 use crate::ray_fan;
+
+/// The flicker law's randomness adapter: Godot's `randf()` returns f32,
+/// widened to f64 at the exact point the GDScript law implicitly did (every
+/// GDScript float is already f64, so `_rng.randf()` widens the instant it
+/// enters an expression). This impl is the ONLY place `Gd<RandomNumberGenerator>`
+/// meets the pure `Randf` trait — [`crate::flicker`] itself stays free of
+/// Godot types.
+impl Randf for Gd<RandomNumberGenerator> {
+    fn randf(&mut self) -> f64 {
+        // Fully-qualified on purpose: `self.randf()` would resolve to this
+        // very trait method (our `Randf` is in scope on exactly this
+        // receiver type) before Rust ever tries the deref-to-engine-method
+        // step, recursing forever instead of calling Godot's f32 randf().
+        RandomNumberGenerator::randf(self) as f64
+    }
+}
 
 // gdext's entry-point API requires the `unsafe` keyword on this impl; the
 // module scope carries the one permitted exception to deny(unsafe_code).
@@ -194,6 +213,27 @@ impl WaveCore {
     #[func]
     fn max_pulses(&self) -> i64 {
         MAXP as i64
+    }
+
+    /// TEST-ONLY SURFACE: seeds a fresh `RandomNumberGenerator` and runs
+    /// the Rust flicker law across `dts`, one [`Flicker::next`] call per
+    /// entry, returning one output level per input dt. Exists solely so
+    /// `flicker_parity_test.gd` can drive the SAME seeded stream through
+    /// both the GDScript `Flicker` and this Rust one and assert the two
+    /// arrays match exactly — the bit-exactness proof for the migration.
+    /// Cheap (one flicker, one RNG, no allocation beyond the output array)
+    /// but never called from the game's own boot path.
+    #[func]
+    fn flicker_probe(&self, seed: i64, dts: PackedFloat64Array) -> PackedFloat64Array {
+        let mut rng = RandomNumberGenerator::new_gd();
+        rng.set_seed(seed as u64);
+        let mut flicker = Flicker::new();
+        let out: Vec<f64> = dts
+            .as_slice()
+            .iter()
+            .map(|&dt| flicker.next(dt, &mut rng))
+            .collect();
+        PackedFloat64Array::from(&out[..])
     }
 }
 
