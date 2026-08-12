@@ -24,6 +24,48 @@ extends GdUnitTestSuite
 const LIFT_EPS := 0.0001
 
 
+func _spawn(at: Vector3) -> WaveSpawn:
+	var spawn := WaveSpawn.new()
+	spawn.position = at
+	return spawn
+
+
+## A reusable prop is composition, not framework: its plain root lets the
+## level recurse into every typed piece in each independent instance.
+func test_chair_prefab_instances_are_recursively_censused() -> void:
+	assert_bool(ResourceLoader.exists("res://scenes/props/chair.tscn")).is_true()
+	if not ResourceLoader.exists("res://scenes/props/chair.tscn"):
+		return
+	var scene := load("res://scenes/props/chair.tscn") as PackedScene
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = Vector2(20, 20)
+	for at: Vector3 in [Vector3(3, 0, 3), Vector3(8, 0, 3)]:
+		var chair := scene.instantiate() as Node3D
+		chair.position = at
+		level.add_child(chair)
+	level.add_child(_spawn(Vector3(1, 0, 1)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var pieces := level.find_children("*", "WaveProp", true, false)
+	assert_int(pieces.size()).is_equal(12)
+	assert_array(level.get_configuration_warnings()).is_empty()
+	for piece: WaveProp in pieces:
+		assert_bool(piece.oid() > 0.0).is_true()
+
+
+## Heading is world data: a zero-yaw spawn inside a turned prefab faces the
+## prefab's global quarter turn without any code or duplicated angle knob.
+func test_spawn_under_a_rotated_prefab_uses_global_yaw() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var room := Node3D.new()
+	room.rotation.y = PI * 0.5
+	room.add_child(_spawn(Vector3(2, 0, 3)))
+	level.add_child(room)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_float(level.spawn_yaw()).is_equal_approx(PI * 0.5, 0.0001)
+
+
 func _skin(body: Node) -> MeshInstance3D:
 	for child: Node in body.get_children():
 		if child is MeshInstance3D:

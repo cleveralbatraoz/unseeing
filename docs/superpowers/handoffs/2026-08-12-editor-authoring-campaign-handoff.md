@@ -196,6 +196,16 @@ simulated clock + seeded randomness only).
   probes, and the 18-class/9-icon censuses. No independent agent was used:
   current orchestration policy forbids delegation unless explicitly requested,
   so specification and quality reviews were performed as separate local passes.
+- **Prop prefabs:** chose plain `Node3D` roots and authored only typed Rust
+  pieces below them. The reusable chair preserves the shipped seat, four legs,
+  and back; the table preserves its top and four legs. Level 01 now instances
+  the kitchen table and both chairs at their original global placements, while
+  the deliberately different RadioTable remains bespoke. Runtime loading
+  proves recursive census and distinct ids; the headless editor probe proves
+  per-instance limbs, ownerless generated children, leak-free repacking,
+  touching-pair colouring, and nested global spawn yaw. Changing the chair root
+  to `WaveProp` produced three focused-suite failures, pinning the composition
+  boundary. Counts at this gate are 332 Cargo and 279 gdUnit cases in 31 suites.
 
 - **Rebase erratum:** `WaveRestorer` was registered in Rust but omitted from
   both independently maintained engine rosters. The post-rebase baseline adds

@@ -1,0 +1,23 @@
+[gd_scene format=3]
+
+[node name="Table" type="Node3D"]
+
+[node name="Top" type="WaveProp" parent="."]
+size = Vector3(0.9, 0.05, 0.6)
+position = Vector3(0, 0.725, 0)
+
+[node name="Leg1" type="WaveProp" parent="."]
+size = Vector3(0.05, 0.7, 0.05)
+position = Vector3(-0.4, 0.35, -0.25)
+
+[node name="Leg2" type="WaveProp" parent="."]
+size = Vector3(0.05, 0.7, 0.05)
+position = Vector3(-0.4, 0.35, 0.25)
+
+[node name="Leg3" type="WaveProp" parent="."]
+size = Vector3(0.05, 0.7, 0.05)
+position = Vector3(0.4, 0.35, -0.25)
+
+[node name="Leg4" type="WaveProp" parent="."]
+size = Vector3(0.05, 0.7, 0.05)
+position = Vector3(0.4, 0.35, 0.25)

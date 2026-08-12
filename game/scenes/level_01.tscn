@@ -1,4 +1,7 @@
-[gd_scene format=3]
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://scenes/props/chair.tscn" id="1_chair"]
+[ext_resource type="PackedScene" path="res://scenes/props/table.tscn" id="2_table"]
 
 [node name="Level" type="WaveLevel" unique_id=11213855]
 extents = Vector2(28, 28)
@@ -93,49 +96,11 @@ transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 2.8, 0, 7.6)
 [node name="Spawn" type="WaveSpawn" parent="." unique_id=1242609234]
 transform = Transform3D(-0.32328957, 0, -0.94630009, 0, 1, 0, 0.94630009, 0, -0.32328957, 3, 0, 4)
 
-[node name="TableTop" type="WaveProp" parent="." unique_id=100000020]
-size = Vector3(0.9, 0.05, 0.6)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.6, 0.725, 4.9)
+[node name="Table" parent="." instance=ExtResource("2_table")]
+position = Vector3(4.6, 0, 4.9)
 
-[node name="TableLeg1" type="WaveProp" parent="." unique_id=100000021]
-size = Vector3(0.05, 0.7, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.2, 0.35, 4.65)
-
-[node name="TableLeg2" type="WaveProp" parent="." unique_id=100000022]
-size = Vector3(0.05, 0.7, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.2, 0.35, 5.15)
-
-[node name="TableLeg3" type="WaveProp" parent="." unique_id=100000023]
-size = Vector3(0.05, 0.7, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 0.35, 4.65)
-
-[node name="TableLeg4" type="WaveProp" parent="." unique_id=100000024]
-size = Vector3(0.05, 0.7, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 0.35, 5.15)
-
-[node name="ChairSeat" type="WaveProp" parent="." unique_id=100000025]
-size = Vector3(0.42, 0.05, 0.42)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.9, 0.475, 5.55)
-
-[node name="ChairLeg1" type="WaveProp" parent="." unique_id=100000026]
-size = Vector3(0.05, 0.45, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.74, 0.225, 5.39)
-
-[node name="ChairLeg2" type="WaveProp" parent="." unique_id=100000027]
-size = Vector3(0.05, 0.45, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.74, 0.225, 5.71)
-
-[node name="ChairLeg3" type="WaveProp" parent="." unique_id=100000028]
-size = Vector3(0.05, 0.45, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.06, 0.225, 5.39)
-
-[node name="ChairLeg4" type="WaveProp" parent="." unique_id=100000029]
-size = Vector3(0.05, 0.45, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4.06, 0.225, 5.71)
-
-[node name="ChairBack" type="WaveProp" parent="." unique_id=100000030]
-size = Vector3(0.05, 0.5, 0.42)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3.71, 0.75, 5.55)
+[node name="Chair" parent="." instance=ExtResource("1_chair")]
+position = Vector3(3.9, 0, 5.55)
 
 [node name="ShelfSideA" type="WaveProp" parent="." unique_id=100000031]
 size = Vector3(0.5, 1.8, 0.06)
@@ -370,29 +335,8 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 21.88, 0.36, 3.14)
 size = Vector3(0.07, 0.72, 0.07)
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 21.88, 0.36, 3.66)
 
-[node name="RadioChairSeat" type="WaveProp" parent="." unique_id=100000086]
-size = Vector3(0.42, 0.05, 0.42)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 22.7, 0.475, 3.4)
-
-[node name="RadioChairLeg1" type="WaveProp" parent="." unique_id=100000087]
-size = Vector3(0.05, 0.45, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 22.54, 0.225, 3.24)
-
-[node name="RadioChairLeg2" type="WaveProp" parent="." unique_id=100000088]
-size = Vector3(0.05, 0.45, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 22.54, 0.225, 3.56)
-
-[node name="RadioChairLeg3" type="WaveProp" parent="." unique_id=100000089]
-size = Vector3(0.05, 0.45, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 22.86, 0.225, 3.24)
-
-[node name="RadioChairLeg4" type="WaveProp" parent="." unique_id=100000090]
-size = Vector3(0.05, 0.45, 0.05)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 22.86, 0.225, 3.56)
-
-[node name="RadioChairBack" type="WaveProp" parent="." unique_id=100000091]
-size = Vector3(0.05, 0.5, 0.42)
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 22.51, 0.75, 3.4)
+[node name="RadioChair" parent="." instance=ExtResource("1_chair")]
+position = Vector3(22.7, 0, 3.4)
 
 [node name="RadioPillar" type="WaveColumn" parent="." unique_id=100000092]
 radius = 0.24
