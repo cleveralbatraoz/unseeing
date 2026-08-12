@@ -106,6 +106,13 @@ and a level of any size needs only a handful. Push enough boxes into one
 another that no arrangement separates them all and the level says so loudly
 in the output — and still runs, with those few seams unlined.
 
+Optional tooling: `../tools/setup-mcp.sh` installs the godot-mcp editor
+addon, which lets a Claude session drive this editor directly — freeze the
+clock, step frames, inject input, read the placement faults above as
+structured data — instead of a screenshot and a guess. See
+`../docs/superpowers/mcp/godot-mcp-loop.md` for the loop; it is a developer
+convenience, never a build dependency.
+
 ## System status
 
 | System | Status |

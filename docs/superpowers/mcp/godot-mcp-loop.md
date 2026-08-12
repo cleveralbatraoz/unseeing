@@ -18,10 +18,24 @@ without writing a scene or a test first.
 The two halves are independent. The observer works in gdUnit4 suites with no
 MCP at all; godot-mcp is a convenience for the interactive loop.
 
-## Status: not installed by this repository
+## Status: half-installed by this repository, by design
 
-Nothing in this tree installs, pins, or vendors godot-mcp. It is a developer
-tool you install on your own machine.
+The two halves install differently, on purpose, because only one of them is
+safe to commit.
+
+- **The MCP client half ships in-tree.** `.mcp.json` at the repo root
+  declares the `godot-mcp` server (`npx -y
+  @satelliteoflove/godot-mcp@<pinned version>`, no serve flags needed — the
+  plain invocation speaks MCP over stdio). Claude Code and any other client
+  that reads `.mcp.json` picks this up with no setup step at all.
+- **The addon half installs on demand, per machine.** Run
+  `tools/setup-mcp.sh` from the repo root: it checks for Node 20+, then runs
+  the pinned `npx @satelliteoflove/godot-mcp@<version> --install-addon
+  game`. The one step it cannot script is enabling the plugin in the editor
+  (below) — that stays a manual, per-machine click.
+- **The addon stays untracked, always, by policy** — not an installation gap
+  to close, a decision to keep (see below). `tools/setup-mcp.sh` writes it to
+  disk; nothing ever adds it to git.
 
 ## Prerequisites
 
@@ -35,29 +49,37 @@ tool you install on your own machine.
 ## Install
 
 ```sh
-npx @satelliteoflove/godot-mcp --install-addon /path/to/unseeing/game
+tools/setup-mcp.sh
 ```
 
 Then enable the plugin in the editor: **Project → Project Settings → Plugins →
-godot-mcp → Enable**. That step is a GUI click; there is no scripted equivalent.
+Godot MCP → Enable**. That step is a GUI click; there is no scripted equivalent
+— see `tools/setup-mcp.sh`'s own comment for why it deliberately does not
+touch `game/project.godot` to do this for you.
 
 ### The addon is gitignored, deliberately
 
 `game/addons/godot_mcp/` is in `.gitignore`, and `test/repo_hygiene.sh` pins
 that from both directions — nothing under the path may be tracked, and the
-ignore rule must still cover it. Two reasons, both load-bearing:
+ignore rule must still cover it. Three reasons, all load-bearing (the same
+three CLAUDE.md's own godot-mcp paragraph names):
 
 1. `deploy.sh` ships the tree by `git archive` into a bare repo whose
-   post-receive hook untars it. Anything committed under `game/addons/` reaches
-   the droplet **and** the wasm export — a Node-backed debugging tool riding
-   into the shipped game.
-2. `ci/vendor-gdunit4.sh verify` fingerprints `game/addons/` believing gdUnit4
-   is its only tenant. A second addon is drift it would have to be taught to
-   forgive.
+   post-receive hook untars it. Anything committed under `game/addons/`
+   reaches the **droplet** — a Node-backed debugging tool riding into the
+   shipped, running game server.
+2. The identical `git archive` mechanism reaches the **wasm export** too —
+   the same commit that ships to the droplet ships into the web build's
+   asset tree.
+3. `ci/vendor-gdunit4.sh verify` fingerprints `game/addons/` believing
+   gdUnit4 is its only tenant. A second addon is drift it would have to be
+   taught to forgive.
 
-The cost of this choice: the version is not pinned in-tree, so two machines can
-run different godot-mcp versions. Accepted — it is a debugging aid, not a
-dependency of the build.
+The cost of this choice: the version is not pinned in-tree by any lock file
+(unlike gdUnit4's `ci/gdunit4.lock`) — `.mcp.json` and `tools/setup-mcp.sh`
+each carry their own version literal, so two machines that update at
+different times can still end up running different addon builds against the
+same server. Accepted — it is a debugging aid, not a dependency of the build.
 
 ## The loop
 
