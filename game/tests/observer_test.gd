@@ -407,7 +407,7 @@ func test_the_shipped_level_has_no_object_id_violations() -> void:
 ## authored anywhere an agent can read, so a snapshot without it leaves the
 ## reader unable to place anything else it reports.
 ##
-## Checked against the level's own accessors, never a literal SpawnPoint
+## Checked against the level's own accessors, never a literal spawn-node
 ## coordinate: this is a read-back law (did the boundary carry the value
 ## through, not invent or drop it), and level_test.gd already hand-derives
 ## spawn_pos()/spawn_yaw() themselves on levels built in code. Both halves
@@ -1072,9 +1072,8 @@ func _eye() -> Camera3D:
 
 
 ## The marker a hand-built level needs to have somewhere to wake the hero.
-func _spawn_marker() -> Marker3D:
-	var marker := Marker3D.new()
-	marker.name = "SpawnPoint"
+func _spawn_marker() -> WaveSpawn:
+	var marker := WaveSpawn.new()
 	return marker
 
 

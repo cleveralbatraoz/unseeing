@@ -28,4 +28,5 @@ mod restorer;
 mod settings;
 mod solid;
 mod source;
+mod spawn;
 mod wall;

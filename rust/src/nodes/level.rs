@@ -1,5 +1,5 @@
 //! The level root — the one node a scene of walls, props, sound sources, a
-//! cat and a spawn marker hangs under, and the engine's single door into
+//! cat and a typed spawn datum hangs under, and the engine's single door into
 //! it. The composition root injects the two data-writing materials (the
 //! world skin and the source image) and the wave pool HERE, once; the level
 //! deals them out and hands the occluding skins the wall table their
@@ -24,13 +24,9 @@
 //! retyping anything or tripping an enclosure law: the waves simply light
 //! what they can reach and stop at what they cannot.
 //!
-//! Spawn decision: a `Marker3D` child named exactly `SpawnPoint`, standing
-//! ON the floor, facing where the hero should look — the designer drags and
-//! rotates a gizmo; the engine lifts it to capsule height. Every OTHER
-//! marker whose name reads like a spawn is collected too — the `SpawnPoint2`
-//! Ctrl+D leaves behind, a second exact name under another parent — not to
-//! compete with it, but so the level can NAME what it ignored instead of
-//! letting a moved copy change nothing in silence.
+//! Spawn decision: the first `WaveSpawn` in depth-first scene order wins,
+//! regardless of its scene name. Every duplicate is named and warned on its
+//! own node; missing still falls back to the level origin and complains.
 //!
 //! Placement decision: the level REPORTS a solid it cannot support and
 //! moves nothing. Its slabs span `0 .. extents` from its own origin, so
@@ -55,8 +51,7 @@
 //! world origin; a level with NO source stays silent, which is legal.
 
 use godot::classes::{
-    ArrayMesh, Engine, INode3D, Marker3D, Material, MeshInstance3D, Node3D, ShaderMaterial,
-    StaticBody3D,
+    ArrayMesh, Engine, INode3D, Material, MeshInstance3D, Node3D, ShaderMaterial, StaticBody3D,
 };
 use godot::obj::DynGd;
 use godot::prelude::*;
@@ -67,6 +62,7 @@ use super::solid::{
     SKIN_NAME, WaveSolid, basis_columns_f64, build_box, clear_limbs, mesh_first_label, to_f64_3,
 };
 use super::source::SoundSource;
+use super::spawn::WaveSpawn;
 use super::wall::WaveWall;
 use crate::level_plan;
 use crate::oid_palette;
@@ -114,12 +110,8 @@ struct Census {
     walls: Vec<Gd<WaveWall>>,
     sources: Vec<DynGd<Node, dyn SoundSource>>,
     cats: Vec<Gd<WaveCat>>,
-    /// EVERY marker whose name reads as a spawn — the exact one and any
-    /// auto-numbered copy Ctrl+D left behind, in walk order. The winner is
-    /// still the first exact name, but a copy that was never collected
-    /// could never be reported either, which is the whole bug: the level
-    /// has to see what it refuses in order to say it refused it.
-    spawns: Vec<Gd<Marker3D>>,
+    /// Every typed datum in deterministic depth-first walk order.
+    spawns: Vec<Gd<WaveSpawn>>,
 }
 
 /// Which concrete thing a [`PaintEntry`] is — the level's own two slabs
@@ -434,7 +426,7 @@ impl WaveLevel {
         INode3D::get_configuration_warnings(self)
     }
 
-    /// Where the hero wakes: the SpawnPoint marker lifted to capsule
+    /// Where the hero wakes: the selected WaveSpawn lifted to capsule
     /// height.
     #[func]
     pub(super) fn spawn_pos(&self) -> Vector3 {
@@ -670,48 +662,46 @@ impl WaveLevel {
     }
 
     /// Where the hero wakes, and every word a designer needs about the
-    /// markers that did not win. The DECISION is pure and lives in
+    /// typed data that did not win. The DECISION is pure and lives in
     /// [`level_plan::choose_spawn`]; this end only measures — the winner's
     /// world position lifted to capsule height, the level's own origin as
-    /// the fallback, and each candidate's path under the level root, which
-    /// is the only thing that tells two markers named `SpawnPoint` apart.
+    /// the fallback, and each candidate's path under the level root.
     ///
     /// `editor` is [`Self::derive`]'s one read of `Engine::is_editor_hint`:
     /// every complaint is ALWAYS filed into `level_faults` (the totals
     /// rewrite an editor's warning icon reads), and printed through
-    /// `godot_error!` only at run time, byte-identical to before — the
-    /// boot gate reads exactly these prints and must keep seeing them.
-    fn derive_spawn(&mut self, markers: &[Gd<Marker3D>], editor: bool) {
+    /// `godot_error!` only at run time, where the boot gate pins the text.
+    fn derive_spawn(&mut self, spawns: &[Gd<WaveSpawn>], editor: bool) {
         let lift = Vector3::new(0.0, level_plan::SPAWN_LIFT as f32, 0.0);
         let fallback = self.base().get_global_position() + lift;
         let root = self.base().clone().upcast::<Node>();
-        // the two lists are grown in ONE pass, so a verdict's index cannot
-        // slide off the marker it names — the walk already applied the same
-        // predicate, but a filter that ever disagreed with it would silently
-        // wake the hero at the wrong node
-        let mut kept: Vec<&Gd<Marker3D>> = Vec::new();
-        let mut candidates: Vec<level_plan::SpawnCandidate> = Vec::new();
-        for marker in markers {
-            let Some(kind) = level_plan::spawn_name(&marker.get_name().to_string()) else {
-                continue; // renamed since the walk: no longer a spawn marker
-            };
-            kept.push(marker);
-            candidates.push(level_plan::SpawnCandidate {
+        let candidates: Vec<level_plan::SpawnCandidate> = spawns
+            .iter()
+            .map(|marker| level_plan::SpawnCandidate {
                 path: root.get_path_to(marker).to_string(),
-                kind,
-            });
-        }
+            })
+            .collect();
         let verdict = level_plan::choose_spawn(&candidates, fallback);
-        for complaint in verdict.complaints {
+        for complaint in &verdict.complaints {
             if !editor {
                 godot_error!("{}", complaint);
             }
-            self.level_faults.push(complaint);
+            self.level_faults.push(complaint.clone());
         }
-        match verdict.winner.and_then(|slot| kept.get(slot)) {
+        if let Some(complaint) = verdict.complaints.first() {
+            for &slot in &verdict.losers {
+                if let Some(candidate) = candidates.get(slot) {
+                    self.node_faults.push(level_plan::PlacementFault {
+                        path: candidate.path.clone(),
+                        text: complaint.clone(),
+                    });
+                }
+            }
+        }
+        match verdict.winner.and_then(|slot| spawns.get(slot)) {
             Some(marker) => {
                 self.spawn_at = marker.get_global_position() + lift;
-                self.spawn_heading = f64::from(marker.get_rotation().y);
+                self.spawn_heading = level_plan::basis_heading(marker.get_global_basis());
             }
             None => {
                 self.spawn_at = fallback;
@@ -823,14 +813,23 @@ impl WaveLevel {
                 .into_gd()
                 .call_deferred("update_configuration_warnings", &[]);
         }
-        // and every censused source alongside them — the only census
-        // members that can freshly ACQUIRE or SHED a starvation fault on
-        // this branch (see the doc comment above); `self.source_children`
-        // already holds them, moved out of `census` a few lines up
+        // Refresh warning-bearing sources alongside the solids. Their fixed
+        // role labels do not enter the world-face colouring, but keeping the
+        // forwarder cache current is part of the shared designer-node law;
+        // `self.source_children` already owns them after the move above.
         for source in &self.source_children {
             source
                 .clone()
                 .into_gd()
+                .call_deferred("update_configuration_warnings", &[]);
+        }
+        // Typed spawn data can gain or lose a duplicate warning when the
+        // scene walk changes. Refresh every candidate, including the winner,
+        // so a loser that becomes unique clears its cached triangle.
+        for spawn in &census.spawns {
+            spawn
+                .clone()
+                .upcast::<Node>()
                 .call_deferred("update_configuration_warnings", &[]);
         }
     }
@@ -1476,7 +1475,7 @@ impl WaveLevel {
     /// The condition [`INode3D::process`]'s editor-only poll watches: the
     /// level's own `extents` knob plus a fresh census, folded by
     /// [`level_plan::scene_signature`] into a single `u64` — every solid,
-    /// source, cat and spawn marker's path and global pose, plus a
+    /// source, cat and spawn datum's path and global pose, plus a
     /// solid's skin AABB, so the fold changes the moment ANYTHING
     /// [`Self::derive`] reads would read differently. `extents` has to be
     /// folded here explicitly rather than discovered through the census:
@@ -1830,10 +1829,8 @@ fn collect(node: &Gd<Node>, census: &mut Census) {
             census.sources.push(source);
         } else if let Ok(cat) = child.clone().try_cast::<WaveCat>() {
             census.cats.push(cat);
-        } else if let Ok(marker) = child.clone().try_cast::<Marker3D>()
-            && level_plan::spawn_name(&marker.get_name().to_string()).is_some()
-        {
-            census.spawns.push(marker);
+        } else if let Ok(spawn) = child.clone().try_cast::<WaveSpawn>() {
+            census.spawns.push(spawn);
         }
         collect(&child, census);
     }

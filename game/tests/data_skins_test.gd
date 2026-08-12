@@ -159,8 +159,7 @@ func test_the_acoustic_image_layer_is_a_band_ordered_by_distance() -> void:
 ## Rust side; this only pins that the boundary carries the same verdict.
 func _one_wall_level() -> WaveLevel:
 	var level: WaveLevel = auto_free(WaveLevel.new())
-	var marker := Marker3D.new()
-	marker.name = "SpawnPoint"
+	var marker := WaveSpawn.new()
 	level.add_child(marker)
 	var wall := WaveWall.new()
 	wall.name = "TheWall"

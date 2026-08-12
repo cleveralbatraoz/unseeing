@@ -47,7 +47,7 @@ pub const WALL_T: f64 = 0.15;
 /// Thickness of the floor and ceiling slabs.
 pub const SLAB_T: f64 = 0.1;
 
-/// The hero's capsule center over the floor a spawn marker stands on.
+/// The hero's capsule center over the floor a spawn datum stands on.
 pub const SPAWN_LIFT: f64 = 0.9;
 
 /// Height of the dev demo tap on its wall — a natural cane-strike height.
@@ -131,6 +131,18 @@ pub fn basis_quadrant(basis: Basis) -> u8 {
     yaw_quadrant(f64::from(-x.z).atan2(f64::from(x.x)))
 }
 
+/// The yaw carried by a global basis, read from its local +X axis. Invalid
+/// or degenerate transforms fall back to zero so an editor transform can
+/// never put a non-finite heading into the running player.
+#[must_use]
+pub fn basis_heading(basis: Basis) -> f64 {
+    let x = basis.col_a();
+    if !x.x.is_finite() || !x.z.is_finite() || (x.x == 0.0 && x.z == 0.0) {
+        return 0.0;
+    }
+    f64::from(-x.z).atan2(f64::from(x.x))
+}
+
 /// The exact basis of a quarter turn about Y: unit columns of 0 and ±1,
 /// bit-for-bit — the one orientation family under which a rotated box's
 /// world vertices are exact coordinate swaps, never trig approximations.
@@ -164,113 +176,54 @@ pub fn wall_segment(center: Vector3, length: f64, quadrant: u8) -> Vector4 {
     }
 }
 
-/// The one name a level's spawn marker may carry.
-pub const SPAWN_NAME: &str = "SpawnPoint";
-
-/// How a `Marker3D`'s name reads against the spawn contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpawnName {
-    /// Exactly [`SPAWN_NAME`] — the only name that can wake the hero.
-    Exact,
-    /// [`SPAWN_NAME`] with digits after it: what Ctrl+D leaves behind when
-    /// a designer duplicates the marker, since Godot renames a copy whose
-    /// name a sibling already holds.
-    Numbered,
-}
-
-/// One `Marker3D` the level walk recognised as meant for the spawn.
+/// One typed spawn the level walk found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpawnCandidate {
     /// Where a designer can find the node: its path under the level root.
-    /// A NAME cannot do this job — two markers named exactly `SpawnPoint`
-    /// under different parents are legal, and are precisely the pair a
-    /// report has to tell apart.
     pub path: String,
-    /// How that node's own name reads.
-    pub kind: SpawnName,
 }
 
-/// Which spawn marker the hero wakes at, and everything a designer has to
+/// Which spawn datum the hero wakes at, and everything a designer has to
 /// be told about the ones that did not win.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SpawnVerdict {
-    /// Index into the candidate slice of the marker the hero wakes at, or
-    /// `None` when nothing carries the exact name and the caller must fall
-    /// back to the level's own origin.
+    /// Index into the candidate slice of the datum the hero wakes at, or
+    /// `None` when the caller must fall back to the level's own origin.
     pub winner: Option<usize>,
+    /// Candidate indices ignored because the first typed spawn wins. The
+    /// boundary uses these to attach the same diagnosis to every loser.
+    pub losers: Vec<usize>,
     /// One printable line per thing that is wrong, in a fixed order.
     pub complaints: Vec<String>,
 }
 
-/// How a node's name reads against the spawn contract — `None` for a name
-/// that has nothing to do with the spawn, so an unrelated `Marker3D` never
-/// enters a report about one.
-#[must_use]
-pub fn spawn_name(name: &str) -> Option<SpawnName> {
-    let tail = name.strip_prefix(SPAWN_NAME)?;
-    if tail.is_empty() {
-        return Some(SpawnName::Exact);
-    }
-    tail.chars()
-        .all(|c| c.is_ascii_digit())
-        .then_some(SpawnName::Numbered)
-}
-
-/// Choose the spawn marker, and say out loud what was ignored.
-///
-/// THE CHOICE IS DELIBERATELY UNCHANGED: the first candidate named exactly
-/// [`SPAWN_NAME`], in the level walk's depth-first scene order, wins —
-/// which is what `Option::get_or_insert` did before this function existed,
-/// so no scene that is valid today wakes its hero anywhere new. Everything
-/// else here is diagnosis:
-///
-/// - a second marker named exactly `SpawnPoint` — legal in Godot under a
-///   different parent — is reported as ignored, never promoted;
-/// - `SpawnPoint2`, `SpawnPoint3`: what Ctrl+D leaves behind. Reported as
-///   ignored copies and never promoted either, because a marker that won by
-///   being the newest would move the hero the moment anyone duplicated one;
-/// - no exact marker at all is the loudest case, because the caller's
-///   fallback is the level's own ORIGIN, and on a bordered map that is the
-///   corner sliver outside the border walls rather than anywhere playable.
+/// Choose by typed candidate count. The first depth-first walk candidate wins;
+/// every later candidate is a loser regardless of its arbitrary scene name.
 #[must_use]
 pub fn choose_spawn(candidates: &[SpawnCandidate], fallback: Vector3) -> SpawnVerdict {
-    let exact: Vec<&SpawnCandidate> = candidates
-        .iter()
-        .filter(|c| c.kind == SpawnName::Exact)
-        .collect();
-    let winner = candidates.iter().position(|c| c.kind == SpawnName::Exact);
+    let winner = (!candidates.is_empty()).then_some(0);
+    let losers: Vec<usize> = (1..candidates.len()).collect();
     let mut complaints = Vec::new();
-    match exact.split_first() {
+    match candidates.split_first() {
         None => complaints.push(format!(
-            "WaveLevel: no Marker3D named exactly '{SPAWN_NAME}' under the level — the hero has \
-             nowhere to wake, so it wakes at the level's own origin, {fallback}. That is the \
-             corner of the map, outside the border walls: the hero is very likely sealed into \
-             the sliver there and cannot reach the level at all. Add a Marker3D named \
-             '{SPAWN_NAME}', standing on the floor, facing where the hero should look."
+            "WaveLevel: no WaveSpawn stands under the level — the hero has nowhere to wake, so \
+             it wakes at the level's own origin, {fallback}. Add one WaveSpawn on the floor, \
+             facing where the hero should look."
         )),
         Some((won, ignored)) if !ignored.is_empty() => complaints.push(format!(
-            "WaveLevel: {} markers are named exactly '{SPAWN_NAME}' — the hero wakes at the \
-             first the level walk reaches, '{}', and ignores {}. Delete or rename every spawn \
-             marker but one.",
-            exact.len(),
+            "WaveLevel: {} WaveSpawn nodes stand under the level — the hero wakes at the first \
+             the level walk reaches, '{}', and ignores {}. Delete every extra WaveSpawn.",
+            candidates.len(),
             won.path,
-            quoted_paths(ignored.iter().copied()),
+            quoted_paths(ignored.iter()),
         )),
         Some(_) => {}
     }
-    let copies: Vec<&SpawnCandidate> = candidates
-        .iter()
-        .filter(|c| c.kind == SpawnName::Numbered)
-        .collect();
-    if !copies.is_empty() {
-        complaints.push(format!(
-            "WaveLevel: auto-numbered spawn copies IGNORED: {}. Only a Marker3D named exactly \
-             '{SPAWN_NAME}' wakes the hero, and Ctrl+D renames the copy — so moving the copy \
-             moves nothing. Rename the one you want to '{SPAWN_NAME}' and delete the rest.",
-            quoted_paths(copies.into_iter()),
-        ));
+    SpawnVerdict {
+        winner,
+        losers,
+        complaints,
     }
-    SpawnVerdict { winner, complaints }
 }
 
 /// Candidate paths as a report quotes them: `'a', 'b'`, in the order given
@@ -883,7 +836,7 @@ pub struct SignatureNode {
     pub transform: [f32; 12],
     /// The skin mesh's local AABB (position then size), for a solid only.
     /// `None` for a wall's typed twin (never folded twice — see
-    /// [`scene_signature`]), a source, a cat or a spawn marker, all of
+    /// [`scene_signature`]), a source, a cat or a spawn datum, all of
     /// which carry no shape a knob can reshape independent of their pose.
     pub aabb: Option<[f32; 6]>,
 }
@@ -1285,161 +1238,92 @@ mod tests {
         );
     }
 
-    /// A marker a designer named by hand, on purpose.
-    fn exact(path: &str) -> SpawnCandidate {
-        SpawnCandidate {
-            path: path.to_string(),
-            kind: SpawnName::Exact,
-        }
-    }
-
-    /// A marker Ctrl+D named, by leaving a number on the end.
-    fn numbered(path: &str) -> SpawnCandidate {
-        SpawnCandidate {
-            path: path.to_string(),
-            kind: SpawnName::Numbered,
-        }
+    /// One typed spawn found by the level walk.
+    fn spawn(path: &str) -> SpawnCandidate {
+        SpawnCandidate { path: path.into() }
     }
 
     /// The level's own origin lifted to capsule height on the shipped map —
     /// the corner the hero is dumped in when no marker names itself.
     const CORNER: Vector3 = Vector3::new(0.0, 0.9, 0.0);
 
-    /// The name is the only trace a duplicated marker leaves: exactly
-    /// `SpawnPoint` is the spawn, `SpawnPoint` plus digits is what Ctrl+D
-    /// wrote, and anything else is a `Marker3D` that means something else
-    /// entirely and must not be dragged into the report.
+    /// Removing the only candidate must change this from a silent winner to
+    /// the fallback branch.
     #[test]
-    fn a_spawn_name_reads_as_exact_or_as_an_auto_numbered_copy() {
-        assert_eq!(spawn_name("SpawnPoint"), Some(SpawnName::Exact));
-        assert_eq!(spawn_name("SpawnPoint2"), Some(SpawnName::Numbered));
-        assert_eq!(spawn_name("SpawnPoint17"), Some(SpawnName::Numbered));
-        assert_eq!(spawn_name("SpawnPointB"), None);
-        assert_eq!(spawn_name("SpawnPoint 2"), None);
-        assert_eq!(spawn_name("spawnpoint"), None);
-        assert_eq!(spawn_name("Spawn"), None);
-        assert_eq!(spawn_name("CameraTarget"), None);
-        assert_eq!(spawn_name(""), None);
-    }
-
-    /// The ordinary map: one marker wins and the level says nothing at all.
-    /// A rule that complained here would train a designer to ignore it.
-    #[test]
-    fn one_spawn_marker_wins_in_silence() {
-        let verdict = choose_spawn(&[exact("SpawnPoint")], CORNER);
+    fn one_typed_spawn_wins_in_silence() {
+        let verdict = choose_spawn(&[spawn("Start")], CORNER);
         assert_eq!(verdict.winner, Some(0));
+        assert!(verdict.losers.is_empty());
         assert!(verdict.complaints.is_empty(), "{:?}", verdict.complaints);
     }
 
-    /// Two markers named EXACTLY `SpawnPoint` is legal in Godot under two
-    /// different parents, and used to be settled in silence by whichever
-    /// the walk reached first. The first still wins — no scene that is
-    /// valid today moves its hero — but the loser is NAMED by path, which
-    /// is the only thing that tells two identically named nodes apart.
+    /// Deleting the duplicate complaint or choosing the last node must make
+    /// this fail: walk order is the deterministic tiebreak and the loser is
+    /// named independently of either node's arbitrary scene name.
     #[test]
-    fn a_second_exact_marker_loses_and_is_named_by_path() {
-        let verdict = choose_spawn(&[exact("SpawnPoint"), exact("Rooms/SpawnPoint")], CORNER);
+    fn a_second_typed_spawn_loses_and_is_named_by_path() {
+        let verdict = choose_spawn(&[spawn("Start"), spawn("Rooms/Other")], CORNER);
         assert_eq!(verdict.winner, Some(0));
+        assert_eq!(verdict.losers, vec![1]);
         assert_eq!(
             verdict.complaints,
             vec![
-                "WaveLevel: 2 markers are named exactly 'SpawnPoint' — the hero wakes at the \
-                 first the level walk reaches, 'SpawnPoint', and ignores 'Rooms/SpawnPoint'. \
-                 Delete or rename every spawn marker but one."
+                "WaveLevel: 2 WaveSpawn nodes stand under the level — the hero wakes at the \
+                 first the level walk reaches, 'Start', and ignores 'Rooms/Other'. Delete \
+                 every extra WaveSpawn."
             ]
         );
     }
 
-    /// THE Ctrl+D case: duplicate the marker, drag the copy, press play,
-    /// and the hero wakes at the original. The copy is reported as ignored
-    /// and never promoted — a marker that won by being the newest would
-    /// move the hero the moment anyone copied one to measure a distance.
+    /// Reporting only the first duplicate must fail: every losing typed node
+    /// gets its own warning triangle, in walk order.
     #[test]
-    fn an_auto_numbered_copy_is_reported_and_never_promoted() {
-        let verdict = choose_spawn(&[exact("SpawnPoint"), numbered("SpawnPoint2")], CORNER);
-        assert_eq!(verdict.winner, Some(0));
-        assert_eq!(
-            verdict.complaints,
-            vec![
-                "WaveLevel: auto-numbered spawn copies IGNORED: 'SpawnPoint2'. Only a Marker3D \
-                 named exactly 'SpawnPoint' wakes the hero, and Ctrl+D renames the copy — so \
-                 moving the copy moves nothing. Rename the one you want to 'SpawnPoint' and \
-                 delete the rest."
-            ]
-        );
-        // and the copy does not win by standing earlier in the walk either:
-        // a level whose only exact marker sits under a folder still wakes
-        // its hero there, not at whatever Ctrl+D dropped at the top
-        let reordered = choose_spawn(
-            &[numbered("SpawnPoint2"), exact("Rooms/SpawnPoint")],
-            CORNER,
-        );
-        assert_eq!(reordered.winner, Some(1));
-    }
-
-    /// Copies are listed in walk order, all of them, so a designer who
-    /// duplicated twice is not told about one and left to find the other.
-    #[test]
-    fn every_auto_numbered_copy_is_listed() {
+    fn three_typed_spawns_keep_the_first_and_name_every_loser() {
         let verdict = choose_spawn(
-            &[
-                exact("SpawnPoint"),
-                numbered("SpawnPoint2"),
-                numbered("Rooms/SpawnPoint3"),
-            ],
+            &[spawn("Start"), spawn("East/Arrival"), spawn("West/Arrival")],
             CORNER,
         );
         assert_eq!(verdict.winner, Some(0));
-        assert_eq!(verdict.complaints.len(), 1);
-        assert!(
-            verdict.complaints[0].contains("'SpawnPoint2', 'Rooms/SpawnPoint3'"),
-            "{}",
-            verdict.complaints[0]
-        );
-    }
-
-    /// The worst case a designer can reach by accident: duplicate the
-    /// marker, delete the original, and nothing carries the exact name any
-    /// more. Both facts are said — the copy that could have been the spawn,
-    /// and where the hero was actually put — because the fallback is the
-    /// level's own origin, which on any bordered map is the sliver outside
-    /// the border walls.
-    #[test]
-    fn no_exact_marker_names_the_fallback_and_the_copy_that_was_not_promoted() {
-        let verdict = choose_spawn(&[numbered("SpawnPoint2")], CORNER);
-        assert_eq!(verdict.winner, None);
+        assert_eq!(verdict.losers, vec![1, 2]);
         assert_eq!(
             verdict.complaints,
             vec![
-                "WaveLevel: no Marker3D named exactly 'SpawnPoint' under the level — the hero \
-                 has nowhere to wake, so it wakes at the level's own origin, (0, 0.9, 0). That \
-                 is the corner of the map, outside the border walls: the hero is very likely \
-                 sealed into the sliver there and cannot reach the level at all. Add a Marker3D \
-                 named 'SpawnPoint', standing on the floor, facing where the hero should look."
-                    .to_string(),
-                "WaveLevel: auto-numbered spawn copies IGNORED: 'SpawnPoint2'. Only a Marker3D \
-                 named exactly 'SpawnPoint' wakes the hero, and Ctrl+D renames the copy — so \
-                 moving the copy moves nothing. Rename the one you want to 'SpawnPoint' and \
-                 delete the rest."
-                    .to_string(),
+                "WaveLevel: 3 WaveSpawn nodes stand under the level — the hero wakes at the \
+                 first the level walk reaches, 'Start', and ignores 'East/Arrival', \
+                 'West/Arrival'. Delete every extra WaveSpawn."
             ]
         );
     }
 
-    /// An empty level reports the fallback it was actually given, not a
-    /// hardcoded origin: a level dropped at (14, 0, 14) puts its hero
-    /// there, and a message quoting (0, 0.9, 0) would send the designer
-    /// looking in the wrong corner.
+    /// Returning origin silently would strand the hero without telling the
+    /// designer which typed datum is missing.
     #[test]
-    fn the_missing_spawn_message_quotes_the_fallback_it_was_given() {
+    fn no_typed_spawn_names_the_fallback() {
         let verdict = choose_spawn(&[], Vector3::new(14.0, 0.9, 2.5));
         assert_eq!(verdict.winner, None);
-        assert_eq!(verdict.complaints.len(), 1);
-        assert!(
-            verdict.complaints[0].contains("(14, 0.9, 2.5)"),
-            "{}",
-            verdict.complaints[0]
+        assert!(verdict.losers.is_empty());
+        assert_eq!(
+            verdict.complaints,
+            vec![
+                "WaveLevel: no WaveSpawn stands under the level — the hero has nowhere to \
+                 wake, so it wakes at the level's own origin, (14, 0.9, 2.5). Add one \
+                 WaveSpawn on the floor, facing where the hero should look."
+            ]
         );
+    }
+
+    /// Reading local yaw would answer zero for the nested quarter-turn case;
+    /// poisoned or degenerate bases must stay finite rather than leaking NaN.
+    #[test]
+    fn global_basis_heading_is_total_and_reads_the_forward_axis() {
+        assert_eq!(basis_heading(quadrant_basis(1)), FRAC_PI_2);
+        assert_eq!(basis_heading(Basis::default()), 0.0);
+        let nan = Vector3::new(f32::NAN, f32::NAN, f32::NAN);
+        let poisoned = Basis::from_cols(nan, Vector3::UP, nan);
+        assert_eq!(basis_heading(poisoned), 0.0);
+        let infinity = Vector3::new(f32::INFINITY, 0.0, 1.0);
+        let poisoned = Basis::from_cols(infinity, Vector3::UP, Vector3::FORWARD);
+        assert_eq!(basis_heading(poisoned), 0.0);
     }
 
     /// A RETIRED 20×20/10-wall map — not the shipped 28×28/19-wall scene in

@@ -20,7 +20,7 @@ the visible game.
   test- and probe-facing, under `tests/`.
 - `scenes/level_01.tscn` — the level, authored in the editor: `WaveWall`
   and `WaveProp` boxes, the `SoundFan`, the companion `WaveCat`, and a
-  `SpawnPoint` marker under a `WaveLevel` root that derives the technical
+  typed `WaveSpawn` datum under a `WaveLevel` root that derives the technical
   contracts (wall centerlines and the occluder table sound is muffled
   through, spawn, demo tap, and the object ids that keep every seam
   drawable) from what the designer placed.
@@ -92,7 +92,8 @@ library yourself is the only way in today.
    **Beam Cos**, the cosine of its sweeping wash's half-angle (about 32°
    at the shipped default) — the radio has no such knob, because it
    radiates evenly in every direction instead of aiming one.
-6. The hero wakes at the `SpawnPoint` marker — move it to move the start.
+6. The hero wakes at the first `WaveSpawn` in scene order — move or rotate it
+   to edit the start; delete duplicates when their warning appears.
 7. Press play. The `WaveLevel` root derives everything technical from what
    you placed — wall centerlines and the occluder table every source's
    silhouette is muffled through, the demo tap, and the flat object id

@@ -198,9 +198,8 @@ func _copy(blob: Dictionary) -> Dictionary:
 
 ## The marker a hand-built level needs to have somewhere to wake the hero
 ## (the same fixture observer_test.gd builds its bare levels from).
-func _spawn_marker() -> Marker3D:
-	var marker := Marker3D.new()
-	marker.name = "SpawnPoint"
+func _spawn_marker() -> WaveSpawn:
+	var marker := WaveSpawn.new()
 	return marker
 
 

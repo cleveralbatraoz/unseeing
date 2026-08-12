@@ -15,9 +15,8 @@ extends GdUnitTestSuite
 ##     single material-wide muffle could never have.
 
 
-func _spawn_marker(at: Vector3) -> Marker3D:
-	var marker := Marker3D.new()
-	marker.name = "SpawnPoint"
+func _spawn_marker(at: Vector3) -> WaveSpawn:
+	var marker := WaveSpawn.new()
 	marker.position = at
 	return marker
 

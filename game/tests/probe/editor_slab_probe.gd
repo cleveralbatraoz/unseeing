@@ -53,8 +53,7 @@ func _initialize() -> void:
 		return
 	_level = ClassDB.instantiate("WaveLevel") as Node3D
 	_level.set("extents", EXTENTS)
-	var marker := Marker3D.new()
-	marker.name = "SpawnPoint"
+	var marker := WaveSpawn.new()
 	_level.add_child(marker)
 	_level.call("inject", ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	root.add_child(_level)

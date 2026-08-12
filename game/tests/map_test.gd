@@ -116,11 +116,10 @@ func _source_named(level: WaveLevel, node_name: String, kind: String) -> Node3D:
 	return null
 
 
-## The spawn marker every legal level needs — a level with no hero start is
+## The typed spawn datum every legal level needs — a level with no hero start is
 ## an error, and these built-in-code levels are not testing that.
-func _spawn_marker(at: Vector3) -> Marker3D:
-	var marker := Marker3D.new()
-	marker.name = "SpawnPoint"
+func _spawn_marker(at: Vector3) -> WaveSpawn:
+	var marker := WaveSpawn.new()
 	marker.position = at
 	return marker
 

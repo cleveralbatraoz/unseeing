@@ -113,7 +113,7 @@ pub struct UnseeingGame {
     #[var]
     wave_core: Option<Gd<WaveCore>>,
     /// The editor-authored world: walls, props, sound sources, the cat, the
-    /// spawn marker.
+    /// typed spawn datum.
     #[var]
     level: Option<Gd<WaveLevel>>,
     /// The blind hero's body-and-input node.

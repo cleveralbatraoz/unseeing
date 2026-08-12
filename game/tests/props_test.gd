@@ -444,8 +444,7 @@ func test_an_unscaled_shape_is_left_alone() -> void:
 ## only some of it would silently lose its outline or its seams.
 func test_every_shape_answers_the_same_solid_door() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
-	var marker := Marker3D.new()
-	marker.name = "SpawnPoint"
+	var marker := WaveSpawn.new()
 	level.add_child(marker)
 	var box := WaveProp.new()
 	box.position = Vector3(1, 0.25, 1)

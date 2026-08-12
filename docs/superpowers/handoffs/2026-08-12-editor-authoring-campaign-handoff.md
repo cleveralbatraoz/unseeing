@@ -180,6 +180,23 @@ simulated clock + seeded randomness only).
 
 ## Traps this campaign already paid for (do not rediscover)
 
+## SP3 execution ledger
+
+- **WaveSpawn:** chose an intentionally drawless `Marker3D` datum so a
+  designer places a transform and nothing else. Census is by Rust type in
+  scene walk order, never by node name. With no datum the level origin remains
+  the safe fallback and the level warns loudly; with duplicates the first wins
+  deterministically and every losing datum carries the same warning naming all
+  losers. Heading comes from the datum's global basis through a total pure
+  helper, so nested rotated prefabs compose without leaking scene conventions
+  into Rust. Plain markers remain valid grouping/editor aids and are ignored.
+- **Verification:** RED began with missing `WaveSpawn`/typed-candidate APIs.
+  Winner-selection and typed-census mutations failed as intended; the corrected
+  release build passed 332 Cargo tests, 277 gdUnit cases in 31 suites, editor
+  probes, and the 18-class/9-icon censuses. No independent agent was used:
+  current orchestration policy forbids delegation unless explicitly requested,
+  so specification and quality reviews were performed as separate local passes.
+
 - **Rebase erratum:** `WaveRestorer` was registered in Rust but omitted from
   both independently maintained engine rosters. The post-rebase baseline adds
   it, so SP3 starts at 17 classes rather than the stale 16-class claim.

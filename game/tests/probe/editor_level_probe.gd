@@ -53,7 +53,7 @@ func _initialize() -> void:
 	_level.set("extents", Vector2(20, 20))
 	_wall = ClassDB.instantiate("WaveWall") as Node3D
 	_level.add_child(_wall)
-	# deliberately no SpawnPoint marker, and no inject() call: the level
+	# deliberately no WaveSpawn, and no inject() call: the level
 	# must derive honest geometry and complain about the missing spawn
 	# either way
 	root.add_child(_level)
@@ -191,17 +191,16 @@ func _judge(editor: bool) -> void:
 	if editor:
 		_check(
 			"editor: the level derives and complains about the missing spawn",
-			_has(_warnings(), "SpawnPoint")
+			_has(_warnings(), "WaveSpawn")
 		)
 		_check(
 			"editor: wall segments were derived at edit time",
 			(_level.call("wall_segments") as PackedVector4Array).size() == 1
 		)
-		var fixed := Marker3D.new()
-		fixed.name = "SpawnPoint"
+		var fixed := WaveSpawn.new()
 		_level.add_child(fixed)
 		_level.call("rederive")
-		_check("editor: giving it a spawn clears the warning", not _has(_warnings(), "SpawnPoint"))
+		_check("editor: giving it a spawn clears the warning", not _has(_warnings(), "WaveSpawn"))
 		_judge_solid_warning()
 	else:
 		_check(

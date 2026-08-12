@@ -90,7 +90,7 @@ seed = 7
 roam_size = Vector2(3.6, 4.4)
 transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 2.8, 0, 7.6)
 
-[node name="SpawnPoint" type="Marker3D" parent="." unique_id=1242609234]
+[node name="Spawn" type="WaveSpawn" parent="." unique_id=1242609234]
 transform = Transform3D(-0.32328957, 0, -0.94630009, 0, 1, 0, 0.94630009, 0, -0.32328957, 3, 0, 4)
 
 [node name="TableTop" type="WaveProp" parent="." unique_id=100000020]
