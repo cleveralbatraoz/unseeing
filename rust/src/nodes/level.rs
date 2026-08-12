@@ -1283,17 +1283,28 @@ impl WaveLevel {
     ///
     /// EVERY `oid` HERE IS STILL A SOLID-GRANULARITY READ: it reads a
     /// mesh's FIRST `CUSTOM0` vertex ([`mesh_first_label`]), one number
-    /// standing in for a whole mesh. That stays legitimate ON PURPOSE for
-    /// what THIS census feeds — `WaveObserver::explain_oids`'s `pairs`/
-    /// `violations`, which only ever reasons about two SEPARATE (never
-    /// coplanar-merged) solids — because `render::superface::superfaces`'s
-    /// own SINGLETON COLLAPSE guarantees a solid that never merged with
-    /// anything carries exactly ONE label across every one of its own
-    /// faces, so its first face genuinely speaks for the whole solid here.
-    /// It is NOT a stand-in for the real per-face law anymore: that now
-    /// lives in [`Self::face_census`], read straight off what
-    /// `paint_labels` actually baked, and `explain_oids`'s `faults` census
-    /// reads THAT instead of this coarser one.
+    /// standing in for a whole mesh — the same trade `Skin::oid()`
+    /// (`super::solid`) makes, for the same reason: EXACT for a solid that
+    /// never coplanar-MERGED with anything
+    /// (`render::superface::superfaces`'s own SINGLETON COLLAPSE folds
+    /// every one of its faces to one class, so the first genuinely speaks
+    /// for the whole solid), APPROXIMATE for one that did — a merged
+    /// solid's bridged value names only its OWN first face's class, never
+    /// the partner's it fused with.
+    ///
+    /// This walk is NOT scoped to solids that stayed singletons, and
+    /// neither is `WaveObserver::explain_oids`'s `pairs`/`violations`,
+    /// which reads every touching pair this census reports: a genuinely
+    /// merged pair (BorderNorth and DividerNorth, on the shipped map) is
+    /// checked here exactly like any other touching pair, and whether it
+    /// reads clean or reports a false violation depends on which of its
+    /// six faces happens to be "first" for each wall — not on anything
+    /// this function knows about the merge (`map_test.gd`'s
+    /// `test_shipped_touching_boxes_draw_their_seam` currently passes for
+    /// this pair by that same accident, an open fragility, not a proven
+    /// law). The real per-face truth — every face, its own label, no
+    /// bridging, no ordinal luck — lives in [`Self::face_census`] instead,
+    /// and `explain_oids`'s `faults` census reads THAT.
     pub(super) fn oid_census(&self) -> Vec<PaintedSolid> {
         let census = self.census();
         let mut painted = Vec::new();
