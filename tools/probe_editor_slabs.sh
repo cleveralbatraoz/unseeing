@@ -40,9 +40,16 @@ PROBE="res://tests/probe/editor_slab_probe.gd"
 # asked for. An engine that quietly ignored `-e` would leave this gate
 # asserting the run-mode law twice, with the editor branch uncovered again
 # and nothing to show for it.
+#
+# `count` pins the exact number of checks a healthy run reports, not just
+# that SOME check passed: grepping only for `probe: PASS` would still match
+# a probe that aborted mid-`_judge` after three checks instead of seven —
+# fewer checks looks exactly like a green run to a bare `probe: PASS` grep,
+# and this repo has already been burned by an empty run wearing exit 0.
 run_mode() {
   want="$1"
-  shift
+  count="$2"
+  shift 2
   echo "probe: slabs — asking for mode=$want"
   # Teardown prints cosmetic RID-leak warnings after a perfectly good run,
   # so the verdict is read off the probe's own report and never off stderr
@@ -57,13 +64,13 @@ run_mode() {
     echo "probe: FAILED — asked for mode=$want and the engine did not report it"
     exit 1
   fi
-  if ! printf '%s' "$out" | grep -q '^probe: PASS'; then
-    echo "probe: FAILED (mode=$want)"
+  if ! printf '%s' "$out" | grep -q "^probe: PASS ($count checks)\$"; then
+    echo "probe: FAILED (mode=$want — expected probe: PASS ($count checks))"
     exit 1
   fi
 }
 
-run_mode editor -e
-run_mode run
+run_mode editor 7 -e
+run_mode run 7
 
 echo "probe: slabs OK — the ceiling is hidden in the editor and drawn in the game"
