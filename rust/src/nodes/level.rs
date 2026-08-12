@@ -63,7 +63,7 @@ use godot::prelude::*;
 
 use super::cat::WaveCat;
 use super::props::{WaveColumn, WaveProp, WaveWedge};
-use super::solid::{self, OID_PARAM, WaveSolid, build_box, clear_limbs};
+use super::solid::{OID_PARAM, WaveSolid, build_box, clear_limbs};
 use super::source::SoundSource;
 use super::wall::WaveWall;
 use crate::level_plan;
@@ -150,10 +150,15 @@ impl PaintItem {
 /// `render::faces` builds faces from) and the world box the touch graph
 /// reasons about — the SAME box [`oid_palette::assign`] used, measured the
 /// identical way.
+///
+/// `shape` is `None` for a slab: a slab is never fed through
+/// `render::faces` at all (see [`WaveLevel::paint_labels`]'s own note on
+/// why), so building one for it here would be a value nothing ever reads —
+/// dead by construction, not merely unused today.
 struct PaintEntry {
     name: String,
     area: oid_palette::Box3,
-    shape: render::Shape,
+    shape: Option<render::Shape>,
     item: PaintItem,
 }
 
@@ -650,7 +655,7 @@ impl WaveLevel {
     /// Every label is also bridged onto the solid's per-instance `u_oid`
     /// (the FIRST face label) so the shader — which still reads `u_oid`,
     /// not `CUSTOM0` — keeps drawing the identical world it always has;
-    /// dropped once the shader reads the attribute directly.
+    /// dropped once Task 8 flips the shader to read the attribute directly.
     fn paint_labels(&mut self, census: &Census) {
         let entries = self.paint_entries(census);
 
@@ -693,10 +698,48 @@ impl WaveLevel {
         let mut faces: Vec<render::Face> = Vec::new();
         let mut ordinal_of_face: Vec<usize> = Vec::new();
         for (i, entry) in entries.iter().enumerate() {
-            if matches!(entry.item, PaintItem::Slab { .. }) {
+            let Some(shape) = &entry.shape else {
+                continue; // a slab — see the note above
+            };
+            let entry_faces = render::faces(i, shape);
+            // THE ORDINAL CONTRACT'S OWN GUARD: `ordinal_of_face` below
+            // trusts that `render::faces`' i-th entry for this solid IS
+            // face ordinal i — true whenever every one of the shape's
+            // PLANAR faces survives (Task 5's contract), false the moment
+            // a degenerate size folds one away (`face_from_poly` refuses
+            // a collapsed polygon). Silently accepting a SHORT list here
+            // would mislabel every ordinal past the gap — not a face
+            // missing a colour, a face wearing another face's colour.
+            // Total instead: refuse this ONE solid's faces outright (its
+            // mesh keeps whatever placeholder it built with,
+            // `paint_entry`'s `vec![0.0; n]` fallback below) rather than
+            // risk a silently wrong label on the ones that did survive.
+            //
+            // A column's own expectation is ONE LESS than
+            // `render::paint::face_count`'s own ordinal count, on
+            // purpose: that count spans every CUSTOM0 ordinal the MESH
+            // carries, flank included, but the flank has no plane at all
+            // and `render::faces` never emits an entry for it — a
+            // healthy column always reports exactly 2 (its two rims),
+            // never 3, and treating 3 as the target would refuse every
+            // column in the level.
+            let kind = entry.item.kind();
+            let expected = match kind {
+                render::paint::ShapeKind::Column => render::paint::face_count(kind) - 1,
+                _ => render::paint::face_count(kind),
+            };
+            if entry_faces.len() != expected {
+                godot_error!(
+                    "WaveLevel: '{}' built {} planar face(s) from its shape, not the {} it \
+                     should — a degenerate size folded one or more away. Its own seams cannot be \
+                     painted correctly this derive; skipping it rather than mislabeling by \
+                     position. Give every extent a real size.",
+                    entry.name,
+                    entry_faces.len(),
+                    expected
+                );
                 continue;
             }
-            let entry_faces = render::faces(i, &entry.shape);
             ordinal_of_face.extend(0..entry_faces.len());
             faces.extend(entry_faces);
         }
@@ -821,14 +864,14 @@ impl WaveLevel {
         // channel's budget that a wider investigation should close.
         // It is silent here because it is provably NOT a rendering
         // regression yet: the shader still reads the `u_oid` BRIDGE below
-        // (each solid's first face), never `CUSTOM0` directly, and the
-        // bridge's own correctness is what `game/tests/map_test.gd`'s
+        // (each solid's first face) until Task 8, never `CUSTOM0` directly,
+        // and the bridge's own correctness is what `game/tests/map_test.gd`'s
         // `test_shipped_touching_boxes_draw_their_seam` and
         // `test_shipped_level_has_no_coplanar_face_fights` hold — both
         // green against the real per-face labels this pass just baked.
 
         // bake: gather each entry's own labels by ordinal and rewrite its
-        // mesh's CUSTOM0 (plus the u_oid bridge)
+        // mesh's CUSTOM0 (plus the u_oid bridge, dropped at Task 8)
         for (i, entry) in entries.iter().enumerate() {
             let n = render::paint::face_count(entry.item.kind());
             let labels_by_ordinal: Vec<f32> = if let PaintItem::Slab { lid } = entry.item {
@@ -883,16 +926,10 @@ impl WaveLevel {
             let Some(area) = mesh_world_box(&slab.skin.clone().upcast()) else {
                 continue; // a slab with no mesh draws no seam
             };
-            let placed = slab.body.get_global_transform();
-            let size = Vector3::new(self.extents.x, level_plan::SLAB_T as f32, self.extents.y);
             entries.push(PaintEntry {
                 name: if slab.lid { "Ceiling" } else { "Floor" }.to_string(),
                 area,
-                shape: render::Shape::Box3d {
-                    center: solid::to_f64_3(placed.origin),
-                    size: solid::to_f64_3(size),
-                    basis: solid::basis_columns_f64(placed.basis),
-                },
+                shape: None,
                 item: PaintItem::Slab { lid: slab.lid },
             });
         }
@@ -907,7 +944,7 @@ impl WaveLevel {
                 entries.push(PaintEntry {
                     name,
                     area,
-                    shape,
+                    shape: Some(shape),
                     item: PaintItem::Wall(wall),
                 });
             } else if let Ok(prop) = node.clone().try_cast::<WaveProp>() {
@@ -915,7 +952,7 @@ impl WaveLevel {
                 entries.push(PaintEntry {
                     name,
                     area,
-                    shape,
+                    shape: Some(shape),
                     item: PaintItem::Prop(prop),
                 });
             } else if let Ok(column) = node.clone().try_cast::<WaveColumn>() {
@@ -923,7 +960,7 @@ impl WaveLevel {
                 entries.push(PaintEntry {
                     name,
                     area,
-                    shape,
+                    shape: Some(shape),
                     item: PaintItem::Column(column),
                 });
             } else if let Ok(wedge) = node.clone().try_cast::<WaveWedge>() {
@@ -931,7 +968,7 @@ impl WaveLevel {
                 entries.push(PaintEntry {
                     name,
                     area,
-                    shape,
+                    shape: Some(shape),
                     item: PaintItem::Wedge(wedge),
                 });
             }

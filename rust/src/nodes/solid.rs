@@ -301,8 +301,6 @@ pub(crate) struct BuiltBox {
     pub(crate) shape: Gd<BoxShape3D>,
 }
 
-/// Build the mesh + collider pair for a box of `size` centered `lift`
-/// above the owner's origin.
 /// A Godot vector's three f32 lanes, widened to the `[f64; 3]` triples
 /// `render::faces` speaks — the one conversion boundary between the engine
 /// layer's f32 geometry and the pure render subsystem's f64 vocabulary.
@@ -323,11 +321,11 @@ pub(crate) fn basis_columns_f64(b: Basis) -> [[f64; 3]; 3] {
 /// Bake the derive-time paint pass's chosen labels onto one solid: rewrite
 /// its mesh's placeholder CUSTOM0 ordinals with the real per-face labels
 /// ([`render::paint::relabel`]), and bridge the FIRST of them onto the
-/// per-instance `u_oid` uniform the shader still reads until a later stage
-/// flips it to read `CUSTOM0` directly — so the game keeps rendering
-/// identically at every step of the migration. `mesh` is `None` for a
-/// solid whose knob was dragged before `_ready` built one; a no-op, the
-/// same as every other builder call in this module.
+/// per-instance `u_oid` uniform the shader still reads until Task 8 flips
+/// it to read `CUSTOM0` directly — so the game keeps rendering identically
+/// at every step of the migration. `mesh` is `None` for a solid whose knob
+/// was dragged before `_ready` built one; a no-op, the same as every other
+/// builder call in this module.
 pub(crate) fn paint_solid(
     skin: &mut Skin,
     mesh: Option<&mut Gd<ArrayMesh>>,
@@ -341,6 +339,8 @@ pub(crate) fn paint_solid(
     }
 }
 
+/// Build the mesh + collider pair for a box of `size` centered `lift`
+/// above the owner's origin.
 pub(crate) fn build_box(size: Vector3, lift: Vector3, mat: Option<&Gd<Material>>) -> BuiltBox {
     let mesh = render::paint::labelled_box(size, Vector3::ZERO, BOX_ORDINALS);
     let mut shape = BoxShape3D::new_gd();

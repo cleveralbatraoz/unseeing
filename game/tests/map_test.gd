@@ -629,6 +629,101 @@ func _face_with_centroid_x_above(skin: MeshInstance3D, threshold: float) -> int:
 	return -1
 
 
+## THE FLANK'S OWN LAW, live: the shipped map's one column that touches
+## something besides a slab is StoveFlue, standing on Stove (its base at
+## y = 0.8 lands exactly on Stove's own top face) — but the FULL shipped
+## map's Welsh–Powell colouring dilutes the effect deleting
+## `add_flank_classes`'s touching-neighbour loop (rust/src/render/paint.rs)
+## has: with 125+ other solids competing for the same five slots,
+## StoveFlue's flank and Stove's touching face land on DIFFERENT slots
+## even without the separating edge between them — confirmed empirically,
+## not assumed, and the reason this fixture is hand-built instead. The
+## SAME topology (a column standing flush on a box, base = box's own top)
+## in ISOLATION removes that dilution: `render::paint`'s own palette is
+## exactly five entries spaced 0.09 apart (every entry > MIN_SEP from
+## every other), so two DIFFERENT slots always differ by ≥ MIN_SEP on
+## their own — the only way to violate the law at all is for two classes
+## to land on the IDENTICAL slot, which only happens when nothing
+## separates them. Base spans y 0..1 (size 1×1×1); Post radius 0.1,
+## height 1, at y = 1, so its base rim sits exactly on Base's own top.
+##
+## Checked against ALL SIX of Base's face labels, not only the +Y face
+## the rim physically rests on: the deleted loop is a BLANKET rule (no
+## polygon to test a specific contact against), so under the mutation the
+## flank collides with whichever of Base's face classes the greedy
+## colouring reaches first — empirically Base's −X/+X pair, not its
+## +Y top — and a test that only reads back +Y would pass right through
+## the mutation exactly as the shipped-map version above it did.
+func test_a_flank_separates_from_its_rims_and_a_touching_neighbour() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var base := WaveProp.new()
+	base.name = "Base"
+	base.size = Vector3(1, 1, 1)
+	base.position = Vector3(3, 0.5, 3)
+	level.add_child(base)
+	var post := WaveColumn.new()
+	post.name = "Post"
+	post.radius = 0.1
+	post.height = 1.0
+	post.position = Vector3(3, 1, 3)
+	level.add_child(post)
+	level.add_child(_spawn_marker(Vector3(3, 0, 3)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+
+	var post_skin := _skin(post)
+	var bottom_rim := _column_ordinal_label(post_skin, 0)
+	var top_rim := _column_ordinal_label(post_skin, 1)
+	var flank := _column_ordinal_label(post_skin, 2)
+
+	# a real palette value, never the freshly-allocated 0.0 default the
+	# flank slot starts at — catches the sibling mutation (skipping the
+	# flank-label write in `WaveLevel::paint_labels`), which the
+	# separation checks alone would pass vacuously (0.0 sits ≥ MIN_SEP
+	# from every real label too, just not for the reason under test).
+	assert_float(flank).is_between(0.15, 0.96)
+	assert_float(absf(flank - bottom_rim)).is_greater_equal(0.08)
+	assert_float(absf(flank - top_rim)).is_greater_equal(0.08)
+
+	# EVERY one of Base's six real faces, not just the one its rim
+	# physically touches: `add_flank_classes`'s own doc calls the
+	# touching-neighbour rule BLANKET rather than fine-grained precisely
+	# because a flank has no polygon to test a specific contact against
+	# — so deleting that loop does not collide the flank with whichever
+	# face it happens to rest on, it collides it with whichever of
+	# Base's OWN merged face classes the greedy colouring reaches for
+	# first once the constraint is gone (Base's −X/+X pair here, not
+	# its +Y top) — checking only one face let the earlier version of
+	# this test pass right through the mutation.
+	var base_custom: PackedFloat32Array = _skin(base).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	for ord in 6:
+		var base_face: float = base_custom[ord * 4]
+		var msg := "flank %.3f vs Base ordinal %d = %.3f" % [flank, ord, base_face]
+		assert_float(absf(flank - base_face)).append_failure_message(msg).is_greater_equal(0.08)
+
+
+## The label a shipped column's mesh carries at ordinal `ord` (0 bottom
+## rim, 1 top rim, 2 flank) — read by POSITION, not by value:
+## `resize_triangle_surface` never groups by ordinal into a fixed block
+## the way a box's FACE_ORDER does, but `column_triangles`'s own emission
+## order is fixed — 12 vertices per `COLUMN_SEGMENTS` segment, laid out
+## [bottom x3, top x3, flank x6] — so ordinal membership is a POSITION
+## fact (index % 12) that survives relabelling, unlike the value once
+## painted over its own placeholder ordinal.
+func _column_ordinal_label(skin: MeshInstance3D, ord: int) -> float:
+	var custom: PackedFloat32Array = skin.mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	var first := NAN
+	for i: int in custom.size():
+		var local: int = i % 12
+		var this_ord := 2 if local >= 6 else (1 if local >= 3 else 0)
+		if this_ord == ord:
+			if is_nan(first):
+				first = custom[i]
+			else:
+				assert_float(custom[i]).is_equal(first)
+	return first
+
+
 ## Every disagreement between a level's derived wall centerlines and the
 ## occluder table its skin was actually handed, as sentences.
 ##

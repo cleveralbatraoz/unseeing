@@ -703,6 +703,13 @@ func test_a_level_past_the_wall_slots_errors_and_counts_the_dropped_walls() -> v
 ## matters arrives inside noise they have already learned to skip. Nothing
 ## else in the suite would notice a threshold nudged the wrong way; this is
 ## the assertion that would.
+##
+## This is ALSO the wall-merge voice's own silence counterpart — "no engine
+## output whatsoever" already covers "no wall-merge warning" for the same
+## 125-solid shipped map `test_a_solid_merged_into_a_wall_warns_naming_it`
+## proves the warning fires on; a second, narrower silence test asserting
+## the identical thing on the identical map would only ever go red in
+## lockstep with this one.
 func test_the_shipped_level_says_nothing_about_either_shader_ceiling() -> void:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
@@ -874,15 +881,43 @@ func test_a_solid_merged_into_a_wall_warns_naming_it() -> void:
 	))
 
 
-## The silence half: the shipped map furnishes 72 props, 27 columns and 7
-## wedges around 19 walls, and none of them is authored to poke through a
-## wall's own plane — entering the tree says nothing about a merge (a
-## stricter pin than the general shader-ceiling silence test above: this
-## one is about the wall-merge voice specifically, and would catch a
-## regression there even if some future map earns a legitimate warning
-## elsewhere).
-func test_the_shipped_level_says_nothing_about_wall_merges() -> void:
-	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+## THE ORDINAL GUARD: a degenerate box (one extent flattened to zero)
+## folds four of its six faces away — `render::faces::face_from_poly`
+## refuses each collapsed polygon (its own two first corners coincide
+## once the flattened axis zeroes their only distinguishing component),
+## leaving only the pair whose corners never depended on that axis. Only
+## 2 of the 6 CUSTOM0 ordinals `render::paint::face_count` promises this
+## mesh therefore have a real face behind them — painting positionally
+## anyway would slide every later ordinal onto the wrong face. The level
+## refuses this ONE solid loudly, naming it, and leaves its mesh
+## unpainted rather than risk that; a healthy neighbour in the SAME
+## derive still paints correctly, proving the refusal is scoped to the
+## one degenerate solid and does not poison the derive.
+func test_a_degenerate_solid_is_refused_not_mislabelled() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var flat := WaveProp.new()
+	flat.name = "FlatCrate"
+	flat.size = Vector3(0, 1, 1)
+	flat.position = Vector3(0, 0.5, 0)
+	level.add_child(flat)
+	var healthy := WaveProp.new()
+	healthy.name = "HealthyCrate"
+	healthy.size = Vector3(1, 1, 1)
+	healthy.position = Vector3(3, 0.5, 0)
+	level.add_child(healthy)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	var enter := func() -> void: add_child(level)
-	await assert_error(enter).is_success()
+	await (assert_error(enter).is_push_error(
+		(
+			"WaveLevel: 'FlatCrate' built 2 planar face(s) from its shape, not the 6 it should "
+			+ "— a degenerate size folded one or more away. Its own seams cannot be painted "
+			+ "correctly this derive; skipping it rather than mislabeling by position. Give "
+			+ "every extent a real size."
+		)
+	))
+	# the healthy neighbour, painted in the SAME derive, still carries
+	# real, in-range labels — the refusal above did not poison it
+	var custom: PackedFloat32Array = _skin(healthy).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	for label: float in custom:
+		assert_float(label).is_between(0.15, 0.96)

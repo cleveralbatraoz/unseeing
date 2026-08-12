@@ -484,6 +484,48 @@ func test_the_oid_census_measures_a_source_by_what_it_sweeps() -> void:
 	assert_array(e["violations"]).is_empty()
 
 
+## The SAME fixture, checked the OTHER way: the violations check above
+## reads at BRIDGED (first-face) resolution, and can pass "by luck" —
+## nothing forces the neighbour's BRIDGED face onto the fan's own 0.33
+## Shell/0.63 Moving (rust/src/nodes/fan.rs), so deleting the
+## source-anchor ban (`extra_anchors.push` for sources,
+## `WaveLevel::paint_labels`) can stay green there while the neighbour's
+## OTHER, un-bridged faces land on 0.34/0.61 anyway. This checks every
+## REAL label the neighbour's mesh carries against both fixed oids
+## directly — what the ban is actually for.
+func test_a_swept_neighbours_own_faces_all_clear_the_sources_oids() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var fan := SoundFan.new()
+	fan.name = "Fan"
+	fan.position = Vector3(1, 0, 1)
+	level.add_child(fan)
+	var neighbour := WaveProp.new()
+	neighbour.name = "SweptNeighbour"
+	neighbour.size = Vector3(0.2, 0.2, 0.2)
+	neighbour.position = Vector3(1.6, 1.15, 1.0)
+	level.add_child(neighbour)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var custom: PackedFloat32Array = _skin_of(neighbour).mesh.surface_get_arrays(0)[
+		Mesh.ARRAY_CUSTOM0
+	]
+	var labels: Array[float] = []
+	for label: float in custom:
+		if not labels.has(label):
+			labels.append(label)
+	assert_array(labels).is_not_empty()
+	for label: float in labels:
+		for source_oid: float in [0.33, 0.63]:
+			var msg := (
+				"SweptNeighbour carries %.3f, within MIN_SEP of the fan's %.3f"
+				% [label, source_oid]
+			)
+			assert_float(absf(label - source_oid)).append_failure_message(msg).is_greater_equal(
+				0.08
+			)
+
+
 ## THE OLD z-fight census's own proof object, now read the other way.
 ## The shelf spans x -1..1, y 0..1, z -0.5..0.5; the crate embedded in its
 ## front half spans x -0.1..0.9, y 0..1, z -0.3..0.5 — so TWO patches
@@ -496,13 +538,13 @@ func test_the_oid_census_measures_a_source_by_what_it_sweeps() -> void:
 ## same-direction, coplanar, genuinely overlapping — so the two faces
 ## MERGE into one label, bit-equal, and the OLD whole-box census (which
 ## can only compare one bridged id per box) finds nothing to report: the
-## bridge and the real per-face law agree there is no fight, because
-## there is no longer a colouring gap for one to speckle through. Checked
-## both ways — the OLD census's own key stays present and empty, and the
-## REAL per-face labels at both known planes are read back and proven
-## bit-equal, so a regression that silently stopped merging this geometry
-## (and left the OLD census blind to it some other way) would still fail
-## here.
+## bridge and the real per-face law agree there is no fight. Checked both
+## ways — the OLD census's key stays present and empty, and the REAL
+## per-face labels at both known planes are proven bit-equal AND distinct
+## from their own placeholder ordinal (see the ground truth block below
+## for why the placeholder check is load-bearing on its own) — so a
+## regression that stopped merging this geometry, or stopped painting it
+## at all, still fails here.
 func test_two_flush_props_report_their_fight() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_spawn_marker())
@@ -534,10 +576,15 @@ func test_two_flush_props_report_their_fight() -> void:
 		. is_empty()
 	)
 
-	# THE GROUND TRUTH: the real per-face label at each known merge plane,
-	# read straight off the two props' own built meshes — ordinal 5 (+Z)
-	# for the z = 0.5 front-face merge, ordinal 3 (+Y) for the y = 1 top
-	# merge, `render::paint::FACE_ORDER`'s own −X,+X,−Y,+Y,−Z,+Z order.
+	# THE GROUND TRUTH, ordinal 5 (+Z, the z = 0.5 merge) and ordinal 3
+	# (+Y, the y = 1 merge), `render::paint::FACE_ORDER` order. Comparing
+	# shelf[ordinal] to crate[ordinal] ALONE is a mirror assertion in
+	# disguise: `labelled_box` writes the PLACEHOLDER ordinal itself
+	# (3.0, 5.0) at the SAME block index in both props, so a skipped
+	# relabel pass reads them back equal too. Each value is also checked
+	# against its own placeholder — a real label is never bit-equal to
+	# the ordinal that named its slot — so THIS fails under that mutation
+	# where the equality check alone would not (confirmed, not assumed).
 	var shelf_custom: PackedFloat32Array = _skin_of(shelf).mesh.surface_get_arrays(0)[
 		Mesh.ARRAY_CUSTOM0
 	]
@@ -545,10 +592,18 @@ func test_two_flush_props_report_their_fight() -> void:
 		Mesh.ARRAY_CUSTOM0
 	]
 	for ordinal: int in [3, 5]:
+		var shelf_label: float = shelf_custom[ordinal * 4]
+		var crate_label: float = crate_custom[ordinal * 4]
+		var placeholder_msg := (
+			"ordinal %d still carries its placeholder — relabel never ran" % ordinal
+		)
+		assert_float(shelf_label).append_failure_message(placeholder_msg).is_not_equal(
+			float(ordinal)
+		)
 		(
-			assert_float(shelf_custom[ordinal * 4])
+			assert_float(shelf_label)
 			. append_failure_message("ordinal %d (shelf vs crate)" % ordinal)
-			. is_equal(crate_custom[ordinal * 4])
+			. is_equal(crate_label)
 		)
 
 

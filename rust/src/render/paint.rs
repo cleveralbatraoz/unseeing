@@ -646,12 +646,27 @@ mod tests {
         assert_eq!(seps, sf.separations);
     }
 
-    /// THE case the brief names: a column standing flush on the floor. The
-    /// flank gets its own class, separated from both of the column's own
-    /// rim classes and from the floor's own class — end to end through
-    /// `labels::assign`, the flank's FINAL label differs from the rim's and
-    /// from the floor's by at least MIN_SEP, so the rim/flank and
-    /// column/floor seams both draw.
+    /// THE case the brief names: a column standing flush on the floor.
+    /// Exercises the "own solid" half of `add_flank_classes` ONLY — the
+    /// flank's separation from its own two rim classes (`sf.class_of[6]`,
+    /// `sf.class_of[7]`, the column's bottom and top) — end to end through
+    /// `labels::assign`, the flank's FINAL label differs from both rims'
+    /// by at least MIN_SEP, so the rim/flank seam draws even for a column
+    /// touching nothing but the floor (a fixed-label singleton whose own
+    /// classes don't exist by the time this runs — [`WaveLevel::paint_labels`]).
+    /// It does NOT exercise the `touching` loop (the flank's separation
+    /// from a DIFFERENT, colourable touching solid's own classes) — that
+    /// half is proven by
+    /// `game/tests/map_test.gd::test_a_flank_separates_from_its_rims_and_a_touching_neighbour`,
+    /// which is the one that actually goes red if the `touching` block is
+    /// deleted. That gdUnit case is hand-built (a box with a column
+    /// standing flush on top) rather than reading the shipped map's own
+    /// StoveFlue-on-Stove pair: measured, the full map's Welsh–Powell
+    /// colouring dilutes the effect that deletion has enough — 125+ other
+    /// solids competing for the same five palette slots — that StoveFlue's
+    /// flank and Stove's touching face land on different slots even with
+    /// no edge between them, so a shipped-map version of this case does
+    /// NOT go red under the mutation.
     #[test]
     fn a_column_flush_on_the_floor_separates_its_rim_from_its_flank() {
         let floor = Shape::Box3d {
