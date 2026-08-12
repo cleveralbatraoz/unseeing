@@ -55,9 +55,9 @@ const LIMBS: [&str; 2] = ["CatCollider", "CatSkin"];
 #[derive(GodotClass)]
 #[class(tool, init, base=CharacterBody3D)]
 pub struct WaveCat {
-    /// The wave pool every sound enters — the GDScript `Pulses` shim
-    /// today, a direct `WaveCore` tomorrow; the cat only asks it to
-    /// `emit`, dynamically, so both answer.
+    /// The wave pool every sound enters — the `WaveCore` itself, upcast to
+    /// `RefCounted`. The GDScript `Pulses` shim survives only in
+    /// `game/tests/`. The cat only asks it to `emit`, dynamically.
     #[var]
     pulses: Option<Gd<RefCounted>>,
     /// The data-pass material — the world is outline-only, and only

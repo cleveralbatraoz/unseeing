@@ -74,6 +74,12 @@ func _queue_one(main: UnseeingGame, at: Vector3) -> void:
 ## `process()` and hands it to the hero and the cats there; the cane, the
 ## footsteps and every reflection cast run on the PHYSICS tick, off the copy
 ## that frame left them.
+##
+## WARNING: `await physics_frame` after `await process_frame` spans a SECOND
+## `process()` call — any guard testing behavior that must land in exactly
+## one frame should await only `process_frame` directly. The snapshot pass
+## and shader reads in `test_process_pushes_this_frames_new_source_waves_into_the_materials`
+## both depend on this distinction.
 func _one_frame() -> void:
 	await get_tree().process_frame
 	await get_tree().physics_frame

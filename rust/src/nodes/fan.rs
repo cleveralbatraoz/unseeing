@@ -61,9 +61,9 @@ const LIMBS: [&str; 2] = ["FanPedestal", "FanPivot"];
 #[derive(GodotClass)]
 #[class(tool, init, base=Node3D)]
 pub struct SoundFan {
-    /// The wave pool every sound enters — today the GDScript `Pulses`
-    /// shim, tomorrow the `WaveCore` itself; the fan only asks it to
-    /// `emit`, dynamically, so both answer.
+    /// The wave pool every sound enters — the `WaveCore` itself, upcast to
+    /// `RefCounted`. The GDScript `Pulses` shim survives only in
+    /// `game/tests/`. The fan only asks it to `emit`, dynamically.
     #[var]
     pulses: Option<Gd<RefCounted>>,
     /// The acoustic-image skin every limb renders through — the world is

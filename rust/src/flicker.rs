@@ -2,9 +2,10 @@
 //! dropouts — part of the mood, not noise. A bit-for-bit transcription of
 //! `game/scripts/flicker.gd:33-43`, the validated law it replaces; every
 //! constant and the exact `randf()` draw ORDER are carried over verbatim so
-//! a seeded stream advances identically whichever side drives it (pinned by
-//! `game/tests/flicker_parity_test.gd`, which drives both against the same
-//! seed).
+//! a seeded stream advances identically whichever side drives it. The
+//! 600-frame parity against the original GDScript was proven before the
+//! original's retirement (commit 5eea935 → c0ecba9); the law's pins are this
+//! file's own cargo tests (`test_flicker_starts_normal`, `test_level_floor_bounce`).
 //!
 //! A pure state machine over an injected [`Randf`] source: no global
 //! randomness anywhere, so a seeded stream replays bit-identically (movie-

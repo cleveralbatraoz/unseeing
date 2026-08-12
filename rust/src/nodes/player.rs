@@ -107,9 +107,9 @@ struct RestProbe {
 #[derive(GodotClass)]
 #[class(init, base=CharacterBody3D)]
 pub struct UnseeingPlayer {
-    /// The wave pool every sound enters — the GDScript `Pulses` shim
-    /// today, a direct `WaveCore` tomorrow; the player only asks it to
-    /// `emit_reflecting`, dynamically, so both answer.
+    /// The wave pool every sound enters — the `WaveCore` itself, upcast to
+    /// `RefCounted`. The GDScript `Pulses` shim survives only in
+    /// `game/tests/`. The player only asks it to `emit_reflecting`, dynamically.
     #[var]
     pulses: Option<Gd<RefCounted>>,
     /// The eye. Built by `_ready` at the fixed base height; the player

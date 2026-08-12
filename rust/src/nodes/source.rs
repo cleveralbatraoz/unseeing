@@ -211,11 +211,12 @@ impl SourceRig {
 /// Put one wave into the pool: a source's voice, born at `at`, aimed along
 /// `aim` (which an even spread ignores), at time `t`.
 ///
-/// The pool is reached dynamically, by name — today it is the GDScript
-/// `Pulses` shim, tomorrow the `WaveCore` itself, and a source only ever
-/// asks it to `emit`, so both answer. A silent voice is not asked at all:
-/// the pool rightly refuses a zero-radius wave, and asking every cadence
-/// would be a steady drip of refusals in the log.
+/// The pool is reached dynamically, by name — the `WaveCore` itself,
+/// upcast to `RefCounted`. The GDScript `Pulses` shim survives only in
+/// `game/tests/`, and a source only ever asks it to `emit`, so both answer.
+/// A silent voice is not asked at all: the pool rightly refuses a
+/// zero-radius wave, and asking every cadence would be a steady drip of
+/// refusals in the log.
 pub(crate) fn sound(pulses: &mut Gd<RefCounted>, voice: &Voice, at: Vector3, aim: Vector3, t: f64) {
     if !voice.volume.audible() {
         return;

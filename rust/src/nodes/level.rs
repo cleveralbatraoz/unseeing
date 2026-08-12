@@ -1549,8 +1549,9 @@ pub(super) struct PaintedSolid {
 /// can drift away from it.
 impl WaveLevel {
     /// The wave pool the composition root injected, exactly as it was
-    /// handed over — the GDScript `Pulses` shim in the game, possibly a
-    /// bare core in a suite. Resolving it is the observer's job.
+    /// handed over — the `WaveCore` itself, upcast to `RefCounted`. The
+    /// GDScript `Pulses` shim survives only in `game/tests/`. Resolving it
+    /// to a `WaveCore` is the observer's job.
     pub(super) fn pulse_handle(&self) -> Option<Gd<RefCounted>> {
         self.pulses.clone()
     }

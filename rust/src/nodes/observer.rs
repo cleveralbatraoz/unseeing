@@ -743,8 +743,9 @@ pub(super) fn unavailable(reason: &str) -> VarDictionary {
 }
 
 /// The Rust wave core behind whatever the level was injected with: the
-/// core itself in a suite that hands one over directly, or the GDScript
-/// `Pulses` shim's own, reached through its public `core()` accessor.
+/// `WaveCore` itself, upcast to `RefCounted`. In shipped code the handle is
+/// the core directly; in `game/tests/` the handle is the GDScript `Pulses`
+/// shim, and this function reaches through its public `core()` accessor.
 ///
 /// Visible to the whole `nodes` module because the RESTORER writes through
 /// the same handle the observer reads through: two ways of finding one

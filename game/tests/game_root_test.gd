@@ -109,6 +109,12 @@ func test_now_starts_at_zero_and_is_writable() -> void:
 ## `restore_transaction_test.gd::_one_frame`, which is where this idiom
 ## lives; this suite's own composition root has no scene of its own to
 ## share a helper file with.
+##
+## WARNING: `await physics_frame` after `await process_frame` spans a SECOND
+## `process()` call — any guard testing behavior that must land in exactly
+## one frame should await only `process_frame` directly. See
+## `test_process_pushes_this_frames_new_source_waves_into_the_materials` for
+## the guard that depends on this distinction.
 func _one_frame() -> void:
 	await get_tree().process_frame
 	await get_tree().physics_frame

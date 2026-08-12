@@ -31,13 +31,19 @@
 //! and is internally consistent — it simply is not the instant the file
 //! claims to hold.
 //!
-//! `main.tscn` boots this class directly; the retired GDScript composition
-//! root is gone, so the shipped path has one owner for this wiring.
+//! `main.tscn` boots `UnseeingGame` as its root — this class IS the
+//! boot root of the shipped path. The retired GDScript composition root is
+//! gone, so this node's `_ready()` and `process()` are the single owner of
+//! every system's wiring.
 //!
 //! Loud totality on every resource load: a shader or the level scene that
 //! fails to load prints `"UnseeingGame: …"` and `ready()` returns, wiring
 //! nothing further — the same refuse-rather-than-limp law every other
 //! composition-root child already keeps.
+//!
+//! WIRING COMPLETE: ready() has no "what is and is not wired yet" stage —
+//! if it returns without panicking, every system is live and the game is
+//! ready to tick.
 
 use godot::classes::{
     Camera3D, Engine, INode3D, Material, MeshInstance3D, Node3D, Os, PackedScene, QuadMesh,
@@ -76,8 +82,7 @@ const NO_OBSERVER: &str = "the root holds no observer — restore_blob has nothi
 /// no writer to hand the parsed blob to.
 const NO_RESTORER: &str = "the root holds no restorer — restore_blob has nothing to write through";
 
-/// Unseeing — composition root. See the module docs for what is and is not
-/// wired yet.
+/// Unseeing — the complete shipped composition root.
 #[derive(GodotClass)]
 #[class(init, base=Node3D)]
 pub struct UnseeingGame {
