@@ -31,3 +31,44 @@ func test_a_labelled_box_carries_one_label_per_face() -> void:
 	for i in 4:
 		assert_float(verts[i].x).is_equal_approx(-1.0, 1e-5)
 		assert_float(custom[i]).is_equal_approx(0.25, 1e-6)
+
+
+## A box has exactly six faces, and no reading of a five- or seven-entry
+## array is "close enough" — it would silently assign some face a label
+## meant for another. The guard refuses loudly (checked via the exact
+## `assert_error`/`is_push_error` message) and hands back an empty mesh —
+## zero surfaces, checked by a second, unwrapped call, since GDScript
+## lambdas capture their outer locals BY VALUE: an assignment made inside
+## the `assert_error` callable would never reach a variable read after it.
+func test_wrong_length_face_labels_is_refused() -> void:
+	var five := func() -> void:
+		WaveLevel.debug_labelled_box(
+			Vector3.ONE, Vector3.ZERO, PackedFloat32Array([0.1, 0.2, 0.3, 0.4, 0.5])
+		)
+	await (assert_error(five).is_push_error(
+		(
+			"WaveLevel.debug_labelled_box: face_labels had 5 entries, not the 6 a box's "
+			+ "faces need (−X,+X,−Y,+Y,−Z,+Z) — returning an empty mesh rather than "
+			+ "guessing which face a wrong-length array meant."
+		)
+	))
+	var five_mesh: ArrayMesh = WaveLevel.debug_labelled_box(
+		Vector3.ONE, Vector3.ZERO, PackedFloat32Array([0.1, 0.2, 0.3, 0.4, 0.5])
+	)
+	assert_int(five_mesh.get_surface_count()).is_equal(0)
+
+	var seven := func() -> void:
+		WaveLevel.debug_labelled_box(
+			Vector3.ONE, Vector3.ZERO, PackedFloat32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
+		)
+	await (assert_error(seven).is_push_error(
+		(
+			"WaveLevel.debug_labelled_box: face_labels had 7 entries, not the 6 a box's "
+			+ "faces need (−X,+X,−Y,+Y,−Z,+Z) — returning an empty mesh rather than "
+			+ "guessing which face a wrong-length array meant."
+		)
+	))
+	var seven_mesh: ArrayMesh = WaveLevel.debug_labelled_box(
+		Vector3.ONE, Vector3.ZERO, PackedFloat32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
+	)
+	assert_int(seven_mesh.get_surface_count()).is_equal(0)
