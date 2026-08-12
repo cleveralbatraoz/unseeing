@@ -12,7 +12,10 @@ rules, CI, deploy/archive behaviour, and Superpowers host manifests.
   now a sub-24-KiB root `AGENTS.md`; `CLAUDE.md` is only the supported import
   adapter. Normative game, platform, workflow, TDD, commit, architecture,
   dependency, review, and documentation rules remain in the shared contract;
-  historical explanation and setup detail moved to normal documentation.
+  historical explanation and setup detail moved to normal documentation. The
+  Rust contract explicitly makes decoupling, total functions, pure domain
+  logic, and absence of global state mandatory, defines each property, and
+  confines engine effects to thin boundary adapters.
 - Workflow precedence formerly delegated project authority back to an
   unpinned plugin. The contract now states: project policy owns project rules,
   pinned Superpowers owns generic procedure, stricter compatible rules apply,

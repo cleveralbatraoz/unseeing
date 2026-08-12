@@ -130,11 +130,56 @@ never enter deployment archives or become a game/build/deploy dependency.
 
 ## Architecture and style
 
-- Prefer small total functions, explicit inputs and outputs, dependency
-  injection, independent components, and no hidden global state.
-- Rust is the hidden engine: wave simulation, echo physics, kinematics,
-  animation math, and perception internals. Put logic in pure tested modules;
-  expose only registered nodes, typed signals, and designer-facing exports.
+The Rust architecture below is mandatory, not aspirational. New code and
+refactors must preserve all four laws; convenience, engine APIs, and a small
+diff are not reasons to bypass them. Code review must identify which pure
+component owns new logic, what its complete input domain is, and where its
+dependencies enter.
+
+- **Decouple components through explicit contracts.** Each component must own
+  one coherent responsibility and depend only on values, traits, or narrow
+  interfaces supplied by its caller. Use dependency injection for clocks,
+  randomness, configuration, world queries, storage, and other collaborators.
+  A component must not reach sideways into another component's internals or
+  rely on call order, scene-tree location, initialization timing, or another
+  undocumented ambient guarantee. Circular dependencies and knowledge of a
+  concrete collaborator where a smaller contract suffices are forbidden.
+  Decoupling is what lets the wave law, object-id allocator, or gait model be
+  replaced and tested without constructing the rest of the game.
+- **Every function must be total over its declared input domain.** For every
+  value its type and public contract admit, it must return a defined result;
+  it must not panic, index blindly, loop without a bound, emit NaN/Infinity,
+  or depend on a supposedly impossible state. Represent absence and failure
+  with `Option`, `Result`, or an explicit domain result. Narrow a domain with a
+  validated type when invalid states must be unrepresentable. Engine callbacks
+  are not an exception: validate untrusted Godot values at the boundary, then
+  pass valid domain values inward. Tests must cover boundaries, degenerate
+  values, and malformed external input, not only the shipped happy path.
+- **Domain logic must be pure.** Given the same inputs it must return the same
+  outputs without reading or changing the scene tree, clocks, random sources,
+  files, environment variables, singletons, or mutable shared state. Put
+  calculations and state transitions in engine-free modules as functions of
+  immutable inputs and explicit prior state, and cargo-test them directly.
+  Side effects are allowed only in thin boundary adapters: registered Godot
+  nodes may read engine state, call a pure operation, then apply its returned
+  commands or state. Do not hide an effect behind a helper and call it pure.
+- **Global state is forbidden.** Do not add mutable statics, process-wide
+  registries, service locators, implicit singletons/autoloads, or caches whose
+  correctness depends on invisible shared lifetime. State belongs to an
+  explicit owner and is passed, borrowed, or returned. If state must be shared,
+  the owner, lifetime, synchronization, reset semantics, and test isolation
+  must all be visible in its type and constructor. Constants and immutable
+  compile-time tables are allowed because they carry no changing state.
+
+Rust is the hidden engine: wave simulation, echo physics, kinematics,
+animation math, and perception internals. Registered nodes are boundary
+adapters, not a home for domain logic; expose only node classes, typed signals,
+designer-facing `#[export]` knobs, and in-editor docs. The pure Rust modules are
+the single behavioural source for native desktop and wasm builds.
+
+- Keep functions small enough that their domain, result, and dependencies are
+  evident. Explicitly model inputs and outputs; do not conceal coupling merely
+  to shorten a signature.
 - Godot is the visible game: editor-authored scenes and thin, statically typed
   GDScript for triggers, sequences, and tuning. Author levels in the editor;
   derive technical contracts from scenes.
