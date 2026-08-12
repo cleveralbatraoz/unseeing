@@ -226,3 +226,34 @@ The campaign is done when, on this branch merged to main:
    razor is stated in CLAUDE.md.
 7. The wiki describes all of it, and the stale claims in
    *Research — Editor Authoring* are marked resolved.
+
+## Errata
+
+Recorded after sub-project 4 landed, so a later reader does not have to
+re-derive either fact from scratch.
+
+1. **The settings sentence was written on a false premise.** Sub-project
+   4's description above says "The settings overlay's *layout* stays a
+   `.tscn`; its logic moves to Rust." Re-verified at `c0ecba9`: no settings
+   `.gd` or `.tscn` ever existed on this branch or on `main` — logic AND
+   layout were already fully Rust (`rust/src/nodes/settings.rs`, 643
+   lines, `SettingsMenu`). There was nothing to extract. Resolved by
+   decision, not by code: SP4's plan
+   (`docs/superpowers/plans/2026-08-12-editor-authoring-sp4-rust-root.md`)
+   locked this as decision 1 of its Global Constraints, and the entire
+   settings-related work in SP4 is constructing `SettingsMenu` last inside
+   `UnseeingGame::ready` (`rust/src/nodes/game.rs:302-304`), preserving the
+   Escape-priority ordering the overlay always depended on.
+2. **The sub-project ordering note is fine as written** — "1 → 4 → 2 → 3"
+   held for the whole campaign; no correction needed there. What SP4 did
+   surface, and is worth recording so it is not re-derived: Task 6's plan
+   predicted the composition-root migration would let
+   `UnseeingGame::ready` drop its call to `UnseeingPlayer::ensure_actions()`,
+   reasoning that the player's own `ready()` already re-registers its
+   input actions. That prediction was wrong. Both calls stand
+   (`rust/src/nodes/game.rs:167` and `rust/src/nodes/player.rs:159`,
+   inside `UnseeingPlayer::ready`) — the redundancy is a locked decision
+   (decision 5, same Global Constraints file), not leftover duplication: a
+   bare `UnseeingPlayer` dropped into a test scene with no `UnseeingGame`
+   ancestor has only its own `ready()` to register its actions, so the
+   second call is load-bearing for every such scene.

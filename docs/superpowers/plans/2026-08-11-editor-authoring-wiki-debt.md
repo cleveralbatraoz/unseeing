@@ -416,3 +416,152 @@ anything SP1 did:
 
 Everything else in §7 (Refuted) and the remaining §8 items (3, 4, 6, 8, 9,
 10) is untouched by this sub-project and needs no edit here.
+
+---
+
+## 4. SP4 — The Rust composition root
+
+Scope check against the campaign spec: SP4 absorbs `game/scripts/main.gd`
+into the registered `UnseeingGame` node (`rust/src/nodes/game.rs`) — level
+instancing, injection order, player/hero/observer/restorer wiring, the
+settings-menu construction (added LAST — unchanged law), the per-frame
+globals (clock, flicker), the demo tap schedule, and the
+capture_env/apply_env/restore_blob trio. Landed `e0c0250..c0ecba9`
+(nine tasks, `6cc6c54`..`c0ecba9`). Closes the "`main.gd` is gone;
+GDScript in the repo is designer-facing only; the razor is stated in
+CLAUDE.md" success criterion. Does **not** touch #22, #16/#35/#36/#45, or
+#39/#41/#42 — unchanged from SP1's own scope note above.
+
+Measured at `c0ecba9`: `game/scripts/` does not exist — git tracks no
+such path at all (`git ls-tree -r HEAD --name-only game/ | grep -c
+'^game/scripts/'` → 0), the same fact CLAUDE.md's own phrasing already
+carries precisely ("`game/scripts/` carries nothing," not "is empty").
+The only GDScript left in the repository lives under `game/tests/`
+(suites, probes, and the relocated `pulses.gd` test shim) — 7,690 lines
+total, all of it test- and probe-facing (`find game -name '*.gd' -not
+-path 'game/addons/*' | xargs wc -l`), export-excluded from every
+shipped build
+(`game/export_presets.cfg`, `exclude_filter="tests/*,addons/*,reports/*"`,
+repeated per platform preset, e.g. line 11). `game/scenes/main.tscn` is
+now `[node name="Main" type="UnseeingGame"]` — no script attached, because
+there is nothing left for one to do.
+
+### Mechanics Overview
+
+§3's file map (`Mechanics-Overview.md:100-114`) still lists
+`scenes/main.tscn — one node: UnseeingMain` and four `scripts/*.gd`
+bullets (`main.gd` the composition root, `pulses.gd`, `flicker.gd`,
+`demo_tap.gd`) — none of which exist any more. Replace with: `main.tscn`
+— one node, `Main`, of type `UnseeingGame` (`rust/src/nodes/game.rs`); no
+`scripts/` entries at all — flicker (`rust/src/flicker.rs`), the demo tap
+(`rust/src/demo_tap.rs`) and the pool shim (`WaveCore`,
+`rust/src/ffi.rs`) are Rust now, reached straight off the root's own
+fields rather than through a GDScript intermediary.
+
+§4 "The frame, end to end" (`Mechanics-Overview.md:117-131`) opens
+"`game/scripts/main.gd::_process` is the whole game loop" and walks seven
+numbered steps. The steps are still correct in order and substance —
+only the anchor needs replacing: it is now `UnseeingGame::process`
+(`INode3D` impl, `rust/src/nodes/game.rs:312-381`), with `ready()`
+(`game.rs:166-305`) as the boot-time sibling the section doesn't name at
+all today. New line citations for the same seven steps: 1 (`now += dt`)
+→ `game.rs:313`; 2 (`player.tick`) → `game.rs:314-316`; 3 (push
+`u_time`/`u_flick`) → `game.rs:324-328`; 4 (`level.tick_sources`) →
+`game.rs:342-346`; 5 (cat ticks) → `game.rs:347-349`; 6 (the apply loop —
+tick, live_count, positions/pulse_data/pulse_dirs pushed to all five
+materials) → `game.rs:357-374`, now inlined rather than calling
+`Pulses.apply`; 7 (`hero.update`) → `game.rs:376-378`. Worth one added
+sentence: `fire_demo_tap()` (`game.rs:380`, body at `game.rs:604-620`)
+runs last, after the frame's own state has settled — present in
+`main.gd` too (`_demo_tap`), just never itemised among the seven.
+
+### Engineering — Build, Test, Deploy
+
+No literal `main.gd` citation on this page, but two things it implies are
+now imprecise. Stage 5 in the numbered list
+(`Engineering-Build-Test-Deploy.md:57-58`, "gdformat --check and gdlint
+over `game/scripts` and `game/tests`") still runs correctly —
+`gdscript_files` walks whatever exists — but `game/scripts` does not
+exist at all any more (git tracks no such path), so the sentence should
+say so rather than imply a populated, or even an empty, directory;
+the regression this exact drift would cause is guarded by the lint-scope
+sentinel, `test/ci_gdscript_lint_scope.sh:74-91`, which proves
+`game/tests/` coverage through two named files (`pulses.gd`,
+`wiring_test.gd`) precisely because `main.gd` stopped being available as
+a sentinel. Stages 8 and 9 ("headless boots of the real main scene") stay
+literally true — `main.tscn` is still THE main scene — but a reader could
+infer a GDScript boot from the surrounding prose; worth one clause noting
+the boot is now the registered `UnseeingGame` node, not a `main.gd`
+script, so the determinism and restore probes exercise Rust
+`ready()`/`process()` end to end, not a script calling into Rust.
+
+### Mechanics — Sound Sources / Mechanics — Level and Objects: checked, nothing to do
+
+Verified directly against a clean wiki checkout (`e2a36e8`): `grep -n
+"main\.gd\|Pulses\|pulses\.gd" Mechanics-Sound-Sources.md
+Mechanics-Level-and-Objects.md` → **zero hits in both files.** Neither
+page has ever named `main.gd` or `Pulses`. Recording this so the next
+reader doesn't go looking for a citation that was never there — the plan
+that named these two pages for this pass was working from an assumption,
+not a re-check.
+
+### Where `main.gd`/`Pulses` actually still linger
+
+Two pages the SP4 plan didn't name, found by the same grep, do carry
+stale citations and belong in the same wiki pass:
+
+- **Mechanics — Rendering**, three hits: `Mechanics-Rendering.md:10`,
+  sources-of-truth line, "`game/scripts/main.gd` (wiring)"; `:176`,
+  "`main.gd` owns five materials and pushes the same globals to all of
+  them"; `:182`, inside the uniform table that follows, "`u_count, u_ppos,
+  u_pdat, u_pdir ← every frame, from Pulses.apply`" — easy to miss because
+  it sits inside a fenced code block rather than prose, which is exactly
+  how a first pass over this page missed it too. All three repoint to
+  `rust/src/nodes/game.rs` — `wave_mats()` (`game.rs:391-402`) is the same
+  five-material array under a new name, `process()` (`game.rs:312-381`) is
+  what pushes the globals every frame, and the `:182` row specifically is
+  the inlined apply loop at `game.rs:357-374` (no more `Pulses.apply`
+  call to name).
+- **Mechanics — Waves** (`Mechanics-Waves.md:51`, "`now` advances once per
+  frame in `game/scripts/main.gd`"; `:93`, "`Pulses.emit_reflecting`").
+  The clock line becomes `rust/src/nodes/game.rs:313`. The reflection line
+  is unchanged in substance — the reflection law itself never moved — but
+  the call now reaches `WaveCore::emit_reflecting` (`rust/src/ffi.rs`)
+  directly from whichever Rust node uses it (player, sources), not
+  through the `Pulses` GDScript name; `Pulses.emit_reflecting` survives
+  only inside `game/tests/pulses.gd`, the test-facing shim, which is what
+  the suites that still call it through that name are exercising.
+- **Engineering — Debugging and Observability** carries the heaviest
+  concentration: 15 raw line hits across 14 citations (`:22`, `:119`,
+  `:138-139` — two consecutive lines, one citation — `:207`, `:403`,
+  `:443`, `:714`, `:759`, `:782`, `:955`, `:961`, `:1131`, `:1134`,
+  `:1261`) — out of SP4's named scope but flagged here rather than left
+  for a second unpushed pass to rediscover. The one that needs more than a
+  path swap: its §11 header, "The GDScript half: `main.gd::restore_blob`"
+  (line `:1131`), needs the *framing* changed, not just the citation —
+  there is no GDScript half left. `restore_blob`
+  (`rust/src/nodes/game.rs:505-560`), `capture_env` (`game.rs:446-464`)
+  and `apply_env` (`game.rs:475-489`) are the same three functions under
+  the same names, ported verbatim (module doc, `game.rs:23-32` says so
+  explicitly), now all Rust. The seed/demo paragraph at `:780-783`
+  ("`UNSEEING_SEED` (or `?seed` on web) seeds the flicker WITHOUT arming
+  the demo tap that would contaminate the pool; `UNSEEING_DEMO`/`?demo`
+  still seed too") is semantically **unchanged** — three arming paths
+  exactly as before, same names, same behaviour — and needs only its
+  citation moved: the switch itself is `UnseeingGame::seed_armed`
+  (`game.rs:582-595`), the tap's one-shot arming check lives inside
+  `fire_demo_tap` (`game.rs:604-620`), and the web-only `?seed`/`?demo`
+  query read is `web_location_search` (`game.rs:660-667`), called from
+  both.
+
+Wiki edit: Mechanics Overview §3/§4 rewritten as above; Engineering —
+Build, Test, Deploy stage 5 and stages 8-9 each get one clarifying
+clause; Mechanics — Rendering (three citations) and Mechanics — Waves
+(two citations) get every `main.gd`/`Pulses` mention repointed at
+`rust/src/nodes/game.rs`; Engineering — Debugging and Observability gets
+the largest pass of this sub-project's debt — path repoints throughout,
+§11's header reframed away from "the GDScript half", the seed/demo
+paragraph's citation moved — worth a full read-through rather than a
+mechanical find-replace, since several of its fifteen line hits sit
+inside prose written for a GDScript reader (e.g. "the reader who has to
+fix it is looking at `main.gd::capture_env`").

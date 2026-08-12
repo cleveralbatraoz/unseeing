@@ -8,30 +8,30 @@ an export of this one project.
 Two layers: the Rust crate (`../rust/`) is the hidden engine, Godot is
 the visible game.
 
-- `scenes/main.tscn` — one root node carrying `main.gd`.
+- `scenes/main.tscn` — one root node, `UnseeingGame`: the composition
+  root, straight from the registered Rust class
+  (`../rust/src/nodes/game.rs`). It instances the level scene, injects
+  the material and wave pool into it, wires the engine nodes together,
+  and owns the fullscreen hearing quad and the per-frame globals (clock,
+  flicker). `scripts/` carries nothing now — the wave-pool shim, the
+  flicker envelope and the dev demo tap that used to live there are all
+  Rust (`WaveCore` in `../rust/src/ffi.rs`, `../rust/src/flicker.rs`,
+  `../rust/src/demo_tap.rs`); the only GDScript left in the project is
+  test- and probe-facing, under `tests/`.
 - `scenes/level_01.tscn` — the level, authored in the editor: `WaveWall`
   and `WaveProp` boxes, the `SoundFan`, the companion `WaveCat`, and a
   `SpawnPoint` marker under a `WaveLevel` root that derives the technical
   contracts (wall centerlines and the occluder table sound is muffled
   through, spawn, demo tap, and the object ids that keep every seam
   drawable) from what the designer placed.
-- `scripts/main.gd` — composition root: instances the level scene,
-  injects the material and wave pool into it, wires the engine nodes
-  together, owns the fullscreen hearing quad and the per-frame globals
-  (clock, flicker).
-- `scripts/pulses.gd` — thin shim over the Rust `WaveCore`: the 64-slot
-  wave pool shared with both shaders.
-- `scripts/flicker.gd` — the mood's envelope: a seeded, bounded dimming
-  the hearing pass multiplies through.
-- `scripts/demo_tap.gd` — the dev cane tap the level derives, for
-  walking the world without a player.
 - `../rust/src/` — the engine: pure wave / viewmodel / level-plan /
   object-id modules (cargo-tested) and the registered node classes the
   game places —
-  `WaveLevel`/`WaveWall`/`WaveProp` (level authoring), `SoundFan`
-  (designer knobs for the hum voice), `WaveCat` (the companion's gait,
-  brain and paw voice), `UnseeingPlayer` (movement, mouse look, cane tap
-  modes), `HeroBody` (viewmodel meshes, head-bob, footsteps).
+  `UnseeingGame` (the composition root), `WaveLevel`/`WaveWall`/`WaveProp`
+  (level authoring), `SoundFan` (designer knobs for the hum voice),
+  `WaveCat` (the companion's gait, brain and paw voice), `UnseeingPlayer`
+  (movement, mouse look, cane tap modes), `HeroBody` (viewmodel meshes,
+  head-bob, footsteps).
 - `shaders/data_pass.gdshader` — world rendered as data: reveal, flat
   object id, camera distance.
 - `shaders/hearing_post.gdshader` — outlines + wave shells; the only pass
@@ -120,7 +120,7 @@ in the output — and still runs, with those few seams unlined.
 | Headless unit tests + browser smoke gate | done (`tests/`, `../test/`) |
 | Web (wasm) export + droplet CI/CD deploy | done |
 | Desktop exports (macOS universal, Windows x86_64 + arm64) | done |
-| Wave/physics core as GDExtension Rust module | done (`rust/`: pure modules + WaveCore behind the Pulses shim) |
+| Wave/physics core as GDExtension Rust module | done (`rust/`: pure modules + `WaveCore`, driven directly by the `UnseeingGame` composition root; `Pulses` survives only as a `tests/` test shim) |
 | Fan / player / hero body as Rust engine nodes | done (`rust/src/nodes/`: SoundFan, UnseeingPlayer, HeroBody replace their .gd scripts; demo movie frames byte-identical across the port) |
 | Companion cat (gait, brain, paw voice) | done (`rust/src/cat_*.rs` + `WaveCat` in `scenes/level_01.tscn`) |
 | One outline per object, every seam drawn | done (`rust/src/oid_palette.rs` colours the touch graph; the shipped scene is pinned by `tests/level_test.gd`) |

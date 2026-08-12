@@ -76,7 +76,7 @@ godot_exec        observer.explain_*(...)    why, when the snapshot is not enoug
 one-liner. The observer is reachable from the scene root:
 
 ```gdscript
-JSON.stringify(get_tree().root.get_node("UnseeingMain").observer.snapshot(now))
+JSON.stringify(get_tree().root.get_node("Main").observer.snapshot(now))
 ```
 
 `WaveObserver` runs with `ProcessMode::ALWAYS` precisely so step 1 does not
