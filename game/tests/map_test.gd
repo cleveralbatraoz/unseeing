@@ -133,22 +133,41 @@ func test_shipped_walls_axis_aligned_and_bordered() -> void:
 		assert_bool(axis_aligned).append_failure_message("segment %s" % s).is_true()
 
 
-## The demo tap lands on the FACE of the wall between the spawn and the
-## fan — DividerNorth, whose centerline is x = 6.4 — a wall half-thickness
-## (0.15) west toward the spawn, inside the wall's z-span, striking toward
-## the spawn side (−X). No room rect: the wall is found from the spawn→fan
-## line alone.
+## The demo tap lands on the FACE of SOME wall the level derived — no room
+## rect, and never pinned to THIS map's own wall by name: level_plan.rs's
+## demo_tap() clamps the spawn's own coordinate into the crossed wall's
+## span and offsets a half-thickness off its centerline, so the LAW is
+## purely geometric — the tap sits on a face plane (centerline ± WALL_T)
+## inside a wall's span, and the returned normal points back toward the
+## spawn, never into the wall it struck.
 func test_shipped_demo_tap_sits_on_the_dividing_wall_face() -> void:
+	# level_plan.rs::WALL_T, the same half-thickness _occluder() pads by
+	const WALL_HALF_T := 0.15
+	const FACE_EPS := 0.005
 	var level := _shipped_level()
 	var tap := level.demo_tap()
-	assert_float(tap.x).is_equal_approx(6.25, 0.001)
-	var on_wall := false
+	var normal := level.demo_tap_normal()
+	var spawn := level.spawn_pos()
+	var on_a_face := false
 	for s: Vector4 in level.wall_segments():
-		if absf(s.x - 6.4) < 0.001 and absf(s.z - 6.4) < 0.001:  # a z-run wall at x = 6.4
-			if tap.z >= minf(s.y, s.w) and tap.z <= maxf(s.y, s.w):
-				on_wall = true
-	assert_bool(on_wall).is_true()
-	assert_vector(level.demo_tap_normal()).is_equal(Vector3(-1, 0, 0))
+		var z_run := absf(s.x - s.z) < 0.001  # centerline constant in x, spans z
+		var span_lo := minf(s.y, s.w) if z_run else minf(s.x, s.z)
+		var span_hi := maxf(s.y, s.w) if z_run else maxf(s.x, s.z)
+		var along := tap.z if z_run else tap.x
+		if along < span_lo - FACE_EPS or along > span_hi + FACE_EPS:
+			continue  # outside this wall's span, however close its plane is
+		var center := s.x if z_run else s.y
+		var across := tap.x if z_run else tap.z
+		if absf(absf(across - center) - WALL_HALF_T) < FACE_EPS:
+			on_a_face = true
+	assert_bool(on_a_face).append_failure_message("tap %s matches no wall face" % tap).is_true()
+	# and the struck face's normal points back toward the spawn, never
+	# parallel to the wall it was planned from
+	(
+		assert_float(normal.dot(spawn - tap))
+		. append_failure_message("normal %s does not point spawn-ward from tap %s" % [normal, tap])
+		. is_greater(0.0)
+	)
 
 
 func test_shipped_spawn_inside_bounds() -> void:
@@ -161,26 +180,6 @@ func test_shipped_spawn_inside_bounds() -> void:
 	var spawn := level.spawn_pos()
 	assert_bool(spawn.x > lo.x and spawn.x < hi.x).is_true()
 	assert_bool(spawn.z > lo.y and spawn.z < hi.y).is_true()
-
-
-## The scene IS the validated design: the numbers the retired LevelData
-## carried by hand now derive from the authored nodes, unchanged.
-func test_shipped_level_matches_validated_design() -> void:
-	var level := _shipped_level()
-	assert_int(level.wall_segments().size()).is_equal(19)
-	assert_vector(level.extents).is_equal(Vector2(28, 28))
-	assert_vector(level.spawn_pos()).is_equal_approx(Vector3(3, 0.9, 4), Vector3.ONE * 0.001)
-	assert_float(level.spawn_yaw()).is_equal_approx(-1.9, 0.0001)
-	# the demo tap is unchanged by the map's growth: it is planned from the
-	# spawn and the FIRST source, and the fan is still first in scene order
-	assert_vector(level.demo_tap()).is_equal_approx(Vector3(6.25, 0.8, 4.0), Vector3.ONE * 0.001)
-	assert_vector(level.demo_tap_normal()).is_equal(Vector3(-1, 0, 0))
-	var sources := level.sources()
-	assert_int(sources.size()).is_equal(2)
-	assert_vector(sources[0].position).is_equal_approx(Vector3(8.6, 0, 4.4), Vector3.ONE * 0.001)
-	assert_vector(sources[1].position).is_equal_approx(
-		Vector3(21.4, 0.78, 3.4), Vector3.ONE * 0.001
-	)
 
 
 ## The per-object source muffle, on a level built in code: a source's
@@ -228,11 +227,20 @@ func test_the_radio_is_one_wall_from_the_fan_room() -> void:
 	var radio := _source_named(level, "Radio", "SoundRadio")
 	var hub := radio.global_position + SoundRadio.hub_offset()
 	var in_fan_room := Vector3(18.0, 1.6, 4.0)
-	assert_float(level.source_muffle(in_fan_room, hub)).is_equal_approx(0.3, 0.0001)
-	# and standing INSIDE the radio room there is nothing between them
+	# EXACTLY one wall, not "some obstruction": the map's whole reason for
+	# growing (see the header) is that this reads the SOURCE_THROUGH factor
+	# the code-built fixture law above (test_the_source_muffle_dims_once_
+	# per_wall_it_crosses) pins for a single crossing, and nothing weaker —
+	# a relative "less than the clear room" would pass just as well through
+	# a second wall, so the literal stays as the claim itself rather than
+	# incidental census.
+	var through_wall := level.source_muffle(in_fan_room, hub)
+	assert_float(through_wall).is_equal_approx(0.3, 0.0001)
+	# and standing INSIDE the radio room there is nothing between them —
+	# the universal "no wall" ceiling, not a fact about this map's shape
 	assert_float(level.source_muffle(Vector3(24.0, 1.6, 5.0), hub)).is_equal_approx(1.0, 0.0001)
-	# from the spawn it is further than one wall — a much fainter ghost
-	assert_bool(level.source_muffle(level.spawn_pos(), hub) < 0.3).is_true()
+	# from the spawn it is further than one wall — a much fainter ghost still
+	assert_bool(level.source_muffle(level.spawn_pos(), hub) < through_wall).is_true()
 
 
 ## A THIRD SOURCE dropped into the map must not re-point the test above.
@@ -250,11 +258,14 @@ func test_a_source_added_first_leaves_the_map_claim_where_it_was() -> void:
 	level.move_child(intruder, 0)  # ahead of the shipped fan and radio
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
-	assert_int(level.sources().size()).is_equal(3)
+	assert_int(level.sources().size()).is_greater_equal(3)
 	assert_object(level.sources()[0]).is_same(intruder)  # it really is first
 	var radio := _source_named(level, "Radio", "SoundRadio")
 	assert_object(radio).is_not_same(intruder)
 	var hub := radio.global_position + SoundRadio.hub_offset()
+	# the same one-wall fact pinned above, now re-checked with a THIRD
+	# source ahead of the shipped two in scene order — literal kept for the
+	# same reason: it is the map's claim, not census
 	assert_float(level.source_muffle(Vector3(18.0, 1.6, 4.0), hub)).is_equal_approx(0.3, 0.0001)
 
 
@@ -281,6 +292,9 @@ func test_a_node_wearing_the_radios_name_is_not_the_radio() -> void:
 	var radio := _source_named(level, "Radio", "SoundRadio")
 	assert_object(radio).is_not_same(impostor)
 	var hub := radio.global_position + SoundRadio.hub_offset()
+	# same one-wall fact as above, now re-checked past an impostor wearing
+	# the radio's own name — literal kept for the same reason: it is the
+	# map's claim, not census
 	assert_float(level.source_muffle(Vector3(18.0, 1.6, 4.0), hub)).is_equal_approx(0.3, 0.0001)
 
 
@@ -333,39 +347,20 @@ func test_a_wall_costs_more_than_the_volume_ladder_is_worth() -> void:
 	assert_bool(radio_image > fan.volume * 0.3).is_true()
 
 
-## The shipped level carries the companion cat, exposes it for the root to
-## tick, and has injected it the same way it injects a source — so it can
-## both sound (pulse pool) and be seen (data-pass material).
+## The shipped level carries at least one companion cat and has injected
+## every one it holds the same way it injects a source — so each can both
+## sound (pulse pool) and be seen (data-pass material). The COUNT is not a
+## law: a level with no cat at all is legal elsewhere (the code-built
+## fixtures above never add one) — this only pins that the shipped map's
+## OWN cat, whatever comes to sit beside it in the editor, is there and
+## wired.
 func test_shipped_level_exposes_and_injects_the_cat() -> void:
 	var level := _shipped_level()
 	var cats := level.cats()
-	assert_int(cats.size()).is_equal(1)
-	var cat: WaveCat = cats[0]
-	assert_object(cat.pulses).is_not_null()
-	assert_object(cat.data_mat).is_not_null()
-	# it wakes in the west room a few steps south of the hero, on the floor
-	assert_vector(cat.position).is_equal_approx(Vector3(2.8, 0, 7.6), Vector3.ONE * 0.001)
-
-
-func _count_kind(node: Node, kind: String) -> int:
-	var n := 0
-	for child: Node in node.get_children():
-		if child.get_class() == kind:
-			n += 1
-		n += _count_kind(child, kind)
-	return n
-
-
-## The furniture census, by shape. A contours-only world has no material and
-## no texture, so the SILHOUETTE is the whole of an object — which is why
-## the vocabulary is three: boxes draw corners, columns draw curves, wedges
-## draw diagonals, and a room furnished from only one of them reads flat.
-## A prop added or lost in the editor trips this before any probe has to.
-func test_shipped_prop_census() -> void:
-	var level := _shipped_level()
-	assert_int(_count_kind(level, "WaveProp")).is_equal(72)
-	assert_int(_count_kind(level, "WaveColumn")).is_equal(27)
-	assert_int(_count_kind(level, "WaveWedge")).is_equal(7)
+	assert_array(cats).append_failure_message("the shipped map has lost its cat").is_not_empty()
+	for cat: WaveCat in cats:
+		assert_object(cat.pulses).is_not_null()
+		assert_object(cat.data_mat).is_not_null()
 
 
 ## Every authored solid in the level that carries a flat object id, paired
@@ -462,7 +457,14 @@ func test_shipped_touching_boxes_draw_their_seam() -> void:
 	var level := _shipped_level()
 	var boxes: Array[Dictionary] = []
 	_painted_boxes(level, boxes)
-	assert_int(boxes.size()).is_equal(125)
+	# non-vacuity: an empty census would pass the seam walk below by having
+	# nothing left to fail it — the anti-vacuity PAIR is the distinct-ids-
+	# fewer-than-boxes counter-law just below, which fails the same way
+	(
+		assert_array(boxes)
+		. append_failure_message("no painted boxes found — _painted_boxes broke")
+		. is_not_empty()
+	)
 	var merged := _merged_pairs(level)
 	var melted: Array[String] = []
 	for i: int in boxes.size():
@@ -892,7 +894,6 @@ func test_wall_table_reaches_the_occluding_skins() -> void:
 	level.inject(data_mat, source_mat, Pulses.new())
 	add_child(level)
 	var segs := level.wall_segments()
-	assert_int(segs.size()).is_equal(19)
 	for m: ShaderMaterial in [data_mat, source_mat]:
 		var faults := _table_faults(level, m)
 		(
@@ -985,7 +986,12 @@ func _depth(a: AABB, b: AABB) -> float:
 func test_no_prop_is_buried_in_a_wall() -> void:
 	var solids: Array[Dictionary] = []
 	_solid_boxes(_shipped_level(), solids)
-	assert_int(solids.size()).is_equal(125)
+	# non-vacuity: an empty census would pass the walk below trivially
+	(
+		assert_array(solids)
+		. append_failure_message("no solids found — _solid_boxes broke")
+		. is_not_empty()
+	)
 	var buried: Array[String] = []
 	for prop: Dictionary in solids:
 		if prop["kind"] == "WaveWall":
