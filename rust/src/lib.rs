@@ -27,6 +27,8 @@
 //!   windowed game falls back to when full screen is switched off.
 //! - [`clustering`] — how ray hits merge per 0.9 m cell so flat walls
 //!   answer as a few points, ranked in a deterministic total order.
+//! - [`demo_tap`] — dev-only schedule for input-less demo taps: first fire
+//!   at 0.6 s, then every 4 s, always at the same pinned wall point.
 //! - [`echo_queue`] — scheduled reflections that fire at the exact
 //!   instant the primary wavefront reaches their surface point.
 //! - [`sound_source`] — what a world sound source IS: the volume ladder
@@ -80,6 +82,7 @@ pub mod cat_body;
 pub mod cat_brain;
 pub mod cat_gait;
 pub mod clustering;
+pub mod demo_tap;
 pub mod display_plan;
 pub mod echo_queue;
 pub mod fan_wave;
