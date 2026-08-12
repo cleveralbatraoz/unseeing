@@ -226,7 +226,47 @@ pub fn assign(boxes: &[Box3], fixed: &[Fixed], palette: &[f64]) -> Assignment {
         }
     }
 
-    // most-constrained first, ties by scene index: a stable, platform-
+    let (chosen, starved) = welsh_powell(&adjacency, &banned, palette.len());
+
+    Assignment {
+        oids: chosen.iter().map(|&slot| palette[slot]).collect(),
+        starved,
+    }
+}
+
+/// The greedy Welsh–Powell colouring core, shared by [`assign`] (over the
+/// box-touch graph above) and `render::labels::assign` (over the superface
+/// separation graph) so the one greedy/ban algorithm has one
+/// implementation instead of two that could quietly drift apart.
+/// `adjacency[i]` lists node `i`'s neighbours; `banned[i][slot]` marks a
+/// palette slot node `i` may never take (some touching fixed anchor sits
+/// within `MIN_SEP` of it). Node order is most-constrained-first (highest
+/// degree), ties broken by index — the same stable, platform-independent
+/// order [`assign`] always used, now named once rather than inlined twice.
+///
+/// It stays here, in the module Task 10 eventually retires, rather than
+/// moving to `render/` now: this is still the WRITTEN-DOWN home of the
+/// algorithm today, and `render::labels` borrowing it is exactly how a
+/// migration is supposed to work — the new consumer reaches into the old
+/// implementation until the old path dies, rather than forking a second
+/// copy that has to be kept in sync by hand in the meantime.
+///
+/// Total for every input but one precondition the caller must uphold:
+/// `palette_len` > 0 — both [`assign`] and `render::labels::assign` refuse
+/// an empty palette before ever reaching here, because `palette_len == 0`
+/// would make the starved fallback's `i % palette_len` divide by zero.
+/// Never panics otherwise: a node the palette cannot satisfy takes the
+/// least-contended slot it can get, counted in the returned `starved`
+/// total, rather than failing its caller.
+pub(crate) fn welsh_powell(
+    adjacency: &[Vec<usize>],
+    banned: &[Vec<bool>],
+    palette_len: usize,
+) -> (Vec<usize>, usize) {
+    debug_assert!(palette_len > 0, "welsh_powell needs a non-empty palette");
+    let n = adjacency.len();
+
+    // most-constrained first, ties by index: a stable, platform-
     // independent order, which is what keeps two machines drawing one world
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&a, &b| adjacency[b].len().cmp(&adjacency[a].len()).then(a.cmp(&b)));
@@ -235,31 +275,28 @@ pub fn assign(boxes: &[Box3], fixed: &[Fixed], palette: &[f64]) -> Assignment {
     let mut decided: Vec<bool> = vec![false; n];
     let mut starved = 0;
     for &i in &order {
-        let mut taken = vec![false; palette.len()];
+        let mut taken = vec![false; palette_len];
         for &j in &adjacency[i] {
             if decided[j] {
                 taken[chosen[j]] = true;
             }
         }
-        let free = (0..palette.len()).find(|&slot| !taken[slot] && !banned[i][slot]);
+        let free = (0..palette_len).find(|&slot| !taken[slot] && !banned[i][slot]);
         chosen[i] = match free {
             Some(slot) => slot,
             None => {
                 starved += 1;
-                // honour the neighbours we still can, then the fixed ids
-                (0..palette.len())
+                // honour the neighbours we still can, then the banned slots
+                (0..palette_len)
                     .find(|&slot| !taken[slot])
-                    .or_else(|| (0..palette.len()).find(|&slot| !banned[i][slot]))
-                    .unwrap_or(i % palette.len())
+                    .or_else(|| (0..palette_len).find(|&slot| !banned[i][slot]))
+                    .unwrap_or(i % palette_len)
             }
         };
         decided[i] = true;
     }
 
-    Assignment {
-        oids: chosen.iter().map(|&slot| palette[slot]).collect(),
-        starved,
-    }
+    (chosen, starved)
 }
 
 #[cfg(test)]

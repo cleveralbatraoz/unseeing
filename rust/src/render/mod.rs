@@ -10,12 +10,18 @@
 //! - `superface` — the merge law over faces and the label-separation
 //!   graph: which coplanar overlapping faces become one class, and which
 //!   resulting classes must take separated labels.
+//! - `labels` — colouring the superface graph against the palette and the
+//!   role table: the fixed labels every creature, source part and slab
+//!   colours to directly, and the Welsh–Powell colouring that fills in
+//!   every other class from a small reusable palette.
 //! - [`paint`] — the derive-time pass that turns a shape's faces into an
 //!   `ArrayMesh` carrying the label as a per-vertex `CUSTOM0` float.
 
 pub mod faces;
+pub mod labels;
 pub mod paint;
 pub mod superface;
 
 pub use faces::{Face, Shape, faces};
+pub use labels::{Labelling, MIN_SEP, Role, assign, role_label};
 pub use superface::{COPLANAR_EPS, PATCH_EPS, Superfaces, superfaces};
