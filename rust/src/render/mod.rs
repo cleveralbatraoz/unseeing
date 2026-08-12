@@ -7,10 +7,15 @@
 //! - `faces` — pure geometry: a solid's shape becomes its world-space
 //!   planar faces, the vocabulary every later stage (the merge law, the
 //!   label colouring) is built from.
+//! - `superface` — the merge law over faces and the label-separation
+//!   graph: which coplanar overlapping faces become one class, and which
+//!   resulting classes must take separated labels.
 //! - [`paint`] — the derive-time pass that turns a shape's faces into an
 //!   `ArrayMesh` carrying the label as a per-vertex `CUSTOM0` float.
 
 pub mod faces;
 pub mod paint;
+pub mod superface;
 
 pub use faces::{Face, Shape, faces};
+pub use superface::{COPLANAR_EPS, PATCH_EPS, Superfaces, superfaces};
