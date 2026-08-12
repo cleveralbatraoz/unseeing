@@ -52,6 +52,11 @@
 //! - [`observe`] — the wave engine described to an agent as data: pool,
 //!   eviction, occlusion, the object-id touch graph, the reflection fan —
 //!   snapshot and explain, never a rendered frame.
+//! - [`render`] — how the world is SEEN: per-vertex superface labels
+//!   replacing the per-instance object id, so overlapping solids agree on
+//!   the outline's G channel by construction. Mostly pure face/label law,
+//!   cargo-tested; [`render::paint`] is the one impure edge, the
+//!   derive-time pass that bakes a label into an `ArrayMesh`'s `CUSTOM0`.
 //!
 //! Determinism is construction, not luck: no hashed iteration anywhere
 //! near an output (ordered containers only), no system time, no
@@ -81,6 +86,7 @@ pub mod prop_shape;
 pub mod pulse_pool;
 pub mod radio_wave;
 pub mod ray_fan;
+pub mod render;
 pub mod reproduce;
 pub mod settings_menu;
 pub mod sight;

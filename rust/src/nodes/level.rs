@@ -55,7 +55,8 @@
 //! world origin; a level with NO source stays silent, which is legal.
 
 use godot::classes::{
-    Engine, INode3D, Marker3D, Material, MeshInstance3D, Node3D, ShaderMaterial, StaticBody3D,
+    ArrayMesh, Engine, INode3D, Marker3D, Material, MeshInstance3D, Node3D, ShaderMaterial,
+    StaticBody3D,
 };
 use godot::obj::DynGd;
 use godot::prelude::*;
@@ -66,6 +67,7 @@ use super::source::SoundSource;
 use super::wall::WaveWall;
 use crate::level_plan;
 use crate::oid_palette;
+use crate::render;
 use crate::sight;
 
 /// The floor's flat object id — dedicated, clear of every wall's, because
@@ -371,6 +373,32 @@ impl WaveLevel {
     #[func]
     fn pack_range() -> f64 {
         level_plan::DIST_PACK_RANGE
+    }
+
+    /// Debug-facing shim, served the same way [`Self::wall_height`] is: not
+    /// a designer knob, only a door for `game/tests/mesh_label_test.gd` to
+    /// reach [`render::paint::labelled_box`] — the spike proving `CUSTOM0`
+    /// rides a gdext `ArrayMesh` at all. `face_labels` must carry exactly
+    /// six entries, read −X,+X,−Y,+Y,−Z,+Z; a wrong count is reported
+    /// rather than guessed at, and an empty box drawn instead of a wrong
+    /// one — there is no "closest" reading of a five- or seven-entry array
+    /// that would not be a silent lie about which face got which label.
+    #[func]
+    fn debug_labelled_box(
+        size: Vector3,
+        lift: Vector3,
+        face_labels: PackedFloat32Array,
+    ) -> Gd<ArrayMesh> {
+        let Ok(labels): Result<[f32; 6], _> = face_labels.to_vec().try_into() else {
+            godot_error!(
+                "WaveLevel.debug_labelled_box: face_labels had {} entries, not the 6 a box's \
+                 faces need (−X,+X,−Y,+Y,−Z,+Z) — returning an empty mesh rather than guessing \
+                 which face a wrong-length array meant.",
+                face_labels.len()
+            );
+            return ArrayMesh::new_gd();
+        };
+        render::paint::labelled_box(size, lift, labels)
     }
 
     /// Drive every sound source for one frame: advance its clockwork with
