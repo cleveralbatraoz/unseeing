@@ -1,3 +1,4 @@
+# gdlint:ignore = max-public-methods
 extends GdUnitTestSuite
 ## The prop SHAPES. A contours-only world has no material and no texture, so
 ## an object IS its silhouette — which is why the vocabulary is three rather
@@ -13,6 +14,12 @@ extends GdUnitTestSuite
 ## a box is centred on its node because a box is as often floating as
 ## standing, while a column and a wedge stand ON theirs, because a barrel
 ## resting nowhere is a mistake.
+##
+## (The directive above must sit on line 1 — gdlint keys an ignore to the
+## line its problem is reported on. A gdUnit4 suite is a list of cases, not
+## a class with an API: every case is a public method, so the 20-method
+## ceiling counts coverage rather than surface. Suppressed here and in
+## level_test.gd, the two suites that outgrew it, and nowhere else.)
 
 const LIFT_EPS := 0.0001
 
@@ -46,26 +53,32 @@ func _world_box(body: Node) -> AABB:
 
 
 ## A column is a real cylinder to the eye AND to the rays: mesh and collider
-## carry the same radius and height, and both follow the knobs live.
+## carry the same radius and height, and both follow the knobs live. The
+## mesh is an `ArrayMesh` now (Task 5), generated rather than a `CylinderMesh`
+## primitive, so its radius/height are read off its own AABB — diameter
+## across X/Z, height along Y — instead of a `top_radius`/`height` property
+## that no longer exists; the resize is still IN PLACE (matching the
+## primitive's own live-reshape behaviour), so the same captured `mesh`
+## handle reflects a later knob drag with no re-fetch.
 func test_column_builds_a_cylinder_the_rays_can_strike() -> void:
 	var column: WaveColumn = auto_free(WaveColumn.new())
 	column.radius = 0.3
 	column.height = 0.9
 	add_child(column)
-	var mesh := _skin(column).mesh as CylinderMesh
+	var mesh := _skin(column).mesh as ArrayMesh
 	var shape := _shape(column) as CylinderShape3D
 	assert_object(mesh).is_not_null()
 	assert_object(shape).is_not_null()
-	assert_float(mesh.top_radius).is_equal_approx(0.3, LIFT_EPS)
-	assert_float(mesh.bottom_radius).is_equal_approx(0.3, LIFT_EPS)
-	assert_float(mesh.height).is_equal_approx(0.9, LIFT_EPS)
+	assert_float(mesh.get_aabb().size.x).is_equal_approx(0.6, LIFT_EPS)
+	assert_float(mesh.get_aabb().size.z).is_equal_approx(0.6, LIFT_EPS)
+	assert_float(mesh.get_aabb().size.y).is_equal_approx(0.9, LIFT_EPS)
 	assert_float(shape.radius).is_equal_approx(0.3, LIFT_EPS)
 	assert_float(shape.height).is_equal_approx(0.9, LIFT_EPS)
 	column.radius = 0.5
 	column.height = 2.0
-	assert_float(mesh.top_radius).is_equal_approx(0.5, LIFT_EPS)
+	assert_float(mesh.get_aabb().size.x).is_equal_approx(1.0, LIFT_EPS)
 	assert_float(shape.radius).is_equal_approx(0.5, LIFT_EPS)
-	assert_float(mesh.height).is_equal_approx(2.0, LIFT_EPS)
+	assert_float(mesh.get_aabb().size.y).is_equal_approx(2.0, LIFT_EPS)
 	assert_float(shape.height).is_equal_approx(2.0, LIFT_EPS)
 
 
@@ -212,6 +225,57 @@ func test_wedge_generates_surface_and_hull_together() -> void:
 	assert_float(reach).is_equal_approx(1.0, LIFT_EPS)
 
 
+## Task 5's ordinal contract on the wedge: each of its eight triangles
+## carries the CUSTOM0 ordinal of the one face it belongs to, in
+## `render::faces::wedge_faces`'s own order — floor (0, two triangles), tall
+## back wall (1, two), slope (2, two), −Z end (3, one), +Z end (4, one) —
+## matching `prop_shape::WEDGE_TRIANGLE_ORDINALS` and
+## `prop_shape::wedge_triangles`'s identical triangle order.
+func test_wedge_mesh_carries_custom0_ordinals_matching_its_five_faces() -> void:
+	var wedge: WaveWedge = auto_free(WaveWedge.new())
+	wedge.size = Vector3(1.2, 0.6, 0.8)
+	add_child(wedge)
+	var mesh := _skin(wedge).mesh as ArrayMesh
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var custom: PackedFloat32Array = arrays[Mesh.ARRAY_CUSTOM0]
+	assert_int(custom.size()).is_equal(24)
+	var want := PackedFloat32Array(
+		[0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 4, 4, 4]
+	)
+	for i: int in custom.size():
+		assert_float(custom[i]).is_equal_approx(want[i], 1e-6)
+
+
+## Task 5's ordinal contract on the column: its two flat rims take ordinals
+## 0 (bottom) and 1 (top), matching `render::faces::column_faces`'s own
+## bottom-then-top order, and the curved flank — which has no plane and so
+## no entry in `faces()` at all — takes ordinal 2. `column_triangles` builds
+## one SEGMENT at a time (32 of them, `render::faces::RIM_SEGMENTS`), each
+## contributing its own bottom-cap triangle (3 verts, ordinal 0), top-cap
+## triangle (3 verts, ordinal 1) and two flank triangles (6 verts, ordinal
+## 2) before moving to the next segment — so the 384 vertices run in 32
+## repeats of that 3/3/6 block, never as three long global runs.
+func test_column_mesh_carries_custom0_ordinals_for_rims_and_flank() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.3
+	column.height = 0.9
+	add_child(column)
+	var mesh := _skin(column).mesh as ArrayMesh
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var custom: PackedFloat32Array = arrays[Mesh.ARRAY_CUSTOM0]
+	assert_int(verts.size()).is_equal(384)
+	assert_int(custom.size()).is_equal(verts.size())
+	for segment: int in 32:
+		var base := segment * 12
+		for i: int in range(base, base + 3):
+			assert_float(custom[i]).is_equal_approx(0.0, 1e-6)
+		for i: int in range(base + 3, base + 6):
+			assert_float(custom[i]).is_equal_approx(1.0, 1e-6)
+		for i: int in range(base + 6, base + 12):
+			assert_float(custom[i]).is_equal_approx(2.0, 1e-6)
+
+
 ## The origin law again: a wedge stands on its node, so a ramp placed at
 ## y = 0 rests on the floor and rises from there.
 func test_wedge_stands_on_its_node() -> void:
@@ -227,10 +291,10 @@ func test_wedge_stands_on_its_node() -> void:
 
 
 ## A minus sign in a size knob must never split what is DRAWN from what is
-## STRUCK. BoxMesh takes a negative extent happily; BoxShape3D REFUSES it
-## and silently keeps whatever it had — its default 1 x 1 x 1 — so the box
-## a designer sees and the box the waves and the cane hit are different
-## objects. The only engine diagnostic ("BoxShape3D size cannot be
+## STRUCK. The generated box mesh takes a negative extent happily; BoxShape3D
+## REFUSES it and silently keeps whatever it had — its default 1 x 1 x 1 —
+## so the box a designer sees and the box the waves and the cane hit are
+## different objects. The only engine diagnostic ("BoxShape3D size cannot be
 ## negative") names no node, and the bad value survives a save. So the sign
 ## folds away at the knob, and the Inspector reads back what was built.
 func test_a_negative_size_cannot_split_the_drawn_box_from_its_collider() -> void:
@@ -238,14 +302,14 @@ func test_a_negative_size_cannot_split_the_drawn_box_from_its_collider() -> void
 	prop.size = Vector3(-0.8, 0.4, -0.6)
 	add_child(prop)
 	assert_vector(prop.size).is_equal(Vector3(0.8, 0.4, 0.6))
-	assert_vector((_skin(prop).mesh as BoxMesh).size).is_equal(Vector3(0.8, 0.4, 0.6))
+	assert_vector(_skin(prop).mesh.get_aabb().size).is_equal(Vector3(0.8, 0.4, 0.6))
 	(
 		assert_vector((_shape(prop) as BoxShape3D).size)
 		. append_failure_message("the collider kept its own size while the mesh was reshaped")
 		. is_equal(Vector3(0.8, 0.4, 0.6))
 	)
 	prop.size = Vector3(1.0, -2.0, 1.0)  # and live, on a dragged knob
-	assert_vector((_skin(prop).mesh as BoxMesh).size).is_equal(Vector3(1, 2, 1))
+	assert_vector(_skin(prop).mesh.get_aabb().size).is_equal(Vector3(1, 2, 1))
 	assert_vector((_shape(prop) as BoxShape3D).size).is_equal(Vector3(1, 2, 1))
 
 
@@ -284,7 +348,7 @@ func test_a_scaled_prop_folds_the_scale_into_its_size_knob() -> void:
 	add_child(prop)
 	assert_vector(prop.size).is_equal_approx(Vector3(2, 0.5, 1), Vector3.ONE * LIFT_EPS)
 	assert_vector(prop.scale).is_equal_approx(Vector3.ONE, Vector3.ONE * LIFT_EPS)
-	assert_vector((_skin(prop).mesh as BoxMesh).size).is_equal_approx(
+	assert_vector(_skin(prop).mesh.get_aabb().size).is_equal_approx(
 		Vector3(2, 0.5, 1), Vector3.ONE * LIFT_EPS
 	)
 	assert_vector((_shape(prop) as BoxShape3D).size).is_equal_approx(
@@ -327,12 +391,12 @@ func test_a_uniformly_scaled_column_folds_exactly() -> void:
 
 
 ## Pulled by different amounts across X and Z, a cylinder is an ELLIPTIC
-## cylinder — a shape neither CylinderMesh nor CylinderShape3D can be, and
-## one this vocabulary deliberately does not own. The fold takes the LARGER
-## of the two, so the barrel a designer ends up with CONTAINS the one they
-## drew: erring inwards would leave drawn geometry outside the collider,
-## and refusing the scale outright would throw away the axial stretch they
-## can perfectly well have.
+## cylinder — a shape neither the generated column mesh's circular ring nor
+## CylinderShape3D can be, and one this vocabulary deliberately does not own.
+## The fold takes the LARGER of the two, so the barrel a designer ends up
+## with CONTAINS the one they drew: erring inwards would leave drawn
+## geometry outside the collider, and refusing the scale outright would
+## throw away the axial stretch they can perfectly well have.
 func test_a_non_uniformly_scaled_column_grows_to_contain_what_was_drawn() -> void:
 	var column: WaveColumn = auto_free(WaveColumn.new())
 	column.radius = 0.3

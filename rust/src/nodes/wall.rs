@@ -24,11 +24,12 @@
 //! single injection point — not per-node; a bare node in the editor simply
 //! shows its plain box.
 
-use godot::classes::{BoxMesh, BoxShape3D, IStaticBody3D, Material, StaticBody3D};
+use godot::classes::{ArrayMesh, BoxShape3D, IStaticBody3D, Material, StaticBody3D};
 use godot::prelude::*;
 
-use super::solid::{LIMBS, SignFold, Skin, WaveSolid, build_box, clear_limbs};
+use super::solid::{BOX_ORDINALS, LIMBS, SignFold, Skin, WaveSolid, build_box, clear_limbs};
 use crate::level_plan;
+use crate::render;
 
 /// One wall segment: an axis-snapped box, `length` meters of centerline
 /// padded by a wall half-thickness each way, floor to ceiling. The node
@@ -45,7 +46,7 @@ pub struct WaveWall {
     length: f64,
     skin: Skin,
     fold: SignFold,
-    mesh: Option<Gd<BoxMesh>>,
+    mesh: Option<Gd<ArrayMesh>>,
     shape: Option<Gd<BoxShape3D>>,
     base: Base<StaticBody3D>,
 }
@@ -84,7 +85,7 @@ impl WaveWall {
         self.length = self.fold.scalar("length", length);
         let size = level_plan::wall_box(self.length);
         if let Some(mesh) = self.mesh.as_mut() {
-            mesh.set_size(size);
+            render::paint::resize_box_surface(mesh, size, BOX_ORDINALS);
         }
         if let Some(shape) = self.shape.as_mut() {
             shape.set_size(size);

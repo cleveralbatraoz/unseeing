@@ -53,9 +53,14 @@ func _skin(body: Node) -> MeshInstance3D:
 	return null
 
 
-func _box(body: Node) -> BoxMesh:
+## The size of the box a builder actually drew — read off the mesh's own
+## untransformed AABB, which works for any `Mesh` subclass. `BoxMesh.size`
+## no longer exists to read: every static solid builds an `ArrayMesh` now
+## (Task 5, `render::paint::labelled_box`), and its own AABB carries the
+## identical numbers a `BoxMesh` of the same size always reported.
+func _box(body: Node) -> Vector3:
 	var skin := _skin(body)
-	return null if skin == null else skin.mesh as BoxMesh
+	return Vector3.ZERO if skin == null else skin.mesh.get_aabb().size
 
 
 func _box_shape(body: Node) -> BoxShape3D:
@@ -140,9 +145,41 @@ func _slabs(level: WaveLevel) -> Array[StaticBody3D]:
 func test_wall_builds_box_and_collider_from_length() -> void:
 	var wall: WaveWall = auto_free(_wall(7.4, Vector3(2, 0, 3), false))
 	add_child(wall)
-	assert_vector(_box(wall).size).is_equal(Vector3(7.69, 3, 0.3))
+	assert_vector(_box(wall)).is_equal(Vector3(7.69, 3, 0.3))
 	assert_vector(_box_shape(wall).size).is_equal(Vector3(7.69, 3, 0.3))
 	assert_vector(_skin(wall).position).is_equal(Vector3(0, 1.5, 0))
+
+
+## Task 5's ordinal contract, on the shape every static solid shares first:
+## a wall now builds an `ArrayMesh` carrying a CUSTOM0 channel, one entry
+## per vertex, holding a placeholder FACE ORDINAL (never a final label —
+## Task 6's paint pass rewrites these) in `render::paint::FACE_ORDER`'s own
+## −X,+X,−Y,+Y,−Z,+Z order. 24 unshared vertices, four per face, exactly the
+## way `render::paint::labelled_box` builds every box-shaped solid now.
+func test_wall_mesh_carries_a_bounded_custom0_ordinal_per_vertex() -> void:
+	var wall: WaveWall = auto_free(_wall(4.0, Vector3.ZERO, false))
+	add_child(wall)
+	var mesh := _skin(wall).mesh as ArrayMesh
+	assert_object(mesh).is_not_null()
+	assert_int(mesh.get_surface_count()).is_equal(1)
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var custom: PackedFloat32Array = arrays[Mesh.ARRAY_CUSTOM0]
+	assert_int(verts.size()).is_equal(24)
+	assert_int(custom.size()).is_equal(verts.size())
+	var fmt := mesh.surface_get_format(0)
+	var shift := Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT
+	assert_int((fmt >> shift) & 7).is_equal(Mesh.ARRAY_CUSTOM_R_FLOAT)
+	# every ordinal is bounded by the widest shape's own count (a box's six)
+	for label: float in custom:
+		assert_bool(label >= 0.0 and label < 6.0).is_true()
+	# the four-vertex blocks land in FACE_ORDER's own order: −X,+X,−Y,+Y,
+	# −Z,+Z — block k holds ordinal k on every one of its four vertices,
+	# which a builder that fed labelled_box a shuffled or repeated ordinal
+	# array would get wrong
+	for face: int in 6:
+		for corner: int in 4:
+			assert_float(custom[face * 4 + corner]).is_equal_approx(float(face), 1e-6)
 
 
 ## The designer-safety law: a wall rotated to any free-hand angle (tilt
@@ -207,7 +244,7 @@ func test_a_scaled_room_cannot_stretch_a_wall_past_its_occluder() -> void:
 ## copies the mesh and collider the ORIGINAL built for itself. Building a
 ## second pair on top leaves a ghost the size knob cannot reach, drawn at
 ## the old size forever; worse, `duplicate()` SHARES resources, so the ghost
-## carries the original's own BoxMesh and would resize with it. A builder
+## carries the original's own box mesh and would resize with it. A builder
 ## must therefore be idempotent: whatever limbs it finds, it owns exactly
 ## one pair when it is done.
 func test_a_duplicated_wall_does_not_double_its_geometry() -> void:
@@ -222,11 +259,11 @@ func test_a_duplicated_wall_does_not_double_its_geometry() -> void:
 	)
 	copy.length = 9.0
 	(
-		assert_vector(_box(copy).size)
+		assert_vector(_box(copy))
 		. append_failure_message("a ghost mesh is drawn ahead of the one the knob reshapes")
 		. is_equal(Vector3(9.29, 3, 0.3))
 	)
-	assert_vector(_box(wall).size).is_equal(Vector3(4.29, 3, 0.3))
+	assert_vector(_box(wall)).is_equal(Vector3(4.29, 3, 0.3))
 
 
 ## The length knob reshapes a placed wall live — mesh and collider
@@ -235,13 +272,13 @@ func test_wall_length_knob_reshapes_live() -> void:
 	var wall: WaveWall = auto_free(_wall(4.0, Vector3.ZERO, false))
 	add_child(wall)
 	wall.length = 9.0
-	assert_vector(_box(wall).size).is_equal(Vector3(9.29, 3, 0.3))
+	assert_vector(_box(wall)).is_equal(Vector3(9.29, 3, 0.3))
 	assert_vector(_box_shape(wall).size).is_equal(Vector3(9.29, 3, 0.3))
 
 
 ## A wall's one knob answers a minus sign the way every prop knob does.
-## Left raw it splits the wall in three: BoxMesh draws 3.7 m, BoxShape3D
-## refuses the negative extent and keeps its default 1 m cube, and
+## Left raw it splits the wall in three: the box mesh draws 3.7 m,
+## BoxShape3D refuses the negative extent and keeps its default 1 m cube, and
 ## wall_segment sweeps the half-length BACKWARDS, handing the level a
 ## centerline whose ends are in the wrong order. The sign folds at the knob
 ## instead, so the drawn box, the collider and the occluder are one wall.
@@ -249,7 +286,7 @@ func test_a_negative_wall_length_folds_instead_of_inverting_the_wall() -> void:
 	var wall := _wall(-4.0, Vector3(3, 0, 1), false)
 	var level := _level_holding(wall)
 	assert_float(wall.length).is_equal_approx(4.0, 0.001)
-	assert_vector(_box(wall).size).is_equal(Vector3(4.29, 3, 0.3))
+	assert_vector(_box(wall)).is_equal(Vector3(4.29, 3, 0.3))
 	(
 		assert_vector(_box_shape(wall).size)
 		. append_failure_message("the collider kept its own size while the mesh was reshaped")
@@ -271,12 +308,12 @@ func test_prop_builds_its_free_box() -> void:
 	prop.position = Vector3(4.6, 0.72, 4.9)
 	prop.rotation.y = 0.3
 	add_child(prop)
-	assert_vector(_box(prop).size).is_equal(Vector3(0.9, 0.05, 0.6))
+	assert_vector(_box(prop)).is_equal(Vector3(0.9, 0.05, 0.6))
 	assert_vector(_box_shape(prop).size).is_equal(Vector3(0.9, 0.05, 0.6))
 	assert_vector(_skin(prop).position).is_equal(Vector3.ZERO)
 	assert_float(prop.rotation.y).is_equal_approx(0.3, 0.0001)
 	prop.size = Vector3(0.4, 0.05, 0.4)  # the knob reshapes live, like the wall's
-	assert_vector(_box(prop).size).is_equal(Vector3(0.4, 0.05, 0.4))
+	assert_vector(_box(prop)).is_equal(Vector3(0.4, 0.05, 0.4))
 
 
 ## The level root end to end: one inject call deals the materials out — the
@@ -324,7 +361,7 @@ func test_level_distributes_and_derives() -> void:
 	var slabs := _slabs(level)
 	assert_int(slabs.size()).is_equal(2)
 	for slab: StaticBody3D in slabs:
-		assert_vector(_box(slab).size).is_equal(Vector3(20, 0.1, 20))
+		assert_vector(_box(slab)).is_equal(Vector3(20, 0.1, 20))
 		assert_object(_skin(slab).material_override).is_same(mat)
 	assert_vector(slabs[0].position).is_equal(Vector3(10, -0.05, 10))
 	assert_vector(slabs[1].position).is_equal(Vector3(10, 3.05, 10))
@@ -512,10 +549,33 @@ func test_extents_knob_resizes_slabs() -> void:
 	var slabs := _slabs(level)
 	assert_int(slabs.size()).is_equal(2)
 	for slab: StaticBody3D in slabs:
-		assert_vector(_box(slab).size).is_equal(Vector3(8, 0.1, 6))
+		assert_vector(_box(slab)).is_equal(Vector3(8, 0.1, 6))
 		assert_vector(_box_shape(slab).size).is_equal(Vector3(8, 0.1, 6))
 	assert_vector(slabs[0].position).is_equal(Vector3(4, -0.05, 3))
 	assert_vector(slabs[1].position).is_equal(Vector3(4, 3.05, 3))
+
+
+## A slab is built through the SAME box path a wall and a prop take
+## (`nodes::solid::build_box`), so it inherits the CUSTOM0 ordinal channel
+## too — held here on the RESIZED slab specifically, since the resize
+## rewrites the mesh's surface in place (`render::paint::resize_box_surface`)
+## and a stale or doubled CUSTOM0 array from a botched `clear_surfaces` would
+## show up only after a knob drag, not on the freshly built mesh.
+func test_a_resized_slab_still_carries_a_bounded_custom0_ordinal() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3.ZERO, 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	level.extents = Vector2(8, 6)
+	for slab: StaticBody3D in _slabs(level):
+		var mesh := _skin(slab).mesh as ArrayMesh
+		var arrays: Array = mesh.surface_get_arrays(0)
+		var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+		var custom: PackedFloat32Array = arrays[Mesh.ARRAY_CUSTOM0]
+		assert_int(verts.size()).is_equal(24)
+		assert_int(custom.size()).is_equal(verts.size())
+		for label: float in custom:
+			assert_bool(label >= 0.0 and label < 6.0).is_true()
 
 
 ## The running half of the slab-drawing law (level_plan::slab_drawn). The
@@ -570,7 +630,7 @@ func test_a_second_ready_does_not_double_the_slabs() -> void:
 	# and the extents knob still drives the slabs that are actually there
 	level.extents = Vector2(8, 6)
 	for slab: StaticBody3D in _slabs(level):
-		assert_vector(_box(slab).size).is_equal(Vector3(8, 0.1, 6))
+		assert_vector(_box(slab)).is_equal(Vector3(8, 0.1, 6))
 
 
 ## A level of `count` z-run stub walls a metre apart, with a spawn marker so

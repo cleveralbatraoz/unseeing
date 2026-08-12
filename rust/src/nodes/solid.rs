@@ -24,12 +24,13 @@
 //! what the data pass will write into the G channel.
 
 use godot::classes::{
-    BoxMesh, BoxShape3D, CollisionShape3D, Material, Mesh, MeshInstance3D, Shape3D,
+    ArrayMesh, BoxShape3D, CollisionShape3D, Material, Mesh, MeshInstance3D, Shape3D,
 };
 use godot::obj::WithBaseField;
 use godot::prelude::*;
 
 use crate::oid_palette;
+use crate::render;
 
 /// The per-instance shader parameter carrying a solid's flat object id —
 /// `data_core`'s `u_oid`, the G channel the outline pass diffs to find
@@ -176,9 +177,9 @@ impl Skin {
 /// naming the node — the other half of every solid that is identical.
 ///
 /// The fold itself is not a nicety. A size is a magnitude to a mesh and a
-/// magnitude to a collider, but they disagree about how to say so:
-/// `BoxMesh`/`CylinderMesh` take a negative extent and draw its mirror,
-/// while `BoxShape3D`/`CylinderShape3D` REFUSE it and silently keep
+/// magnitude to a collider, but they disagree about how to say so: the
+/// generated box or column mesh takes a negative extent and draws its
+/// mirror, while `BoxShape3D`/`CylinderShape3D` REFUSE it and silently keep
 /// whatever they had — the default 1 m cube on a freshly built node. The
 /// drawn shape and the struck shape stop being the same object, and the
 /// only engine diagnostic ("BoxShape3D size cannot be negative") names no
@@ -270,14 +271,27 @@ pub(crate) fn build_body(
     BuiltBody { skin, collider }
 }
 
+/// The six ordinals (0..6) every box-shaped solid — a wall, a free prop,
+/// a floor or ceiling slab — carries in CUSTOM0, one per face, read in
+/// [`render::paint::FACE_ORDER`]'s own −X,+X,−Y,+Y,−Z,+Z order: a
+/// placeholder the derive-time paint pass (Task 6) rewrites into a real
+/// label. Its length is [`render::paint::face_count`]'s Box/Slab entry
+/// made concrete, so a wrong-length edit here breaks a cargo test rather
+/// than drifting silently.
+pub(crate) const BOX_ORDINALS: [f32; 6] = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+
 /// One built box — the shape the walls, the slabs and the box prop all
 /// share. Its mesh and shape come back typed, because their owners reshape
-/// them live when a designer drags a size knob.
+/// them live when a designer drags a size knob: the collider's `set_size`
+/// mutates `BoxShape3D` in place as it always has, and the mesh's own
+/// resize goes through [`render::paint::resize_box_surface`], which
+/// mutates the SAME `ArrayMesh` resource for the same reason — see that
+/// function's doc comment.
 pub(crate) struct BuiltBox {
     /// The outline mesh limb.
     pub(crate) skin: Gd<MeshInstance3D>,
     /// The skin's box mesh, kept for live reshaping.
-    pub(crate) mesh: Gd<BoxMesh>,
+    pub(crate) mesh: Gd<ArrayMesh>,
     /// The collider limb.
     pub(crate) collider: Gd<CollisionShape3D>,
     /// The collider's box shape, kept for live reshaping.
@@ -287,8 +301,7 @@ pub(crate) struct BuiltBox {
 /// Build the mesh + collider pair for a box of `size` centered `lift`
 /// above the owner's origin.
 pub(crate) fn build_box(size: Vector3, lift: Vector3, mat: Option<&Gd<Material>>) -> BuiltBox {
-    let mut mesh = BoxMesh::new_gd();
-    mesh.set_size(size);
+    let mesh = render::paint::labelled_box(size, Vector3::ZERO, BOX_ORDINALS);
     let mut shape = BoxShape3D::new_gd();
     shape.set_size(size);
     let built = build_body(

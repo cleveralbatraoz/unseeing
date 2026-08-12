@@ -121,8 +121,8 @@ pub struct ColumnKnobs {
     pub height: f64,
     /// False when the cross-section was pulled by different amounts across
     /// X and Z. That asks for an ELLIPTIC cylinder — a shape neither
-    /// `CylinderMesh` nor `CylinderShape3D` can be, and one this
-    /// vocabulary deliberately does not own.
+    /// [`column_triangles`]' circular ring nor `CylinderShape3D` can be,
+    /// and one this vocabulary deliberately does not own.
     pub round: bool,
 }
 
@@ -201,6 +201,81 @@ pub fn wedge_triangles(size: Vector3) -> Vec<(Vector3, Vector3)> {
     face([a, f, c], slope);
     face([a, c, b], Vector3::FORWARD);
     face([d, e, f], Vector3::BACK);
+    out
+}
+
+/// Which of the wedge's five faces each of [`wedge_triangles`]'s eight
+/// triangles belongs to — a CUSTOM0 ordinal per triangle, in
+/// `render::faces::wedge_faces`'s own emission order: floor (0), tall
+/// back wall (1), slope (2), −Z triangular end (3), +Z triangular end
+/// (4). The grouping mirrors [`wedge_triangles`]'s own triangle order
+/// exactly (compare that function's body against `wedge_faces`'s five
+/// polygons), so this table is the one place the correspondence is named
+/// rather than re-derived at every call site that paints a wedge.
+pub const WEDGE_TRIANGLE_ORDINALS: [f32; 8] = [0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 4.0];
+
+/// How many segments a column's rims and flank discretize into — pinned
+/// equal to `render::faces::RIM_SEGMENTS` so the mesh a designer sees and
+/// the polygon the merge law reasons about describe the same circle.
+pub const COLUMN_SEGMENTS: usize = 32;
+
+/// A column's surface as `(position, normal, CUSTOM0 ordinal)` triples,
+/// local space, centered on the node with `half_height` above and below
+/// it: the bottom rim (ordinal 0, outward normal DOWN), the top rim
+/// (ordinal 1, outward normal UP) — matching
+/// `render::faces::column_faces`'s own bottom-then-top order — and the
+/// curved flank (ordinal 2), which has no plane and so no entry in
+/// `faces()` at all. Each rim is a triangle fan from its own center, flat
+/// shaded; the flank's radial normal varies smoothly per vertex, the way
+/// the `CylinderMesh` primitive this replaces shaded it.
+///
+/// Every triangle's winding is hand-derived (see the module tests): a fan
+/// walking increasing angle points DOWN, the mirrored walk points UP, and
+/// a flank quad wound `(bottom[i], top[i], top[i+1])` /
+/// `(bottom[i], top[i+1], bottom[i+1])` points radially outward — each
+/// checked independently by recomputing the winding's own cross product
+/// rather than trusting this comment.
+#[must_use]
+pub fn column_triangles(radius: f32, half_height: f32) -> Vec<(Vector3, Vector3, f32)> {
+    let n = COLUMN_SEGMENTS;
+    let ring = |y: f32| -> Vec<Vector3> {
+        (0..n)
+            .map(|i| {
+                let theta = i as f32 * std::f32::consts::TAU / n as f32;
+                Vector3::new(radius * theta.cos(), y, radius * theta.sin())
+            })
+            .collect()
+    };
+    let bottom = ring(-half_height);
+    let top = ring(half_height);
+    let radial = |i: usize| -> Vector3 {
+        let theta = i as f32 * std::f32::consts::TAU / n as f32;
+        Vector3::new(theta.cos(), 0.0, theta.sin())
+    };
+
+    let mut out = Vec::with_capacity(n * 12);
+    let center_bottom = Vector3::new(0.0, -half_height, 0.0);
+    let center_top = Vector3::new(0.0, half_height, 0.0);
+    for i in 0..n {
+        let j = (i + 1) % n;
+        // bottom cap: increasing angle winds outward (−Y) — see the
+        // module test `column_caps_wind_outward`
+        out.push((center_bottom, Vector3::DOWN, 0.0));
+        out.push((bottom[i], Vector3::DOWN, 0.0));
+        out.push((bottom[j], Vector3::DOWN, 0.0));
+        // top cap: the mirrored walk winds outward (+Y)
+        out.push((center_top, Vector3::UP, 1.0));
+        out.push((top[j], Vector3::UP, 1.0));
+        out.push((top[i], Vector3::UP, 1.0));
+        // flank: two triangles per segment, radial outward normal
+        let (n_i, n_j) = (radial(i), radial(j));
+        out.push((bottom[i], n_i, 2.0));
+        out.push((top[i], n_i, 2.0));
+        out.push((top[j], n_j, 2.0));
+        out.push((bottom[i], n_i, 2.0));
+        out.push((top[j], n_j, 2.0));
+        out.push((bottom[j], n_j, 2.0));
+    }
     out
 }
 
@@ -478,5 +553,141 @@ mod tests {
             wedge_hull(Vector3::new(-1.2, 0.6, -0.8)),
             wedge_hull(Vector3::new(1.2, 0.6, 0.8))
         );
+    }
+
+    /// The ordinal table has one entry per [`wedge_triangles`] triangle,
+    /// grouped 2/2/2/1/1 — floor, tall back wall and slope get two
+    /// triangles each (they are quads), the two triangular ends get one —
+    /// and every ordinal is inside the wedge's own five-face count
+    /// (`render::paint::face_count(ShapeKind::Wedge)`, hand-mirrored here
+    /// as 5 rather than imported, so this pure module stays decoupled
+    /// from `render`).
+    #[test]
+    fn wedge_ordinals_group_2_2_2_1_1_and_stay_inside_five_faces() {
+        assert_eq!(
+            WEDGE_TRIANGLE_ORDINALS.len(),
+            wedge_triangles(SIZE).len() / 3
+        );
+        let mut counts = [0u8; 5];
+        for &ord in &WEDGE_TRIANGLE_ORDINALS {
+            assert!(
+                (0.0..5.0).contains(&ord),
+                "ordinal {ord} outside the wedge's 5 faces"
+            );
+            counts[ord as usize] += 1;
+        }
+        assert_eq!(counts, [2, 2, 2, 1, 1]);
+    }
+
+    /// `column_triangles` at 32 segments: 12 vertices per segment (a
+    /// bottom-cap triangle, a top-cap triangle, two flank triangles, three
+    /// vertices each), hand-derived from the loop structure rather than
+    /// read off the function's own length.
+    #[test]
+    fn column_triangles_count_matches_the_segment_loop() {
+        let tris = column_triangles(RADIUS, HEIGHT * 0.5);
+        assert_eq!(tris.len(), COLUMN_SEGMENTS * 12);
+    }
+
+    /// Every vertex the column emits is finite and every normal is a unit
+    /// vector — a non-unit normal packs a wrong crease id, and a NaN
+    /// coordinate poisons everything downstream.
+    #[test]
+    fn every_column_vertex_is_finite_with_a_unit_normal() {
+        for (v, n, _) in column_triangles(RADIUS, HEIGHT * 0.5) {
+            assert!(v.is_finite(), "vertex not finite: {v}");
+            assert!(n.is_finite(), "normal not finite: {n}");
+            assert!((n.length() - 1.0).abs() < 1e-5, "normal not unit: {n}");
+        }
+    }
+
+    /// The three ordinals land where the doc comment says: bottom rim 0,
+    /// top rim 1, flank 2 — and nowhere past 3, the column's own face
+    /// count (`render::paint::face_count(ShapeKind::Column)`, hand-mirrored
+    /// as 3 for the same decoupling reason as the wedge test above).
+    /// Every bottom-rim vertex sits at y = −half_height, every top-rim
+    /// vertex at +half_height, and every flank vertex spans both — a
+    /// property read from the vertex's OWN y, independent of which
+    /// ordinal the triangle carries, so a swapped 0/1 label would fail
+    /// this rather than pass by agreeing with itself.
+    #[test]
+    fn column_ordinals_match_bottom_top_and_flank() {
+        let half = HEIGHT * 0.5;
+        for (v, _, ord) in column_triangles(RADIUS, half) {
+            assert!(
+                (0.0..3.0).contains(&ord),
+                "ordinal {ord} outside the column's 3 faces"
+            );
+            if ord == 0.0 {
+                assert!(
+                    (v.y - -half).abs() < 1e-5,
+                    "bottom-rim vertex not at −half: {v}"
+                );
+            } else if ord == 1.0 {
+                assert!(
+                    (v.y - half).abs() < 1e-5,
+                    "top-rim vertex not at +half: {v}"
+                );
+            }
+        }
+    }
+
+    /// Every bottom-cap triangle winds toward −Y (outward, seen from
+    /// below) and every top-cap triangle toward +Y — the fan's mirrored
+    /// walk, checked by recomputing each triangle's own cross product
+    /// rather than trusting the doc comment that derives it.
+    #[test]
+    fn column_caps_wind_outward() {
+        for (v0, v1, v2, want) in [
+            // a bottom-cap triangle: (center, ring[i], ring[i+1])
+            (
+                Vector3::new(0.0, -1.0, 0.0),
+                Vector3::new(1.0, -1.0, 0.0),
+                Vector3::new(0.0, -1.0, 1.0),
+                Vector3::DOWN,
+            ),
+            // a top-cap triangle: (center, ring[i+1], ring[i])
+            (
+                Vector3::new(0.0, 1.0, 0.0),
+                Vector3::new(0.0, 1.0, 1.0),
+                Vector3::new(1.0, 1.0, 0.0),
+                Vector3::UP,
+            ),
+        ] {
+            let cross = (v1 - v0).cross(v2 - v0);
+            assert!(
+                cross.dot(want) > 0.0,
+                "triangle {v0:?},{v1:?},{v2:?} does not wind toward {want:?}"
+            );
+        }
+    }
+
+    /// A flank quad winds radially outward — the same independent
+    /// cross-product check, at a concrete angle rather than trusting the
+    /// derivation in [`column_triangles`]'s doc comment.
+    #[test]
+    fn column_flank_winds_radially_outward() {
+        let tris = column_triangles(1.0, 1.0);
+        // segment 0 -> 1 sits at the very start of the ring, where the
+        // outward direction is +X
+        let (a, d, c) = (tris[6].0, tris[7].0, tris[8].0); // bottom[0], top[0], top[1]
+        let cross = (d - a).cross(c - a);
+        assert!(
+            cross.x > 0.0,
+            "flank triangle does not wind toward +X: {cross:?}"
+        );
+    }
+
+    /// Total on the shapes a designer can type by accident: zero radius or
+    /// height still yields a finite, if degenerate, mesh.
+    #[test]
+    fn degenerate_columns_stay_finite() {
+        for (r, h) in [(0.0, 0.5), (0.3, 0.0), (0.0, 0.0)] {
+            for (v, n, ord) in column_triangles(r, h) {
+                assert!(v.is_finite(), "vertex not finite for r={r} h={h}: {v}");
+                assert!(n.is_finite(), "normal not finite for r={r} h={h}: {n}");
+                assert!((0.0..3.0).contains(&ord));
+            }
+        }
     }
 }

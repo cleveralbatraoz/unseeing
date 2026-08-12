@@ -76,13 +76,11 @@ const FACE_CORNERS: [[Vector3; 4]; 6] = [
     ],
 ];
 
-/// An axis-aligned box, 24 vertices and 12 triangles, carrying one constant
-/// label per face in `ARRAY_CUSTOM0` — the spike's proof object. `size` is
-/// the box's full extent; `lift` translates every vertex, so several boxes
-/// can later be baked into one shared `ArrayMesh` without each needing its
-/// own node transform. `face_labels` is read in [`FACE_ORDER`]: −X, +X,
-/// −Y, +Y, −Z, +Z.
-pub fn labelled_box(size: Vector3, lift: Vector3, face_labels: [f32; 6]) -> Gd<ArrayMesh> {
+/// The vertex/normal/CUSTOM0/index arrays a labelled box is built from —
+/// factored out of [`labelled_box`] so [`resize_box_surface`] can rewrite
+/// an EXISTING mesh's surface with the identical geometry a fresh call to
+/// [`labelled_box`] would build, rather than the two risking drift apart.
+fn labelled_box_arrays(size: Vector3, lift: Vector3, face_labels: [f32; 6]) -> Array<Variant> {
     let half = Vector3::new(size.x * 0.5, size.y * 0.5, size.z * 0.5);
 
     let mut verts = PackedVector3Array::new();
@@ -116,12 +114,119 @@ pub fn labelled_box(size: Vector3, lift: Vector3, face_labels: [f32; 6]) -> Gd<A
     arrays.set(ArrayType::NORMAL.ord() as usize, &normals.to_variant());
     arrays.set(ArrayType::CUSTOM0.ord() as usize, &custom.to_variant());
     arrays.set(ArrayType::INDEX.ord() as usize, &indices.to_variant());
+    arrays
+}
 
+/// An axis-aligned box, 24 vertices and 12 triangles, carrying one constant
+/// label per face in `ARRAY_CUSTOM0` — the spike's proof object. `size` is
+/// the box's full extent; `lift` translates every vertex, so several boxes
+/// can later be baked into one shared `ArrayMesh` without each needing its
+/// own node transform. `face_labels` is read in [`FACE_ORDER`]: −X, +X,
+/// −Y, +Y, −Z, +Z.
+pub fn labelled_box(size: Vector3, lift: Vector3, face_labels: [f32; 6]) -> Gd<ArrayMesh> {
+    let arrays = labelled_box_arrays(size, lift, face_labels);
     let mut mesh = ArrayMesh::new_gd();
     mesh.add_surface_from_arrays_ex(PrimitiveType::TRIANGLES, &arrays)
         .flags(custom0_format())
         .done();
     mesh
+}
+
+/// Rewrite `mesh`'s single surface IN PLACE to a box of `size` — the
+/// resize half of every box-shaped static solid (a wall, a free prop, a
+/// floor or ceiling slab). Mutating the existing resource rather than
+/// handing back a fresh one is load-bearing, not a style choice:
+/// `Node.duplicate()` shares a mesh by REFERENCE
+/// (`nodes::solid::clear_limbs`'s own doc comment), so a knob drag has to
+/// land on every reference that mesh has, not just the one the resizing
+/// node happens to hold — replacing the resource outright would leave a
+/// stale ghost limb frozen at its old size instead of resizing with the
+/// original, which is the exact bug `clear_limbs` exists to guard against
+/// after a duplicate re-enters the tree.
+pub fn resize_box_surface(mesh: &mut Gd<ArrayMesh>, size: Vector3, face_labels: [f32; 6]) {
+    let arrays = labelled_box_arrays(size, Vector3::ZERO, face_labels);
+    mesh.clear_surfaces();
+    mesh.add_surface_from_arrays_ex(PrimitiveType::TRIANGLES, &arrays)
+        .flags(custom0_format())
+        .done();
+}
+
+/// The shape kinds a static solid's builder paints — one entry per shape
+/// [`crate::render::faces::Shape`] describes, plus [`ShapeKind::Slab`],
+/// which has no `Shape` variant of its own: a floor or ceiling is built
+/// straight through [`crate::nodes::solid::build_box`], the same box path
+/// a wall or a free prop takes, never through `render::faces`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeKind {
+    Box,
+    Wedge,
+    Column,
+    Slab,
+}
+
+/// How many CUSTOM0 ordinals a shape's mesh carries — the ONE contract
+/// every builder ([`crate::nodes::solid`], [`crate::nodes::props`],
+/// [`crate::nodes::level`]) and the later derive-time paint pass (Task 6's
+/// `relabel`) must read the same way: an ordinal a builder writes at or
+/// past this count, or a `labels_by_ordinal` slice shorter than it, is
+/// exactly the bug this number exists to catch before it ships as a
+/// silently wrong face.
+///
+/// A box or a slab matches [`FACE_ORDER`]'s six entries. A wedge matches
+/// `render::faces::wedge_faces`'s five: floor, tall back wall, slope, and
+/// the two triangular ends. A column's three is its two flat rims —
+/// bottom then top, `render::faces::column_faces`'s own order — plus its
+/// curved flank, which has no plane and so no entry in `faces()` at all;
+/// the flank still needs its OWN ordinal so it never shares a vertex with
+/// a rim it meets.
+#[must_use]
+pub fn face_count(kind: ShapeKind) -> usize {
+    match kind {
+        ShapeKind::Box | ShapeKind::Slab => 6,
+        ShapeKind::Wedge => 5,
+        ShapeKind::Column => 3,
+    }
+}
+
+/// The vertex/normal/CUSTOM0 arrays a triangle-list mesh (no index
+/// buffer) is built from — the [`labelled_box_arrays`] of
+/// [`resize_triangle_surface`].
+fn triangle_arrays(triangles: &[(Vector3, Vector3, f32)]) -> Array<Variant> {
+    let mut verts = PackedVector3Array::new();
+    let mut normals = PackedVector3Array::new();
+    let mut custom = PackedFloat32Array::new();
+    for (pos, normal, ordinal) in triangles {
+        verts.push(*pos);
+        normals.push(*normal);
+        custom.push(*ordinal);
+    }
+    let mut arrays = Array::<Variant>::new();
+    arrays.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
+    arrays.set(ArrayType::VERTEX.ord() as usize, &verts.to_variant());
+    arrays.set(ArrayType::NORMAL.ord() as usize, &normals.to_variant());
+    arrays.set(ArrayType::CUSTOM0.ord() as usize, &custom.to_variant());
+    arrays
+}
+
+/// Rewrite `mesh`'s single surface IN PLACE — no index buffer — from
+/// `(position, normal, CUSTOM0 ordinal)` triples: a shape whose triangles
+/// are not already grouped into indexed quads the way [`labelled_box`]
+/// builds them. Doubles as the FIRST build too, not only a later resize:
+/// `clear_surfaces()` is a no-op on a mesh that has none yet, so the
+/// column and wedge builders can call this once from `_ready` (on a mesh
+/// built empty by `ArrayMesh::new_gd()`) and again on every knob drag,
+/// with no separate "fresh mesh" path to risk drifting from this one.
+/// Mutating the existing resource rather than handing back a fresh one is
+/// load-bearing on every call, for the identical reason
+/// [`resize_box_surface`]'s doc comment gives: `Node.duplicate()` shares a
+/// mesh by reference, so a rebuild has to land on every reference that
+/// mesh has.
+pub fn resize_triangle_surface(mesh: &mut Gd<ArrayMesh>, triangles: &[(Vector3, Vector3, f32)]) {
+    let arrays = triangle_arrays(triangles);
+    mesh.clear_surfaces();
+    mesh.add_surface_from_arrays_ex(PrimitiveType::TRIANGLES, &arrays)
+        .flags(custom0_format())
+        .done();
 }
 
 /// The surface flag that marks `ARRAY_CUSTOM0` as one 32-bit float per
@@ -166,6 +271,26 @@ mod tests {
             );
         }
     }
+
+    /// The ordinal contract's four counts, hand-derived from each shape's
+    /// own vocabulary rather than read off `face_count` reproducing
+    /// itself: a box's six faces, a wedge's five (`render::faces::wedge_faces`),
+    /// a column's two rims plus its one curved flank, and a slab sharing
+    /// the box's six because it is built through the same box path.
+    #[test]
+    fn face_count_matches_each_shapes_own_vocabulary() {
+        assert_eq!(face_count(ShapeKind::Box), 6);
+        assert_eq!(face_count(ShapeKind::Slab), 6);
+        assert_eq!(face_count(ShapeKind::Wedge), 5);
+        assert_eq!(face_count(ShapeKind::Column), 3);
+    }
+
+    // `resize_triangle_surface` cannot be cargo-tested past this either,
+    // for the identical reason `labelled_box` below cannot: it too
+    // reaches a live `Gd<ArrayMesh>`. The triples it merely copies are
+    // where the real geometry is built and where it stays pure and
+    // cargo-tested — `prop_shape::column_triangles`, and the ordinal
+    // lookup beside `prop_shape::wedge_triangles`.
 
     // `labelled_box` itself is NOT cargo-tested beyond this: it constructs
     // a live `Gd<ArrayMesh>`, and gdext refuses engine calls outside a

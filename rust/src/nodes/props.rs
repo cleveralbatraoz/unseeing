@@ -39,18 +39,20 @@
 //! instead of folding it, because its length feeds an occluding centerline;
 //! a prop's extent is free, so it can hold what the scale meant.
 
-use godot::classes::mesh::{ArrayType, PrimitiveType};
 use godot::classes::notify::Node3DNotification;
 use godot::classes::{
-    ArrayMesh, BoxMesh, BoxShape3D, CollisionShape3D, ConvexPolygonShape3D, CylinderMesh,
-    CylinderShape3D, IStaticBody3D, Material, Mesh, Shape3D, StaticBody3D,
+    ArrayMesh, BoxShape3D, CollisionShape3D, ConvexPolygonShape3D, CylinderShape3D, IStaticBody3D,
+    Material, Mesh, Shape3D, StaticBody3D,
 };
 use godot::prelude::*;
 
 use godot::classes::MeshInstance3D;
 
-use super::solid::{LIMBS, SignFold, Skin, WaveSolid, build_body, build_box, clear_limbs};
+use super::solid::{
+    BOX_ORDINALS, LIMBS, SignFold, Skin, WaveSolid, build_body, build_box, clear_limbs,
+};
 use crate::prop_shape;
+use crate::render;
 
 /// A free box obstacle — table top, chair leg, crate, shelf. The node sits
 /// at the box's CENTER; `size` is its full extent. Unlike a wall it may
@@ -67,7 +69,7 @@ pub struct WaveProp {
     size: Vector3,
     skin: Skin,
     fold: SignFold,
-    mesh: Option<Gd<BoxMesh>>,
+    mesh: Option<Gd<ArrayMesh>>,
     shape: Option<Gd<BoxShape3D>>,
     base: Base<StaticBody3D>,
 }
@@ -104,7 +106,7 @@ impl WaveProp {
         self.size = self.fold.vector("size", size);
         let size = self.size;
         if let Some(mesh) = self.mesh.as_mut() {
-            mesh.set_size(size);
+            render::paint::resize_box_surface(mesh, size, BOX_ORDINALS);
         }
         if let Some(shape) = self.shape.as_mut() {
             shape.set_size(size);
@@ -161,7 +163,7 @@ pub struct WaveColumn {
     height: f64,
     skin: Skin,
     fold: SignFold,
-    mesh: Option<Gd<CylinderMesh>>,
+    mesh: Option<Gd<ArrayMesh>>,
     shape: Option<Gd<CylinderShape3D>>,
     collider: Option<Gd<CollisionShape3D>>,
     base: Base<StaticBody3D>,
@@ -185,12 +187,10 @@ impl IStaticBody3D for WaveColumn {
             };
             drop_scale(&mut self.base_mut(), scale, lost);
         }
-        let mut mesh = CylinderMesh::new_gd();
-        // fewer segments than the engine default: a flat object id means the
-        // facets never draw as creases, so the count buys nothing but
-        // vertices past the point the OUTLINE stops looking polygonal
-        mesh.set_radial_segments(24);
-        mesh.set_rings(1);
+        // built empty here and filled by the `reshape()` call below, which
+        // is the ONE place the real geometry is generated — so `ready` and
+        // a dragged knob can never disagree about what a column is
+        let mesh = ArrayMesh::new_gd();
         let shape = CylinderShape3D::new_gd();
         let built = build_body(
             &mesh.clone().upcast::<Mesh>(),
@@ -260,6 +260,10 @@ impl WaveColumn {
 
     /// Mesh, collider and lift together, so a knob dragged in the
     /// Inspector moves what the waves strike and not only what is drawn.
+    /// The mesh is regenerated whole — [`prop_shape::column_triangles`] —
+    /// rather than resized in place the way the `CylinderMesh` primitive
+    /// this replaces was: a generated surface has no size knob of its own
+    /// to mutate, only vertices to rebuild.
     ///
     /// Both knobs are magnitudes by the time they land in the fields (the
     /// setters fold, [`SignFold`]), so nothing here has a sign to defend
@@ -268,9 +272,8 @@ impl WaveColumn {
         let radius = self.radius as f32;
         let height = self.height as f32;
         if let Some(mesh) = self.mesh.as_mut() {
-            mesh.set_top_radius(radius);
-            mesh.set_bottom_radius(radius);
-            mesh.set_height(height);
+            let triangles = prop_shape::column_triangles(radius, height * 0.5);
+            render::paint::resize_triangle_surface(mesh, &triangles);
         }
         if let Some(shape) = self.shape.as_mut() {
             shape.set_radius(radius);
@@ -491,19 +494,20 @@ fn placement_basis(node: &Gd<StaticBody3D>) -> Basis {
 /// Cut a wedge of `size` into the given mesh and hull — the one place the
 /// generated geometry crosses into the engine, so `_ready` and a dragged
 /// knob cannot disagree about what a wedge is.
+///
+/// Each vertex takes a CUSTOM0 ordinal from
+/// [`prop_shape::WEDGE_TRIANGLE_ORDINALS`], one entry per triangle: that
+/// table's own order already matches [`prop_shape::wedge_triangles`]'s —
+/// both are built from the same eight triangles in the same order — so
+/// `triangle_index / 3` (three vertices per triangle) reads the right
+/// ordinal without a second lookup.
 fn cut_wedge(mesh: &mut Gd<ArrayMesh>, shape: &mut Gd<ConvexPolygonShape3D>, size: Vector3) {
-    let mut verts = PackedVector3Array::new();
-    let mut normals = PackedVector3Array::new();
-    for (v, n) in prop_shape::wedge_triangles(size) {
-        verts.push(v);
-        normals.push(n);
-    }
-    let mut arrays = Array::<Variant>::new();
-    arrays.resize(ArrayType::MAX.ord() as usize, &Variant::nil());
-    arrays.set(ArrayType::VERTEX.ord() as usize, &verts.to_variant());
-    arrays.set(ArrayType::NORMAL.ord() as usize, &normals.to_variant());
-    mesh.clear_surfaces();
-    mesh.add_surface_from_arrays(PrimitiveType::TRIANGLES, &arrays);
+    let triangles: Vec<(Vector3, Vector3, f32)> = prop_shape::wedge_triangles(size)
+        .into_iter()
+        .enumerate()
+        .map(|(i, (v, n))| (v, n, prop_shape::WEDGE_TRIANGLE_ORDINALS[i / 3]))
+        .collect();
+    render::paint::resize_triangle_surface(mesh, &triangles);
     shape.set_points(&PackedVector3Array::from(&prop_shape::wedge_hull(size)));
 }
 

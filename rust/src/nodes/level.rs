@@ -102,7 +102,7 @@ const SLAB_NAMES: [&str; 2] = ["WaveFloor", "WaveCeiling"];
 struct Slab {
     body: Gd<StaticBody3D>,
     skin: Gd<MeshInstance3D>,
-    mesh: Gd<godot::classes::BoxMesh>,
+    mesh: Gd<ArrayMesh>,
     shape: Gd<godot::classes::BoxShape3D>,
     /// True for the ceiling, false for the floor.
     lid: bool,
@@ -238,7 +238,7 @@ impl WaveLevel {
         let size = Vector3::new(extents.x, level_plan::SLAB_T as f32, extents.y);
         for slab in &mut self.slabs {
             slab.body.set_position(slab_center(extents, slab.lid));
-            slab.mesh.set_size(size);
+            render::paint::resize_box_surface(&mut slab.mesh, size, super::solid::BOX_ORDINALS);
             slab.shape.set_size(size);
         }
     }
