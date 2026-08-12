@@ -28,6 +28,31 @@
 //! therefore load-bearing here, not cosmetic: a torus wound inward would
 //! cull to nothing from outside. [`tests::every_triangle_winds_outward`]
 //! is the guard.
+//!
+//! # A disclosed fidelity trade-off, not a silent one
+//!
+//! Both replacements tessellate COARSER than the engine primitives they
+//! stand in for: `TorusMesh`'s own defaults are `rings` 64 (its major
+//! loop) and `ring_segments` 32 (its tube cross-section), against
+//! [`MAJOR_SEGMENTS`] 32 and [`MINOR_SEGMENTS`] 12 here; `CylinderMesh`'s
+//! own default `radial_segments` is 64, against
+//! [`crate::prop_shape::COLUMN_SEGMENTS`] 32 — reused unchanged from the
+//! world's own columns rather than given a source-specific count, so a
+//! source's cylindrical limbs read at the same silhouette resolution the
+//! rest of the game already settled on.
+//!
+//! Deliberate, judged against the actual object scale rather than
+//! assumed harmless: the fan's guard ring is a THIN ring (major radius
+//! ≈0.42 m, tube radius ≈0.02 m — `nodes/fan.rs`'s `labelled_torus(0.40,
+//! GUARD_R, ..)`) and the radio's grille smaller still (major ≈0.069 m,
+//! tube ≈0.017 m — `labelled_torus(0.052, 0.086, ..)`); at either size,
+//! in a black-and-white thin-outline renderer whose only marks are the
+//! silhouette and the crease lines a Laplacian draws off packed depth
+//! and a flat label, the missing facets between 12 and 32 tube segments
+//! or 32 and 64 major segments do not read as visible polygon corners at
+//! ordinary play distance. Judged negligible, not measured zero — flagged
+//! here rather than left for a future session to rediscover by looking
+//! twice at a screenshot.
 
 use std::f32::consts::TAU;
 
