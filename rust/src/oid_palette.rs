@@ -99,8 +99,10 @@ pub fn separated(a: f64, b: f64) -> bool {
 /// this much before asking.
 pub const TOUCH_EPS: f64 = 0.01;
 
-/// The data pass's "no id given" sentinel, matching `u_oid`'s default in
-/// `data_pass.gdshader`: the shader falls back to a normal-derived id.
+/// The engine-side "no id given" sentinel: what a census reports for a
+/// solid whose mesh carries no `CUSTOM0` channel at all, never a value the
+/// shader itself sees — the data pass reads `CUSTOM0` straight through for
+/// every drawn vertex and has no separate "unset" case of its own.
 pub const NO_OID: f64 = -1.0;
 
 /// An axis-aligned box in world space.

@@ -2,7 +2,7 @@
 // The world is never drawn: geometry renders as DATA for the hearing
 // pass to read from the screen texture:
 //   R — reveal: how recently/strongly a wave swept this point
-//   G — normal id / object id: crease edge detection
+//   G — superface label: crease edge detection
 //   B — camera distance / DIST_PACK_RANGE (silhouette edges + wave occlusion)
 // Distance is packed here on purpose: the depth texture is unreliable on
 // WebGL2/Compatibility, and the web build is a first-class target.
@@ -16,14 +16,18 @@
 
 uniform float u_base = 0.0;  // standing reveal floor; 0 = waves only
 
-// One flat OBJECT ID per instance: the post pass diffs the G channel, so a
-// constant id across a whole object draws its unified silhouette with NO
-// interior component seams. < 0 (the default) falls back to the normal-id
-// crease encoding, so an object opts in the moment it sets this per-instance.
-instance uniform float u_oid = -1.0;
+// The per-VERTEX superface label: the derive-time paint pass
+// (rust/src/render/paint.rs) bakes one label per face into each mesh's
+// CUSTOM0 channel, and both skins' vertex() functions carry it straight
+// through as this varying. Two overlapping solids sharing a label
+// bit-for-bit melt into one silhouette; where they must differ the paint
+// pass has already kept them >= MIN_SEP apart. Replaces the old
+// per-instance object-id uniform and its normal-derived fallback outright
+// — every object's G channel now comes from its own geometry, never a
+// per-object override.
+varying float v_label;
 
 varying vec3 v_world;
-varying vec3 v_nworld;
 
 // The viewmodel depth hack, written from the FRAGMENT: DEPTH takes the
 // window depth of the near plane (~1.0 under Godot's reversed-Z), so
@@ -136,15 +140,11 @@ float reveal_at(vec3 world) {
 	return reveal;
 }
 
-// Pack (reveal, normal/object id, camera distance) into the data channels:
-// nervous-light modulation and distance fade on R; the per-object id when
-// assigned, else distinct normal-id levels for the six axis directions
-// (continuous for curved surfaces) on G; packed camera distance on B.
-vec3 pack_data(float reveal, vec3 world, vec3 nworld, vec3 cam) {
+// Pack (reveal, superface label, camera distance) into the data channels:
+// nervous-light modulation and distance fade on R; the per-vertex label
+// straight off CUSTOM0 (v_label) on G; packed camera distance on B.
+vec3 pack_data(float reveal, vec3 world, vec3 cam) {
 	float vd = length(world - cam);
 	reveal *= (0.9 + 0.1 * u_flick) * exp(-vd * 0.05);
-	float nid = u_oid >= 0.0
-			? u_oid
-			: (0.5 + nworld.x * 0.30 + nworld.y * 0.17 + nworld.z * 0.09);
-	return vec3(clamp(reveal, 0.0, 1.0), nid, clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));
+	return vec3(clamp(reveal, 0.0, 1.0), v_label, clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));
 }

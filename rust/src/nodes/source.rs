@@ -40,10 +40,6 @@ use crate::sound_source::{Cadence, SOURCE_KIND, Voice};
 /// radio dim and brighten as one. `data_xray.gdshader` declares it.
 pub(crate) const IMAGE_PARAM: &str = "u_source_floor";
 
-/// The parameter each limb's flat object id rides in — `data_core`'s
-/// `u_oid`, the G channel the outline pass diffs to draw creases.
-pub(crate) const OID_PARAM: &str = "u_oid";
-
 /// What the level needs of a sound source, whatever the thing actually is.
 /// Implemented by every source node through `#[godot_dyn]`, which is what
 /// lets the level hold them all as one list.
@@ -161,21 +157,19 @@ impl SourceRig {
     }
 
     /// Build one limb: a mesh instance drawn through the injected skin,
-    /// tagged with its flat object id, positioned and rotated in its
-    /// parent. Remembered, so the standing image reaches it every frame.
+    /// positioned and rotated in its parent. Remembered, so the standing
+    /// image reaches it every frame.
     ///
-    /// `oid` is now (Task 7) a [`crate::render::role_label`] value the
-    /// caller's own mesh ALREADY carries baked into `CUSTOM0` — this push
-    /// is the TEMPORARY BRIDGE onto the per-instance `u_oid` the shader
-    /// still reads until Task 8 flips it to read `CUSTOM0` directly; the
-    /// two must always agree, since nothing here checks that they do.
+    /// The caller's own mesh already carries its
+    /// [`crate::render::role_label`] value baked into `CUSTOM0` — the
+    /// shader reads that directly for G, so this builder has no id of its
+    /// own left to push.
     pub(crate) fn limb(
         &mut self,
         parent: &mut Gd<Node3D>,
         mesh: &Gd<godot::classes::Mesh>,
         at: Vector3,
         rotation: Vector3,
-        oid: f64,
         skin: Option<&Gd<Material>>,
     ) {
         let mut mi = MeshInstance3D::new_alloc();
@@ -183,7 +177,6 @@ impl SourceRig {
         if let Some(skin) = skin {
             mi.set_material_override(skin);
         }
-        mi.set_instance_shader_parameter(OID_PARAM, &oid.to_variant());
         mi.set_position(at);
         mi.set_rotation(rotation);
         parent.add_child(&mi);

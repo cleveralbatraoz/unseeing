@@ -57,8 +57,8 @@ const TAP_SPEED := 5.5
 ## merge `map_test.gd`'s `KNOWN_MERGES` names, duplicated here rather than
 ## shared: `ShelfSideA`/`ShelfSideB` genuinely coplanar-merge with
 ## `ShelfBack` under `render::superface` (the `Rack*` trio the same way),
-## so their bridged `u_oid`s legitimately agree — the ONE pair this suite's
-## violation check accepts on purpose.
+## so their bridged first-face ids legitimately agree — the ONE pair this
+## suite's violation check accepts on purpose.
 const KNOWN_MERGES := [
 	["ShelfSideA", "ShelfBack"],
 	["ShelfSideB", "ShelfBack"],

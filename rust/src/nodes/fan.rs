@@ -39,10 +39,8 @@ const GUARD_R: f32 = 0.44;
 
 /// Both labels the fan paints itself with, so the level can keep the walls
 /// and props it colours clear of whichever one they stand against. Every
-/// limb bakes the SAME value into its mesh's `CUSTOM0` (the new truth) and
-/// into its per-instance `u_oid` (the TEMPORARY BRIDGE the shader still
-/// reads until Task 8 flips it to read `CUSTOM0` directly — see
-/// [`SourceRig::limb`]'s own doc comment for where that push happens).
+/// limb bakes the SAME value into its mesh's `CUSTOM0` — what the shader
+/// reads directly for G.
 const OIDS: [f64; 2] = [
     render::role_label(Role::Shell),
     render::role_label(Role::Moving),
@@ -178,7 +176,6 @@ impl SoundFan {
             &labelled_cyl(0.22, 0.06, shell),
             Vector3::new(0.0, 0.03, 0.0),
             Vector3::ZERO,
-            shell,
             skin.as_ref(),
         );
         self.rig.limb(
@@ -186,7 +183,6 @@ impl SoundFan {
             &labelled_cyl(0.03, HEAD_H, shell),
             Vector3::new(0.0, HEAD_H * 0.5, 0.0),
             Vector3::ZERO,
-            shell,
             skin.as_ref(),
         );
         let mut base_col = CollisionShape3D::new_alloc();
@@ -214,7 +210,6 @@ impl SoundFan {
             &labelled_boxm(0.16, 0.16, 0.24, shell),
             Vector3::new(0.0, 0.0, 0.10),
             Vector3::ZERO,
-            shell,
             skin.as_ref(),
         );
         self.rig.limb(
@@ -222,7 +217,6 @@ impl SoundFan {
             &labelled_torus(0.40, GUARD_R, shell),
             Vector3::new(0.0, 0.0, -0.10),
             Vector3::new(PI * 0.5, 0.0, 0.0),
-            shell,
             skin.as_ref(),
         );
         let mut head_col = CollisionShape3D::new_alloc();
@@ -255,7 +249,6 @@ impl SoundFan {
             &labelled_cyl(0.045, 0.08, moving),
             Vector3::ZERO,
             Vector3::new(PI * 0.5, 0.0, 0.0),
-            moving,
             skin.as_ref(),
         );
         for k in 0..3_i32 {
@@ -269,7 +262,6 @@ impl SoundFan {
                 &labelled_boxm(0.32, 0.11, 0.016, moving),
                 Vector3::new(0.24, 0.0, 0.0),
                 Vector3::ZERO,
-                moving,
                 skin.as_ref(),
             );
         }

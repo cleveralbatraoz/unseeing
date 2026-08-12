@@ -48,9 +48,8 @@ const HUB: Vector3 = Vector3::new(-0.11, 0.14, -0.10);
 /// stands on world geometry) and `Role::Shell`, reused from the fan's own
 /// housing under the palette's own law — two objects that can never touch
 /// may share a label, and these two stand rooms apart. Every limb bakes the
-/// SAME value into its mesh's `CUSTOM0` (the new truth) and into its
-/// per-instance `u_oid` (the TEMPORARY BRIDGE the shader still reads until
-/// Task 8 flips it to read `CUSTOM0` directly).
+/// SAME value into its mesh's `CUSTOM0` — what the shader reads directly
+/// for G.
 const OIDS: [f64; 2] = [
     render::role_label(Role::Case),
     render::role_label(Role::Shell),
@@ -154,7 +153,6 @@ impl SoundRadio {
             &labelled_boxm(CASE, case_label),
             lift,
             Vector3::ZERO,
-            case_label,
             skin.as_ref(),
         );
         let mut shape = BoxShape3D::new_gd();
@@ -180,7 +178,6 @@ impl SoundRadio {
             &labelled_torus(0.052, 0.086, shell),
             Vector3::new(HUB.x, HUB.y, face),
             flat,
-            shell,
             skin.as_ref(),
         );
         self.rig.limb(
@@ -188,7 +185,6 @@ impl SoundRadio {
             &labelled_boxm(Vector3::new(0.15, 0.05, 0.014), shell),
             Vector3::new(0.11, 0.195, face),
             Vector3::ZERO,
-            shell,
             skin.as_ref(),
         );
         for x in [0.055_f32, 0.165] {
@@ -197,7 +193,6 @@ impl SoundRadio {
                 &labelled_cyl(0.030, 0.026, shell),
                 Vector3::new(x, 0.075, face),
                 flat,
-                shell,
                 skin.as_ref(),
             );
         }
@@ -213,7 +208,6 @@ impl SoundRadio {
                 half * tilt.sin(),
             ),
             Vector3::new(tilt, 0.0, 0.0),
-            shell,
             skin.as_ref(),
         );
     }

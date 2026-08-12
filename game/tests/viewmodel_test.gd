@@ -69,11 +69,9 @@ func _assert_mesh_built_finite(mesh: ArrayMesh) -> void:
 
 ## Both viewmodel layers carry their role label (HeroCane 0.96, HeroBody
 ## 0.82 — render::labels::role_label, rust/src/render/labels.rs) on every
-## vertex of their baked mesh's CUSTOM0, and the mesh instance HeroBody adds
-## for each layer bridges the identical value onto its own u_oid — the
-## TEMPORARY BRIDGE the shader still reads until Task 8 flips it to CUSTOM0
-## directly must never disagree with the mesh underneath it.
-func test_viewmodel_layers_carry_their_role_labels_and_bridge_them() -> void:
+## vertex of their baked mesh's CUSTOM0 — what the shader's G channel reads
+## directly, with no per-instance uniform standing between them.
+func test_viewmodel_layers_carry_their_role_labels() -> void:
 	_step(_walk_vel)
 	_assert_layer_labelled(_hero.cane_mesh(), 0.96)
 	_assert_layer_labelled(_hero.body_mesh(), 0.82)
@@ -83,10 +81,6 @@ func test_viewmodel_layers_carry_their_role_labels_and_bridge_them() -> void:
 			layers.append(child as MeshInstance3D)
 	# ready() adds the cane layer first, then the body layer
 	assert_int(layers.size()).is_equal(2)
-	var cane_oid: float = layers[0].get_instance_shader_parameter("u_oid")
-	var body_oid: float = layers[1].get_instance_shader_parameter("u_oid")
-	assert_float(cane_oid).is_equal_approx(0.96, 0.0001)
-	assert_float(body_oid).is_equal_approx(0.82, 0.0001)
 
 
 func _assert_layer_labelled(mesh: ArrayMesh, label: float) -> void:

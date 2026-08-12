@@ -461,14 +461,14 @@ func test_shipped_level_reuses_ids_between_distant_boxes() -> void:
 ##
 ## `explain_oids()`'s fight census (`observe::oids::coplanar_fights_checked`,
 ## unrewritten until a later stage) still reasons at SOLID granularity: one
-## bridged `u_oid` per box (`WaveLevel::paint_entry`'s FIRST-face bridge),
+## value per box, the FIRST face's own CUSTOM0 label (`WaveLevel::oid_census`),
 ## not the real per-face labels the superface paint pass actually bakes.
 ## Now that a genuine wall junction MERGES (`render::superface`), a solid
 ## can legitimately carry several different labels across its own six
-## faces — and the single bridged value almost never happens to be the
+## faces — and the single first-face value almost never happens to be the
 ## SPECIFIC face that is actually coplanar with its neighbour, so the OLD
 ## census reports a "fight" the renderer will never draw: a stale artifact
-## of solid-granularity bridging, not a real defect. So this checks the
+## of solid-granularity reading, not a real defect. So this checks the
 ## GROUND TRUTH instead: for every reported fight, read the two solids'
 ## OWN meshes back and compare the REAL CUSTOM0 label of the face nearest
 ## the reported plane — the exact same law `_face_nearest_world_axis`
@@ -1087,12 +1087,20 @@ func _limbs(node: Node, out: Array[MeshInstance3D]) -> Array[MeshInstance3D]:
 	return out
 
 
-## Every distinct flat id a source paints its limbs with, read back off the
-## limbs themselves so the test cannot drift from what the data pass writes.
+## Every distinct flat id a source paints its limbs with, read back off each
+## limb's own mesh (CUSTOM0) so the test cannot drift from what the data
+## pass writes — CUSTOM0 is the shader's own G-channel source now, not a
+## per-instance uniform.
 func _source_oids(source: Node) -> Array[float]:
 	var ids: Array[float] = []
 	for limb: MeshInstance3D in _limbs(source, [] as Array[MeshInstance3D]):
-		var oid: float = limb.get_instance_shader_parameter("u_oid")
+		var mesh: ArrayMesh = limb.mesh
+		if mesh == null or mesh.get_surface_count() == 0:
+			continue
+		var custom: PackedFloat32Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+		if custom.is_empty():
+			continue
+		var oid: float = custom[0]
 		if oid >= 0.0 and not ids.has(oid):
 			ids.append(oid)
 	return ids

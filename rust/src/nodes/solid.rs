@@ -23,6 +23,7 @@
 //! back off the mesh instance, so there is one source of truth — exactly
 //! what the data pass will write into the G channel.
 
+use godot::classes::mesh::ArrayType;
 use godot::classes::{
     ArrayMesh, BoxShape3D, CollisionShape3D, Material, Mesh, MeshInstance3D, Shape3D,
 };
@@ -31,11 +32,6 @@ use godot::prelude::*;
 
 use crate::oid_palette;
 use crate::render;
-
-/// The per-instance shader parameter carrying a solid's flat object id —
-/// `data_core`'s `u_oid`, the G channel the outline pass diffs to find
-/// creases. Two touching solids sharing an id have NO line between them.
-pub(crate) const OID_PARAM: &str = "u_oid";
 
 /// The name the engine writes on every mesh limb it builds, and on every
 /// collider beside one. A designer never types these — they exist so that a
@@ -97,15 +93,14 @@ where
 
 /// What the level needs of any solid, whatever shape it is.
 ///
-/// Used to carry `set_oid`/`oid` too — the per-instance flat object id the
-/// old colouring painted every solid with. The derive-time superface paint
-/// pass (`render::paint`) replaced that with a real per-face label baked
-/// into each mesh's `CUSTOM0` channel, read back off the mesh itself
-/// (`Skin::oid`/`Skin::set_oid`, still the one source of truth for the
-/// `u_oid` bridge every solid still carries until the shader stops reading
-/// it), so the trait no longer needs to speak for it at all — every solid's
-/// own `#[func] oid()` reads its `Skin` directly instead of going through
-/// this trait.
+/// Used to carry `oid` too — the per-instance flat object id the old
+/// colouring painted every solid with. The derive-time superface paint pass
+/// (`render::paint`) replaced that with a real per-face label baked into
+/// each mesh's `CUSTOM0` channel, read back off the mesh itself (`Skin::oid`,
+/// the shader's own G-channel source now that `pack_data` reads `CUSTOM0`
+/// directly), so the trait no longer needs to speak for it at all — every
+/// solid's own `#[func] oid()` reads its `Skin` directly instead of going
+/// through this trait.
 pub trait WaveSolid {
     /// Take the world skin — the data-writing material the level deals to
     /// everything that renders at real depth.
@@ -152,20 +147,14 @@ impl Skin {
         self.wear(mat);
     }
 
-    /// Paint the limb with a flat object id.
-    pub(crate) fn set_oid(&mut self, oid: f64) {
-        if let Some(limb) = self.limb.as_mut() {
-            limb.set_instance_shader_parameter(OID_PARAM, &oid.to_variant());
-        }
-    }
-
     /// The id the limb carries right now — the one source of truth, read
-    /// back rather than mirrored.
+    /// straight off the limb's own mesh (`mesh_first_label`) rather than
+    /// mirrored or pushed through any per-instance uniform: `CUSTOM0` is
+    /// what the shader itself reads for G, so this is exactly that value.
     pub(crate) fn oid(&self) -> f64 {
         self.limb
             .as_ref()
-            .map(|limb| limb.get_instance_shader_parameter(OID_PARAM))
-            .and_then(|value| value.try_to::<f64>().ok())
+            .and_then(mesh_first_label)
             .unwrap_or(oid_palette::NO_OID)
     }
 
@@ -174,6 +163,30 @@ impl Skin {
             limb.set_material_override(mat);
         }
     }
+}
+
+/// The label a mesh limb's FIRST vertex carries in `CUSTOM0` — the
+/// [`render::paint::FACE_ORDER`] −X face's real value once the derive-time
+/// paint pass has rewritten it, read straight off the geometry itself: the
+/// one source of truth the shader now reads too (`v_label`, off
+/// `CUSTOM0.x`). `None` for a limb with no mesh, no surface, or no `CUSTOM0`
+/// channel at all — a caller decides its own "nothing painted" answer
+/// rather than this function folding one in.
+///
+/// This is still a SOLID-granularity read — the first face standing in for
+/// a mesh that may carry several different labels across its own faces —
+/// exactly the coarseness `WaveLevel::oid_census` (`super::level`) accepts
+/// for the identical reason, until a later stage's real per-face law
+/// replaces both call sites at once.
+pub(crate) fn mesh_first_label(limb: &Gd<MeshInstance3D>) -> Option<f64> {
+    let mesh = limb.get_mesh()?;
+    if mesh.get_surface_count() == 0 {
+        return None;
+    }
+    let arrays = mesh.surface_get_arrays(0);
+    let custom = arrays.get(ArrayType::CUSTOM0.ord() as usize)?;
+    let custom = custom.try_to::<PackedFloat32Array>().ok()?;
+    custom.get(0).map(f64::from)
 }
 
 /// A minus sign typed into a size knob, folded away and reported ONCE,
@@ -320,22 +333,14 @@ pub(crate) fn basis_columns_f64(b: Basis) -> [[f64; 3]; 3] {
 
 /// Bake the derive-time paint pass's chosen labels onto one solid: rewrite
 /// its mesh's placeholder CUSTOM0 ordinals with the real per-face labels
-/// ([`render::paint::relabel`]), and bridge the FIRST of them onto the
-/// per-instance `u_oid` uniform the shader still reads until Task 8 flips
-/// it to read `CUSTOM0` directly — so the game keeps rendering identically
-/// at every step of the migration. `mesh` is `None` for a solid whose knob
-/// was dragged before `_ready` built one; a no-op, the same as every other
+/// ([`render::paint::relabel`]) — the shader reads `CUSTOM0` directly now,
+/// so this is the whole of painting a solid; there is no instance uniform
+/// left to keep in step. `mesh` is `None` for a solid whose knob was
+/// dragged before `_ready` built one; a no-op, the same as every other
 /// builder call in this module.
-pub(crate) fn paint_solid(
-    skin: &mut Skin,
-    mesh: Option<&mut Gd<ArrayMesh>>,
-    labels_by_ordinal: &[f32],
-) {
+pub(crate) fn paint_solid(mesh: Option<&mut Gd<ArrayMesh>>, labels_by_ordinal: &[f32]) {
     if let Some(mesh) = mesh {
         render::paint::relabel(mesh, labels_by_ordinal);
-    }
-    if let Some(&first) = labels_by_ordinal.first() {
-        skin.set_oid(f64::from(first));
     }
 }
 

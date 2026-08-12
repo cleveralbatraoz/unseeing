@@ -11,10 +11,10 @@ render_mode unshaded, cull_disabled, shadows_disabled, ambient_light_disabled, f
 
 void vertex() {
 	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	v_nworld = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	v_label = CUSTOM0.x;
 }
 
 void fragment() {
 	float reveal = max(reveal_at(v_world), u_base);
-	ALBEDO = pack_data(reveal, v_world, v_nworld, CAMERA_POSITION_WORLD);
+	ALBEDO = pack_data(reveal, v_world, CAMERA_POSITION_WORLD);
 }

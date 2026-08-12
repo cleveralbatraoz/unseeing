@@ -9,12 +9,13 @@ render_mode unshaded, cull_back, shadows_disabled, ambient_light_disabled, fog_d
 // always-pass depth test a mesh's own back faces would stomp its front
 // faces in draw order.
 //
-// The object id still packs into G through the shared core (u_oid), so a
-// source reads as one clean silhouette exactly like the world skin — the
-// only differences are the faked depth and the standing floor.
+// The superface label still packs into G through the shared core (v_label,
+// off CUSTOM0), so a source reads as one clean silhouette exactly like the
+// world skin — the only differences are the faked depth and the standing
+// floor.
 //
-// v_world/v_nworld stay TRUE world values while the rasterized depth is
-// faked — B-channel distance and G normals never lie.
+// v_world stays a TRUE world value while the rasterized depth is faked —
+// B-channel distance never lies.
 
 #include "res://shaders/data_core.gdshaderinc"
 
@@ -36,7 +37,7 @@ instance uniform float u_source_floor = 0.0;
 
 void vertex() {
 	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	v_nworld = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	v_label = CUSTOM0.x;
 }
 
 void fragment() {
@@ -44,5 +45,5 @@ void fragment() {
 	// world fragment, but never over a nearer source than itself
 	DEPTH = source_depth(length(v_world - CAMERA_POSITION_WORLD));
 	float reveal = max(reveal_at(v_world), u_source_floor);
-	ALBEDO = pack_data(reveal, v_world, v_nworld, CAMERA_POSITION_WORLD);
+	ALBEDO = pack_data(reveal, v_world, CAMERA_POSITION_WORLD);
 }

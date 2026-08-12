@@ -121,7 +121,7 @@ impl WaveProp {
     }
 
     /// The id this prop carries — the engine-facing read-back of its own
-    /// [`Skin`], the `u_oid` bridge the derive-time paint pass keeps alive.
+    /// [`Skin`], off the mesh's own `CUSTOM0`.
     #[func]
     fn oid(&self) -> f64 {
         self.skin.oid()
@@ -142,7 +142,7 @@ impl WaveProp {
     /// Bake the derive-time paint pass's labels onto this prop — see
     /// [`solid::paint_solid`].
     pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
-        solid::paint_solid(&mut self.skin, self.mesh.as_mut(), labels_by_ordinal);
+        solid::paint_solid(self.mesh.as_mut(), labels_by_ordinal);
     }
 }
 
@@ -262,7 +262,7 @@ impl WaveColumn {
     }
 
     /// The id this column carries — the engine-facing read-back of its own
-    /// [`Skin`], the `u_oid` bridge the derive-time paint pass keeps alive.
+    /// [`Skin`], off the mesh's own `CUSTOM0`.
     #[func]
     fn oid(&self) -> f64 {
         self.skin.oid()
@@ -295,7 +295,7 @@ impl WaveColumn {
     /// Bake the derive-time paint pass's labels onto this column — see
     /// [`solid::paint_solid`].
     pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
-        solid::paint_solid(&mut self.skin, self.mesh.as_mut(), labels_by_ordinal);
+        solid::paint_solid(self.mesh.as_mut(), labels_by_ordinal);
     }
 
     /// Mesh, collider and lift together, so a knob dragged in the
@@ -435,7 +435,7 @@ impl WaveWedge {
     }
 
     /// The id this wedge carries — the engine-facing read-back of its own
-    /// [`Skin`], the `u_oid` bridge the derive-time paint pass keeps alive.
+    /// [`Skin`], off the mesh's own `CUSTOM0`.
     #[func]
     fn oid(&self) -> f64 {
         self.skin.oid()
@@ -457,7 +457,7 @@ impl WaveWedge {
     /// Bake the derive-time paint pass's labels onto this wedge — see
     /// [`solid::paint_solid`].
     pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
-        solid::paint_solid(&mut self.skin, self.mesh.as_mut(), labels_by_ordinal);
+        solid::paint_solid(self.mesh.as_mut(), labels_by_ordinal);
     }
 
     /// Rebuild the surface and the hull from the size knob, and re-lift the

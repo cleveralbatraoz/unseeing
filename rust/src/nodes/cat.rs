@@ -121,12 +121,8 @@ impl ICharacterBody3D for WaveCat {
         mi.set_material_override(self.data_mat.as_ref());
         // one flat label for the whole cat: the outline post-pass draws it
         // as a single unified silhouette, never a pile of joint circles.
-        // CUSTOM0 (baked below, every rebuild) is the new truth; this
-        // per-instance u_oid is the TEMPORARY BRIDGE the shader still
-        // reads until Task 8 flips it to CUSTOM0 directly — the two must
-        // always agree, or the game would render one thing today and
-        // another the instant that switch flips.
-        mi.set_instance_shader_parameter("u_oid", &render::role_label(Role::Cat).to_variant());
+        // CUSTOM0 (baked below, every rebuild) is what the shader reads for
+        // G directly — no per-instance bridge to keep in step any more.
         // the mesh mutates every frame in world space; never frustum-cull
         // it by its stale local bounds
         mi.set_extra_cull_margin(16384.0);
@@ -149,12 +145,19 @@ impl ICharacterBody3D for WaveCat {
         let frame = gait.advance(0.0, pos, yaw, 0.0);
         let pose = CatPose::from_gait(pos, yaw, &frame, 0.0);
         let sk = cat_body::skeleton(&pose);
-        self.tail = Some(Tail::new(sk.tail_root, sk.tail_back, rightward(yaw)));
+        let tail = Tail::new(sk.tail_root, sk.tail_back, rightward(yaw));
+        self.tail = Some(tail);
         self.gait = Some(gait);
         self.pose = Some(pose);
         self.presence = Cadence::every(cat_gait::PRESENCE_EVERY);
         self.last_pos = pos;
-        self.mesh_dirty = true;
+        // built HERE rather than left for the first process() tick: the
+        // mesh's CUSTOM0 is the shader's own G-channel source now (no
+        // per-instance uniform to carry the label in the meantime), so a
+        // census or an observer reading this cat before a frame has ever
+        // ticked must already find a real, painted silhouette.
+        self.build_mesh(&pose, &tail);
+        self.mesh_dirty = false;
     }
 
     fn physics_process(&mut self, dt: f64) {
@@ -399,10 +402,10 @@ impl WaveCat {
     /// fraction of the per-vertex FFI cost the wasm build feels.
     ///
     /// Every vertex carries the SAME [`Role::Cat`] label in `CUSTOM0` — one
-    /// silhouette, the same law [`Self::ready`]'s `u_oid` bridge states for
-    /// the mesh instance as a whole. `tri_buf` is cleared and refilled here
-    /// rather than rebuilt fresh, so a cat that has been alive a few frames
-    /// allocates nothing more to keep drawing itself.
+    /// silhouette, exactly what the shader's G channel reads for the whole
+    /// mesh instance. `tri_buf` is cleared and refilled here rather than
+    /// rebuilt fresh, so a cat that has been alive a few frames allocates
+    /// nothing more to keep drawing itself.
     fn build_mesh(&mut self, pose: &CatPose, tail: &Tail) {
         let sk = cat_body::skeleton(pose);
         let label = render::role_label(Role::Cat) as f32;

@@ -88,18 +88,10 @@ impl INode3D for HeroBody {
         }
         let cane_mesh = self.cane_mesh.clone();
         let cane_mat = self.cane_mat.clone();
-        self.add_layer(
-            &cane_mesh,
-            cane_mat.as_ref(),
-            render::role_label(Role::HeroCane),
-        );
+        self.add_layer(&cane_mesh, cane_mat.as_ref());
         let body_mesh = self.body_mesh.clone();
         let body_mat = self.body_mat.clone();
-        self.add_layer(
-            &body_mesh,
-            body_mat.as_ref(),
-            render::role_label(Role::HeroBody),
-        );
+        self.add_layer(&body_mesh, body_mat.as_ref());
         self.vm = Some(Viewmodel::new(
             f64::from(player.get_rotation().y),
             f64::from(camera.get_rotation().x),
@@ -198,18 +190,17 @@ impl HeroBody {
 
     /// One render layer of the body: a baked mesh drawn through the given
     /// data-pass material, never frustum-culled (the mesh mutates every
-    /// frame), tagged with a flat label so the arm and the legs/torso each
-    /// read as one silhouette, not a heap of tubes. `CUSTOM0` (baked into
-    /// the mesh every rebuild) is the new truth; this per-instance u_oid is
-    /// the TEMPORARY BRIDGE the shader still reads until Task 8 flips it to
-    /// CUSTOM0 directly — the two must always carry the identical label.
-    fn add_layer(&mut self, mesh: &Gd<ArrayMesh>, mat: Option<&Gd<ShaderMaterial>>, label: f64) {
+    /// frame). The arm and the legs/torso each read as one silhouette, not
+    /// a heap of tubes, because `build_cane`/`build_body` bake one constant
+    /// label into every vertex of the mesh's own `CUSTOM0` — what the
+    /// shader's G channel reads directly, with no per-instance uniform to
+    /// keep in step.
+    fn add_layer(&mut self, mesh: &Gd<ArrayMesh>, mat: Option<&Gd<ShaderMaterial>>) {
         let mut mi = MeshInstance3D::new_alloc();
         mi.set_mesh(mesh);
         if let Some(mat) = mat {
             mi.set_material_override(mat);
         }
-        mi.set_instance_shader_parameter("u_oid", &label.to_variant());
         mi.set_extra_cull_margin(16384.0);
         self.base_mut().add_child(&mi);
     }

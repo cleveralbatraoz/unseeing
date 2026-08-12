@@ -63,7 +63,9 @@ use godot::prelude::*;
 
 use super::cat::WaveCat;
 use super::props::{WaveColumn, WaveProp, WaveWedge};
-use super::solid::{OID_PARAM, WaveSolid, basis_columns_f64, build_box, clear_limbs, to_f64_3};
+use super::solid::{
+    WaveSolid, basis_columns_f64, build_box, clear_limbs, mesh_first_label, to_f64_3,
+};
 use super::source::SoundSource;
 use super::wall::WaveWall;
 use crate::level_plan;
@@ -122,8 +124,8 @@ struct Census {
 
 /// Which concrete thing a [`PaintEntry`] is — the level's own two slabs
 /// have no `Skin`-carrying node of their own (no indirection needed to
-/// reach their mesh/instance-uniform), while every authored solid paints
-/// itself back through its own `paint()` method; see [`WaveLevel::paint_entry`].
+/// reach their mesh), while every authored solid paints itself back
+/// through its own `paint()` method; see [`WaveLevel::paint_entry`].
 enum PaintItem {
     Slab { lid: bool },
     Wall(Gd<WaveWall>),
@@ -652,10 +654,9 @@ impl WaveLevel {
     /// case they now MELT together on purpose — the whole point of this
     /// campaign.
     ///
-    /// Every label is also bridged onto the solid's per-instance `u_oid`
-    /// (the FIRST face label) so the shader — which still reads `u_oid`,
-    /// not `CUSTOM0` — keeps drawing the identical world it always has;
-    /// dropped once Task 8 flips the shader to read the attribute directly.
+    /// The shader reads `CUSTOM0` straight through for G now, so baking it
+    /// onto each solid's mesh is the whole of painting — there is no
+    /// per-instance uniform left to keep in step with it.
     fn paint_labels(&mut self, census: &Census) {
         let entries = self.paint_entries(census);
 
@@ -803,12 +804,12 @@ impl WaveLevel {
         }
 
         // sound sources stay OUT of the face census entirely (their limbs
-        // bake their own role labels directly and still speak their own
-        // `u_oid`), but their FIXED ids still have to ban the world
-        // palette entries near them for whatever touches their swept
-        // envelope — `render::labels::role_label(Shell)` (0.33) sits a
-        // centimetre from the world palette's own 0.34, and without a ban
-        // a wall or a crate touching a source would be free to land there.
+        // bake their own role labels directly into CUSTOM0), but their
+        // FIXED ids still have to ban the world palette entries near them
+        // for whatever touches their swept envelope —
+        // `render::labels::role_label(Shell)` (0.33) sits a centimetre from
+        // the world palette's own 0.34, and without a ban a wall or a crate
+        // touching a source would be free to land there.
         let mut extra_anchors: Vec<(f64, Vec<usize>)> = Vec::new();
         for source in &census.sources {
             let Some(source_area) = mesh_world_box(&source.clone().into_gd()) else {
@@ -862,7 +863,7 @@ impl WaveLevel {
         }
 
         // bake: gather each entry's own labels by ordinal and rewrite its
-        // mesh's CUSTOM0 (plus the u_oid bridge, dropped at Task 8)
+        // mesh's CUSTOM0 — the shader's own G-channel source now
         for (i, entry) in entries.iter().enumerate() {
             let n = render::paint::face_count(entry.item.kind());
             let mut labels_by_ordinal: Vec<f32> = vec![0.0; n];
@@ -979,10 +980,6 @@ impl WaveLevel {
                     return;
                 };
                 render::paint::relabel(&mut slab.mesh, labels_by_ordinal);
-                if let Some(&first) = labels_by_ordinal.first() {
-                    slab.skin
-                        .set_instance_shader_parameter(OID_PARAM, &f64::from(first).to_variant());
-                }
             }
             PaintItem::Wall(w) => w.clone().bind_mut().paint(labels_by_ordinal),
             PaintItem::Prop(p) => p.clone().bind_mut().paint(labels_by_ordinal),
@@ -1239,14 +1236,14 @@ impl WaveLevel {
     /// The other occupant of the creature band is therefore outside every
     /// report this function feeds.
     ///
-    /// EVERY `oid` HERE IS A SOLID-GRANULARITY BRIDGE, not the real
-    /// per-face law: it reads back a solid's `u_oid`, which
-    /// [`Self::paint_entry`] bridges to that solid's FIRST face label — one
-    /// number standing in for a whole mesh that may now carry several. That
-    /// is deliberately coarser than what actually draws, kept only so this
-    /// census (and the observer's `explain_oids`, which reads it) keeps
-    /// compiling and reporting something true, if incomplete, through the
-    /// migration; the real per-face postcondition is a later stage's job.
+    /// EVERY `oid` HERE IS STILL A SOLID-GRANULARITY READ, not the real
+    /// per-face law: it reads a mesh's FIRST `CUSTOM0` vertex
+    /// ([`mesh_first_label`]) — one number standing in for a whole mesh
+    /// that may now carry several. That is deliberately coarser than what
+    /// actually draws, kept only so this census (and the observer's
+    /// `explain_oids`, which reads it) keeps compiling and reporting
+    /// something true, if incomplete; the real per-face postcondition is a
+    /// later stage's job.
     pub(super) fn oid_census(&self) -> Vec<PaintedSolid> {
         let census = self.census();
         let mut painted = Vec::new();
@@ -1313,16 +1310,15 @@ impl WaveLevel {
 }
 
 /// The flat object id a creature is painted with, read off the first limb
-/// that carries one. A creature paints every limb with one id (the whole
-/// animal is one silhouette), so the first limb speaks for it; `None` for a
-/// node whose limbs were never painted, which the census then leaves out
-/// rather than reporting under [`oid_palette::NO_OID`] as though the shader
-/// had been handed a real value.
+/// whose mesh carries a `CUSTOM0` channel. A creature paints every limb
+/// with one id (the whole animal is one silhouette), so the first limb
+/// speaks for it; `None` for a node with no `MeshInstance3D` descendant
+/// carrying one at all, which the census then leaves out rather than
+/// reporting under [`oid_palette::NO_OID`] as though the shader had been
+/// handed a real value.
 fn painted_oid(node: &Gd<Node>) -> Option<f64> {
     if let Ok(skin) = node.clone().try_cast::<MeshInstance3D>()
-        && let Ok(oid) = skin
-            .get_instance_shader_parameter(OID_PARAM)
-            .try_to::<f64>()
+        && let Some(oid) = mesh_first_label(&skin)
     {
         return Some(oid);
     }
@@ -1332,12 +1328,11 @@ fn painted_oid(node: &Gd<Node>) -> Option<f64> {
 }
 
 /// The flat object id a mesh instance carries right now — the one source
-/// of truth, read straight back off the skin the data pass will write
-/// from. [`oid_palette::NO_OID`] when nothing has painted it.
+/// of truth, read straight back off the skin's own `CUSTOM0`, exactly what
+/// the shader itself reads for G. [`oid_palette::NO_OID`] when nothing has
+/// painted it.
 fn read_oid(skin: &Gd<MeshInstance3D>) -> f64 {
-    skin.get_instance_shader_parameter(OID_PARAM)
-        .try_to::<f64>()
-        .unwrap_or(oid_palette::NO_OID)
+    mesh_first_label(skin).unwrap_or(oid_palette::NO_OID)
 }
 
 /// The recursive half of [`WaveLevel::census`]: depth-first, scene

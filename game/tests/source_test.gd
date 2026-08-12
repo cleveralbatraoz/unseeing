@@ -219,6 +219,17 @@ func test_a_sourceless_level_ticks_quietly() -> void:
 	assert_vector(level.demo_tap()).is_equal(Vector3.ZERO)
 
 
+## A limb's own painted label, read off its mesh's CUSTOM0 — what the
+## shader's G channel reads directly, with no per-instance uniform between
+## them any more.
+func _limb_label(limb: MeshInstance3D) -> float:
+	var mesh: ArrayMesh = limb.mesh
+	assert_int(mesh.get_surface_count()).is_equal(1)
+	var custom: PackedFloat32Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	assert_int(custom.size()).is_greater(0)
+	return custom[0]
+
+
 ## Every source's limbs are painted with object ids the world's colouring
 ## then keeps clear of: a source stands ON world geometry (a fan on the
 ## floor, a radio on a table), and where they touch there is no depth step,
@@ -228,49 +239,63 @@ func test_sources_paint_ids_the_world_colouring_must_avoid() -> void:
 	for source: Node3D in level.sources():
 		var ids := {}
 		for limb: MeshInstance3D in _limbs(source, [] as Array[MeshInstance3D]):
-			var oid: float = limb.get_instance_shader_parameter("u_oid")
+			var oid := _limb_label(limb)
 			assert_bool(oid >= 0.0).is_true()
 			ids[oid] = true
 		# a source reads as a few coherent parts, never as a heap of limbs
 		assert_bool(ids.size() >= 1 and ids.size() <= 3).is_true()
 
 
-## Every limb a source builds now carries its role label baked into its
-## mesh's per-vertex CUSTOM0 (Task 7's new truth) AND the per-instance
-## u_oid the shader still reads until Task 8 flips it to CUSTOM0 directly —
-## the TEMPORARY BRIDGE (rust/src/nodes/source.rs's `SourceRig::limb`) must
-## never disagree with the mesh underneath it, or the game would render one
-## thing today and a different one the instant that switch flips. Every
+## Every limb a source builds carries its role label baked into its mesh's
+## per-vertex CUSTOM0 — what the shader's G channel reads directly. Every
 ## vertex of a limb's mesh carries the SAME label, since a source's own
 ## body has no internal seams of its own — one label per limb, never split
 ## across it. Hand-derived against render::labels::role_label
 ## (rust/src/render/labels.rs): Shell 0.33, Moving 0.63, Case 0.05.
-func _assert_limbs_bridge_their_labels(source: Node3D, expected: Array[float]) -> void:
-	var seen: Array[float] = []
+##
+## Matched APPROXIMATELY, not by exact membership: CUSTOM0 is packed as
+## `ARRAY_CUSTOM_R_FLOAT`, a 32-bit float, so the f64 role label round-trips
+## through an f32 lane and lands a hair off the f64 literal typed here
+## (0.33 reads back as 0.33000001311302) — a real, expected precision loss
+## from the format the shader actually reads, not a bug to chase.
+func _assert_limbs_carry_their_labels(source: Node3D, expected: Array[float]) -> void:
+	var seen: Array[bool] = []
+	for _e: float in expected:
+		seen.append(false)
 	for limb: MeshInstance3D in _limbs(source, [] as Array[MeshInstance3D]):
-		var oid: float = limb.get_instance_shader_parameter("u_oid")
-		(
-			assert_bool(expected.has(oid))
-			. override_failure_message(
-				"limb carries an unexpected u_oid %.3f, not one of %s" % [oid, expected]
-			)
-			. is_true()
-		)
-		if not seen.has(oid):
-			seen.append(oid)
 		var mesh: ArrayMesh = limb.mesh
 		assert_int(mesh.get_surface_count()).is_equal(1)
 		var custom: PackedFloat32Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
 		assert_int(custom.size()).is_greater(0)
-		for label: float in custom:
-			(
-				assert_float(label)
-				. append_failure_message(
-					"limb's u_oid bridge %.3f but a CUSTOM0 vertex carries %.3f" % [oid, label]
-				)
-				. is_equal_approx(oid, 0.0001)
+		var label: float = custom[0]
+		var matched := -1
+		for i: int in expected.size():
+			if absf(label - expected[i]) < 0.0001:
+				matched = i
+				break
+		(
+			assert_bool(matched >= 0)
+			. override_failure_message(
+				"limb carries an unexpected label %.3f, not one of %s" % [label, expected]
 			)
-	assert_array(seen).contains_exactly_in_any_order(expected)
+			. is_true()
+		)
+		if matched >= 0:
+			seen[matched] = true
+		for v: float in custom:
+			(
+				assert_float(v)
+				. append_failure_message(
+					"limb's first vertex carries %.3f but another vertex carries %.3f" % [label, v]
+				)
+				. is_equal_approx(label, 0.0001)
+			)
+	for i: int in expected.size():
+		(
+			assert_bool(seen[i])
+			. override_failure_message("expected label %.3f never seen on any limb" % expected[i])
+			. is_true()
+		)
 
 
 func test_fan_limbs_carry_shell_and_moving_labels() -> void:
@@ -278,7 +303,7 @@ func test_fan_limbs_carry_shell_and_moving_labels() -> void:
 	fan.pulses = Pulses.new()
 	fan.data_mat = ShaderMaterial.new()
 	add_child(fan)
-	_assert_limbs_bridge_their_labels(fan, [0.33, 0.63] as Array[float])
+	_assert_limbs_carry_their_labels(fan, [0.33, 0.63] as Array[float])
 
 
 func test_radio_limbs_carry_case_and_shell_labels() -> void:
@@ -286,7 +311,7 @@ func test_radio_limbs_carry_case_and_shell_labels() -> void:
 	radio.pulses = Pulses.new()
 	radio.data_mat = ShaderMaterial.new()
 	add_child(radio)
-	_assert_limbs_bridge_their_labels(radio, [0.05, 0.33] as Array[float])
+	_assert_limbs_carry_their_labels(radio, [0.05, 0.33] as Array[float])
 
 
 ## Nothing about a running source is frozen at build time. Volume, speed and

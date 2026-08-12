@@ -6,6 +6,7 @@ extends GdUnitTestSuite
 
 const INC_PATH := "res://shaders/pulse_pool.gdshaderinc"
 const DATA_PASS_PATH := "res://shaders/data_pass.gdshader"
+const XRAY_PATH := "res://shaders/data_xray.gdshader"
 const CORE_PATH := "res://shaders/data_core.gdshaderinc"
 const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
@@ -20,20 +21,36 @@ func _include_text() -> String:
 	return _read(INC_PATH)
 
 
-## The G channel carries a per-object id, packed in the shared data CORE
-## now (every data-writing skin — the world and the always-on-top acoustic
-## image — reads the same machinery): pack_data declares a per-instance
-## u_oid and writes it into G when set, falling back to the normal-id
-## crease encoding when unset (u_oid < 0). The outline post-pass diffs G,
-## so one flat id per object draws one unified silhouette with no interior
-## component seams. Pinned as source text so a "harmless" rewrite cannot
+## The G channel carries a per-VERTEX superface label now, packed in the
+## shared data CORE (every data-writing skin — the world and the
+## always-on-top acoustic image — reads the same machinery): the derive-time
+## paint pass (rust/src/render/paint.rs) bakes one label per face into each
+## mesh's CUSTOM0 channel, both skins' vertex() stages carry it through as
+## v_label, and pack_data writes v_label straight into G. The outline
+## post-pass diffs G, so two overlapping solids sharing a label bit-for-bit
+## melt into one silhouette. The OLD per-instance u_oid uniform and its
+## normal-derived fallback are gone outright — no shader in the tree may
+## declare or read u_oid anywhere, since a per-object override could once
+## again let one wrong instance push corrupt what the geometry itself
+## already says. Pinned as source text so a "harmless" rewrite cannot
 ## silently revert the whole game's outline style, and the data pass must
 ## include the core rather than carry its own copy.
-func test_data_core_writes_object_id_into_g() -> void:
+func test_data_core_reads_the_per_vertex_label_into_g() -> void:
 	var core := _read(CORE_PATH)
-	assert_str(core).contains("instance uniform float u_oid")
-	assert_str(core).contains("u_oid >= 0.0")
-	assert_str(_read(DATA_PASS_PATH)).contains("data_core.gdshaderinc")
+	assert_str(core).contains("varying float v_label")
+	assert_str(core).contains("vec3 pack_data(float reveal, vec3 world, vec3 cam)")
+	var data_pass := _read(DATA_PASS_PATH)
+	var xray := _read(XRAY_PATH)
+	assert_str(data_pass).contains("data_core.gdshaderinc")
+	assert_str(data_pass).contains("v_label = CUSTOM0.x")
+	assert_str(xray).contains("v_label = CUSTOM0.x")
+	for path: String in [CORE_PATH, DATA_PASS_PATH, XRAY_PATH]:
+		var text := _read(path)
+		(
+			assert_bool(text.contains("u_oid"))
+			. append_failure_message("%s still mentions u_oid" % path)
+			. is_false()
+		)
 
 
 ## The data core occludes a source's REVEAL by the shared wall table now,

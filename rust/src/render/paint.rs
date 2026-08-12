@@ -7,9 +7,10 @@
 //!
 //! A shared vertex cannot hold two labels, so every face gets its own four
 //! corners even where two faces meet: 24 vertices for a box, not the 8 an
-//! engine `BoxMesh` would share. That is the same law the doc-comment on
-//! `OID_PARAM` states for the instance-uniform mechanism this replaces —
-//! only now it is enforced per VERTEX rather than per solid.
+//! engine `BoxMesh` would share. That is the same "two touching solids
+//! sharing an id have no line between them" law the old per-instance
+//! object-id uniform this replaces relied on — only now it is enforced per
+//! VERTEX rather than per solid.
 
 use godot::classes::ArrayMesh;
 use godot::classes::mesh::{ArrayCustomFormat, ArrayFormat, ArrayType, PrimitiveType};
@@ -546,11 +547,11 @@ pub fn add_flank_classes(
 /// entry of `extra_anchors` — the mechanism that preserves
 /// [`crate::oid_palette::Fixed`]'s old law (a sound source's own ids ban
 /// the world palette entries near them for whatever touches it) now that a
-/// source contributes no real face to the census at all (its limbs still
-/// bake `u_oid` directly until a later stage): `render::labels::role_label`
-/// puts the world palette's 0.34 within a centimetre of `Role::Shell`'s
-/// 0.33, and without a ban a wall or a crate touching a source's swept
-/// envelope would be free to land there.
+/// source contributes no real face to the census at all (its limbs bake
+/// their role labels directly into `CUSTOM0`, never through the census):
+/// `render::labels::role_label` puts the world palette's 0.34 within a
+/// centimetre of `Role::Shell`'s 0.33, and without a ban a wall or a crate
+/// touching a source's swept envelope would be free to land there.
 ///
 /// Each `(label, touching_classes)` pair becomes one phantom class fixed to
 /// `label`, separated from every class named in `touching_classes` — the
