@@ -237,10 +237,6 @@ pub struct WaveLevel {
     /// first successful `derive()` (the editor, or a level never added to
     /// the tree), exactly as `segments`/`occluders` start empty.
     face_census: Vec<FaceCensusEntry>,
-    /// Superface class indices the last label pass could not separate,
-    /// retained for the editor-warning pass that maps them back to their
-    /// owning scene nodes. Empty on a healthy level.
-    starved_oid_slots: Vec<usize>,
     /// Every level-wide complaint the last derivation produced — spawn
     /// faults, the demo-tap fault, the wall-budget and pack-range budgets,
     /// the label-starvation count — in the order `derive` produced them.
@@ -407,9 +403,16 @@ impl WaveLevel {
     /// same contract `derive` itself carries: `WaveWall::segment` and every
     /// `mesh_world_box` read global transforms, which only exist once the
     /// level has entered the tree.
+    ///
+    /// Reseeds `last_signature` afterward, exactly as [`INode3D::ready`]
+    /// does after its own first derive: without this, [`INode3D::process`]'s
+    /// condition-watch would find the scene still differs from whatever
+    /// signature it last saw and re-derive a second time on the very next
+    /// editor frame, for nothing.
     #[func]
     fn rederive(&mut self) {
         self.derive();
+        self.last_signature = self.scene_signature();
     }
 
     /// The engine-facing read-back of [`INode3D::get_configuration_warnings`]
@@ -1150,8 +1153,6 @@ impl WaveLevel {
                     .to_string(),
             });
         }
-        self.starved_oid_slots = out.starved_classes.clone();
-
         // bake: gather each entry's own labels by ordinal and rewrite its
         // mesh's CUSTOM0 — the shader's own G-channel source now.
         //

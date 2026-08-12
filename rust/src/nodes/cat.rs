@@ -419,10 +419,12 @@ impl WaveCat {
     /// Blueprint mode: build the same two limbs the runtime path does, but
     /// in LOCAL space around the origin (no material, no top-level, no
     /// cull margin), then write one frozen standing pose into the mesh.
-    /// The brain, gait, tail and pose are thrown away the moment the mesh
-    /// is written — the persistent `Option` fields stay `None`, exactly as
+    /// The gait, tail and pose are thrown away the moment the mesh is
+    /// written — the persistent `Option` fields stay `None`, exactly as
     /// they are for any node whose `_ready` refused to build, and nothing
-    /// reads them because processing is disabled before this runs.
+    /// reads them because processing is disabled before this runs. No
+    /// brain is built here at all: a frozen standing pose needs no roam
+    /// decision to render.
     fn build_editor_pose(&mut self) {
         let mut col = CollisionShape3D::new_alloc();
         col.set_name("CatCollider");
@@ -440,12 +442,6 @@ impl WaveCat {
 
         let pos = Vector3::ZERO;
         let yaw = 0.0_f64;
-        let rect = RoamRect::around(
-            pos,
-            f64::from(self.roam_size.x),
-            f64::from(self.roam_size.y),
-        );
-        let _ = CatBrain::new(self.seed as u64, rect, yaw); // throwaway: nothing ticks here
         let mut gait = CatGait::new(pos, yaw);
         let frame = gait.advance(0.0, pos, yaw, 0.0);
         let pose = CatPose::from_gait(pos, yaw, &frame, 0.0);
