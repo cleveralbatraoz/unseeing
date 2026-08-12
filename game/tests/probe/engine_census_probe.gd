@@ -8,8 +8,8 @@ extends SceneTree
 ## probes next door (editor_slab_probe.gd, editor_source_probe.gd,
 ## editor_level_probe.gd) that poll for a node's deferred _ready.
 ##
-## Every #[class(...)] struct registered from rust/src/, same 16 names as
-## game/tests/engine_binary_test.gd:25-42. Hand-written ON PURPOSE, not
+## Every #[class(...)] struct registered from rust/src/, same 17 names as
+## game/tests/engine_binary_test.gd. Hand-written ON PURPOSE, not
 ## derived from rust/src/ at probe time: if it were regenerated from the
 ## same source that produces the registration, a stale or absent binary
 ## missing every one of these classes would still pass, because the
@@ -33,6 +33,7 @@ const REGISTERED_CLASSES: Array[String] = [
 	"SettingsMenu",
 	"SettingsFrame",
 	"WaveObserver",
+	"WaveRestorer",
 	"UnseeingGame",
 ]
 

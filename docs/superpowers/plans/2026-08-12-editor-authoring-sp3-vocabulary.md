@@ -8,6 +8,18 @@
 
 ## Global Constraints
 
+### Post-rebase errata
+
+- The original plan counted 16 registered classes, but `WaveRestorer` already
+  existed and was missing from both hand-written rosters. The corrected SP3
+  baseline is 17 classes; `WaveSpawn` raises it to 18 and `WaveRun` to 19.
+- Openings are absolute parent-local coordinates on the selected X/Z axis,
+  paired with a width; they are not offsets from `from`. Negative widths use
+  their magnitude. The dominant axis wins (X on ties), endpoints normalize,
+  and non-finite or zero-length runs are rejected safely.
+- Reusable prefabs live under `game/scenes/props/`; SP3 includes a configured
+  doorway plus `room_16x16.tscn`, rather than deferring the room library.
+
 Every task's requirements implicitly include this section.
 
 - **The two-layer standard (ratified, CLAUDE.md):** Law 1 — every designer-met entity is a registered Rust node class that just works when dragged in; the **new-object checklist in CLAUDE.md is the acceptance test for `WaveSpawn` and `WaveRun`** (tool, named-child idempotence, censused, warnings pair, knob hints + /// docs, icon + manifest count, BOTH rosters, boot-pattern entry for any class-style opening, injected-never-self-wired, blob coverage if stateful, wasm-safe). Law 2 — logic in Rust; GDScript tests-only.
@@ -16,7 +28,7 @@ Every task's requirements implicitly include this section.
 - **Strict TDD** (fail-first, hand-derived literals, mutation checks); count discipline (baseline **334 cargo / 276 gdUnit cases / 31 suites**; predict-and-match every delta; `--import` first).
 - **Boot-gate contract:** class-style openings are literals + pattern entries in the same commit; prefer composing complaints in `level_plan.rs` relayed by WaveLevel ("WaveLevel: " is already covered). The dual-channel law (store always, print at runtime only) applies to every new fault.
 - **Commits:** small, green, narrative, NO attribution. Formatters/analyzers before every commit. Full `SKIP_EXPORT=1 ci/pipeline.sh` green per task. **Do not touch or push the wiki remote** — the wiki-debt file is the canvas.
-- **Registration ripple for each new class:** BOTH hand-written rosters (engine_binary_test.gd + engine_census_probe.gd, 16 names today), `[icons]` + SVG + sidecar + icon_manifest_test's **exactly-N** function (name carries the count — rename it), knob_hint_test for new hinted knobs, `nodes/mod.rs` alphabetical.
+- **Registration ripple for each new class:** BOTH hand-written rosters (engine_binary_test.gd + engine_census_probe.gd, 17 names at the corrected baseline), `[icons]` + SVG + sidecar + icon_manifest_test's **exactly-N** function (name carries the count — rename it), knob_hint_test for new hinted knobs, `nodes/mod.rs` alphabetical.
 - **Scene-file hygiene:** committed `.tscn` files ship in every export (`export_filter="all_resources"`) — keep prefabs lean; Godot 4.7 mints random `unique_id=` per node on editor save (expect diff noise; never build on those ids).
 
 ## Decisions Locked by Research
@@ -87,4 +99,4 @@ Every task's requirements implicitly include this section.
 
 1. **Spec coverage:** prefabs (#41 — T2), endpoint walls/doorways (#42 — T3), typed spawn (T1), level knob + editor launch (#39 — T4), write-back (T5). The spec's rooms/*.tscn stretch is deliberately folded into level_02's dogfood rather than a separate room library — the vocabulary is proven; the library grows by use (recorded as a scope note, not silent).
 2. **Placeholders:** none; open micro-decisions (WaveRun's warning opening word, level_02 authoring route) are named with their constraint and decided in-task.
-3. **Type consistency:** `Census.spawns: Vec<Gd<WaveSpawn>>` (T1) consumed by T2's yaw fixture; `run_segments`/`RunSeg` (T3) consumed by its own node; the knob (T4) consumed by game_root's new case; roster/icon counts ripple 16→17→18 and eight→nine→ten across T1/T3 in order.
+3. **Type consistency:** `Census.spawns: Vec<Gd<WaveSpawn>>` (T1) consumed by T2's yaw fixture; `run_segments`/`RunSeg` (T3) consumed by its own node; the knob (T4) consumed by game_root's new case; roster/icon counts ripple 17→18→19 and eight→nine→ten across T1/T3 in order.

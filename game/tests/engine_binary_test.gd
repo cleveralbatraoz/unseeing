@@ -38,6 +38,7 @@ const REGISTERED_CLASSES: Array[String] = [
 	"SettingsMenu",
 	"SettingsFrame",
 	"WaveObserver",
+	"WaveRestorer",
 	"UnseeingGame",
 ]
 

@@ -66,7 +66,8 @@ Each sub-project passed a per-task review and a fix wave; final states:
 - **SP3 plan committed** at `0bc2491`:
   `docs/superpowers/plans/2026-08-12-editor-authoring-sp3-vocabulary.md`.
 
-**Test baselines at HEAD: 334 cargo / 276 gdUnit cases / 31 suites.**
+**Test baselines after the rebase correction: 334 cargo / 276 gdUnit cases /
+31 suites; 17 registered engine classes.**
 Every task must predict its count delta and match it.
 
 ## The active work: SP3 "The Vocabulary"
@@ -165,7 +166,8 @@ translation — the obligations are the same:
 ## Registration ripple for every new node class
 
 Both hand-written rosters (`game/tests/engine_binary_test.gd` and
-`game/tests/probe/engine_census_probe.gd` — 16 names today); `[icons]` in
+`game/tests/probe/engine_census_probe.gd` — 17 names at the corrected
+baseline); `[icons]` in
 `game/project.godot` + a new SVG + its `.import` sidecar +
 `icon_manifest_test.gd`'s exactly-N function (the function name carries the
 count — rename it); `knob_hint_test.gd` for new hinted knobs;
@@ -177,6 +179,10 @@ self-wired, capture/restore blob if stateful, wasm-safe via runtime checks,
 simulated clock + seeded randomness only).
 
 ## Traps this campaign already paid for (do not rediscover)
+
+- **Rebase erratum:** `WaveRestorer` was registered in Rust but omitted from
+  both independently maintained engine rosters. The post-rebase baseline adds
+  it, so SP3 starts at 17 classes rather than the stale 16-class claim.
 
 - **Injection order is law:** inject dependencies BEFORE `add_child`;
   engine-emitted/instanced children are ownerless (**never `set_owner`** on
