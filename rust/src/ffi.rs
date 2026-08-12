@@ -139,8 +139,14 @@ impl WaveCore {
     /// Fire every echo whose appointment has come — the drain half of
     /// `Pulses.apply`: each fired reflection re-enters the pool as an
     /// ECHO pulse born at drain time, in the pinned reverse-index order.
+    ///
+    /// `pub(crate)`: the composition root's own `process()` calls this
+    /// directly through a typed `Gd<WaveCore>` — the shim's `apply()` loop
+    /// moved into `UnseeingGame`, and the handle it drives is the typed
+    /// core, never the GDScript shim, so the call is typed rather than
+    /// the stringly `.call()` a dynamic `pulses` handle would need.
     #[func]
-    fn tick(&mut self, now: f64) {
+    pub(crate) fn tick(&mut self, now: f64) {
         for echo in self.echoes.drain(now) {
             // ECHO_MAX_R and ECHO_SPEED are positive constants: refusal
             // is impossible, so the Result carries nothing here.
@@ -151,28 +157,36 @@ impl WaveCore {
     }
 
     /// Highest live slot + 1 — the shaders' loop bound, holes spanned.
+    ///
+    /// `pub(crate)`, for the same typed-call reason as [`Self::tick`].
     #[func]
-    fn live_count(&self, now: f64) -> i64 {
+    pub(crate) fn live_count(&self, now: f64) -> i64 {
         self.pool.live_count(now) as i64
     }
 
     /// World origins of the pool's sounds — the `u_ppos` uniform lane.
+    ///
+    /// `pub(crate)`, for the same typed-call reason as [`Self::tick`].
     #[func]
-    fn positions(&self) -> PackedVector3Array {
+    pub(crate) fn positions(&self) -> PackedVector3Array {
         PackedVector3Array::from(&self.pool.pos()[..])
     }
 
     /// Packed pulse data (birth, max radius, speed, kind*10 + gain*9) —
     /// the `u_pdat` uniform lane.
+    ///
+    /// `pub(crate)`, for the same typed-call reason as [`Self::tick`].
     #[func]
-    fn pulse_data(&self) -> PackedVector4Array {
+    pub(crate) fn pulse_data(&self) -> PackedVector4Array {
         PackedVector4Array::from(&self.pool.dat()[..])
     }
 
     /// Beam directions + cos(half-angle), w = -2 for omni — the `u_pdir`
     /// uniform lane.
+    ///
+    /// `pub(crate)`, for the same typed-call reason as [`Self::tick`].
     #[func]
-    fn pulse_dirs(&self) -> PackedVector4Array {
+    pub(crate) fn pulse_dirs(&self) -> PackedVector4Array {
         PackedVector4Array::from(&self.pool.dir()[..])
     }
 

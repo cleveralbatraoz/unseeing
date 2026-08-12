@@ -278,8 +278,12 @@ impl ICharacterBody3D for WaveCat {
 impl WaveCat {
     /// The clock is handed, never poked: the composition root advances
     /// the simulated time here every frame, exactly like the player's.
+    ///
+    /// `pub(super)`: the root's own `process()` drives every cat's clock
+    /// through a typed handle, the same precedent
+    /// `UnseeingPlayer::tick`/`HeroBody::update` already set.
     #[func]
-    fn tick(&mut self, now_t: f64) {
+    pub(super) fn tick(&mut self, now_t: f64) {
         self.now = now_t;
     }
 

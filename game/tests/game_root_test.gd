@@ -102,3 +102,182 @@ func test_now_starts_at_zero_and_is_writable() -> void:
 	assert_float(game.now).is_equal(0.0)
 	game.now = 1.0
 	assert_float(game.now).is_equal(1.0)
+
+
+## One process frame and one physics frame — the pair every clock in the
+## game needs to see a change. Duplicated from
+## `restore_transaction_test.gd::_one_frame`, which is where this idiom
+## lives; this suite's own composition root has no scene of its own to
+## share a helper file with.
+func _one_frame() -> void:
+	await get_tree().process_frame
+	await get_tree().physics_frame
+
+
+## Two real process frames: `now` strictly increases both times, and every
+## one of the five wave materials carries `u_time` equal to `now` — the
+## push `process()` makes each frame, not a value set once at boot and
+## never touched again.
+func test_two_process_frames_advance_now_and_set_u_time_on_all_five_mats() -> void:
+	var game := _game()
+	assert_float(game.now).is_equal(0.0)
+	await _one_frame()
+	var after_first: float = game.now
+	assert_bool(after_first > 0.0).is_true()
+	for mat: ShaderMaterial in game.wave_mats():
+		assert_float(mat.get_shader_parameter("u_time")).is_equal(after_first)
+	await _one_frame()
+	assert_bool(game.now > after_first).is_true()
+	for mat: ShaderMaterial in game.wave_mats():
+		assert_float(mat.get_shader_parameter("u_time")).is_equal(game.now)
+
+
+## `capture_env()` carries exactly the nine fields `main.gd::capture_env`
+## did, at the values a freshly booted, never-ticked world actually holds
+## — the flicker's and the demo tap's own constructor defaults, read back
+## rather than mirrored.
+func test_capture_env_returns_exactly_the_nine_keys_with_plausible_values() -> void:
+	var game := _game()
+	var env: Dictionary = game.capture_env()
+	assert_int(env.size()).is_equal(9)
+	for key: String in [
+		"now",
+		"demo_checked",
+		"demo_armed",
+		"demo_next",
+		"flicker_t",
+		"flicker_level",
+		"flicker_drop_until",
+		"flicker_next_drop",
+		"flicker_rng_state",
+	]:
+		assert_bool(env.has(key)).is_true()
+	assert_float(env["now"]).is_equal(0.0)
+	assert_bool(env["demo_checked"]).is_false()
+	assert_bool(env["demo_armed"]).is_false()
+	assert_float(env["demo_next"]).is_equal(0.6)
+	assert_float(env["flicker_t"]).is_equal(0.0)
+	assert_float(env["flicker_level"]).is_equal(1.0)
+	assert_float(env["flicker_drop_until"]).is_equal(-1.0)
+	assert_float(env["flicker_next_drop"]).is_equal(9.0)
+	assert_int(typeof(env["flicker_rng_state"])).is_equal(TYPE_INT)
+
+
+## `apply_env` is the exact write side of `capture_env`: capturing, moving
+## `now` far away, applying the FIRST capture back and capturing again
+## lands on the same nine values — nothing in the pair loses or invents a
+## field.
+func test_apply_env_of_capture_env_round_trips() -> void:
+	var game := _game()
+	var first: Dictionary = game.capture_env()
+	game.now = 42.0
+	game.apply_env(first)
+	var second: Dictionary = game.capture_env()
+	assert_dict(second).is_equal(first)
+
+
+## A world with a life behind it: ticked, looked, tapped, and a wave still
+## queued — `restore_transaction_test.gd`'s `_boot_ticked`/`_lively`
+## fixture recipe, adapted for the bare `UnseeingGame` this suite
+## constructs directly rather than through `main.tscn`. The hero looks
+## DOWN before tapping (a level swing strikes nothing) and the wave is
+## queued LAST, with no frame after it, for the same reasons that suite's
+## own doc comment gives.
+func _lively_game() -> UnseeingGame:
+	var game := _game()
+	await _one_frame()
+	game.now += 1.0
+	await _one_frame()
+	game.player.look(Vector2(0.0, 100.0))
+	game.player.tap()
+	for _i in 2:
+		await _one_frame()
+	game.player.queue_wave(2, Vector3(2.5, 0.5, 3.25), 6.25, 5.5, 0.75, 3, Vector3.UP)
+	return game
+
+
+## `restore_blob` of a blob captured from a live world restores cleanly —
+## its own freshly-computed hash echoed back in the verdict — and the same
+## blob with a doctored `hash` key is refused with a one-key `unavailable`
+## naming both numbers. `restore_transaction_test.gd`'s round-trip and
+## lying-hash assertions, against the root directly rather than
+## `UnseeingMain`.
+func test_restore_blob_restores_a_fresh_capture_and_refuses_a_doctored_hash() -> void:
+	var game := await _lively_game()
+	var blob: Dictionary = game.observer.capture(game.now, game.capture_env())
+	assert_bool(blob.has("unavailable")).is_false()
+	for _i in 5:
+		await _one_frame()
+	var verdict: Dictionary = game.restore_blob(blob)
+	assert_str(str(verdict.get("unavailable", ""))).is_empty()
+	assert_str(verdict["hash"]).is_equal(blob["hash"])
+
+	var doctored: Dictionary = blob.duplicate(true)
+	var honest: String = doctored["hash"]
+	doctored["hash"] = "0000000000000000"
+	var refused: Dictionary = game.restore_blob(doctored)
+	assert_bool(refused.has("unavailable")).is_true()
+	assert_str(refused["unavailable"]).contains("stored 0000000000000000")
+	assert_str(refused["unavailable"]).contains("restored %s" % honest)
+
+
+## MUTATION GUARD: `process()` must feed `level.tick_sources()` the
+## CAMERA's position, never the player's own BODY — the two differ by the
+## head-bob offset, and here, deliberately, by much more. The shipped
+## map's `DividerNorth` wall (x = 6.4, spanning z = 0.6..8.0) stands
+## directly between the spawn — where the player's body stays, since
+## nothing drives it in a headless test — and the Fan (8.6, 0, 4.4): one
+## wall crossing, a muffled ghost. Relocating the camera INTO the fan's
+## own room removes that wall for the eye alone. Both multipliers are
+## computed through the level's own `source_muffle` oracle rather than
+## assumed, so the fixture proves it discriminates before the real
+## assertion leans on it. If `process()` ever fed the body's position
+## instead, the fan would render exactly as muffled as it does from the
+## spawn, and the final assertion would fail.
+func test_process_feeds_tick_sources_the_camera_not_the_body() -> void:
+	var game := _game()
+	var fan: Node3D = game.level.sources()[0]
+	assert_str(str(fan.name)).is_equal("Fan")
+	var hub: Vector3 = fan.global_position
+	var body_at: Vector3 = game.player.global_position
+	game.player.camera.global_position = hub + Vector3(0.3, 0.0, 0.0)  # the fan's own room
+	var eye_at: Vector3 = game.player.camera.global_position
+	var eye_muffle: float = game.level.source_muffle(eye_at, hub)
+	var body_muffle: float = game.level.source_muffle(body_at, hub)
+	assert_bool(body_muffle < eye_muffle).is_true()  # the fixture must actually discriminate
+	await _one_frame()
+	var fan_entry: Dictionary
+	for s: Dictionary in game.observer.snapshot(game.now)["sources"]:
+		if s["name"] == "Fan":
+			fan_entry = s
+	var source_floor: float = fan_entry["source_floor"]
+	var volume: float = fan_entry["volume"]
+	assert_float(source_floor).is_equal_approx(volume * eye_muffle, 0.001)
+
+
+## MUTATION GUARD: the apply loop (`WaveCore.tick` plus the u_count/u_ppos/
+## u_pdat/u_pdir push) must run AFTER `level.tick_sources` and the cat
+## loop, in the SAME `process()` frame — a source whose appointment first
+## comes due THIS frame must already be counted in this frame's materials,
+## not next frame's. Adapted from `source_test.gd`'s
+## `test_one_tick_drives_every_source_on_its_own_voice`: both shipped
+## sources' very first appointment (fan 0.4 s, radio 0.7 s) is overdue the
+## instant `now` reaches 1.0, and the pool is provably empty going into
+## this one frame — boot alone never ticks anything — so 2 is the only
+## frame-consistent count.
+##
+## Deliberately NOT `_one_frame()`: that helper awaits `process_frame` THEN
+## `physics_frame`, and measured here (`game.now` moves between the two
+## awaits) the second wait spans a SECOND `process()` call — which would
+## silently absorb a one-frame-stale apply loop into a merely one-frame-
+## late-but-still-eventually-2 count and defeat this exact guard. One
+## `process_frame` await is exactly one `process()` call, pinned by
+## `test_two_process_frames_advance_now_and_set_u_time_on_all_five_mats`
+## already showing `now`/`u_time` moving once per await.
+func test_process_pushes_this_frames_new_source_waves_into_the_materials() -> void:
+	var game := _game()
+	game.now = 1.0
+	await get_tree().process_frame
+	for mat: ShaderMaterial in game.wave_mats():
+		var count: int = mat.get_shader_parameter("u_count")
+		assert_int(count).is_equal(2)

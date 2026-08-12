@@ -3,25 +3,37 @@
 //! per-frame globals (clock, flicker) both shader passes consume; systems
 //! never reach into each other, they meet here.
 //!
-//! READY-SIDE ONLY, for now. [`INode3D::ready`] reproduces
-//! `main.gd:64-134`'s order EXACTLY — materials, the wave core, the level
-//! (injected before it enters the tree), the demo tap's aim, the player,
-//! the hero, the post quad, the observer, the restorer, and the settings
-//! overlay LAST. There is no `process()` override here yet: the per-frame
-//! loop (the clock, the flicker draw, `tick_sources`, the cats' clocks, the
-//! demo tap's cadence) and the capture/restore doors are a later migration
-//! step, laid onto this same struct without reshaping it — which is why
-//! `wave_core`, `rng` and `demo` already exist as fields, wired in `ready()`
-//! and readable through this task's own observability surface. `flicker`
-//! and `demo_checked` are deliberately NOT fields yet: nothing in this
-//! ready-side task ever reads or writes either one (both are purely a
-//! `process()` concern), and a field neither read nor written anywhere is
-//! dead code `cargo clippy -D warnings` catches — so they land with the
-//! `process()` migration step that first gives them a reader.
+//! [`INode3D::ready`] reproduces `main.gd:64-134`'s order EXACTLY —
+//! materials, the wave core, the level (injected before it enters the
+//! tree), the demo tap's aim, the player, the hero, the post quad, the
+//! observer, the restorer, and the settings overlay LAST.
+//!
+//! [`INode3D::process`] reproduces `main.gd:150-168`'s order EXACTLY: the
+//! clock, the player's own clock, the flicker draw pushed to all five
+//! materials, the post quad's breath/grain mood, every source's clockwork
+//! (`level.tick_sources`, eye = the CAMERA, never the player's body — the
+//! two differ by the head-bob offset and, in a scripted test, by however
+//! far a caller has moved one and not the other), every cat's clock, the
+//! apply loop (`WaveCore::tick` draining reflections, then the pool's
+//! shader lanes pushed to all five materials), the hero's viewmodel, and
+//! last the dev-only demo tap's one-shot arming and cadence. Defining
+//! `process()` on the `INode3D` impl auto-enables per-frame processing —
+//! desired here, so there is no `set_process` dance to add.
+//!
+//! The env trio (`capture_env`/`apply_env`/`restore_blob`) is
+//! `main.gd:204-286` verbatim: the nine fields no Rust node owns (the
+//! clock, the demo tap's schedule, the flicker envelope), and the
+//! transaction that applies a whole capture blob back — pause bracket,
+//! the observer's `env_of` refusal short-circuit, the previous env kept
+//! for rollback, and the one asymmetry that is NOT a bug: a POST-WRITE
+//! hash mismatch (the artifact disagreeing with its own claimed hash)
+//! refuses WITHOUT rolling back, because the world really was restored
+//! and is internally consistent — it simply is not the instant the file
+//! claims to hold.
 //!
 //! `main.tscn` still boots `main.gd`, unchanged: this class exists in the
 //! tree of registered classes but nothing in the shipped path instantiates
-//! it. That switch is a later step too.
+//! it. That switch is a later step.
 //!
 //! Loud totality on every resource load: a shader or the level scene that
 //! fails to load prints `"UnseeingGame: …"` and `ready()` returns, wiring
@@ -37,12 +49,13 @@ use godot::prelude::*;
 use super::cat::WaveCat;
 use super::hero::HeroBody;
 use super::level::WaveLevel;
-use super::observer::WaveObserver;
+use super::observer::{WaveObserver, unavailable};
 use super::player::UnseeingPlayer;
 use super::restorer::WaveRestorer;
 use super::settings::SettingsMenu;
 use crate::demo_tap::DemoTap;
 use crate::ffi::WaveCore;
+use crate::flicker::{Flicker, FlickerState};
 use crate::level_plan;
 
 /// The perceptual ladder's world layer — real depth, everything but the
@@ -55,6 +68,14 @@ const PRIORITY_SOURCES: i32 = 20;
 
 /// The deterministic-run seed every armed switch shares.
 const SEED: u64 = 0x5EED;
+
+/// `restore_blob` was called before `ready()` wired an observer — there is
+/// no reader to ask `env_of` at all.
+const NO_OBSERVER: &str = "the root holds no observer — restore_blob has nothing to ask env_of";
+
+/// `restore_blob` was called before `ready()` wired a restorer — there is
+/// no writer to hand the parsed blob to.
+const NO_RESTORER: &str = "the root holds no restorer — restore_blob has nothing to write through";
 
 /// Unseeing — composition root. See the module docs for what is and is not
 /// wired yet.
@@ -97,6 +118,12 @@ pub struct UnseeingGame {
     /// The hero's visible viewmodel — cane, arm, legs, torso.
     #[var]
     hero: Option<Gd<HeroBody>>,
+    /// The eye every source's standing image and the demo tap's own frame
+    /// of reference are measured from — the player's camera, cached once
+    /// at `ready()` rather than re-fetched by name every frame. NOT the
+    /// player's own body: the two differ by the head-bob offset, and
+    /// `process()` must feed `tick_sources` this one, never the body's.
+    camera: Option<Gd<Camera3D>>,
     /// The settings overlay — added LAST, so unhandled input sees Escape
     /// before the world does.
     #[var]
@@ -117,15 +144,20 @@ pub struct UnseeingGame {
     #[var]
     now: f64,
     /// The flicker's seeded stream. `None` only before `ready()` runs.
-    /// `Flicker` itself (`main.gd`'s nervous-light envelope, drawn from
-    /// this stream) is not a field yet — nothing reads or writes one until
-    /// `process()` exists; see the module docs.
     rng: Option<Gd<RandomNumberGenerator>>,
+    /// Nervous light: the reveal intensity wavers, with rare brief
+    /// dropouts — `main.gd`'s `_flicker`, drawn from [`Self::rng`] every
+    /// `process()` frame.
+    #[init(val = Flicker::new())]
+    flicker: Flicker,
     /// Dev-only demo tap: fires a wall strike every few seconds so an
-    /// input-less run can verify the renderer — armed by a later
-    /// `process()`, aimed here at the level's own tap plan.
+    /// input-less run can verify the renderer — armed once `process()`
+    /// sees `now >= 0.5`, aimed here at the level's own tap plan.
     #[init(val = DemoTap::new(Vector3::ZERO, Vector3::UP))]
     demo: DemoTap,
+    /// Whether the one-shot demo-arming check has already run —
+    /// `main.gd`'s `_demo_checked`.
+    demo_checked: bool,
     base: Base<Node3D>,
 }
 
@@ -232,6 +264,7 @@ impl INode3D for UnseeingGame {
             godot_error!("UnseeingGame: player built no camera — cannot attach the post quad");
             return;
         };
+        self.camera = Some(camera.clone());
         self.setup_post_quad(camera.clone());
 
         // the debug window: the level (which already holds the wave pool)
@@ -269,6 +302,82 @@ impl INode3D for UnseeingGame {
         let settings = SettingsMenu::new_alloc();
         self.base_mut().add_child(&settings);
         self.settings = Some(settings);
+    }
+
+    /// The per-frame loop — `main.gd:150-168` verbatim. Defining this
+    /// override auto-enables processing (gdext's own rule, the same one
+    /// [`super::level::WaveLevel`] documents turning back OFF at run
+    /// time): the runtime root is meant to process every frame it lives,
+    /// so nothing here opts back out of it.
+    fn process(&mut self, delta: f64) {
+        self.now += delta;
+        if let Some(mut player) = self.player.clone() {
+            player.bind_mut().tick(self.now);
+        }
+
+        // the mood: drawn from the seeded stream, pushed to every material
+        // that renders waves — a flicker one draw out of step desyncs a
+        // shared seeded stream from the very next frame
+        let Some(rng) = self.rng.as_mut() else {
+            return; // ready() refused before the RNG was ever wired
+        };
+        let flick = self.flicker.next(delta, rng);
+        for mut mat in self.wave_mats().iter_shared() {
+            mat.set_shader_parameter("u_time", &self.now.to_variant());
+            mat.set_shader_parameter("u_flick", &flick.to_variant());
+        }
+        self.post_mat.set_shader_parameter(
+            "u_breath",
+            &(1.0 + (self.now * 0.5).sin() * 0.045).to_variant(),
+        );
+        self.post_mat
+            .set_shader_parameter("u_grain_t", &((self.now % 1.0) * 61.7).to_variant());
+
+        // every world sound source, driven by the level itself: it
+        // advances each one's clockwork on the simulated clock and dims
+        // each one's standing image by the walls between the EYE — the
+        // camera, never the player's body, which differs from it by the
+        // head-bob offset — and THAT source's hub. A silent level is
+        // legal; the loop simply finds nothing.
+        if let (Some(mut level), Some(camera)) = (self.level.clone(), self.camera.clone()) {
+            level
+                .bind_mut()
+                .tick_sources(self.now, camera.get_global_position());
+        }
+        for mut cat in self.cat_children.iter_shared() {
+            cat.bind_mut().tick(self.now); // a catless level is legal too
+        }
+
+        // the apply loop — `Pulses.apply` verbatim: fire every echo whose
+        // appointment has come, then push the pool's shader lanes to all
+        // five materials. MUST run after the sources and the cats above:
+        // this is the one frame their fresh emissions first reach the
+        // screen, and a reorder ahead of them would push last frame's pool
+        // instead.
+        if let Some(mut core) = self.wave_core.clone() {
+            let (count, positions, pdat, pdir) = {
+                let mut bound = core.bind_mut();
+                bound.tick(self.now);
+                (
+                    bound.live_count(self.now),
+                    bound.positions(),
+                    bound.pulse_data(),
+                    bound.pulse_dirs(),
+                )
+            };
+            for mut mat in self.wave_mats().iter_shared() {
+                mat.set_shader_parameter("u_count", &count.to_variant());
+                mat.set_shader_parameter("u_ppos", &positions.to_variant());
+                mat.set_shader_parameter("u_pdat", &pdat.to_variant());
+                mat.set_shader_parameter("u_pdir", &pdir.to_variant());
+            }
+        }
+
+        if let Some(mut hero) = self.hero.clone() {
+            hero.bind_mut().update(self.now, delta);
+        }
+
+        self.fire_demo_tap();
     }
 }
 
@@ -324,6 +433,131 @@ impl UnseeingGame {
     fn seeded(&self) -> bool {
         self.rng.as_ref().is_some_and(|rng| rng.get_seed() == SEED)
     }
+
+    /// The env group of a capture blob: everything about this instant that
+    /// lives on this struct's own fields and in no Rust node, so no
+    /// observer could ever read it — the clock, the demo tap's one-shot
+    /// check and schedule, and the flicker's whole envelope, RNG stream
+    /// position included. `main.gd::capture_env` verbatim: exactly nine
+    /// keys, real (native) values — the blob's own TEXT spelling of these
+    /// same nine fields is [`super::observer::WaveObserver::env_of`]'s job,
+    /// never this one's.
+    #[func]
+    fn capture_env(&self) -> VarDictionary {
+        let flicker = self.flicker.state();
+        let mut env = VarDictionary::new();
+        env.set("now", self.now);
+        env.set("demo_checked", self.demo_checked);
+        env.set("demo_armed", self.demo.armed);
+        env.set("demo_next", self.demo.next_at());
+        env.set("flicker_t", flicker.t);
+        env.set("flicker_level", flicker.level);
+        env.set("flicker_drop_until", flicker.drop_until);
+        env.set("flicker_next_drop", flicker.next_drop);
+        env.set(
+            "flicker_rng_state",
+            self.rng
+                .as_ref()
+                .map_or(0_i64, |rng| rng.get_state() as i64),
+        );
+        env
+    }
+
+    /// Put a captured env group back — the write side of
+    /// [`Self::capture_env`], the exact nine fields it reads and the only
+    /// half of a blob no Rust node besides this one can write.
+    /// `main.gd::apply_env` verbatim: every value is ASSIGNED, never
+    /// validated — `env_of` already did that on the way out of the blob's
+    /// text spelling, and a native env handed straight from
+    /// [`Self::capture_env`] (the round-trip and restore-transaction paths)
+    /// needs no validation at all.
+    #[func]
+    fn apply_env(&mut self, env: VarDictionary) {
+        self.now = dict_f64(&env, "now");
+        self.demo_checked = dict_bool(&env, "demo_checked");
+        self.demo.armed = dict_bool(&env, "demo_armed");
+        self.demo.restore_next(dict_f64(&env, "demo_next"));
+        self.flicker.restore(FlickerState {
+            t: dict_f64(&env, "flicker_t"),
+            level: dict_f64(&env, "flicker_level"),
+            drop_until: dict_f64(&env, "flicker_drop_until"),
+            next_drop: dict_f64(&env, "flicker_next_drop"),
+        });
+        if let Some(rng) = self.rng.as_mut() {
+            rng.set_state(dict_i64(&env, "flicker_rng_state") as u64);
+        }
+    }
+
+    /// Apply a captured blob to this running game — the one call the
+    /// suites and the reproduction probes make. `main.gd::restore_blob`
+    /// verbatim: freeze first (state must not move between the env half
+    /// and the engine half), ask the observer to translate the blob's env
+    /// group, apply it, hand the whole blob to the restorer, and roll the
+    /// env back on any refusal the transaction can still name a field for.
+    ///
+    /// The one asymmetry that is NOT a bug: a POST-WRITE hash mismatch —
+    /// the artifact's own claimed hash disagreeing with the world just
+    /// restored — refuses WITHOUT rolling the env back. The restore
+    /// itself succeeded and the world is internally consistent; it is
+    /// simply not the instant the file claims to hold, so undoing it
+    /// would throw away a good restore over a bad label on the file.
+    #[func]
+    fn restore_blob(&mut self, blob: VarDictionary) -> VarDictionary {
+        let was_paused = self.is_paused();
+        self.set_paused(true);
+
+        let Some(observer) = self.observer.clone() else {
+            self.set_paused(was_paused);
+            return unavailable(NO_OBSERVER);
+        };
+        let env = observer.bind().env_of(blob.clone());
+        if env.contains_key("unavailable") {
+            self.set_paused(was_paused);
+            return env;
+        }
+
+        let previous = self.capture_env();
+        self.apply_env(env);
+
+        let Some(mut restorer) = self.restorer.clone() else {
+            self.apply_env(previous);
+            self.set_paused(was_paused);
+            return unavailable(NO_RESTORER);
+        };
+        let mut verdict = restorer
+            .bind_mut()
+            .restore(blob.clone(), self.capture_env());
+        if verdict.contains_key("unavailable") {
+            self.apply_env(previous);
+        } else {
+            // `main.gd::restore_blob` verbatim, mismatched defaults and
+            // all: the COMPARE reads a missing key as "" (a blob with a
+            // genuinely empty hash must not spuriously read as missing),
+            // while the MESSAGE reads it as "<missing>" (legible when it
+            // truly is absent) — two defaults for one key, on purpose.
+            let stored_for_compare = blob
+                .get("hash")
+                .and_then(|v| v.try_to::<GString>().ok())
+                .unwrap_or_default();
+            let restored = verdict
+                .get("hash")
+                .and_then(|v| v.try_to::<GString>().ok())
+                .unwrap_or_default();
+            if stored_for_compare != restored {
+                let stored_for_message = blob
+                    .get("hash")
+                    .and_then(|v| v.try_to::<GString>().ok())
+                    .unwrap_or_else(|| GString::from("<missing>"));
+                verdict = unavailable(&format!(
+                    "the blob's stored hash disagrees with the restored world: stored \
+                     {stored_for_message}, restored {restored} — the artifact was edited or \
+                     corrupted"
+                ));
+            }
+        }
+        self.set_paused(was_paused);
+        verdict
+    }
 }
 
 impl UnseeingGame {
@@ -343,7 +577,7 @@ impl UnseeingGame {
     /// Deterministic runs arm the seed three ways: `UNSEEING_SEED` (seed
     /// alone), `UNSEEING_DEMO` (a demo run must also be reproducible), or
     /// `?seed` / `?demo` in a web URL. The demo TAP itself arms only from
-    /// `UNSEEING_DEMO` / `?demo` (a later `process()`'s job) — seed and
+    /// `UNSEEING_DEMO` / `?demo`, in [`Self::fire_demo_tap`] — seed and
     /// demo are separate switches, and this helper owns only the seed.
     fn seed_armed(&self) -> bool {
         let os = Os::singleton();
@@ -358,6 +592,46 @@ impl UnseeingGame {
                 .is_some_and(|search| search.contains("seed") || search.contains("demo"));
         }
         false
+    }
+
+    /// Dev-only: fires a wall tap every few seconds so an input-less run
+    /// can verify the renderer visually — movie-maker locally
+    /// (`UNSEEING_DEMO=1` env), or the deployed web build (`?demo` in the
+    /// URL). Queued through the player so its reflection raycasts run in
+    /// physics context. `main.gd::_demo_tap` verbatim, one-shot arming
+    /// check included — the web search read is [`Self::seed_armed`]'s own
+    /// `web_location_search` helper, not a second `JavaScriptBridge.eval`.
+    fn fire_demo_tap(&mut self) {
+        if !self.demo_checked && self.now >= 0.5 {
+            self.demo_checked = true;
+            self.demo.armed = !Os::singleton().get_environment("UNSEEING_DEMO").is_empty();
+            if Os::singleton().has_feature("web") {
+                self.demo.armed = self.demo.armed
+                    || web_location_search().is_some_and(|search| search.contains("demo"));
+            }
+        }
+        if self.demo.fire_due(self.now)
+            && let Some(mut player) = self.player.clone()
+        {
+            player
+                .bind_mut()
+                .queue_wave(0, self.demo.point, 6.0, 5.5, 1.0, 6, self.demo.normal);
+        }
+    }
+
+    /// Whether the world is frozen right now — the same rule
+    /// [`super::settings::SettingsMenu`] applies to its own pause bracket.
+    fn is_paused(&self) -> bool {
+        self.base()
+            .get_tree_or_null()
+            .is_some_and(|tree| tree.is_paused())
+    }
+
+    /// Freeze or thaw the world — the write side of [`Self::is_paused`].
+    fn set_paused(&mut self, paused: bool) {
+        if let Some(mut tree) = self.base().get_tree_or_null() {
+            tree.set_pause(paused);
+        }
     }
 
     /// The "hearing" pass: a fullscreen quad glued to the camera. It
@@ -390,4 +664,32 @@ fn web_location_search() -> Option<String> {
         &["window.location.search".to_variant(), true.to_variant()],
     );
     Some(result.to_string())
+}
+
+/// One field of a NATIVE env dictionary — [`UnseeingGame::apply_env`]'s
+/// only reader. The dictionary always came straight back from
+/// `WaveObserver::env_of` or `UnseeingGame::capture_env` itself, never
+/// through a file, so a missing or mistyped key can only mean the caller
+/// handed this function something that was never a real env group —
+/// answered with the same total default every other reader in this crate
+/// falls back to, rather than a panic.
+fn dict_f64(env: &VarDictionary, key: &str) -> f64 {
+    env.get(key)
+        .and_then(|v| v.try_to::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
+/// The bool sibling of [`dict_f64`].
+fn dict_bool(env: &VarDictionary, key: &str) -> bool {
+    env.get(key)
+        .and_then(|v| v.try_to::<bool>().ok())
+        .unwrap_or(false)
+}
+
+/// The integer sibling of [`dict_f64`] — the flicker RNG's stream
+/// position, the one field in the env group that is never a float.
+fn dict_i64(env: &VarDictionary, key: &str) -> i64 {
+    env.get(key)
+        .and_then(|v| v.try_to::<i64>().ok())
+        .unwrap_or(0)
 }

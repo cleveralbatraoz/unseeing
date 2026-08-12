@@ -320,8 +320,12 @@ impl WaveObserver {
     /// the first place. So the text-to-float step stays here, and the
     /// restore's GDScript half is handed nine values it only has to
     /// assign.
+    ///
+    /// `pub(super)`: `UnseeingGame::restore_blob` calls this directly
+    /// through a typed handle — it IS the composition root's own env-owning
+    /// half the doc above describes, not a second caller.
     #[func]
-    fn env_of(&self, blob: VarDictionary) -> VarDictionary {
+    pub(super) fn env_of(&self, blob: VarDictionary) -> VarDictionary {
         let root = Group::new(&blob, Floats::Text, String::new());
         match root.group("env").and_then(|group| parse_env_group(&group)) {
             Ok(env) => env_dict(&env, Floats::Native),
