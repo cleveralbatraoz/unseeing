@@ -2,6 +2,24 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERIFY="$ROOT/ci/verify-superpowers.sh"
+
+# Every fixture below is built by copying the repo's real `.gitmodules`, and
+# `.gitattributes` marks that file `export-ignore` — so it is absent by design
+# from the tar extract the droplet's post-receive hook deploys, and the copy
+# died there under `set -e`, failing the whole pipeline. The verifier this
+# script tests already handles that tree: with no repository metadata it
+# asserts the developer tooling is ABSENT and passes. There is nothing left
+# for the self-test to prove once the tooling it guards cannot be present, so
+# it steps aside in the same voice `test/repo_hygiene.sh` uses for the same
+# reason. (The stronger shape is to synthesise the fixture's `.gitmodules`
+# from a hand-written literal instead of copying the real one, which would
+# keep these cases running everywhere; that is a redesign of what the fixture
+# IS, and this is a deploy-blocking hotfix.)
+[ -f "$ROOT/.gitmodules" ] || {
+  echo "verify-superpowers-test: SKIP no .gitmodules — deploy work tree is a tar extract"
+  exit 0
+}
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 FAIL=0
