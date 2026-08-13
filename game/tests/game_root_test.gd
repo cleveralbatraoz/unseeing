@@ -1,15 +1,15 @@
 extends GdUnitTestSuite
 ## UnseeingGame's ready-side wiring contract — the migration's safety net,
-## built and asserted BEFORE any old main.gd suite is touched. Constructs
-## the class directly, no scene involved, the same way restore_test.gd and
-## observer_test.gd build a bare WaveLevel/HeroBody: `UnseeingGame.new()`,
-## `add_child`, then synchronous assertions. `_ready` runs INSIDE
-## `add_child` (the parent — this suite — is already in the tree), so
-## nothing here awaits a frame.
+## originally built and asserted before main.tscn switched away from main.gd.
+## Most cases construct the registered class directly, no scene involved, the
+## same way restore_test.gd and observer_test.gd build a bare
+## WaveLevel/HeroBody: `UnseeingGame.new()`, `add_child`, then synchronous
+## assertions. `_ready` runs INSIDE `add_child` (the parent — this suite — is
+## already in the tree), so nothing here awaits a frame. Scene-loading cases
+## separately prove main.tscn now boots this same Rust composition root.
 ##
-## Pins WIRING, not pixels or behaviour: `main.tscn` still boots `main.gd`
-## and every existing suite still runs against it unchanged. This suite is
-## the only thing in the tree that has ever instantiated `UnseeingGame`.
+## Pins wiring and level selection, not pixels; the rendering and perception
+## suites own those downstream contracts.
 
 const DATA_SHADER := preload("res://shaders/data_pass.gdshader")
 const XRAY_SHADER := preload("res://shaders/data_xray.gdshader")

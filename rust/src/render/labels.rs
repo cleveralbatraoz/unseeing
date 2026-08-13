@@ -34,18 +34,16 @@
 //!
 //! That scope is exact, not a hedge. Values in the game DO come within
 //! `MIN_SEP` of `Case`, and every one of them is a placeholder ORDINAL
-//! rather than a label — a mesh's `CUSTOM0` before a derive has painted
-//! it, where ordinal 0 is `0.0`, five hundredths from `Case`. **Any**
-//! unpainted mesh is such a state, so read the general clause rather than
-//! the examples; the three that exist today are the EDITOR
-//! (`WaveLevel::derive` returns before painting there), a solid the derive
-//! REFUSED out loud for a degenerate size (whose bake is skipped, so it
-//! keeps what its builder wrote), and a solid added under the level AFTER
-//! `_ready` — `derive` runs only from `ready` and there is no re-derive
-//! hook, so nothing ever paints it. None is a value the colouring can
-//! produce, which is why the sentence above is scoped to labels: it is a
-//! claim about the label table, not an inventory of every float that can
-//! reach the G channel.
+//! rather than a label — a mesh's `CUSTOM0` before a successful derive has
+//! painted it, where ordinal 0 is `0.0`, five hundredths from `Case`.
+//! `WaveLevel` derives in both editor and runtime mode, exposes an explicit
+//! `rederive`, and watches the editor scene signature, so ordinary authored
+//! meshes do not remain in that placeholder state. A mesh can still be
+//! temporarily unpainted before entering a derived level, or deliberately
+//! remain so when the paint pass refuses malformed geometry. Neither is a
+//! value the colouring can produce, which is why the sentence above is
+//! scoped to labels: it is a claim about the label table, not an inventory
+//! of every float that can momentarily reach the G channel.
 //!
 //! Not a pattern to copy, because 0.10 is the smallest margin any pair in
 //! the table carries, and a SECOND label down here would have nothing to
