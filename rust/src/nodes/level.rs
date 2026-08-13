@@ -721,6 +721,7 @@ impl WaveLevel {
         // takes — rather than a slab-specific phantom one.
         let mut faces: Vec<render::Face> = Vec::new();
         let mut ordinal_of_face: Vec<usize> = Vec::new();
+        let mut refused: Vec<bool> = vec![false; entries.len()];
         for (i, entry) in entries.iter().enumerate() {
             let entry_faces = render::faces(i, &entry.shape);
             // THE ORDINAL CONTRACT'S OWN GUARD: `ordinal_of_face` below
@@ -731,10 +732,16 @@ impl WaveLevel {
             // a collapsed polygon). Silently accepting a SHORT list here
             // would mislabel every ordinal past the gap — not a face
             // missing a colour, a face wearing another face's colour.
-            // Total instead: refuse this ONE solid's faces outright (its
-            // mesh keeps whatever placeholder it built with,
-            // `paint_entry`'s `vec![0.0; n]` fallback below) rather than
-            // risk a silently wrong label on the ones that did survive.
+            // Total instead: refuse this ONE solid outright — its faces
+            // never enter the census AND `refused` keeps the bake loop
+            // below from calling `paint_entry` for it at all, so its mesh
+            // keeps the placeholder ordinals its builder wrote rather than
+            // risking a silently wrong label on the ones that did survive.
+            // (Skipping the bake is the load-bearing half: `relabel` maps
+            // EVERY in-range placeholder ordinal, so a bake with the
+            // all-zero `labels_by_ordinal` this entry would get flattens
+            // the whole mesh to 0.0 — out of band, and 0.05 from
+            // `Role::Case`.)
             //
             // A column's own expectation is ONE LESS than
             // `render::paint::face_count`'s own ordinal count, on
@@ -759,6 +766,7 @@ impl WaveLevel {
                     entry_faces.len(),
                     expected
                 );
+                refused[i] = true;
                 continue;
             }
             ordinal_of_face.extend(0..entry_faces.len());
@@ -887,8 +895,18 @@ impl WaveLevel {
         }
 
         // bake: gather each entry's own labels by ordinal and rewrite its
-        // mesh's CUSTOM0 — the shader's own G-channel source now
+        // mesh's CUSTOM0 — the shader's own G-channel source now.
+        //
+        // A REFUSED entry is skipped entirely: it contributed no face to
+        // the census, so every one of its ordinals would bake the `0.0`
+        // fill below, and `relabel` would write that over all of its
+        // vertices. Leaving it alone is what actually keeps its
+        // placeholder ordinals on the mesh — pinned by
+        // `level_test.gd::test_a_degenerate_solid_is_refused_not_mislabelled`.
         for (i, entry) in entries.iter().enumerate() {
+            if refused[i] {
+                continue;
+            }
             let n = render::paint::face_count(entry.item.kind());
             let mut labels_by_ordinal: Vec<f32> = vec![0.0; n];
             for (fi, face) in faces.iter().enumerate() {

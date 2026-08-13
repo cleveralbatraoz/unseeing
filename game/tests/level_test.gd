@@ -890,9 +890,12 @@ func test_a_solid_merged_into_a_wall_warns_naming_it() -> void:
 ## mesh therefore have a real face behind them — painting positionally
 ## anyway would slide every later ordinal onto the wrong face. The level
 ## refuses this ONE solid loudly, naming it, and leaves its mesh
-## unpainted rather than risk that; a healthy neighbour in the SAME
-## derive still paints correctly, proving the refusal is scoped to the
-## one degenerate solid and does not poison the derive.
+## unpainted rather than risk that — CUSTOM0 still holds the six
+## placeholder ordinals its builder wrote, not a label and not the
+## all-zero fill an entry with no face in the census would otherwise
+## bake. A healthy neighbour in the SAME derive still paints correctly,
+## proving the refusal is scoped to the one degenerate solid and does not
+## poison the derive.
 func test_a_degenerate_solid_is_refused_not_mislabelled() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	var flat := WaveProp.new()
@@ -921,3 +924,13 @@ func test_a_degenerate_solid_is_refused_not_mislabelled() -> void:
 	var custom: PackedFloat32Array = _skin(healthy).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
 	for label: float in custom:
 		assert_float(label).is_between(0.15, 0.96)
+	# and the REFUSED solid's own mesh is untouched: still the six
+	# placeholder ordinals `nodes::solid::BOX_ORDINALS` built it with, four
+	# vertices each, never overwritten by a label the paint pass never
+	# chose for it. Hand-derived from the builder, not read back from the
+	# paint pass: `render::paint::labelled_box` walks FACE_ORDER emitting
+	# four corners per face, so ordinal k occupies vertices 4k..4k+3.
+	var refused: PackedFloat32Array = _skin(flat).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	assert_int(refused.size()).is_equal(24)
+	for vertex: int in range(24):
+		assert_float(refused[vertex]).is_equal(float(vertex / 4))
