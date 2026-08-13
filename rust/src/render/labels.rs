@@ -11,16 +11,28 @@
 //!
 //! # The role table
 //!
-//! [`role_label`] is meant to become the one place every fixed label in
-//! the game lives, replacing the constants scattered today across
-//! `nodes/radio.rs`, `nodes/fan.rs`, `nodes/cat.rs`, `nodes/hero.rs` and
-//! `nodes/level.rs`'s own `OID_FLOOR`/`OID_CEIL` — those call sites move
-//! to it in a later task; this stage only builds the table itself and the
-//! colouring that reads it. [`Role::Case`] (0.05) is the one grandfathered
-//! exception: it sits BELOW the 0.15 sRGB comfort line every other entry
-//! respects, carried over unchanged from the radio chassis's pre-existing
-//! value because moving *that* value is out of scope for this stage, not
-//! because 0.05 is a good one.
+//! [`role_label`] IS the one place every fixed label in the game lives.
+//! The per-node id constants that used to hold these numbers — `OID_FLOOR`
+//! and `OID_CEIL` in `nodes/level.rs`, and the equivalents in
+//! `nodes/radio.rs`, `nodes/fan.rs`, `nodes/cat.rs` and `nodes/hero.rs` —
+//! are gone; every one of those files builds its own fixed table from this
+//! function at compile time (it is a `const fn` for exactly that reason).
+//!
+//! [`Role::Case`] (0.05) is the one grandfathered exception: it sits BELOW
+//! the 0.15 comfort line every other entry respects, carried over
+//! unchanged from the radio chassis's pre-existing value. It is safe where
+//! it stands and it is not a pattern to copy. Safe, because the only
+//! question a label has to answer is whether the seams it must draw clear
+//! the hearing pass's crease floor (`smoothstep(0.04, 0.08, nrm)`,
+//! `hearing_post.gdshader`), and every label `Case` can meet clears it:
+//! `Floor` 0.15 (the radio stands on it) by 0.10, its own `Shell` fascia
+//! 0.33 by 0.28, and the whole world palette (`nodes::level::WORLD_OIDS`,
+//! lowest entry 0.25) by 0.20 or more. Measured end to end on the web
+//! build rather than assumed — the G channel round-trips linearly there,
+//! byte = 255 x label within a byte, so the 0.10 gap arrives as ~0.094 and
+//! still saturates the crease. Not a pattern to copy, because that margin
+//! is the smallest any pair in the table carries, and a SECOND label down
+//! here would have nothing to separate from `Case` against.
 //!
 //! # Colouring
 //!
@@ -84,15 +96,16 @@ pub enum Role {
 }
 
 /// The one label table. `Case` 0.05 stays only for the radio chassis
-/// (pre-existing; grandfathered below the 0.15 sRGB comfort line and
-/// unchanged this stage), `Floor` 0.15, `Shell` 0.33, `Moving` 0.63, `Cat`
-/// 0.70, `HeroBody` 0.82, `Ceiling` 0.90, `HeroCane` 0.96.
+/// (pre-existing, grandfathered below the 0.15 comfort line — the module
+/// doc derives why it is safe there and why it is the last of its kind),
+/// `Floor` 0.15, `Shell` 0.33, `Moving` 0.63, `Cat` 0.70, `HeroBody` 0.82,
+/// `Ceiling` 0.90, `HeroCane` 0.96.
 ///
-/// `const fn` on purpose (Task 7): every creature and source builds its
-/// own fixed `oids()`/`OIDS` table from this function at compile time
-/// now that the id constants that used to hold these numbers locally
-/// (`CAT_OID`, `FAN_OID`, `RADIO_CASE_OID`, ...) are gone — this is the
-/// one place any of them may be spelled again.
+/// `const fn` on purpose: every creature and source builds its own fixed
+/// `oids()`/`OIDS` table from this function at compile time now that the
+/// id constants that used to hold these numbers locally (`CAT_OID`,
+/// `FAN_OID`, `RADIO_CASE_OID`, ...) are gone — this is the one place any
+/// of them may be spelled again.
 pub const fn role_label(role: Role) -> f64 {
     match role {
         Role::Case => 0.05,
@@ -107,22 +120,28 @@ pub const fn role_label(role: Role) -> f64 {
 }
 
 /// Labels at least this far apart draw a full-strength crease off the
-/// shader's own `smoothstep(0.04, 0.08, nrm)` knee — this render
-/// subsystem's own copy of the value [`oid_palette::MIN_SEP`] names for
-/// the id path it is replacing. Both describe the identical shader knee
-/// and are equal by construction; they are kept as two textually
-/// independent constants, rather than one re-exported from the other, so
-/// this module answers to nothing outside itself once `oid_palette` is
-/// retired in Task 10.
+/// shader's own `smoothstep(0.04, 0.08, nrm)` upper knee. Below it the
+/// seam fades; at zero it is gone.
+///
+/// THE one definition in the crate. `oid_palette` carried a second,
+/// textually independent copy of the same number for the per-solid id path
+/// this campaign replaced, with nothing asserting the two agreed — so
+/// tuning the shader knee and updating one copy would have left the
+/// colouring and the seam census judging by different thresholds. That
+/// copy is gone and `observe::oids` reads this one. What is still NOT
+/// single-sourced, and cannot be from Rust, is the shader literal itself:
+/// `hearing_post.gdshader`'s `smoothstep(0.04, 0.08, nrm)` is the actual
+/// authority, and no gate compares this constant against it.
 pub const MIN_SEP: f64 = 0.08;
 
-/// Slack on the separation test, matching [`oid_palette`]'s own: a palette
-/// laid out on exact decimal steps misses its own nominal gap by an ULP —
-/// `0.31 - 0.23` is `0.0799999999999999`, just under [`MIN_SEP`].
+/// Slack on the separation test: a palette laid out on exact decimal steps
+/// misses its own nominal gap by an ULP — `0.31 - 0.23` is
+/// `0.0799999999999999`, just under [`MIN_SEP`] — and a law that rejected
+/// the palette it was written for would be worse than no law.
 const SLACK: f64 = 1e-9;
 
 /// Do two labels draw a full-strength seam between them?
-fn separated(a: f64, b: f64) -> bool {
+pub fn separated(a: f64, b: f64) -> bool {
     (a - b).abs() >= MIN_SEP - SLACK
 }
 

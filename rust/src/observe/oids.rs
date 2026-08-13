@@ -4,7 +4,7 @@
 //! difference in the flat object id is the ONLY thing that can draw their
 //! seam. Two touching solids sharing an id melt into one shape. This
 //! reports the touch graph, the id handed to each solid, and every pair
-//! closer than `oid_palette::MIN_SEP` — the SOLID-granularity law. It
+//! closer than `render::MIN_SEP` — the SOLID-granularity law. It
 //! stays true for any two solids that never coplanar-MERGE
 //! (`render::superface`): the singleton collapse means a solid alone in
 //! its own cluster carries exactly one label across every one of its own
@@ -26,9 +26,9 @@
 //! pair actually z-fight", can never drift apart by one file forgetting to
 //! update the other.
 
-use crate::oid_palette::{Box3, MIN_SEP, separated};
-use crate::render::Face;
+use crate::oid_palette::Box3;
 use crate::render::superface::is_merge_candidate;
+use crate::render::{Face, MIN_SEP, separated};
 
 /// Two solids that touch, and whether the seam between them draws.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -127,12 +127,32 @@ pub struct LabelFault {
 ///
 /// The predicate is [`is_merge_candidate`] — the IDENTICAL test
 /// `render::superface::superfaces` uses to decide which faces share a
-/// class — so a reported fault names a genuine defect: somewhere between
-/// the class graph and the label actually carried for each face, the
-/// merge law's own promise (bit-identical labels for anything it merged)
-/// was broken. No eye band, no crease threshold, any plane: this census
-/// answers a simpler question than the old fight census did, because the
-/// merge law already resolved the geometry question for it.
+/// class. No eye band, no crease threshold, any plane: this census answers
+/// a simpler question than the old fight census did, because the merge law
+/// already resolved the geometry question for it.
+///
+/// KNOW WHAT THIS PROVES, because it is narrower than it reads. Fed the
+/// level's OWN face census — which is how `WaveObserver::explain_oids`
+/// calls it, and the only way anything calls it today — it is a
+/// POSTCONDITION OVER THE CLASS GRAPH, and it cannot fail. `superfaces`
+/// unions exactly the pairs this predicate accepts, `paint_labels` writes
+/// `label_of_class[class_of[face]]` into the census over that same face
+/// slice, so a merge candidate reads the same array element twice and the
+/// bit comparison is unreachable. That is the design's "impossible by
+/// construction" goal reported back, not a check with teeth: it says the
+/// class graph and the labels handed out from it agree, and nothing more.
+/// It does not read a single byte of any mesh.
+///
+/// The BAKE — the step that could actually get an ordinal wrong, and the
+/// one a reader of this census will assume is covered — is pinned
+/// elsewhere, by tests that read real `ARRAY_CUSTOM0` bytes back off the
+/// shipped meshes and find their faces geometrically rather than by
+/// ordinal: `map_test.gd::test_a_junction_style_pair_merges_its_cap_and_separates_its_corner`
+/// (the real BorderNorth/DividerNorth junction, merge plane hand-derived),
+/// `map_test.gd::test_shipped_walls_clear_the_floor_and_ceiling_labels`
+/// (all 19 shipped walls, six real face labels each), and
+/// `observer_test.gd::test_two_flush_props_report_no_fault` (the issue-14
+/// geometry, with its own placeholder guard).
 ///
 /// Returns `None` when `labels` is shorter than `faces`: a truncated
 /// check that reported no faults would be a vacuous pass indistinguishable

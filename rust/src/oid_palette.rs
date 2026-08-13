@@ -18,11 +18,8 @@
 //!   itself by (`WaveLevel::mesh_world_box` and its callers), with the
 //!   touch/union/grow primitives `observe::oids`'s SOLID-granularity law
 //!   still reasons over.
-//! - [`MIN_SEP`]/[`separated`]/[`TOUCH_EPS`] — the crease-drawing threshold
-//!   and its touch epsilon, both textually mirrored (not re-exported) in
-//!   `render::labels` for the identical reason `render::superface` mirrors
-//!   `COPLANAR_EPS`/`PATCH_EPS`: this module answers to nothing outside
-//!   itself, and neither does that one.
+//! - [`TOUCH_EPS`] — the epsilon [`Box3::touches`] grows a box by before
+//!   asking, since boxes sharing a face overlap by exactly zero.
 //! - [`NO_OID`] — the "nothing painted this yet" sentinel, read by
 //!   `nodes::solid`/`nodes::level` wherever a mesh's `CUSTOM0` cannot be
 //!   read at all.
@@ -36,23 +33,11 @@
 //! catches CREASES, faded over `smoothstep(0.04, 0.08, ..)`. Where two
 //! boxes interpenetrate there is no depth step, so the silhouette term has
 //! nothing to bite on — the crease is the only thing that can draw their
-//! seam, which is the law [`MIN_SEP`]/[`separated`] still state.
-
-/// Ids at least this far apart draw a full-strength crease, straight off
-/// the shader's `smoothstep(0.04, 0.08, nrm)` upper knee. Below it the seam
-/// fades; at zero it is gone.
-pub const MIN_SEP: f64 = 0.08;
-
-/// Slack on the separation test. A palette laid out on exact decimal steps
-/// misses its own nominal gap by an ULP — `0.31 - 0.23` is
-/// 0.0799999999999999, just under [`MIN_SEP`] — and a law that rejected the
-/// palette it was written for would be worse than no law.
-const SLACK: f64 = 1e-9;
-
-/// Do two ids draw a full-strength seam between them?
-pub fn separated(a: f64, b: f64) -> bool {
-    (a - b).abs() >= MIN_SEP - SLACK
-}
+//! seam. The threshold that law is stated in, `MIN_SEP`, lives in
+//! `render::labels` and nowhere else: this module used to carry a second,
+//! textually independent copy of it with nothing asserting the two agreed,
+//! and `observe::oids` — its one consumer here — reads the render
+//! subsystem's own constant now.
 
 /// Boxes sharing a face touch at exactly zero overlap — a wall's underside
 /// sits precisely on the floor's top — so containment tests are grown by

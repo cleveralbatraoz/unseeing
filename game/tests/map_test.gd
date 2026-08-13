@@ -460,15 +460,26 @@ func test_shipped_level_reuses_ids_between_distant_boxes() -> void:
 ## on colour.
 ##
 ## `explain_oids()`'s `faults` census (`observe::oids::coplanar_label_faults`)
-## now reasons at real FACE granularity, over the exact per-face labels
+## reasons at real FACE granularity, over the exact per-face labels
 ## `WaveLevel::paint_labels` baked (`WaveLevel::face_census`) — not the
 ## solid-granularity bridge the old fight census read, which this suite
 ## used to have to cross-check against the raw mesh bytes by hand to tell
-## a genuine defect from a stale artifact of that bridging. The merge law
-## (`render::superface`) and this postcondition share one predicate
-## (`is_merge_candidate`), so a genuine wall junction that MERGES reports
-## no fault at all — the two faces are bit-identical by construction — and
-## the pin is simply `faults == []`.
+## a genuine defect from a stale artifact of that bridging.
+##
+## WHAT THIS CASE ACTUALLY BINDS, stated plainly because the name promises
+## more: the merge law and this census share ONE predicate and ONE labels
+## array, so a merge candidate reads the same array element twice and
+## `faults` is `[]` for any level, any geometry, any bug. That is the
+## design's "impossible by construction" goal reported back — a
+## postcondition over the CLASS GRAPH — and the only assertion here with
+## teeth is `has("faults")`: the census REFUSES (returns no key) when the
+## labels array is shorter than the faces array, which is a real
+## derive-time defect this catches.
+##
+## The BAKE is pinned separately, by the cases in this suite that read real
+## ARRAY_CUSTOM0 bytes and locate faces geometrically —
+## `test_a_junction_style_pair_merges_its_cap_and_separates_its_corner` and
+## `test_shipped_walls_clear_the_floor_and_ceiling_labels`.
 func test_shipped_level_has_no_label_faults() -> void:
 	var level := _shipped_level()
 	var obs: WaveObserver = auto_free(WaveObserver.new())

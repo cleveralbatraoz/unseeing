@@ -23,5 +23,5 @@ pub mod paint;
 pub mod superface;
 
 pub use faces::{Face, Shape, faces};
-pub use labels::{Labelling, MIN_SEP, Role, assign, role_label};
+pub use labels::{Labelling, MIN_SEP, Role, assign, role_label, separated};
 pub use superface::{COPLANAR_EPS, PATCH_EPS, Superfaces, superfaces};
