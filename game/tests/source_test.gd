@@ -260,10 +260,103 @@ func _limb_label(limb: MeshInstance3D) -> float:
 	return custom[0]
 
 
-## Every source's limbs carry fixed role labels in CUSTOM0. Sources never
-## enter the world's superface colouring or merge with it; their few coherent
-## roles give the shader the stable seams within each source.
-func test_sources_paint_fixed_role_labels_into_custom0() -> void:
+## Free placement includes two sources of the SAME class. These radio cases
+## stand side by side at their exact 0.44 m width, so their front faces are
+## coplanar and their side planes meet at one X coordinate. Distance and
+## normal therefore cannot invent the boundary: the actual CUSTOM0 labels on
+## the two case meshes must clear the hearing shader's 0.08 upper crease knee.
+func test_two_touching_radios_keep_their_coplanar_seam() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(1, 0, 1)))
+	var gate := WaveWall.new()
+	gate.name = "Gate"
+	gate.length = 2.0
+	gate.position = Vector3(2, 0, 2)
+	level.add_child(gate)
+	var radio_a := SoundRadio.new()
+	radio_a.name = "RadioA"
+	radio_a.position = Vector3(3, 0, 3)
+	level.add_child(radio_a)
+	var radio_b := SoundRadio.new()
+	radio_b.name = "RadioB"
+	radio_b.position = Vector3(3.44, 0, 3)
+	level.add_child(radio_b)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+
+	var case_a: MeshInstance3D = _limbs(radio_a.find_child("RadioCase", true, false), [])[0]
+	var case_b: MeshInstance3D = _limbs(radio_b.find_child("RadioCase", true, false), [])[0]
+	var box_a: AABB = case_a.global_transform * case_a.get_aabb()
+	var box_b: AABB = case_b.global_transform * case_b.get_aabb()
+	assert_float(box_a.end.x).is_equal_approx(box_b.position.x, 0.0001)
+	assert_float(box_a.position.z).is_equal_approx(box_b.position.z, 0.0001)
+	assert_float(box_a.end.z).is_equal_approx(box_b.end.z, 0.0001)
+	var label_a := _limb_label(case_a)
+	var label_b := _limb_label(case_b)
+	for limb: MeshInstance3D in [case_a, case_b]:
+		var custom: PackedFloat32Array = limb.mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+		var chosen: float = label_a if limb == case_a else label_b
+		assert_int(custom.size()).is_greater(0)
+		for vertex_label: float in custom:
+			assert_float(vertex_label).is_equal(chosen)
+	assert_float(absf(label_a - label_b)).is_greater_equal(0.08)
+
+
+## Three coincident two-role sources form K6, one class beyond the five-label
+## palette. The allocator remains total, but this is authoring-invalid because
+## one seam cannot draw: the level shouts once and the affected source owns the
+## repairable warning triangle. The other two sources must not inherit it.
+func test_a_starved_source_role_warns_its_source_and_the_level() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(1, 0, 1)))
+	var gate := WaveWall.new()
+	gate.name = "Gate"
+	gate.length = 2.0
+	gate.position = Vector3(2, 0, 2)
+	level.add_child(gate)
+	var radios: Array[SoundRadio] = []
+	for index in 3:
+		var radio := SoundRadio.new()
+		radio.name = "Radio%d" % (index + 1)
+		radio.position = Vector3(3, 0, 3)
+		radios.append(radio)
+		level.add_child(radio)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var level_warning := (
+		"WaveLevel: 1 face/source-role class(es) could not take a label distinct from "
+		+ "everything they touch — those seams will not draw. Spread the geometry or widen "
+		+ "WORLD_OIDS."
+	)
+	var enter := func() -> void: add_child(level)
+	await assert_error(enter).is_push_error(level_warning)
+	assert_array(level.get_configuration_warnings()).contains([level_warning])
+	var source_warning := (
+		"one or more source roles cannot take a label distinct from everything they touch — "
+		+ "those seams will not draw."
+	)
+	var warning_owners := 0
+	var warning_owner: SoundRadio = null
+	for radio: SoundRadio in radios:
+		var warnings := radio.get_configuration_warnings()
+		if warnings.has(source_warning):
+			warning_owners += 1
+			warning_owner = radio
+	assert_int(warning_owners).is_equal(1)
+	if warning_owner == null:
+		fail("the starved source-role class had no repairable source owner")
+		return
+	warning_owner.position = Vector3(10, 0, 3)
+	var replay := func() -> void: level.rederive()
+	await assert_error(replay).is_success()
+	assert_array(level.get_configuration_warnings()).not_contains([level_warning])
+	for radio: SoundRadio in radios:
+		assert_array(radio.get_configuration_warnings()).not_contains([source_warning])
+
+
+## Sources do not become world superfaces, but their few semantic limb roles
+## join the same separation graph and are baked back into CUSTOM0. Each source
+## therefore reads as a few coherent parts rather than a heap of limb IDs.
+func test_sources_paint_graph_coloured_roles_into_custom0() -> void:
 	var level := _two_source_level(Vector3(3, 0, 3), Vector3(8, 0, 8))
 	for source: Node3D in level.sources():
 		var ids := {}
@@ -271,15 +364,40 @@ func test_sources_paint_fixed_role_labels_into_custom0() -> void:
 			var oid := _limb_label(limb)
 			assert_bool(oid >= 0.0).is_true()
 			ids[oid] = true
-		# a source reads as a few coherent parts, never as a heap of limbs
-		assert_bool(ids.size() >= 1 and ids.size() <= 3).is_true()
+		# fan and radio each define exactly two roles at this boundary
+		assert_int(ids.size()).is_equal(2)
+		var values: Array[float] = []
+		for value: float in ids.keys():
+			values.append(value)
+		assert_float(absf(values[0] - values[1])).is_greater_equal(0.08)
 
 
-## Every limb a source builds carries its role label baked into its mesh's
-## per-vertex CUSTOM0 — what the shader's G channel reads directly. Every
-## vertex of a limb's mesh carries the SAME label, since a source's own
-## body has no internal seams of its own — one label per limb, never split
-## across it. Hand-derived against render::labels::role_label
+## A source can re-enter the tree with `request_ready()` without any authored
+## path/transform change. Its ownerless limbs are rebuilt, but the last derived
+## semantic role labels must survive that generation change immediately; a
+## scene-signature poll is allowed to see the same scene and do nothing.
+func test_a_rebuilt_source_keeps_its_derived_role_labels() -> void:
+	var level := _two_source_level(Vector3(3, 0, 3), Vector3(3.44, 0, 3))
+	var radio: SoundRadio = level.sources()[1]
+	var first: Array[float] = []
+	for limb: MeshInstance3D in _limbs(radio, [] as Array[MeshInstance3D]):
+		first.append(_limb_label(limb))
+	level.remove_child(radio)
+	radio.request_ready()
+	level.add_child(radio)
+	var second: Array[float] = []
+	for limb: MeshInstance3D in _limbs(radio, [] as Array[MeshInstance3D]):
+		second.append(_limb_label(limb))
+	assert_int(second.size()).is_equal(first.size())
+	for index in first.size():
+		assert_float(second[index]).is_equal_approx(first[index], 0.000001)
+
+
+## A standalone source blueprint starts with its semantic-role defaults baked
+## into per-vertex CUSTOM0 — what the shader's G channel reads directly.
+## Every vertex of a limb carries the SAME label: one label per role limb,
+## never split across it. Hand-derived against the standalone defaults in
+## render::labels::role_label
 ## (rust/src/render/labels.rs): Shell 0.33, Moving 0.63, Case 0.05.
 ##
 ## Matched APPROXIMATELY, not by exact membership: CUSTOM0 is packed as

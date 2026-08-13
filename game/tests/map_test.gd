@@ -364,7 +364,7 @@ func test_shipped_level_exposes_and_injects_the_cat() -> void:
 
 ## Every authored world solid carrying per-face CUSTOM0 labels, paired with
 ## the world box it fills. Sound sources and the cat are deliberately absent:
-## they use fixed role labels rather than the world-superface palette.
+## neither contributes geometric faces to the world-superface merge census.
 func _painted_boxes(node: Node, out: Array[Dictionary], root: Node = null) -> void:
 	if root == null:
 		root = node
@@ -614,9 +614,9 @@ func test_shipped_level_derives_with_no_starved_classes() -> void:
 ## ground truth, not the coarser bridge — must clear BOTH Floor (0.15)
 ## and Ceiling (0.90) by at least MIN_OID_SEP. Hand-derived: every wall
 ## takes its label from the five-entry WORLD_OIDS palette
-## ([0.25, 0.34, 0.43, 0.52, 0.61], `rust/src/nodes/level.rs`) — walls
-## are never anchored, only slabs and sources are — and every one of
-## those five sits comfortably clear of both role labels
+## ([0.25, 0.34, 0.43, 0.52, 0.61], `rust/src/nodes/level.rs`) — walls and
+## source roles are graph-coloured; only slabs are anchored — and every one
+## of those five sits comfortably clear of both slab role labels
 ## (`render::labels::role_label`) already; this is the wiring pin that
 ## would catch a wall ever inheriting 0.15/0.90 directly, the way it
 ## could if a wall's own cluster were ever silently merged into a slab's
@@ -1089,10 +1089,10 @@ func test_the_room_bound_follows_the_extents_knob() -> void:
 	assert_array(_strays(_one_crate_level(Vector2(28, 28), crate_at))).is_empty()
 
 
-## The seam law's tightest cross-domain pair: a fixed-role sound source
-## against the world face classes it touches. Check every real world-face
-## label, not the retired first-face bridge, against every source role label.
-func test_world_faces_clear_the_fixed_source_roles_they_touch() -> void:
+## The seam law's tightest cross-domain pair: derived semantic source roles
+## against the world face classes they touch. Check every real CUSTOM0 label,
+## not the retired first-face bridge or a semantic-role preview default.
+func test_world_faces_clear_the_source_roles_they_touch() -> void:
 	var level := _shipped_level()
 	var boxes: Array[Dictionary] = []
 	_painted_boxes(level, boxes)
@@ -1141,10 +1141,9 @@ func _limbs(node: Node, out: Array[MeshInstance3D]) -> Array[MeshInstance3D]:
 	return out
 
 
-## Every distinct fixed role label a source paints its limbs with, read back off each
-## limb's own mesh (CUSTOM0) so the test cannot drift from what the data
-## pass writes — CUSTOM0 is the shader's own G-channel source now, not a
-## per-instance uniform.
+## Every distinct semantic role label actually baked into a source's limbs,
+## read from CUSTOM0 so the test cannot drift from this instance's graph
+## assignment. CUSTOM0 is the shader's G-channel source.
 func _source_labels(source: Node) -> Array[float]:
 	var labels: Array[float] = []
 	for limb: MeshInstance3D in _limbs(source, [] as Array[MeshInstance3D]):

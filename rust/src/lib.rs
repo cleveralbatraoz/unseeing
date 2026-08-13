@@ -62,10 +62,12 @@
 //!   snapshot and explain, never a rendered frame.
 //! - [`render`] — how the world is SEEN: per-vertex face-or-role labels
 //!   replacing the per-instance object id. Derive-painted superface labels
-//!   make overlapping world solids agree on G; sources, creatures and the
-//!   viewmodel carry fixed role labels. Mostly pure face/label law,
-//!   cargo-tested; [`render::paint`] is the impure mesh edge that bakes
-//!   derive-time world labels and submits every generated `ArrayMesh` surface.
+//!   make overlapping world solids agree on G. Sources retain fixed semantic
+//!   roles while the level derives a separated numeric label for each source
+//!   instance; creatures and the viewmodel carry fixed numeric role labels.
+//!   Mostly pure face/label law, cargo-tested; [`render::paint`] is the impure
+//!   mesh edge that bakes labels and submits every generated `ArrayMesh`
+//!   surface.
 //! - [`source_shape`] — the one generated shape a sound source's limbs
 //!   need beyond a box or [`prop_shape::column_triangles`]: a torus, for
 //!   the fan's guard ring and the radio's speaker grille.

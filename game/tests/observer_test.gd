@@ -383,18 +383,16 @@ func test_the_shipped_level_has_no_object_id_violations() -> void:
 	assert_float(e["min_sep"]).is_equal_approx(0.08, 0.0001)
 	# the whole picture, named: the engine's own slabs ("Floor"/"Ceiling",
 	# built by every level regardless of what a designer authored), and one
-	# entry per fixed role label a source paints its own limbs with — each
-	# label is excluded from nearby world-face classes so a wall or crate
-	# cannot melt into the source. WHICH wall stands there is this map's own
-	# census, not this law, so it is not named here.
+	# entry per semantic source role, carrying the actual per-instance label
+	# baked into its limbs. Each label shares the separation graph with nearby
+	# world faces so a wall, prop, or second source cannot melt into it.
 	var names: Array = e["names"]
 	assert_array(names).contains(["Floor", "Ceiling"])
 	var has_fan_limb := false
 	for n: String in names:
 		if n.begins_with("Fan @"):
 			has_fan_limb = true
-	# The numeric suffix is the source limb's fixed role label; sources do
-	# not consume or compete for the reusable world-face labels.
+	# The numeric suffix is diagnostic read-back, not a designer identity.
 	(
 		assert_bool(has_fan_limb)
 		. append_failure_message("no 'Fan @<oid>' entry in %s" % [names])
@@ -507,10 +505,9 @@ func test_the_oid_census_includes_the_levels_creatures() -> void:
 	assert_array(real_violations).is_empty()
 
 
-## The compatibility census measures a source by the box it SWEEPS, exactly as
-## the face labeller does — not by the single pose it happens to hold.
-## WaveLevel::paint_labels grows each fixed-role proximity anchor by the
-## source's sweep_margin before assigning nearby world-face labels; a check
+## The compatibility census measures the swept source box, not one pose.
+## WaveLevel::paint_labels grows each source-role envelope by the source's
+## sweep_margin before assigning the shared graph; a check
 ## built from the ungrown box is weaker than the law it explains, and would
 ## hand back "no such pair, no violations" for a prop the fan's guard ring
 ## reaches on half of every cycle.
@@ -546,22 +543,20 @@ func test_the_oid_census_measures_a_source_by_what_it_sweeps() -> void:
 	for pair: Dictionary in e["pairs"]:
 		seams.append("%s|%s" % [pair["name_a"], pair["name_b"]])
 	# Pairs come back in ascending census order, with painted solids before
-	# fixed-role source anchors, so the prop is the a side. Shell and Moving
-	# intentionally keep their role labels; this code-built fixture pins the
-	# proximity exclusion against those real labels, not a shipped-map census.
-	assert_array(seams).contains(["SweptNeighbour|Fan @0.33", "SweptNeighbour|Fan @0.63"])
+	# source-role entries, so the prop is the a side. Both semantic roles must
+	# be present, whatever numeric labels this particular graph derived.
+	var fan_pairs: Array[String] = []
+	for seam: String in seams:
+		if seam.begins_with("SweptNeighbour|Fan @"):
+			fan_pairs.append(seam)
+	assert_int(fan_pairs.size()).is_equal(2)
 	assert_array(e["violations"]).is_empty()
 
 
-## The SAME fixture, checked the OTHER way: the violations check above
-## reads at BRIDGED (first-face) resolution, and can pass "by luck" —
-## nothing forces the neighbour's BRIDGED face onto the fan's own 0.33
-## Shell/0.63 Moving (rust/src/nodes/fan.rs), so deleting the
-## source-anchor ban (`extra_anchors.push` for sources,
-## `WaveLevel::paint_labels`) can stay green there while the neighbour's
-## OTHER, un-bridged faces land on 0.34/0.61 anyway. This checks every
-## REAL label the neighbour's mesh carries against both fixed oids
-## directly — what the ban is actually for.
+## The SAME fixture at real per-face rather than bridged resolution:
+## nothing forces the neighbour's BRIDGED face onto either derived fan role,
+## so deleting the source/world role edges can stay green there while an
+## un-bridged face collides. This checks every REAL mesh label directly.
 func test_a_swept_neighbours_own_faces_all_clear_the_sources_oids() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_spawn_marker())
@@ -576,6 +571,9 @@ func test_a_swept_neighbours_own_faces_all_clear_the_sources_oids() -> void:
 	level.add_child(neighbour)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
+	var obs := _observer()
+	obs.inject(level, _eye())
+	var e: Dictionary = obs.explain_oids()
 	var custom: PackedFloat32Array = _skin_of(neighbour).mesh.surface_get_arrays(0)[
 		Mesh.ARRAY_CUSTOM0
 	]
@@ -584,8 +582,16 @@ func test_a_swept_neighbours_own_faces_all_clear_the_sources_oids() -> void:
 		if not labels.has(label):
 			labels.append(label)
 	assert_array(labels).is_not_empty()
+	var source_labels: Array[float] = []
+	for name: String in e["names"]:
+		if not name.begins_with("Fan @"):
+			continue
+		var label := name.trim_prefix("Fan @").to_float()
+		if not source_labels.has(label):
+			source_labels.append(label)
+	assert_int(source_labels.size()).is_equal(2)
 	for label: float in labels:
-		for source_oid: float in [0.33, 0.63]:
+		for source_oid: float in source_labels:
 			var msg := (
 				"SweptNeighbour carries %.3f, within MIN_SEP of the fan's %.3f"
 				% [label, source_oid]

@@ -18,15 +18,12 @@ use godot::prelude::*;
 
 use super::faces::Face;
 use super::superface::Superfaces;
+use crate::oid_palette::Box3;
 
 /// A class/separation graph's separation edges — [`Superfaces::separations`]'
-/// own shape, named here so [`add_flank_classes`] and [`add_anchor_classes`]
-/// don't each restate the same three-deep generic.
+/// own shape, named here so the pure graph extensions do not each restate the
+/// same nested tuple type.
 type Separations = Vec<(usize, usize)>;
-
-/// The `(class, fixed label)` pairs [`super::labels::assign`]'s own
-/// `anchors` parameter expects.
-type Anchors = Vec<(usize, f64)>;
 
 /// The face order every per-face label array is read in, and the order
 /// [`labelled_box`] emits its four-vertex quads in: −X, +X, −Y, +Y, −Z, +Z.
@@ -465,6 +462,49 @@ pub fn relabel(mesh: &mut Gd<ArrayMesh>, kind: ShapeKind, labels_by_ordinal: &[f
         .done();
 }
 
+/// Rewrite every vertex of a source limb with one chosen role-class label.
+/// Source builders emit one semantic role per limb, so unlike [`relabel`]
+/// there is no face ordinal to recover: the whole existing CUSTOM0 channel
+/// changes together. Geometry, normals and indices are resubmitted unchanged.
+/// Non-finite labels and meshes with no readable surface/channel are no-ops.
+pub fn relabel_constant(mesh: &mut Gd<ArrayMesh>, label: f32) {
+    if !label.is_finite() || mesh.get_surface_count() == 0 {
+        return;
+    }
+    let arrays = mesh.surface_get_arrays(0);
+    let Some(custom_variant) = arrays.get(ArrayType::CUSTOM0.ord() as usize) else {
+        return;
+    };
+    let Ok(mut custom) = custom_variant.try_to::<PackedFloat32Array>() else {
+        return;
+    };
+    custom.as_mut_slice().fill(label);
+    let mut new_arrays = arrays.clone();
+    new_arrays.set(ArrayType::CUSTOM0.ord() as usize, &custom.to_variant());
+    mesh.surface_remove(0);
+    mesh.add_surface_from_arrays_ex(PrimitiveType::TRIANGLES, &new_arrays)
+        .flags(custom0_format())
+        .done();
+}
+
+/// Retain per-role assignments across an ownerless-limb rebuild. Supplied
+/// finite values update the same role index; non-finite values and omitted
+/// trailing roles leave the previous assignment intact. New finite roles grow
+/// the result. This is pure so malformed boundary slices cannot silently shift
+/// one semantic role onto another.
+pub fn update_role_labels(previous: &[Option<f64>], supplied: &[f64]) -> Vec<Option<f64>> {
+    let mut updated = previous.to_vec();
+    if updated.len() < supplied.len() {
+        updated.resize(supplied.len(), None);
+    }
+    for (role, &label) in supplied.iter().enumerate() {
+        if label.is_finite() {
+            updated[role] = Some(label);
+        }
+    }
+    updated
+}
+
 /// One warning line and its original census address per non-wall solid
 /// sharing a MERGE CLUSTER with any
 /// wall — the visible half of the merge law: a solid whose faces genuinely
@@ -753,43 +793,101 @@ pub fn add_flank_classes(
     (flank_class, classes, separations)
 }
 
-/// Extend a class/separation graph with one extra, FIXED-label class per
-/// entry of `extra_anchors` — the mechanism that preserves the retired
-/// `oid_palette::Fixed`'s old law (a sound source's own ids ban the world
-/// palette entries near them for whatever touches it) now that a source
-/// contributes no real face to the census at all (its limbs bake their
-/// role labels directly into `CUSTOM0`, never through the census):
-/// `render::labels::role_label` puts the world palette's 0.34 within a
-/// centimetre of `Role::Shell`'s 0.33, and without a ban a wall or a crate
-/// touching a source's swept envelope would be free to land there.
+/// One sound source as the pure label graph sees it: the swept world box its
+/// rendered limbs may occupy and the number of semantic limb roles it needs
+/// kept distinct. Geometry and role count are read at the Godot boundary;
+/// this value owns no node or resource handle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceRoleInput {
+    pub area: Box3,
+    /// Bounded at the type boundary: a designer object cannot ask this pure
+    /// pass to allocate or loop over an arbitrary machine-sized count.
+    pub roles: u8,
+}
+
+/// A world superface graph extended with colourable source-role classes.
+/// `classes_of_source` is in source-input order and role order so the thin
+/// node boundary can bake the chosen labels back onto the right limbs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceRoleGraph {
+    pub classes: usize,
+    pub separations: Vec<(usize, usize)>,
+    pub classes_of_source: Vec<Vec<usize>>,
+}
+
+/// Add every source's semantic roles to the SAME separation graph as the
+/// world faces. Roles within one source always separate; every role of two
+/// touching sources separates; and every role separates from each world
+/// class whose owning entry touches the source's swept area. The allocator
+/// can then reuse a label for distant sources but never melt two touching
+/// same-class sources merely because their semantic role is the same.
 ///
-/// Each `(label, touching_classes)` pair becomes one phantom class fixed to
-/// `label`, separated from every class named in `touching_classes` — the
-/// caller has already resolved which REAL (and flank) classes belong to
-/// whatever touches the source's own swept box; this function only wires
-/// the separation edges and returns the `(class, label)` pairs
-/// [`super::labels::assign`]'s own `anchors` parameter expects.
-///
-/// Total: an empty `extra_anchors` returns `classes`/`separations`
-/// unchanged and no anchors — a level with no sound sources pays nothing
-/// extra.
-pub fn add_anchor_classes(
+/// `entry_areas` and `classes_of_entry` are parallel only over their common
+/// prefix. Unknown world class indices are ignored. Class-count overflow
+/// stops allocating further role classes and leaves a shorter mapping rather
+/// than wrapping or indexing blindly.
+pub fn add_source_role_classes(
     classes: usize,
     separations: &[(usize, usize)],
-    extra_anchors: &[(f64, Vec<usize>)],
-) -> (usize, Separations, Anchors) {
+    sources: &[SourceRoleInput],
+    entry_areas: &[Box3],
+    classes_of_entry: &[Vec<usize>],
+) -> SourceRoleGraph {
+    let world_classes = classes;
     let mut classes = classes;
     let mut separations = separations.to_vec();
-    let mut anchors = Vec::with_capacity(extra_anchors.len());
-    for (label, touching_classes) in extra_anchors {
-        let this_class = classes;
-        classes += 1;
-        anchors.push((this_class, *label));
-        for &c in touching_classes {
-            add_sep(&mut separations, this_class, c);
+    let mut classes_of_source = Vec::with_capacity(sources.len());
+
+    for source in sources {
+        let mut roles = Vec::with_capacity(usize::from(source.roles));
+        for _ in 0..source.roles {
+            let Some(next) = classes.checked_add(1) else {
+                break;
+            };
+            roles.push(classes);
+            classes = next;
+        }
+        for (i, &a) in roles.iter().enumerate() {
+            for &b in roles.iter().skip(i + 1) {
+                add_sep(&mut separations, a, b);
+            }
+        }
+        classes_of_source.push(roles);
+    }
+
+    for (source, roles) in sources.iter().zip(&classes_of_source) {
+        for (entry_area, owned_classes) in entry_areas.iter().zip(classes_of_entry) {
+            if !source.area.touches(entry_area) {
+                continue;
+            }
+            for &role_class in roles {
+                for &world_class in owned_classes {
+                    if world_class < world_classes {
+                        add_sep(&mut separations, role_class, world_class);
+                    }
+                }
+            }
         }
     }
-    (classes, separations, anchors)
+
+    for (a_index, (a, a_roles)) in sources.iter().zip(&classes_of_source).enumerate() {
+        for (b, b_roles) in sources.iter().zip(&classes_of_source).skip(a_index + 1) {
+            if !a.area.touches(&b.area) {
+                continue;
+            }
+            for &a_class in a_roles {
+                for &b_class in b_roles {
+                    add_sep(&mut separations, a_class, b_class);
+                }
+            }
+        }
+    }
+
+    SourceRoleGraph {
+        classes,
+        separations,
+        classes_of_source,
+    }
 }
 
 #[cfg(test)]
@@ -1290,55 +1388,115 @@ mod tests {
         if a < b { (a, b) } else { (b, a) }
     }
 
-    // ---------------------------------------------------------------
-    // add_anchor_classes
-    // ---------------------------------------------------------------
-
-    /// An empty `extra_anchors` is a pure no-op.
+    /// Two same-class sources are still two authored objects. Give each of
+    /// their two semantic roles a colourable class; because the source boxes
+    /// touch, all four role classes separate from one another. The one world
+    /// class touching both completes a hand-derived K5, exactly coverable by
+    /// the five world labels with no seam starvation.
     #[test]
-    fn no_extra_anchors_leaves_the_graph_unchanged() {
-        let (classes, seps, anchors) = add_anchor_classes(4, &[(0, 1)], &[]);
-        assert_eq!(classes, 4);
-        assert_eq!(seps, vec![(0, 1)]);
-        assert!(anchors.is_empty());
-    }
-
-    /// One phantom anchor class per entry, separated from every class it
-    /// names, and returned as an `(class, label)` pair `labels::assign`
-    /// takes directly — the mechanism that preserves a source's old
-    /// `Fixed`-anchor ban now that it contributes no real face at all.
-    #[test]
-    fn a_phantom_anchor_bans_its_named_neighbours() {
-        let (classes, seps, anchors) = add_anchor_classes(3, &[], &[(0.33, vec![0, 2])]);
-        assert_eq!(classes, 4);
-        assert_eq!(anchors, vec![(3, 0.33)]);
-        assert!(seps.contains(&(0, 3)));
-        assert!(seps.contains(&(2, 3)));
-        assert_eq!(seps.len(), 2);
-    }
-
-    /// End to end: a class touching a phantom anchor must not land within
-    /// MIN_SEP of the anchor's own label once `labels::assign` runs.
-    #[test]
-    fn a_touching_class_avoids_the_phantom_anchors_label() {
-        let sf = Superfaces {
-            class_of: vec![0, 1],
-            classes: 2,
-            separations: vec![],
-            cluster_of_solid: vec![0, 1],
-        };
-        let (classes, seps, anchors) =
-            add_anchor_classes(sf.classes, &sf.separations, &[(0.33, vec![0])]);
-        let augmented = Superfaces {
-            class_of: sf.class_of,
-            classes,
-            separations: seps,
-            cluster_of_solid: sf.cluster_of_solid,
-        };
-        let out = labels::assign(&augmented, &anchors, &PALETTE);
+    fn touching_source_roles_join_the_same_separation_graph_as_world_faces() {
+        let world = Box3::from_center_size([0.0, 0.5, 0.0], [2.0, 1.0, 1.0]);
+        let sources = [
+            SourceRoleInput {
+                area: Box3::from_center_size([0.6, 0.5, 0.0], [0.2, 1.0, 1.0]),
+                roles: 2,
+            },
+            SourceRoleInput {
+                area: Box3::from_center_size([0.8, 0.5, 0.0], [0.2, 1.0, 1.0]),
+                roles: 2,
+            },
+        ];
+        let graph = add_source_role_classes(1, &[], &sources, &[world], &[vec![0]]);
+        assert_eq!(graph.classes, 5);
+        assert_eq!(graph.classes_of_source, vec![vec![1, 2], vec![3, 4]]);
+        for a in 0..5 {
+            for b in (a + 1)..5 {
+                assert!(graph.separations.contains(&(a, b)), "missing {a}--{b}");
+            }
+        }
+        let out = labels::assign(
+            &Superfaces {
+                class_of: vec![0],
+                classes: graph.classes,
+                separations: graph.separations,
+                cluster_of_solid: vec![0],
+            },
+            &[],
+            &PALETTE,
+        );
         assert_eq!(out.starved, 0);
-        assert_eq!(out.label_of_class[2], 0.33); // the anchor's own class
-        assert!(separated(out.label_of_class[0], 0.33));
+        for a in 0..5 {
+            for b in (a + 1)..5 {
+                assert!(separated(out.label_of_class[a], out.label_of_class[b]));
+            }
+        }
+    }
+
+    /// Distance is permission to reuse labels. Two source boxes that do not
+    /// touch have no cross-source edges; each source's own roles still differ.
+    #[test]
+    fn separated_sources_reuse_the_same_role_labels() {
+        let sources = [
+            SourceRoleInput {
+                area: Box3::from_center_size([0.0; 3], [0.2; 3]),
+                roles: 2,
+            },
+            SourceRoleInput {
+                area: Box3::from_center_size([10.0, 0.0, 0.0], [0.2; 3]),
+                roles: 2,
+            },
+        ];
+        let graph = add_source_role_classes(0, &[], &sources, &[], &[]);
+        let out = labels::assign(
+            &Superfaces {
+                class_of: vec![],
+                classes: graph.classes,
+                separations: graph.separations,
+                cluster_of_solid: vec![],
+            },
+            &[],
+            &PALETTE,
+        );
+        assert_eq!(out.starved, 0);
+        assert!(separated(out.label_of_class[0], out.label_of_class[1]));
+        assert_eq!(out.label_of_class[0], out.label_of_class[2]);
+        assert_eq!(out.label_of_class[1], out.label_of_class[3]);
+    }
+
+    /// Malformed parallel entry inputs are truncated to their common prefix;
+    /// unknown class indices and a zero-role source are ignored, never indexed.
+    #[test]
+    fn source_role_graph_is_total_for_mismatched_and_unknown_inputs() {
+        let source = SourceRoleInput {
+            area: Box3::from_center_size([0.0; 3], [1.0; 3]),
+            roles: 0,
+        };
+        let graph = add_source_role_classes(
+            2,
+            &[(0, 1)],
+            &[source],
+            &[source.area, source.area],
+            &[vec![99]],
+        );
+        assert_eq!(graph.classes, 2);
+        assert_eq!(graph.separations, vec![(0, 1)]);
+        assert_eq!(graph.classes_of_source, vec![vec![]]);
+    }
+
+    /// Boundary corruption cannot compact role indices or erase omitted
+    /// assignments: Case remains Case even if the incoming Case value is NaN.
+    #[test]
+    fn malformed_or_short_role_updates_preserve_semantic_indices() {
+        let previous = vec![Some(0.25), Some(0.34), Some(0.43)];
+        assert_eq!(
+            update_role_labels(&previous, &[f64::NAN, 0.52]),
+            vec![Some(0.25), Some(0.52), Some(0.43)]
+        );
+        assert_eq!(update_role_labels(&previous, &[]), previous);
+        assert_eq!(
+            update_role_labels(&[], &[0.61, f64::INFINITY, 0.43]),
+            vec![Some(0.61), None, Some(0.43)]
+        );
     }
 
     // The ArrayMesh resize doors cannot be cargo-tested past this either,

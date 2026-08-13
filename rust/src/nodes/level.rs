@@ -354,7 +354,8 @@ impl WaveLevel {
         // Order is not a preference here, it is the whole contract. By the
         // time the level is in the tree, `derive` has already run: it pushed
         // an EMPTY wall table to skins that did not exist, and it labelled
-        // every wall and prop without the sources' fixed roles as anchors — so a
+        // every wall, prop and source role without injected source geometry
+        // to measure — so a
         // source injected now would render with seams that silently do not
         // draw, in a world whose walls no longer occlude. Nothing later can
         // repair either. Say so rather than limp.
@@ -790,10 +791,9 @@ impl WaveLevel {
     ///
     /// The level's own icon is not the only one that can go stale: this pass
     /// may add or clear a fault on a solid, source, spawn or run, so every
-    /// warning-bearing census family is refreshed after the level. Sources
-    /// retain fixed role labels and do not consume world-palette slots; the
-    /// refresh is the shared registered-node warning contract, not a claim
-    /// that they participate in world-face colouring. Omit one family and
+    /// warning-bearing census family is refreshed after the level. Source
+    /// roles consume graph classes without becoming world superfaces, and
+    /// may own starvation like a solid does. Omit one family and
     /// the synchronous fault store can be right while the Scene dock keeps
     /// a stale triangle until an unrelated repaint jars it loose.
     ///
@@ -844,10 +844,10 @@ impl WaveLevel {
                 .into_gd()
                 .call_deferred("update_configuration_warnings", &[]);
         }
-        // Refresh warning-bearing sources alongside the solids. Their fixed
-        // role labels do not enter the world-face colouring, but keeping the
-        // forwarder cache current is part of the shared designer-node law;
-        // `self.source_children` already owns them after the move above.
+        // Refresh warning-bearing sources alongside the solids. Their role
+        // classes can gain or clear starvation while their geometry remains
+        // outside the world-superface census; `self.source_children` already
+        // owns them after the move above.
         for source in &self.source_children {
             source
                 .clone()
@@ -983,11 +983,10 @@ impl WaveLevel {
     /// onto each solid's mesh is the whole of painting — there is no
     /// per-instance uniform left to keep in step with it.
     ///
-    /// Starvation is both a level-wide warning and one node warning for
-    /// every authored solid that owns a starved superface class. The latter
-    /// is deliberately mapped from `classes_of_entry`, not from a retired
-    /// per-solid colour slot: one solid can now own several face classes,
-    /// and one merged class can belong to several solids.
+    /// Starvation is both a level-wide warning and one node warning for every
+    /// authored solid or source that owns a starved class. Solid ownership is
+    /// deliberately mapped through `classes_of_entry`, not a retired
+    /// per-solid slot; source role classes map through `classes_of_source`.
     fn paint_labels(&mut self, census: &Census, editor: bool) {
         let entries = self.paint_entries(census);
 
@@ -1147,47 +1146,45 @@ impl WaveLevel {
             }
         }
 
-        // sound sources stay OUT of the face census entirely (their limbs
-        // bake their own role labels directly into CUSTOM0), but their
-        // FIXED ids still have to ban the world palette entries near them
-        // for whatever touches their swept envelope —
-        // `render::labels::role_label(Shell)` (0.33) sits a centimetre from
-        // the world palette's own 0.34, and without a ban a wall or a crate
-        // touching a source would be free to land there.
-        let mut extra_anchors: Vec<(f64, Vec<usize>)> = Vec::new();
-        for source in &census.sources {
+        // Sources stay OUT of the face census: their curved, animated limbs
+        // are not world superfaces. Their semantic limb roles still enter the
+        // SAME separation graph as colourable phantom classes. That preserves
+        // a fan's shell/blade crease, separates two touching same-class
+        // sources, and coordinates every touching world face without asking a
+        // designer for an identity knob.
+        let entry_areas: Vec<oid_palette::Box3> = entries.iter().map(|e| e.area).collect();
+        let mut source_slots: Vec<usize> = Vec::new();
+        let mut source_inputs: Vec<render::paint::SourceRoleInput> = Vec::new();
+        for (slot, source) in census.sources.iter().enumerate() {
             let Some(source_area) = mesh_world_box(&source.clone().into_gd()) else {
                 continue; // a source that draws nothing can show no seam
             };
             let bound = source.dyn_bind();
             let source_area = source_area.grown_flat(bound.sweep_margin());
-            let mut touching_classes: Vec<usize> = Vec::new();
-            for (i, entry) in entries.iter().enumerate() {
-                if entry.area.touches(&source_area) {
-                    for &c in &classes_of_entry[i] {
-                        if !touching_classes.contains(&c) {
-                            touching_classes.push(c);
-                        }
-                    }
-                }
-            }
-            if touching_classes.is_empty() {
-                continue; // nothing touches this source: no ban needed
-            }
-            for &oid in bound.oids() {
-                extra_anchors.push((oid, touching_classes.clone()));
-            }
+            source_slots.push(slot);
+            source_inputs.push(render::paint::SourceRoleInput {
+                area: source_area,
+                roles: bound.role_count(),
+            });
         }
-        let (classes, separations, mut anchors) =
-            render::paint::add_anchor_classes(classes1, &seps1, &extra_anchors);
-        anchors.extend(direct_anchors);
+        let render::paint::SourceRoleGraph {
+            classes: source_classes,
+            separations: source_separations,
+            classes_of_source,
+        } = render::paint::add_source_role_classes(
+            classes1,
+            &seps1,
+            &source_inputs,
+            &entry_areas,
+            &classes_of_entry,
+        );
         let augmented = render::Superfaces {
             class_of: sf.class_of.clone(),
-            classes,
-            separations,
+            classes: source_classes,
+            separations: source_separations,
             cluster_of_solid: sf.cluster_of_solid.clone(),
         };
-        let out = render::assign(&augmented, &anchors, &WORLD_OIDS);
+        let out = render::assign(&augmented, &direct_anchors, &WORLD_OIDS);
         // Wave S: the singleton collapse (`render::superface::superfaces`)
         // closed the gap that used to starve the palette here — a lone
         // box now costs the world palette exactly what it always did
@@ -1200,7 +1197,7 @@ impl WaveLevel {
         // the warning triangle instead of flooding the output panel.
         if out.starved > 0 {
             let message = format!(
-                "WaveLevel: {} superface class(es) could not take a label distinct from \
+                "WaveLevel: {} face/source-role class(es) could not take a label distinct from \
                  everything they touch — those seams will not draw. Spread the geometry or \
                  widen WORLD_OIDS.",
                 out.starved
@@ -1232,6 +1229,31 @@ impl WaveLevel {
                        touch — those seams will not draw."
                     .to_string(),
             });
+        }
+        // Source-role phantom classes have no PaintEntry owner. File the same
+        // starvation on the source node whose semantic role a designer can
+        // move, and bake every chosen role label through the source trait.
+        for (source_index, role_classes) in source_slots.iter().copied().zip(&classes_of_source) {
+            let Some(source) = census.sources.get(source_index) else {
+                continue;
+            };
+            let labels: Vec<f64> = role_classes
+                .iter()
+                .filter_map(|&class| out.label_of_class.get(class).copied())
+                .collect();
+            source.clone().dyn_bind_mut().set_role_labels(&labels);
+            if role_classes
+                .iter()
+                .any(|class| out.starved_classes.contains(class))
+            {
+                let node = source.clone().into_gd();
+                self.node_faults.push(level_plan::PlacementFault {
+                    path: root.get_path_to(&node).to_string(),
+                    text: "one or more source roles cannot take a label distinct from everything \
+                           they touch — those seams will not draw."
+                        .to_string(),
+                });
+            }
         }
         // bake: gather each entry's own labels by ordinal and rewrite its
         // mesh's CUSTOM0 — the shader's own G-channel source now.
@@ -1629,10 +1651,9 @@ impl WaveLevel {
 /// coplanar-same-facing with its siblings on all six faces, so a census
 /// fed the envelope reported each source z-fighting itself. The new
 /// per-face postcondition ([`FaceCensusEntry`], `observe::oids::
-/// coplanar_label_faults`) never sees a source at all — a source's limbs
-/// bake their role labels directly and contribute no `render::Face` to
-/// the census in the first place — so the skip flag had nothing left to
-/// guard and is gone with it.
+/// coplanar_label_faults`) never treats a source as a world face. Source
+/// limbs bake their graph-coloured semantic roles directly, so the skip flag
+/// had nothing left to guard and is gone with it.
 pub(super) struct PaintedSolid {
     pub(super) name: String,
     pub(super) area: oid_palette::Box3,
@@ -1800,9 +1821,12 @@ impl WaveLevel {
             let name = node.get_name().to_string();
             let bound = source.dyn_bind();
             let area = area.grown_flat(bound.sweep_margin());
-            // one box for all of a source's ids, and the same union the
-            // colouring anchored on — see `paint_labels`
-            for &oid in bound.oids() {
+            // One swept box for every semantic source role, carrying the
+            // actual graph-coloured label baked by `paint_labels`.
+            for role in 0..bound.role_count() {
+                let Some(oid) = bound.role_label(usize::from(role)) else {
+                    continue;
+                };
                 painted.push(PaintedSolid {
                     name: format!("{name} @{oid}"),
                     area,

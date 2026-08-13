@@ -23,7 +23,7 @@ use godot::classes::{
 };
 use godot::prelude::*;
 
-use super::solid::clear_limbs;
+use super::solid::{clear_limbs, warnings_from_level};
 use super::source::{SoundSource, SourceRig, sound};
 use crate::fan_wave;
 use crate::render::{self, Role};
@@ -38,14 +38,15 @@ pub const HEAD_H: f32 = 1.15;
 /// and so what decides how far the housing reaches as it sweeps.
 const GUARD_R: f32 = 0.44;
 
-/// Both labels the fan paints itself with, so the level can keep the walls
-/// and props it colours clear of whichever one they stand against. Every
-/// limb bakes the SAME value into its mesh's `CUSTOM0` — what the shader
-/// reads directly for G.
-const OIDS: [f64; 2] = [
+/// Standalone blueprint defaults for the fan's two semantic roles. Inside a
+/// WaveLevel the grouping remains but numeric labels are derived per instance,
+/// so two touching fans cannot melt merely because both have a shell.
+const PREVIEW_ROLE_LABELS: [f64; 2] = [
     render::role_label(Role::Shell),
     render::role_label(Role::Moving),
 ];
+const SHELL_ROLE: usize = 0;
+const MOVING_ROLE: usize = 1;
 
 /// The two built subtrees, named so a rebuilding ready() can free the
 /// ghosts a Ctrl+D duplicate carries in (names are the only handle —
@@ -125,10 +126,20 @@ impl INode3D for SoundFan {
         self.build_head();
         self.build_blades();
     }
+
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        warnings_from_level(&self.base().clone().upcast::<Node>())
+    }
 }
 
 #[godot_api]
 impl SoundFan {
+    /// Callable mirror of the editor-only warning virtual.
+    #[func]
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        INode3D::get_configuration_warnings(self)
+    }
+
     /// The head's oscillation at time `t` — the pure curve, kept callable
     /// for the headless tests.
     #[func]
@@ -193,6 +204,7 @@ impl SoundFan {
         self.rig.limb(
             &mut body,
             &labelled_cyl(0.22, 0.06, shell),
+            SHELL_ROLE,
             Vector3::new(0.0, 0.03, 0.0),
             Vector3::ZERO,
             skin.as_ref(),
@@ -200,6 +212,7 @@ impl SoundFan {
         self.rig.limb(
             &mut body,
             &labelled_cyl(0.03, HEAD_H, shell),
+            SHELL_ROLE,
             Vector3::new(0.0, HEAD_H * 0.5, 0.0),
             Vector3::ZERO,
             skin.as_ref(),
@@ -228,6 +241,7 @@ impl SoundFan {
         self.rig.limb(
             &mut head_node,
             &labelled_boxm(0.16, 0.16, 0.24, shell),
+            SHELL_ROLE,
             Vector3::new(0.0, 0.0, 0.10),
             Vector3::ZERO,
             skin.as_ref(),
@@ -235,6 +249,7 @@ impl SoundFan {
         self.rig.limb(
             &mut head_node,
             &labelled_torus(0.40, GUARD_R, shell),
+            SHELL_ROLE,
             Vector3::new(0.0, 0.0, -0.10),
             Vector3::new(PI * 0.5, 0.0, 0.0),
             skin.as_ref(),
@@ -267,6 +282,7 @@ impl SoundFan {
         self.rig.limb(
             &mut spinner,
             &labelled_cyl(0.045, 0.08, moving),
+            MOVING_ROLE,
             Vector3::ZERO,
             Vector3::new(PI * 0.5, 0.0, 0.0),
             skin.as_ref(),
@@ -280,6 +296,7 @@ impl SoundFan {
             self.rig.limb(
                 &mut arm,
                 &labelled_boxm(0.32, 0.11, 0.016, moving),
+                MOVING_ROLE,
                 Vector3::new(0.24, 0.0, 0.0),
                 Vector3::ZERO,
                 skin.as_ref(),
@@ -308,8 +325,16 @@ impl SoundSource for SoundFan {
         }
     }
 
-    fn oids(&self) -> &'static [f64] {
-        &OIDS
+    fn role_count(&self) -> u8 {
+        PREVIEW_ROLE_LABELS.len() as u8
+    }
+
+    fn set_role_labels(&mut self, labels: &[f64]) {
+        self.rig.set_role_labels(labels);
+    }
+
+    fn role_label(&self, role: usize) -> Option<f64> {
+        self.rig.role_label(role)
     }
 
     /// The head swings `PIVOT_RANGE` each way, carrying a 0.44 m guard ring

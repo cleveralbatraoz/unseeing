@@ -2,7 +2,7 @@
 // The world is never drawn: geometry renders as DATA for the hearing
 // pass to read from the screen texture:
 //   R — reveal: how recently/strongly a wave swept this point
-//   G — per-vertex face or fixed-role label: crease edge detection
+//   G — per-vertex face or semantic-role label: crease edge detection
 //   B — camera distance / DIST_PACK_RANGE (silhouette edges + wave occlusion)
 // Distance is packed here on purpose: the depth texture is unreliable on
 // WebGL2/Compatibility, and the web build is a first-class target.
@@ -18,9 +18,10 @@ uniform float u_base = 0.0;  // standing reveal floor; 0 = waves only
 
 // Every drawn mesh supplies a per-VERTEX label in CUSTOM0. WaveLevel's
 // derive-time paint pass (rust/src/render/paint.rs) assigns per-face
-// superface labels to world solids (with slabs anchored to fixed roles),
-// while source, creature and viewmodel builders bake fixed role labels
-// directly. Both skins' vertex() functions carry either kind straight
+// superface labels to world solids (with slabs anchored to fixed roles).
+// Source builders bake the per-instance numeric labels derived for their
+// semantic roles; creature and viewmodel builders bake fixed role labels.
+// Both skins' vertex() functions carry either kind straight
 // through as this varying. Overlapping world solids sharing a label
 // bit-for-bit melt into one silhouette; labels that must differ stay at
 // least MIN_SEP apart. Replaces the old per-instance object-id uniform and

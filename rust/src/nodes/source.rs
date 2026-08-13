@@ -22,7 +22,7 @@
 //!
 //! WHAT LIVES HERE. Only the machinery every source shares: the cadence gate
 //! that decides when a wave is born, the limb builder that tags each mesh
-//! with its fixed semantic role label, the push of the per-object
+//! with its semantic role, the push of the per-object
 //! standing image, and the one call into the wave pool. The LAWS are pure
 //! and live in [`crate::sound_source`]; the BODIES — what a fan looks like,
 //! what a radio looks like — live in the node files. Nothing in between.
@@ -30,6 +30,8 @@
 use godot::classes::{Material, MeshInstance3D, Node3D, RefCounted};
 use godot::prelude::*;
 
+use super::solid::mesh_first_label;
+use crate::render;
 use crate::sound_source::{Cadence, SOURCE_KIND, Voice};
 
 /// The per-instance shader parameter carrying a source's STANDING acoustic
@@ -55,11 +57,21 @@ pub trait SoundSource {
     /// Inspector answers differently.
     fn voice(&self) -> Voice;
 
-    /// The fixed semantic role labels this source paints its limbs with.
-    /// Sources never enter the world superface census; the level uses these
-    /// labels only as proximity anchors, so a touching wall or prop cannot
-    /// take a world label close enough to melt into the source.
-    fn oids(&self) -> &'static [f64];
+    /// How many semantic limb roles this source paints. A fan has shell and
+    /// moving roles; a radio has case and fascia roles. They enter the level's
+    /// colourable separation graph as distinct classes so two touching
+    /// same-class sources cannot melt merely because their role names match.
+    fn role_count(&self) -> u8;
+
+    /// Bake the level's chosen label for each semantic role back onto every
+    /// limb in that role. Missing or non-finite labels retain that role's
+    /// prior assignment (or its preview default before any assignment); extra
+    /// labels are retained for a later generation but paint no absent limb.
+    fn set_role_labels(&mut self, labels: &[f64]);
+
+    /// Read one role's current label from an actual limb mesh. `None` when
+    /// the role has no built limb or the mesh has no readable CUSTOM0 data.
+    fn role_label(&self, role: usize) -> Option<f64>;
 
     /// The single injection point: the wave pool every sound enters and the
     /// acoustic-image skin every limb renders through. Called by the level
@@ -75,11 +87,10 @@ pub trait SoundSource {
     /// How far this source's MOVING parts swing beyond the pose the level
     /// samples when it colours the world, in metres on the horizontal axes.
     ///
-    /// The level applies a source's fixed-role proximity anchors to the box
-    /// its meshes fill at derivation time. For a source that swings, that
-    /// box is one frame of a sweep: a prop just outside it could take a
-    /// world label too close to the source for part of every cycle, while a
-    /// single-pose seam check would report green.
+    /// The level connects every source-role class to the world and source
+    /// roles touching this swept box. For a source that swings, one sampled
+    /// pose is too small: a prop just outside it could meet the source for
+    /// part of every cycle while a single-pose seam check reported green.
     /// Zero for a source that does not move.
     fn sweep_margin(&self) -> f64 {
         0.0
@@ -121,7 +132,8 @@ pub trait SoundSource {
 /// visible in its own fields where a designer and a test can see it.
 #[derive(Default)]
 pub(crate) struct SourceRig {
-    limbs: Vec<Gd<MeshInstance3D>>,
+    limbs: Vec<(Gd<MeshInstance3D>, usize)>,
+    assigned_labels: Vec<Option<f64>>,
     cadence: Cadence,
 }
 
@@ -163,35 +175,72 @@ impl SourceRig {
     /// that needs a stable handle (a rebuilding `ready()` freeing it by
     /// name) can name it.
     ///
-    /// The caller's own mesh already carries its
-    /// [`crate::render::role_label`] value baked into `CUSTOM0` — the
-    /// shader reads that directly for G, so this builder has no id of its
-    /// own left to push.
+    /// The caller's mesh carries a standalone preview default in CUSTOM0.
+    /// If a level already assigned this role, a generation rebuild reapplies
+    /// the retained derived value before the limb is exposed.
     pub(crate) fn limb(
         &mut self,
         parent: &mut Gd<Node3D>,
         mesh: &Gd<godot::classes::Mesh>,
+        role: usize,
         at: Vector3,
         rotation: Vector3,
         skin: Option<&Gd<Material>>,
     ) -> Gd<MeshInstance3D> {
         let mut mi = MeshInstance3D::new_alloc();
         mi.set_mesh(mesh);
+        if let Some(label) = self.assigned_labels.get(role).and_then(|label| *label)
+            && let Some(current) = mi.get_mesh()
+            && let Ok(mut current) = current.try_cast::<godot::classes::ArrayMesh>()
+        {
+            render::paint::relabel_constant(&mut current, label as f32);
+            mi.set_mesh(&current);
+        }
         if let Some(skin) = skin {
             mi.set_material_override(skin);
         }
         mi.set_position(at);
         mi.set_rotation(rotation);
         parent.add_child(&mi);
-        self.limbs.push(mi.clone());
+        self.limbs.push((mi.clone(), role));
         mi
+    }
+
+    /// Repaint each built limb with the graph-coloured label chosen for its
+    /// semantic role. The node remains the sole owner of its mesh resources;
+    /// the level supplies values and never reaches into limb structure.
+    pub(crate) fn set_role_labels(&mut self, labels: &[f64]) {
+        self.assigned_labels = render::paint::update_role_labels(&self.assigned_labels, labels);
+        for (limb, role) in &mut self.limbs {
+            let Some(label) = self.assigned_labels.get(*role).and_then(|label| *label) else {
+                continue;
+            };
+            let Some(mesh) = limb.get_mesh() else {
+                continue;
+            };
+            let Ok(mut mesh) = mesh.try_cast::<godot::classes::ArrayMesh>() else {
+                continue;
+            };
+            render::paint::relabel_constant(&mut mesh, label as f32);
+            limb.set_mesh(&mesh);
+        }
+    }
+
+    /// The label an actual built limb in `role` carries, never a mirrored
+    /// copy of what the allocator intended to write.
+    pub(crate) fn role_label(&self, role: usize) -> Option<f64> {
+        self.limbs.iter().find_map(|(limb, own_role)| {
+            (*own_role == role)
+                .then(|| mesh_first_label(limb))
+                .flatten()
+        })
     }
 
     /// Push the standing acoustic image onto every limb this source built.
     /// Per instance, not per material: the world's sources share one skin,
     /// and each must dim by its OWN volume and its OWN walls.
     pub(crate) fn set_image(&mut self, image: f64) {
-        for limb in &mut self.limbs {
+        for (limb, _) in &mut self.limbs {
             limb.set_instance_shader_parameter(IMAGE_PARAM, &image.to_variant());
         }
     }

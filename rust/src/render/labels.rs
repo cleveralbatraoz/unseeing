@@ -1,53 +1,20 @@
-//! Colouring the superface graph against the palette and the role table
+//! Colouring the unified face/source-role separation graph against the
+//! palette and the role table
 //! (`docs/superpowers/specs/2026-08-12-superface-outline-rendering-design.md`).
-//! [`superface::superfaces`](super::superface::superfaces) already decided
-//! which faces share ONE class and which resulting classes must take
-//! separated labels; this module decides what label each class actually
-//! gets — a fixed [`Role`] value for anything the colouring must never
-//! touch (a slab, a creature, a source's own limbs), a palette entry for
-//! everything else, chosen so that no two classes
-//! [`Superfaces::separations`] names ever land within [`MIN_SEP`] of each
-//! other.
+//! [`superface::superfaces`](super::superface::superfaces) decides which world
+//! faces share a class. [`super::paint`] then adds non-geometric source-role
+//! classes. This module assigns numeric labels so every edge clears
+//! [`MIN_SEP`].
 //!
 //! # The role table
 //!
-//! [`role_label`] IS the one place every fixed label in the game lives.
-//! The per-node id constants that used to hold these numbers — `OID_FLOOR`
-//! and `OID_CEIL` in `nodes/level.rs`, and the equivalents in
-//! `nodes/radio.rs`, `nodes/fan.rs`, `nodes/cat.rs` and `nodes/hero.rs` —
-//! are gone; every one of those files builds its own fixed table from this
-//! function at compile time (it is a `const fn` for exactly that reason).
-//!
-//! [`Role::Case`] (0.05) is the one grandfathered exception: it sits BELOW
-//! the 0.15 comfort line every other entry respects, carried over
-//! unchanged from the radio chassis's pre-existing value. It is safe where
-//! it stands and it is not a pattern to copy. Safe, because the only
-//! question a label has to answer is whether the seams it must draw clear
-//! the hearing pass's crease floor (`smoothstep(0.04, 0.08, nrm)`,
-//! `hearing_post.gdshader`), and every LABEL A DERIVE CAN HAND OUT clears
-//! it against `Case`: `Floor` 0.15 (the radio stands on it) by 0.10, its
-//! own `Shell` fascia 0.33 by 0.28, and the whole world palette
-//! (`nodes::level::WORLD_OIDS`, lowest entry 0.25) by 0.20 or more.
-//! Measured end to end on the web build rather than assumed — the G
-//! channel round-trips linearly there, byte = 255 x label within a byte,
-//! so the 0.10 gap arrives as ~0.094 and still saturates the crease.
-//!
-//! That scope is exact, not a hedge. Values in the game DO come within
-//! `MIN_SEP` of `Case`, and every one of them is a placeholder ORDINAL
-//! rather than a label — a mesh's `CUSTOM0` before a successful derive has
-//! painted it, where ordinal 0 is `0.0`, five hundredths from `Case`.
-//! `WaveLevel` derives in both editor and runtime mode, exposes an explicit
-//! `rederive`, and watches the editor scene signature, so ordinary authored
-//! meshes do not remain in that placeholder state. A mesh can still be
-//! temporarily unpainted before entering a derived level, or deliberately
-//! remain so when the paint pass refuses malformed geometry. Neither is a
-//! value the colouring can produce, which is why the sentence above is
-//! scoped to labels: it is a claim about the label table, not an inventory
-//! of every float that can momentarily reach the G channel.
-//!
-//! Not a pattern to copy, because 0.10 is the smallest margin any pair in
-//! the table carries, and a SECOND label down here would have nothing to
-//! separate from `Case` against.
+//! [`role_label`] is the one numeric table for fixed slabs/creatures and for
+//! standalone source-blueprint defaults. A WaveLevel does not fix every fan
+//! shell or radio case to that global number: it preserves the semantic role
+//! grouping while deriving per-instance palette values, so two copied sources
+//! can touch and retain a seam. [`Role::Case`] at 0.05 is therefore only the
+//! grandfathered standalone radio preview; it is never a newly allocated
+//! authored-level label and is not a pattern to copy.
 //!
 //! # Colouring
 //!
@@ -66,7 +33,7 @@
 //!
 //! `anchors` play the role `oid_palette::Fixed` used to play for the
 //! retired `oid_palette::assign`: a class whose label is already
-//! decided — a slab, a source's swept neighbourhood — bans any palette
+//! decided — currently a slab — bans any palette
 //! slot within [`MIN_SEP`] of its own label for every class
 //! [`Superfaces::separations`] pairs it with. Unlike that old `Fixed`,
 //! though, an anchor's class is itself a member of the SAME class space
@@ -86,19 +53,18 @@
 use crate::oid_palette;
 use crate::render::superface::Superfaces;
 
-/// A fixed role a class colours to directly — the palette colouring never
-/// touches these; see [`role_label`] for the table and the module doc for
-/// why `Case` is the one exception to the sRGB comfort line.
+/// A semantic render role. Slabs and creatures use the table value directly;
+/// sources use Case/Shell/Moving as preview defaults and role names while a
+/// level derives their per-instance numeric labels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
-    /// A source's own case — the part that stands on world geometry (the
-    /// radio's chassis). Grandfathered below the sRGB comfort line.
+    /// A radio case's standalone blueprint default.
     Case,
     /// The floor slab.
     Floor,
-    /// A source's shell — the fan's housing, the radio's fascia.
+    /// A source shell/fascia standalone blueprint default.
     Shell,
-    /// A source's moving part (fan blades).
+    /// A moving-source-part standalone blueprint default.
     Moving,
     /// The companion cat.
     Cat,
@@ -110,17 +76,13 @@ pub enum Role {
     HeroCane,
 }
 
-/// The one label table. `Case` 0.05 stays only for the radio chassis
-/// (pre-existing, grandfathered below the 0.15 comfort line — the module
-/// doc derives why it is safe there and why it is the last of its kind),
+/// The one role/default table. `Case` 0.05 stays only for the standalone
+/// radio preview (pre-existing and grandfathered below the 0.15 comfort line),
 /// `Floor` 0.15, `Shell` 0.33, `Moving` 0.63, `Cat` 0.70, `HeroBody` 0.82,
 /// `Ceiling` 0.90, `HeroCane` 0.96.
 ///
-/// `const fn` on purpose: every creature and source builds its own fixed
-/// `oids()`/`OIDS` table from this function at compile time now that the
-/// id constants that used to hold these numbers locally (`CAT_OID`,
-/// `FAN_OID`, `RADIO_CASE_OID`, ...) are gone — this is the one place any
-/// of them may be spelled again.
+/// `const fn` on purpose: creatures/slabs build final labels and sources
+/// build standalone preview defaults without repeating numeric literals.
 pub const fn role_label(role: Role) -> f64 {
     match role {
         Role::Case => 0.05,

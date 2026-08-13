@@ -49,11 +49,12 @@ func _all_shader_files() -> Array[String]:
 ## shared data CORE (every data-writing skin — the world and the
 ## always-on-top acoustic image — reads the same machinery). WaveLevel's
 ## derive-time paint pass (rust/src/render/paint.rs) assigns per-face
-## superface labels to world solids; source, creature and viewmodel builders
-## bake fixed role labels directly. Both skins' vertex() stages carry either
+## superface labels to world solids; source builders bake derived per-instance
+## semantic-role labels, while creature/viewmodel builders bake fixed roles.
+## Both skins' vertex() stages carry either
 ## kind through as v_label, and pack_data writes it straight into G. The
 ## outline post-pass diffs G, so two overlapping world solids sharing a
-## label bit-for-bit melt into one silhouette while fixed-role meshes retain
+## label bit-for-bit melt into one silhouette while role-grouped meshes retain
 ## their intended creases. The OLD per-instance u_oid uniform and its
 ## normal-derived fallback are gone outright — no shader in the tree may
 ## declare or read u_oid anywhere, since a per-object override could once

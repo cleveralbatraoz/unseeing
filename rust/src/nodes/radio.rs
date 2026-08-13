@@ -27,7 +27,7 @@ use godot::classes::{
 };
 use godot::prelude::*;
 
-use super::solid::clear_limbs;
+use super::solid::{clear_limbs, warnings_from_level};
 use super::source::{SoundSource, SourceRig, sound};
 use crate::radio_wave;
 use crate::render::{self, Role};
@@ -44,17 +44,15 @@ const CASE: Vector3 = Vector3::new(0.44, 0.26, 0.20);
 /// radio, not at its feet.
 const HUB: Vector3 = Vector3::new(-0.11, 0.14, -0.10);
 
-/// Both labels the radio paints itself with, so the level can keep whatever
-/// it stands on clear of them: `Role::Case` (the CASE band, the part that
-/// stands on world geometry) and `Role::Shell`, reused from the fan's own
-/// housing under the palette's own law — two objects that can never touch
-/// may share a label, and these two stand rooms apart. Every limb bakes the
-/// SAME value into its mesh's `CUSTOM0` — what the shader reads directly
-/// for G.
-const OIDS: [f64; 2] = [
+/// Standalone blueprint defaults for the case and fascia semantic roles.
+/// Inside a WaveLevel the grouping stays fixed while numeric labels are
+/// derived per instance, so a copied radio may touch its twin and keep a seam.
+const PREVIEW_ROLE_LABELS: [f64; 2] = [
     render::role_label(Role::Case),
     render::role_label(Role::Shell),
 ];
+const CASE_ROLE: usize = 0;
+const FASCIA_ROLE: usize = 1;
 
 /// The six built subtrees, named so a rebuilding ready() can free the
 /// ghosts a Ctrl+D duplicate carries in (names are the only handle — a
@@ -134,10 +132,20 @@ impl INode3D for SoundRadio {
         self.build_case();
         self.build_fascia();
     }
+
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        warnings_from_level(&self.base().clone().upcast::<Node>())
+    }
 }
 
 #[godot_api]
 impl SoundRadio {
+    /// Callable mirror of the editor-only warning virtual.
+    #[func]
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        INode3D::get_configuration_warnings(self)
+    }
+
     /// Where the waves are born in the node's own space — a build
     /// dimension, served as a static method because ClassDB registers
     /// integer constants only.
@@ -179,6 +187,7 @@ impl SoundRadio {
         self.rig.limb(
             &mut node,
             &labelled_boxm(CASE, case_label),
+            CASE_ROLE,
             lift,
             Vector3::ZERO,
             skin.as_ref(),
@@ -192,8 +201,8 @@ impl SoundRadio {
     }
 
     /// The fascia: speaker grille, tuning scale, two dials and the antenna.
-    /// All use fixed source-role labels, so the set reads as one radio face
-    /// against the case rather than five world-coloured loose parts.
+    /// All share one semantic role, whose numeric label the level derives for
+    /// this radio instance, so the set reads as one face against the case.
     fn build_fascia(&mut self) {
         let skin = self.data_mat.clone();
         let mut node = self.base().clone().upcast::<Node3D>();
@@ -205,6 +214,7 @@ impl SoundRadio {
             .limb(
                 &mut node,
                 &labelled_torus(0.052, 0.086, shell),
+                FASCIA_ROLE,
                 Vector3::new(HUB.x, HUB.y, face),
                 flat,
                 skin.as_ref(),
@@ -214,6 +224,7 @@ impl SoundRadio {
             .limb(
                 &mut node,
                 &labelled_boxm(Vector3::new(0.15, 0.05, 0.014), shell),
+                FASCIA_ROLE,
                 Vector3::new(0.11, 0.195, face),
                 Vector3::ZERO,
                 skin.as_ref(),
@@ -227,6 +238,7 @@ impl SoundRadio {
                 .limb(
                     &mut node,
                     &labelled_cyl(0.030, 0.026, shell),
+                    FASCIA_ROLE,
                     Vector3::new(x, 0.075, face),
                     flat,
                     skin.as_ref(),
@@ -240,6 +252,7 @@ impl SoundRadio {
             .limb(
                 &mut node,
                 &labelled_cyl(0.008, half * 2.0, shell),
+                FASCIA_ROLE,
                 Vector3::new(
                     CASE.x * 0.5 - 0.04,
                     CASE.y + half * tilt.cos(),
@@ -270,8 +283,16 @@ impl SoundSource for SoundRadio {
         }
     }
 
-    fn oids(&self) -> &'static [f64] {
-        &OIDS
+    fn role_count(&self) -> u8 {
+        PREVIEW_ROLE_LABELS.len() as u8
+    }
+
+    fn set_role_labels(&mut self, labels: &[f64]) {
+        self.rig.set_role_labels(labels);
+    }
+
+    fn role_label(&self, role: usize) -> Option<f64> {
+        self.rig.role_label(role)
     }
 
     fn next_emit(&self) -> Option<f64> {

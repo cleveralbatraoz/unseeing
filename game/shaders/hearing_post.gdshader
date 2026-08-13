@@ -66,8 +66,9 @@ void fragment() {
 
 	// thin white outlines: silhouettes (Laplacian of the packed distance in B)
 	// + creases (label differences in G — the per-vertex CUSTOM0 label:
-	// derive-painted face labels for world solids, fixed role labels for
-	// sources, creatures and the viewmodel), visible only where a wave has
+	// derive-painted face labels for world solids, per-instance labels for
+	// semantic source roles, and fixed role labels for creatures/viewmodel),
+	// visible only where a wave has
 	// swept (max of the five reveal taps in R). Two touching world faces
 	// sharing the SAME label draw no seam at all: see
 	// rust/src/render/labels.rs (MIN_SEP) for the 0.08 separation the
