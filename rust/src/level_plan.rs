@@ -1218,8 +1218,9 @@ fn fnv_f32(hash: u64, value: f32) -> u64 {
 /// `extents` folds FIRST and outside the per-node loop, not as a synthetic
 /// node, because it is not a censused node's property at all: it is read
 /// straight off `WaveLevel` itself — `derive`'s `report_placement` reads
-/// it through the floor slab's own world box, and `assign_oids` anchors
-/// the slab ids against that same box — so the fold has to name it as
+/// it through the floor slab's own world box, and the per-face paint pass
+/// anchors the slabs' fixed role labels against that same box — so the fold
+/// has to name it as
 /// what it is, the level's own top-level condition, rather than dress it
 /// up as a node with an invented path. A dedicated boundary byte (`2`,
 /// distinct from the `0`/`1` presence bytes every node folds around its
@@ -2770,8 +2771,8 @@ mod tests {
     /// `extents` knob changing with the censused scene held perfectly
     /// still. This is the designer-facing gap the fold used to have —
     /// `derive` genuinely reads `extents` (through the floor slab's own
-    /// world box, in `report_placement` and `assign_oids`), so a resize
-    /// that is not in the fold is a resize the condition-watch cannot see.
+    /// world box, in `report_placement` and the per-face paint pass), so a
+    /// resize that is not in the fold is a resize the condition-watch cannot see.
     /// Drop the extents fold and this is the test that goes quiet.
     #[test]
     fn a_different_extents_alone_moves_the_signature() {
