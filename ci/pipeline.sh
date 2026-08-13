@@ -37,13 +37,15 @@ echo "ci: pinned Superpowers metadata"
 echo "ci: Superpowers verifier self-test"
 "$DIR/test/verify_superpowers_test.sh" || exit 1
 
-# Self-tests for two gates further down (#21, #28) — pure shell, no
-# Godot, so they belong up here with the other cheap invariant checks
+# Self-tests for gates further down (#21, #28, and the exact gdUnit summary)
+# are pure shell, so they belong up here with the other cheap invariant checks
 # rather than after minutes of Rust/export work.
 echo "ci: boot-error gate self-test"
 "$DIR/test/ci_boot_error_gate.sh" || exit 1
 echo "ci: gdscript lint scope self-test"
 "$DIR/test/ci_gdscript_lint_scope.sh" || exit 1
+echo "ci: gdUnit source/summary gate self-test"
+"$DIR/test/ci_gdunit_gate.sh" || exit 1
 echo "ci: POSIX designer-bootstrap self-test"
 "$DIR/test/bootstrap_posix_test.sh" || exit 1
 if command -v pwsh >/dev/null 2>&1; then
@@ -140,7 +142,8 @@ fi
 echo "ci: boot check OK"
 
 echo "ci: unit tests (gdUnit4)"
-"$GODOT" --headless --path "$DIR/game" -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
+"$DIR/ci/run_gdunit.sh" "$DIR/game" \
+  "$GODOT" --headless --path "$DIR/game" -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
   --ignoreHeadlessMode -c -a tests || {
   echo "ci: unit tests FAILED"
   exit 1
