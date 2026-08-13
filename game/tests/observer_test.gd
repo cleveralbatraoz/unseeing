@@ -54,11 +54,12 @@ const TAP_MAX_R := 6.0
 const TAP_SPEED := 5.5
 
 ## The two flush bookcases' own member pairs — the same verified geometric
-## merge `map_test.gd`'s `KNOWN_MERGES` names, duplicated here rather than
-## shared: `ShelfSideA`/`ShelfSideB` genuinely coplanar-merge with
-## `ShelfBack` under `render::superface` (the `Rack*` trio the same way),
-## so their bridged first-face ids legitimately agree — the ONE pair this
-## suite's violation check accepts on purpose.
+## merge `map_test.gd`'s `MERGING_PROPS` names, listed here as PAIRS rather
+## than shared, because this suite asks a different question of them:
+## `ShelfSideA`/`ShelfSideB` genuinely coplanar-merge with `ShelfBack`
+## under `render::superface` (the `Rack*` trio the same way), so their
+## bridged first-face ids legitimately agree — the ONE pair this suite's
+## violation check accepts on purpose.
 const KNOWN_MERGES := [
 	["ShelfSideA", "ShelfBack"],
 	["ShelfSideB", "ShelfBack"],
@@ -321,13 +322,25 @@ func test_snapshot_describes_the_levels_sound_sources() -> void:
 	assert_float(fan["next_emit"]).is_equal_approx(FAN_CADENCE, 0.0001)
 
 
-## The id budget over the SHIPPED map, checked by the same Rust the renderer
-## colours with. Pairs must not be empty: a check that found no touching
-## boxes at all would pass vacuously on a map where everything melts. The
-## sole exception is `KNOWN_MERGES` — the two bookcases' own flush panels,
-## a verified geometric MERGE (`render::superface`) rather than a colouring
-## shortfall; see `map_test.gd`'s identical exception for the full
-## derivation.
+## The id budget over the SHIPPED map as `explain_oids`' SOLID-granularity
+## census reports it — `pairs`/`violations`, built from `oid_census`'s
+## first-face bridged read. This case exists to hold THAT census, not the
+## seam law itself: the seam law's own pin moved to per-face labels in
+## `map_test.gd::test_shipped_touching_boxes_draw_their_seam`, because a
+## bridged value names only a solid's own ordinal-0 class and never the
+## partner's it merged with. Pairs must not be empty: a check that found no
+## touching boxes at all would pass vacuously on a map where everything
+## melts. The sole exception is `KNOWN_MERGES` above — the two bookcases'
+## own flush panels, a verified geometric MERGE (`render::superface`)
+## rather than a colouring shortfall.
+##
+## KNOWN LIMITATION, stated rather than left to be rediscovered: this case
+## inherits the bridged read's ordinal sensitivity. The shipped wall
+## network genuinely merges, and it passes here only because ordinal 0 is
+## not the merged face for those walls — point `mesh_first_label` at
+## another ordinal and this reports eighteen false violations (measured).
+## Making the bridged census itself ordering-robust means retiring it, which
+## is recorded as follow-up work, not done here.
 func test_the_shipped_level_has_no_object_id_violations() -> void:
 	var level := _shipped_level(Pulses.new())
 	var obs := _observer()

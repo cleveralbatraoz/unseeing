@@ -43,25 +43,28 @@ const MIN_OID_SEP := 0.08
 ## Boxes that share a face register as touching at exactly zero overlap.
 const TOUCH_EPS := 0.01
 
-## The two flush bookcases' own member pairs — the ONE place
-## `test_shipped_touching_boxes_draw_their_seam` accepts a bridged-`oid()`
-## melt between touching solids on purpose. `ShelfBack`/`RackBack` were
-## reverted from a tucked (deliberately non-coplanar) panel back to flush
-## against their own sides (game/scenes/level_01.tscn), so
-## `ShelfSideA`/`ShelfSideB` genuinely coplanar-MERGE with `ShelfBack`
-## under `render::superface` (and the `Rack*` trio the same way) — a
-## verified geometric fact, independently confirmed by
+## The only NON-WALL solids on the shipped map allowed to melt into
+## anything. The two bookcases' backs sit flush against their own sides
+## (game/scenes/level_01.tscn), so each trio genuinely coplanar-MERGES
+## under `render::superface` and is drawn as one piece of furniture on
+## purpose — a verified geometric fact, independently confirmed by
 ## `render::superface::tests::a_junction_cap_merges_into_the_partners_flank`'s
-## sibling fixtures, not something this GDScript suite re-derives. Named
-## explicitly, and ONLY these four pairs, so every OTHER touching pair in
-## the map is still held to the strict "must differ" law — a pair sharing
-## a bridged id for any other reason (the colouring running out of room,
-## not a real merge) still fails as it always has.
-const KNOWN_MERGES := [
-	["ShelfSideA", "ShelfBack"],
-	["ShelfSideB", "ShelfBack"],
-	["RackSideA", "RackBack"],
-	["RackSideB", "RackBack"],
+## sibling fixtures, not something this GDScript suite re-derives.
+##
+## Walls are deliberately absent and are allowed to merge freely: the
+## 17-wall network merging into one drawn structure is the whole point of
+## the campaign, and a non-wall solid that joins it is already caught by
+## `WaveLevel`'s own wall-merge warning (pinned silent on this map by
+## `level_test.gd::test_the_shipped_level_says_nothing_about_either_shader_ceiling`).
+## What this list catches is the case neither of those sees: one PROP
+## nudged flush into another.
+const MERGING_PROPS := [
+	"ShelfSideA",
+	"ShelfSideB",
+	"ShelfBack",
+	"RackSideA",
+	"RackSideB",
+	"RackBack",
 ]
 
 
@@ -391,33 +394,76 @@ func _painted_boxes(node: Node, out: Array[Dictionary]) -> void:
 							"name": str(child.name),
 							"box": skin.global_transform * skin.get_aabb(),
 							"oid": oid,
+							"labels": _labels_of(skin),
 						}
 					)
 				)
 		_painted_boxes(child, out)
 
 
-func _is_a_known_merge(name_a: String, name_b: String) -> bool:
-	for pair: Array in KNOWN_MERGES:
-		if (name_a == pair[0] and name_b == pair[1]) or (name_a == pair[1] and name_b == pair[0]):
-			return true
-	return false
+## Which solids the MERGE LAW ITSELF puts in one superface class with
+## another solid, as a set of "A|B" keys in both orders — read off
+## `explain_oids()['superfaces']`, which reports each class by the distinct
+## names of the solids whose faces belong to it.
+##
+## Read from the law rather than inferred from the labels, deliberately:
+## two touching solids that share a label because the COLOURING ran out of
+## room would otherwise excuse themselves from the very check that exists
+## to catch them.
+func _merged_pairs(level: WaveLevel) -> Dictionary:
+	var obs: WaveObserver = auto_free(WaveObserver.new())
+	obs.inject(level, null)
+	var e: Dictionary = obs.explain_oids()
+	assert_bool(e.has("superfaces")).append_failure_message("the census refused: %s" % e).is_true()
+	var pairs := {}
+	for superface: Dictionary in e.get("superfaces", []):
+		var members: Array = superface.get("members", [])
+		for a: int in members.size():
+			for b: int in range(a + 1, members.size()):
+				pairs["%s|%s" % [members[a], members[b]]] = true
+				pairs["%s|%s" % [members[b], members[a]]] = true
+	return pairs
+
+
+## Every DISTINCT label a solid's mesh actually carries, read off the whole
+## CUSTOM0 array. Every vertex, so no face-ordering convention decides what
+## this sees — which is the point: the reading this replaced was
+## `WaveSolid::oid()`, the label of whichever face happens to be ordinal 0,
+## and for a solid that genuinely merged, that one value names only its own
+## first face's class and never its partner's.
+func _labels_of(skin: MeshInstance3D) -> Array[float]:
+	var custom: PackedFloat32Array = skin.mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	var out: Array[float] = []
+	for label: float in custom:
+		if not out.has(label):
+			out.append(label)
+	return out
 
 
 ## Where two boxes interpenetrate there is no depth step, so the silhouette
 ## Laplacian on B has nothing to bite on — only the G-channel crease can
 ## draw their seam, and the shader fades it over smoothstep(0.04, 0.08).
-## Two touching boxes closer than 0.08 in id therefore draw a weak seam, and
-## IDENTICAL ids draw none at all: the pair melts into one silhouette. The
-## shipped level must clear the knee on EVERY touching pair across all four
-## solid shapes — nineteen walls and a hundred and six props, coloured from
-## a five-entry palette by the touch graph — with the sole, NAMED exception
-## of `KNOWN_MERGES` above, a verified geometric merge rather than a
-## colouring shortfall.
+## Two touching solids closer than 0.08 in label therefore draw a weak
+## seam, and IDENTICAL labels draw none at all: the pair melts into one
+## silhouette. The shipped level must clear the knee on EVERY touching pair
+## across all four solid shapes — nineteen walls and a hundred and six
+## props, coloured from a five-entry palette — unless the merge law
+## genuinely fused them, in which case being drawn as one piece IS the
+## intent.
+##
+## EVERY label of one against EVERY label of the other, which is exactly
+## what `render::superface`'s rule (c) promises for two touching solids in
+## DIFFERENT clusters: it separates their classes blanket, not pairwise by
+## face. A pair the law did fuse is skipped whole here rather than held to
+## rule (b)'s finer per-face law; that finer case has its own pin, at real
+## shipped geometry, in
+## `test_a_junction_style_pair_merges_its_cap_and_separates_its_corner`.
 func test_shipped_touching_boxes_draw_their_seam() -> void:
+	var level := _shipped_level()
 	var boxes: Array[Dictionary] = []
-	_painted_boxes(_shipped_level(), boxes)
+	_painted_boxes(level, boxes)
 	assert_int(boxes.size()).is_equal(125)
+	var merged := _merged_pairs(level)
 	var melted: Array[String] = []
 	for i: int in boxes.size():
 		for j: int in range(i + 1, boxes.size()):
@@ -427,17 +473,61 @@ func test_shipped_touching_boxes_draw_their_seam() -> void:
 			var far_box: AABB = far["box"]
 			if not near_box.grow(TOUCH_EPS).intersects(far_box):
 				continue
-			var near_oid: float = near["oid"]
-			var far_oid: float = far["oid"]
-			if _is_a_known_merge(str(near["name"]), str(far["name"])):
+			if merged.has("%s|%s" % [near["name"], far["name"]]):
 				continue
-			if absf(near_oid - far_oid) < MIN_OID_SEP:
+			var closest := INF
+			for near_label: float in near["labels"]:
+				for far_label: float in far["labels"]:
+					closest = minf(closest, absf(near_label - far_label))
+			if closest < MIN_OID_SEP:
 				melted.append(
-					"%s(%.2f) touches %s(%.2f)" % [near["name"], near_oid, far["name"], far_oid]
+					(
+						"%s touches %s, closest labels %.3f apart"
+						% [near["name"], far["name"], closest]
+					)
 				)
 	(
 		assert_array(melted)
-		. append_failure_message("touching boxes with no seam between them: %s" % str(melted))
+		. append_failure_message("touching solids with no seam between them: %s" % str(melted))
+		. is_empty()
+	)
+
+
+## The other half of the same law: a melt has to be AUTHORED. The merge
+## law happily fuses whatever is flush, so a prop nudged a centimetre into
+## its neighbour would simply be excused by the test above. Walls are
+## allowed to melt into anything (the network being drawn as one structure
+## is the campaign's whole point, and a non-wall joining it already
+## triggers `WaveLevel`'s own warning); every other solid that shares a
+## superface class with another solid must be one of the six named
+## `MERGING_PROPS`.
+func test_only_the_named_props_melt_into_a_neighbour() -> void:
+	var level := _shipped_level()
+	var walls: Array[WaveWall] = []
+	_collect_walls(level, walls)
+	var wall_names := {}
+	for wall: WaveWall in walls:
+		wall_names[str(wall.name)] = true
+
+	var obs: WaveObserver = auto_free(WaveObserver.new())
+	obs.inject(level, null)
+	var e: Dictionary = obs.explain_oids()
+	assert_bool(e.has("superfaces")).append_failure_message("the census refused: %s" % e).is_true()
+	var unexpected: Array[String] = []
+	for superface: Dictionary in e.get("superfaces", []):
+		var members: Array = superface.get("members", [])
+		if members.size() < 2:
+			continue
+		for member: String in members:
+			if wall_names.has(member) or MERGING_PROPS.has(member):
+				continue
+			if not unexpected.has(member):
+				unexpected.append(member)
+	(
+		assert_array(unexpected)
+		. append_failure_message(
+			"solids melted into a neighbour without being authored to: %s" % str(unexpected)
+		)
 		. is_empty()
 	)
 

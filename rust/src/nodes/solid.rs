@@ -180,12 +180,23 @@ impl Skin {
 /// own singleton collapse folds every one of its faces to one class, so
 /// the first genuinely speaks for the whole mesh), approximate for one
 /// that did (a merged solid's bridged value names only its OWN first
-/// face's class, never the partner's it fused with). `WaveLevel::oid_census`
-/// (`super::level`) accepts the identical trade for the identical reason,
-/// and every remaining caller of a solid's own `.oid()` already knows and
-/// names the exception (`game/tests/map_test.gd`'s `KNOWN_MERGES`). The
-/// real per-face truth — every face, its own label, no bridging — lives in
-/// `WaveLevel::face_census` instead.
+/// face's class, never the partner's it fused with).
+/// `WaveLevel::oid_census` (`super::level`) accepts the identical trade for
+/// the identical reason. The real per-face truth — every face, its own
+/// label, no bridging — lives in `WaveLevel::face_census` instead.
+///
+/// NOTHING SHOULD GATE A SEAM ON THIS, and nothing does anymore. The
+/// shipped-map seam pin (`game/tests/map_test.gd::test_shipped_touching_boxes_draw_their_seam`)
+/// used to, and passed by an ordinal accident: the shipped wall network
+/// really does merge, so BorderNorth and DividerNorth share a label — just
+/// not on face ordinal 0, which is all that read looked at. Proved by
+/// mutation rather than argued: point this function at ordinal 3 instead
+/// and the old form reports 18 false melts, the named pair among them,
+/// while the rewritten pin (every distinct label of one solid against
+/// every distinct label of the other, merges identified from
+/// `explain_oids`' own `superfaces`) does not move. What still reads this
+/// asks a question a bridged value can answer — `map_test.gd`'s
+/// label-reuse count, and `explain_oids`' solid-granularity `pairs`.
 pub(crate) fn mesh_first_label(limb: &Gd<MeshInstance3D>) -> Option<f64> {
     let mesh = limb.get_mesh()?;
     if mesh.get_surface_count() == 0 {
