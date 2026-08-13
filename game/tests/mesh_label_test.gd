@@ -112,10 +112,9 @@ func test_wrong_length_face_labels_is_refused() -> void:
 ## forever, because the fixed-resolution tessellations always match in length
 ## and the carry always fires.
 ##
-## No shipped caller varies its label today (every creature, viewmodel and
-## source limb bakes one constant role label), which is exactly why this
-## needs a door rather than a node: the trap is silent until the day one
-## does.
+## No shipped direct-door caller varies its label today (the cat and hero
+## layers each bake one fixed role label), which is exactly why this needs a
+## door rather than a node: the trap is silent until the day one does.
 func test_a_rebuilt_triangle_surface_takes_the_label_it_was_just_given() -> void:
 	var mesh := ArrayMesh.new()
 	mesh = WaveLevel.debug_triangle_surface(mesh, 0.25)

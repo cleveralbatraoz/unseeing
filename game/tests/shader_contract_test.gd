@@ -190,7 +190,7 @@ func test_dist_pack_range_matches_the_level_budget() -> void:
 ## touching faces sit at least MIN_SEP = 0.08 apart), and a bilinear tap at an
 ## unlucky sub-pixel phase would blend neighbouring labels, halving a genuine
 ## 0.08 diff onto the dead crease floor the hearing pass's `nrm` threshold
-## (hearing_post.gdshader:76) never crosses — the seam the label law exists to
+## (hearing_post.gdshader:75) never crosses — the seam the label law exists to
 ## draw would vanish exactly where a wave revealed it. Pinned as source text
 ## so a "harmless" filter cleanup cannot silently reopen it.
 func test_hearing_pass_reads_the_screen_texture_nearest() -> void:
@@ -199,14 +199,14 @@ func test_hearing_pass_reads_the_screen_texture_nearest() -> void:
 
 
 ## Camera distance is packed into one color channel divided by
-## DIST_PACK_RANGE, CLAMPED rather than wrapped (data_core.gdshaderinc:149),
+## DIST_PACK_RANGE, CLAMPED rather than wrapped (data_core.gdshaderinc:150),
 ## so a point past the range does not alias — it saturates, and everything
 ## out there reads a flat 1.0. That is worse than it sounds: the silhouette
-## outline is a Laplacian of that channel (hearing_post.gdshader:72) and the
+## outline is a Laplacian of that channel (hearing_post.gdshader:75) and the
 ## Laplacian of a plateau is zero, so far geometry draws no outline at all,
 ## and the hearing pass recovers scene depth as c_c.b * DIST_PACK_RANGE
-## (line 57), which pins at the range and cuts player-sound rings against a
-## world that is not there.
+## (hearing_post.gdshader:58), which pins at the range and cuts player-sound
+## rings against a world that is not there.
 ##
 ## The range must therefore exceed the longest sight line the map allows:
 ## the full 3D diagonal of the SLAB PAIR'S union, floor to ceiling — the

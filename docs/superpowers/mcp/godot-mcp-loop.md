@@ -151,18 +151,23 @@ closed mesh does not disappear completely.
 For campaign closeout, run the validator after the final release rebuild and
 Godot import in all three states below, and require zero findings in each:
 
-1. raw `level_02.tscn`, covering boxes plus the fan's generated columns and
-   torus;
-2. raw `level_01.tscn`, covering wedges, columns, fan, radio, and the cat's
-   editor blueprint;
-3. the running configured main scene, covering the runtime hero body/cane and
-   runtime-rebuilt geometry.
+1. raw `level_02.tscn`, covering the six derived wall segments, two slabs,
+   and six chair pieces. An uninjected raw WaveLevel intentionally does not
+   build its runtime fan, so this state is expected to report 14 mesh
+   resources / 14 triangle surfaces;
+2. a code-free `UnseeingGame` runner selecting `level_02.tscn`. Step or poll
+   until both hero ArrayMeshes have surfaces, then require 24/24; this covers
+   the same level plus the injected fan's box, column, and torus paths and the
+   hero/cane direct path;
+3. the configured main scene, likewise stepped until both hero meshes are
+   populated, then require 144/144. This covers level 01's wedges and columns,
+   fan, radio, cat, hero/cane, and the world box path together.
 
-The final 2026-08-13 release-library pass completed all three states with zero
-findings: raw level 02 checked 14 meshes/surfaces, raw level 01 checked 127,
-and running main checked 144 mesh instances across 142 surfaces. Record these
-structured counts whenever the geometry changes; a screenshot cannot
-substitute for them.
+`godot_validate_meshes` walks the **running** `SceneTree.current_scene`, not
+the editor's edited-scene root. Editor-only fan/radio/cat blueprint presence is
+therefore proved by `tools/probe_editor_sources.sh`; the production mesh routes
+are checked through the configured runners above. Record the actual structured
+counts whenever topology changes; a screenshot cannot substitute for them.
 
 ## The rule about screenshots
 

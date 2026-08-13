@@ -168,12 +168,14 @@ state into a scene.
   confirmed the correct Godot/project/addon versions. The addon and its local
   enabled-plugin edit must never enter a campaign commit; every export preset
   excludes addon scripts.
-- The required MCP mesh validator exposed the winding defect: the original raw
-  level-02 read found every checked surface backwards. After the final release
-  rebuild/editor restart, raw level 02 checked 14 meshes/surfaces, raw level 01
-  checked 127, and running main checked 144 mesh instances / 142 surfaces;
-  every state reported zero findings. MCP 4.1.0/addon 4.1.0 on Godot
-  4.7.1-stable also reported the exact campaign path and no editor errors.
+- The required MCP mesh validator exposed the winding defect: the first
+  configured level-02 runner found all 22 then-populated surfaces backwards.
+  A readiness audit corrected the acceptance contract: raw level 02 is 14/14
+  because uninjected sources deliberately stay absent; the configured level-02
+  runner reaches 24/24 after its hero meshes populate; configured main reaches
+  144/144. These exact zero-finding states must be repeated after the final
+  pipeline/rebase. Editor-only blueprint presence remains covered by the
+  editor-source probe because the MCP validator walks only a running scene.
 
 ## Decision and verification ledger
 
@@ -237,15 +239,16 @@ RED/GREEN and mutation evidence retained for closeout:
   runners. Removing any of the overall/suite/case witnesses makes its named
   mutation case red.
 - The winding correction began red when `godot_validate_meshes` reported all
-  22 raw level-02 ArrayMesh surfaces backwards under Godot's documented
+  22 then-populated configured level-02 surfaces backwards under Godot's documented
   clockwise-front convention. Engine-bound box/outward-adapter cases and
   production prop/source/cat/viewmodel cases pin the two submission doors; a
   pure wedge case joins the existing box/column/torus outward proofs.
   Reverting box indices caused 12 focused failures; bypassing the outward
   conversion caused 2,441; misrouting the already-clockwise limb door caused
   2,384; and adding label carry to that direct door failed its write-through
-  witness. The restored focused suites passed 64/64, and the final three-state
-  MCP pass reported zero findings at 14/14, 127/127, and 144/142.
+  witness. The restored focused suites passed 64/64. A later readiness audit
+  caught and rejected zero-finding passes taken before runtime-only meshes had
+  populated; the close checklist now requires 14/14, 24/24, and 144/144.
 
 Earlier pre-rebase export/browser-smoke results are historical evidence only;
 they are not a substitute for the final post-rebase full pipeline.
@@ -261,8 +264,9 @@ they are not a substitute for the final post-rebase full pipeline.
    quality, fix findings, and rerun the complete gates.
 4. Run the full export/browser-smoke pipeline with an explicit non-deployable
    destination. Do not invoke deployment tooling.
-5. Ask the user only for the remaining visual/interactive checks in one
-   consolidated editor session; the final automated MCP pass is complete.
+5. Repeat the corrected three-state MCP mesh gate after the final build, then
+   ask the user only for the remaining visual/interactive checks in one
+   consolidated editor session.
 6. Present exactly one integration menu: merge locally, push/open a PR, or keep
    the local branch. Do nothing with that choice until the user explicitly
    selects it.

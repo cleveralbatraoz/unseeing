@@ -28,17 +28,22 @@ print the exact 326/326 and 31/31 zero-error terminal summaries.
 - [ ] Run the full export/browser-smoke pipeline with an explicit
   non-deployable destination and verify it copied/deployed nothing. Never call
   `deploy.sh` during campaign verification.
-- [x] With the final release library imported, Godot MCP 4.1.0/addon 4.1.0
-  confirmed Godot 4.7.1-stable, project `Unseeing`, the exact campaign path,
-  and no editor errors after restart.
-- [x] `godot_validate_meshes` on raw level 02 checked 14 meshes/surfaces with
-  zero findings.
-- [x] `godot_validate_meshes` on raw level 01 checked 127 meshes/surfaces with
-  zero findings, covering wedges, columns, both source blueprints, and the cat
-  blueprint.
-- [x] `godot_validate_meshes` on running main checked 144 mesh instances / 142
-  surfaces with zero findings, covering the runtime hero body/cane and rebuilt
-  geometry.
+- [ ] With the final release library imported, use Godot MCP 4.1.0/addon 4.1.0
+  to confirm Godot 4.7.1-stable, project `Unseeing`, the exact campaign path,
+  and no new editor errors after restart.
+- [ ] `godot_validate_meshes` on raw level 02 reports 14 mesh resources / 14
+  triangle surfaces with zero findings. This intentionally excludes its
+  uninjected runtime fan.
+- [ ] Run a code-free `UnseeingGame` runner selecting level 02, step/poll until
+  both hero meshes have surfaces, then require 24/24 with zero findings. This
+  covers the fan's box/column/torus paths and hero/cane as well as the level.
+- [ ] Run configured main, step/poll until both hero meshes have surfaces, then
+  require 144/144 with zero findings. This covers level 01, fan, radio, cat,
+  hero/cane, boxes, columns, wedges, and torus together.
+- [ ] Keep editor-only blueprint coverage separate and exact:
+  `tools/probe_editor_sources.sh` must pass its 11 editor checks and three
+  uninjected-runtime checks. The MCP validator cannot walk the edited-scene
+  root.
 - [ ] Confirm this handoff and only the temporary `AGENTS.md` in-flight section
   remain ready for removal at an explicitly authorized merge.
 

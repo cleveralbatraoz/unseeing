@@ -3,9 +3,11 @@
 //! Layering law: everything below the engine boundary is pure Rust with
 //! no engine types beyond godot's glam-backed math builtins — testable
 //! under plain `cargo test` with no Godot runtime. Engine classes may
-//! appear only in the boundary modules: `ffi` (the wave core the shim
-//! wraps) and `nodes` (the registered node classes the Godot layer
-//! places).
+//! appear only in the thin boundary modules: `ffi` (the engine-facing wave
+//! core), `nodes` (the registered classes the Godot layer places), and
+//! `render::paint` (the derive/submission adapter that reads and writes
+//! `ArrayMesh` surfaces). Geometry, allocation, and paint laws remain in the
+//! pure modules those adapters call.
 //!
 //! The pure core, one law per module. Migrated systems retain bit-for-bit
 //! parity with their retired GDScript implementations through ported tests;
@@ -62,8 +64,8 @@
 //!   replacing the per-instance object id. Derive-painted superface labels
 //!   make overlapping world solids agree on G; sources, creatures and the
 //!   viewmodel carry fixed role labels. Mostly pure face/label law,
-//!   cargo-tested; [`render::paint`] is the one impure edge, the derive-time
-//!   pass that bakes world labels into an `ArrayMesh`'s `CUSTOM0`.
+//!   cargo-tested; [`render::paint`] is the impure mesh edge that bakes
+//!   derive-time world labels and submits every generated `ArrayMesh` surface.
 //! - [`source_shape`] — the one generated shape a sound source's limbs
 //!   need beyond a box or [`prop_shape::column_triangles`]: a torus, for
 //!   the fan's guard ring and the radio's speaker grille.
