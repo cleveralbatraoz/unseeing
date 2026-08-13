@@ -4,9 +4,12 @@
 `dfbb69a`. This checklist is a gate, never authorization. Green boxes do not
 authorize integration, a push, wiki publication, deployment, or issue closure.
 
-The settled source census is 406 Cargo tests and 326 gdUnit cases in 31 suites,
-with 19 registered classes and ten icons. The final full runner must still
-print the exact 326/326 and 31/31 zero-error terminal summaries.
+The strict checkpoint at `c8744de` is 419 Cargo tests with all targets/features
+(417 default plus two focused `editor-docs` tests) and 327 gdUnit cases in 31
+suites, with 19 registered classes and ten icons. Recompute after the final
+rebase and require exact zero-error terminal summaries rather than trusting
+these literals alone. The same checkpoint passed slab probes 7+7,
+source probes 11+3, live-level probes 29+1, and the 16-check prefab probe.
 
 ## Automated close
 
@@ -93,8 +96,8 @@ proved without the user.
 - [ ] Treat reverted commit `9778a00` only as historical research. Do not
   cherry-pick, revive, or publish it verbatim: its six-slot source-colouring
   model predates the superface rebase. Rewrite applicable prose around
-  per-face labels, merged superfaces, fixed source/creature roles, and current
-  file owners.
+  per-face labels, merged superfaces, per-instance source-role labels, fixed
+  creature roles, and current file owners.
 - [ ] Review and push the wiki as its own authorized action.
 
 ## Authorization 3 — deployment

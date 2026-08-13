@@ -84,17 +84,24 @@ correct-worktree check and the full-game runner scene.
    a wall's centerline is what the sight shaders count to decide what a
    source may light and the hero may hear, so its geometry is physics,
    not decoration — the engine holds that law itself. Rotate one and it
-   snaps to the nearest quarter turn and drops any scale, warning in the
-   Output panel when it does. That snap only runs when the wall
-   (re-)enters the scene tree — placed, duplicated, or the scene
-   reloaded — not while you're turning its gizmo in the viewport, so a
-   wall you just rotated can sit at a free angle on screen for the rest
-   of the session with no warning until the next reload.
+   snaps live in the editor to the nearest quarter turn and drops any inherited
+   scale. At runtime the same validation happens once at ready and logs any
+   correction; later runtime geometry is immutable so retained paint and
+   occlusion cannot drift. The editor stays quiet and immediately shows the
+   exact geometry the occluder uses. The authored wall is a `Node3D` datum;
+   Rust keeps its exact collision body and generated mesh private and ownerless,
+   so `WaveBody`, `WaveSkin`, and `WaveCollider` never leak into a saved scene.
+   Edit **Length** and the exported collision properties on `WaveWall`, and
+   connect its relayed collision signals there—never edit `WaveBody`. A
+   singular, non-finite, or unrepresentably large ancestor, a non-finite own
+   transform, invalid **Length**, or nonpositive/non-finite **Collision
+   Priority** produces a repairable warning triangle on the authored wall.
 4. Furniture: drag `scenes/props/chair.tscn` or `table.tscn` from the
    FileSystem dock, or compose another plain `Node3D` scene from typed props.
    A plain root is important: it groups content while Rust still recursively
-   discovers every solid beneath it. The engine-generated preview limbs are
-   deliberately ownerless and never become authored scene content.
+   discovers every solid beneath it. The engine-generated preview limbs,
+   including a wall's private `WaveBody`, are deliberately ownerless and never
+   become authored scene content.
 5. Sound sources: `SoundFan` and `SoundRadio` both have their voice in
    the Inspector — **Volume** (0 to 1, how loud and how far the waves
    reach), **Cadence** (seconds between waves) and **Wave Speed** (how
@@ -126,13 +133,14 @@ correct-worktree check and the full-game runner scene.
    bends, steps, and faces whose seam must draw receive separated labels.
    The test suite gates the rest on every commit.
 
-Nothing about those labels needs setting by hand. The engine colours the
-superface separation graph from five reusable world labels, while sources,
-creatures, the floor, and the ceiling use fixed role labels. The palette is
-not a limit on level size: distant face classes reuse it freely. If one local
-arrangement demands more mutually separated labels than the palette can
-provide, the affected solids and their `WaveLevel` show warnings and the game
-still runs, with the named seams at risk of disappearing.
+Nothing about those labels needs setting by hand. The engine colours one
+separation graph from five reusable labels: world superfaces and each placed
+source's semantic limb roles share it, while creatures, the floor, and the
+ceiling use fixed numeric roles. The palette is not a limit on level size:
+distant classes reuse it freely. If one local arrangement demands more
+mutually separated labels than the palette can provide, the affected solids or
+sources and their `WaveLevel` show warnings and the game still runs, with the
+named seams at risk of disappearing.
 
 Optional tooling: `../tools/setup-mcp.sh` installs the godot-mcp editor
 addon, which lets a connected MCP assistant drive this editor directly —

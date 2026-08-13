@@ -117,10 +117,24 @@ following corrections control any later review:
   `room_16x16` scenes; it was not merely folded into level 02. A raw
   `WaveLevel` is not a playable F6 target. Use **Run Current Scene** from a
   configured `UnseeingGame` runner; never call that action “Run Custom Scene.”
-- The six-slot/source-colouring perception bullets and their mutations were
-  superseded by the `dfbb69a` superface architecture. Sources/creatures keep
-  fixed role labels; world solids receive per-face labels. `AGENTS.md` owns the
-  current new-object checklist.
-- Historical task deltas are not closeout expectations. The current measured
-  baseline at `e5f874c` is 405 Cargo tests, 320 gdUnit cases in 31 suites, 19
-  classes, and ten icons.
+- The six-slot/source-colouring mechanics and their mutations were superseded
+  by the `dfbb69a` superface architecture. World solids receive per-face
+  labels; sources keep semantic roles but take per-instance numeric labels from
+  the shared separation graph; creatures keep fixed numeric roles. `AGENTS.md`
+  owns the current new-object checklist.
+- The body's promise that “WaveWall's contract is untouched” did not survive
+  live-editor acceptance. `WaveWall` is now a designer-facing `Node3D` datum
+  with explicit collision properties/signals and ownerless private physics
+  limbs. That narrow contract lets paint, occlusion, mesh, and collision share
+  one exact canonical frame under oblique prefab ancestors without exposing a
+  dummy `StaticBody3D` RID or inherited body state the datum cannot honor.
+- WaveRun's equivalent setters may replace a RunSeg with byte-identical
+  geometry. The editor scene signature therefore folds each censused Godot
+  instance identity: a new generation forces one repaint and refreshes retained
+  level-relative wall paths before the following idle frame. WaveLevel stages
+  live walls before derivation, while runtime walls take one immutable snapshot
+  at ready so retained paint and occlusion cannot drift.
+- Historical task deltas are not closeout expectations. The source-role
+  live-wall checkpoint is 419 Cargo tests and 327 gdUnit cases in 31 suites,
+  with 19 classes and ten icons. The real editor-level probe passes 29 live
+  checks plus its runtime check; closeout must recompute final totals.

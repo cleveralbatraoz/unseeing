@@ -15,9 +15,11 @@ traces. Physics and sound-wave propagation must be exact.
   construction. Bends and steps still draw — a room corner, a shelf edge, a
   crate's pierce line. Seams between *separate* touching solids draw too, and
   need labels at least `MIN_SEP` = 0.08 apart. Creatures and sound sources
-  never merge with the world. Labels live in the sRGB-safe band
-  `[0.15, 0.96]`, with one grandfathered exception (the radio chassis's
-  `Role::Case` at 0.05); put new labels in the band. The merge law lives in
+  never geometrically merge with the world; source semantic roles still join
+  the separation graph so touching source copies cannot melt. Labels live in
+  the sRGB-safe band `[0.15, 0.96]`, with one grandfathered standalone-preview
+  exception (the radio chassis's `Role::Case` at 0.05); put new labels in the
+  band. The merge law lives in
   `rust/src/render/superface.rs` (`COPLANAR_EPS`, `PATCH_EPS`) and the
   colouring and role table in `rust/src/render/labels.rs` (`MIN_SEP`); never
   assign labels by cycling a list. Get the merge predicate wrong and either a
@@ -195,9 +197,10 @@ The engine/content split is two enforceable laws:
   node builds named blueprint limbs idempotently; an intentionally drawless
   datum says so explicitly. Each node is reached by recursive level census or
   has an explicit exclusion. World solids enter the per-face superface paint;
-  creatures and sources use fixed role labels; drawless data consumes no
-  label. Warnings are stored for editor triangles and printed only at runtime,
-  with both the Godot virtual and callable forwarder. Designer-facing
+  creatures use fixed numeric role labels; sources keep fixed semantic roles
+  whose numeric labels are derived per placed instance; drawless data consumes
+  no label. Warnings are stored for editor triangles and printed only at
+  runtime, with both the Godot virtual and callable forwarder. Designer-facing
   composition is scenes, nodes, signals, and Inspector properties, never
   custom Resources or generated intermediate files. Triggers and sequences
   are registered Rust nodes with typed signals. GDScript is tests and probes
@@ -208,9 +211,10 @@ The engine/content split is two enforceable laws:
 For every new designer-facing class, verify the complete new-object checklist:
 tool registration; named-child clearing and ownerless rebuilding, or an
 explicit drawless declaration; recursive census or an explicit exclusion;
-per-face superface labels, fixed role labels, or an explicit label-free
-classification; dual-channel warnings plus the callable forwarder and
-boot-pattern coverage; ranged/suffixed Inspector hints and `editor-docs`
+per-face superface labels, fixed numeric roles, graph-coloured semantic source
+roles, or an explicit label-free classification; dual-channel warnings plus
+the callable forwarder and boot-pattern coverage; ranged/suffixed Inspector
+hints and `editor-docs`
 documentation; SVG icon and exact manifest count; both hand-written class
 rosters; dependency injection before tree entry and no self-wiring; simulated
 clocks and seeded randomness only; capture/restore coverage when stateful;

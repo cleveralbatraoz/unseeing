@@ -141,8 +141,9 @@ laws, restore semantics, and the code-free `main.tscn` root remain current.
   playable raw `WaveLevel`. The later `level_scene` property preserves one
   inject-before-add path and is the code-free F6 authoring boundary.
 - Class/count predictions inside individual tasks record their execution
-  moment. Current closeout counts are 405 Cargo tests, 320 gdUnit cases in 31
-  suites, 19 registered classes, and ten icons.
+  moment. The source-role checkpoint is 407 Cargo tests and 329 gdUnit cases
+  in 31 suites, with 19 registered classes and ten icons; closeout recomputes
+  final totals.
 - Task 9's wiki work remains debt. Integration does not authorize wiki
   publication, deployment, or issue closure; each requires its own user
   decision.

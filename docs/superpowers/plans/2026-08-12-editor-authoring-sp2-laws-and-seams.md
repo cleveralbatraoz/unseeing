@@ -131,14 +131,17 @@ pack-range outcomes survive, but the source-colouring mechanism and the
 planned buried-in-wall runtime heir do not.
 
 - Rebasing onto `origin/main` at `dfbb69a` made per-face superfaces canonical.
-  The six-slot palette, source role recolouring, K6/K7 capacity examples,
-  two-domain starved mapping, and source-starvation triangle are retired.
-  Sources and creatures keep fixed role labels outside world-face colouring;
-  world solids receive per-face `CUSTOM0` labels.
+  The six-slot palette, old positional source recolouring, and K6/K7 examples
+  are retired. Sources remain outside world-face merging, but their semantic
+  roles now enter the same separation graph as colourable non-geometric
+  classes and receive numeric labels per placed instance; creatures retain
+  fixed numeric roles. Shared-graph source starvation owns a repairable source
+  warning. World solids receive per-face `CUSTOM0` labels.
 - `game/tests/source_seam_test.gd` was removed after the rebase because its
-  premise was the retired source-recolouring implementation. Current seam
-  evidence comes from the superface graph, real mesh-label read-back, and
-  fixed-role clearance tests.
+  premise was the retired positional implementation. Current evidence is the
+  pure unified graph plus real CUSTOM0 read-back on touching same-class radios,
+  source/world clearance, starvation ownership, clearing, and rebuild
+  persistence in `game/tests/source_test.gd` and `observer_test.gd`.
 - Task 6 is also not current behaviour. The rebased tree has no general
   `level_plan::buried_in_wall` law and no WaveLevel configuration warning for
   a prop embedded in a wall. It retains only

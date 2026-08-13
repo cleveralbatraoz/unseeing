@@ -667,12 +667,14 @@ task bodies or reuse their old counts as current gates.
   new-object checklist. `CLAUDE.md` is only an adapter.
 - The plan's `starved_slots`/flat object-id warning model describes the branch
   before the `dfbb69a` superface rebase. Current world solids are painted per
-  face; sources/creatures use fixed role labels. Preserve SP1's durable
+  face; sources keep semantic roles with per-instance graph-derived numeric
+  labels, while creatures keep fixed numeric roles. Preserve SP1's durable
   outcomes—live warnings, truthful paths, tool blueprints, knob hints/docs,
   icons, and bootstrap—but translate wiki prose to superface labels.
 - Named-limb clearing remains correct for each class's known blueprint limbs.
   It must not be generalized to WaveRun: later generated segments are selected
   by `WaveWall` type, private metadata, and typed `WaveRun` parent.
 - Task 11's Windows-manual boundary is superseded by the cross-platform
-  bootstrap spec already linked above. Current verification is 405 Cargo tests,
-  320 gdUnit cases in 31 suites, 19 registered classes, and ten icons.
+  bootstrap spec already linked above. The source-role checkpoint is 407 Cargo
+  tests and 329 gdUnit cases in 31 suites, with 19 registered classes and ten
+  icons; final closeout recomputes those totals.

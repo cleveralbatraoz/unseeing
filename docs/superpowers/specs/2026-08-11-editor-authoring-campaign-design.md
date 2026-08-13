@@ -274,17 +274,35 @@ re-derive either fact from scratch.
    free-placement outcome remains law, but its historical six-slot
    source-recolouring/K7 route is no longer how the branch achieves it. After
    rebasing onto `origin/main` at `dfbb69a`, world solids receive per-face
-   `CUSTOM0` labels from the superface graph while sources and creatures keep
-   fixed role labels. Same-facing coplanar overlapping faces merge
-   bit-identically; separate touching solids keep `MIN_SEP = 0.08`. The current
-   owners are `rust/src/render/superface.rs`, `labels.rs`, and `paint.rs`; the
-   old solid-level object-id output is compatibility observability only.
+   `CUSTOM0` labels from the superface graph. Sources stay outside geometric
+   superface merging but contribute colourable semantic-role classes to the
+   same separation graph, receiving numeric labels per placed instance;
+   creatures retain fixed numeric roles. Same-facing coplanar overlapping
+   world faces merge bit-identically, while separate touching solids and
+   sources keep `MIN_SEP = 0.08`. The current owners are
+   `rust/src/render/superface.rs`, `labels.rs`, and `paint.rs`; the old
+   solid-level object-id output is compatibility observability only.
 5. **Policy and completion language moved to `AGENTS.md`.** `CLAUDE.md` is now
    only a three-line adapter, so success criterion 6's reference to the razor
    being stated there is historical. The enforceable two-law split and
    new-object checklist live in `AGENTS.md`, and GDScript is tests/probes-only,
-   not designer-facing residue. At `e5f874c` the automated census is 405 Cargo
-   tests, 320 gdUnit cases in 31 suites, 19 classes, and ten icons. Feature
-   implementation is complete, but human-editor, integration, wiki,
+   not designer-facing residue. The later source-role checkpoint is 407 Cargo
+   tests and 329 gdUnit cases in 31 suites, with 19 classes and ten icons;
+   final closeout must recompute those counts. Feature implementation is
+   present, but human-editor, integration, wiki,
    deployment, and issue-closure gates remain separate; none is authorized by
    this spec or by a green checklist.
+6. **Live-wall acceptance changed representation, not the authoring outcome.**
+   Commit `c8744de` supersedes SP3's claim that WaveWall's representation stays
+   untouched. The authored node is now a `Node3D` datum with explicit collision
+   properties/signals; one ownerless private top-level body carries the exact
+   canonical physics/mesh frame. WaveLevel stages live editor walls before
+   derivation and folds RunSeg instance generation into its scene signature;
+   runtime wall geometry is immutable after ready. This preserves the spec's
+   one visible Godot-authored object while preventing parent round-trip dust,
+   stale paint, or derived limbs from entering the scene artifact.
+7. **Later verification checkpoint.** At `c8744de`, the default Cargo suite is
+   417 plus two focused `editor-docs` tests (419 all-features); gdUnit is
+   327/327 across 31/31 suites; both class rosters contain 19 classes and the
+   icon manifest contains ten. Editor probes pass 7+7, 11+3, 29+1, and 16.
+   These remain checkpoint facts until the required final rebase and gates.

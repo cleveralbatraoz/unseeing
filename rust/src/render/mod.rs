@@ -14,8 +14,9 @@
 //!   the palette and role table: creatures and slabs take fixed numeric role
 //!   labels, while world faces and each source instance take separated labels
 //!   from a small reusable palette.
-//! - [`paint`] — the derive-time pass that turns a shape's faces into an
-//!   `ArrayMesh` carrying the label as a per-vertex `CUSTOM0` float.
+//! - [`paint`] — the thin mesh boundary that bakes world-face or semantic-role
+//!   labels into `ArrayMesh` `CUSTOM0`; derivation and runtime builders share
+//!   it while the geometry and label decisions remain pure.
 
 pub mod faces;
 pub mod labels;

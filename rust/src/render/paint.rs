@@ -1,9 +1,9 @@
-//! The derive-time paint pass: turn a shape's faces into geometry that
-//! carries its label as a per-vertex attribute rather than a per-instance
-//! shader parameter. This is the spike the whole superface campaign rides
-//! on — proving `ARRAY_CUSTOM0` round-trips through gdext's `ArrayMesh`
-//! at all, headless and provably, before anything downstream depends on
-//! it.
+//! The mesh paint/submission boundary: turn geometry into `ArrayMesh`
+//! surfaces that carry labels as per-vertex attributes rather than
+//! per-instance shader parameters. `WaveLevel` uses it during derivation to
+//! repaint world faces; source, creature, and viewmodel builders use the same
+//! boundary when they submit their semantic-role meshes. The pure geometry,
+//! graph, and label laws stay in the modules these adapters call.
 //!
 //! A shared vertex cannot hold two labels, so every face gets its own four
 //! corners even where two faces meet: 24 vertices for a box, not the 8 an

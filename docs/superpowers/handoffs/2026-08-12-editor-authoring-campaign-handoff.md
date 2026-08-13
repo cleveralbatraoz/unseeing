@@ -33,9 +33,13 @@ intermediate architecture.
   HEAD, so recompute the range, inspect `git status`, and preserve concurrent
   or user-owned changes before acting.
 - The planned feature implementation and the closeout `ArrayMesh` winding
-  correction are complete; the final full CI/export gates remain. The branch
-  is not integrated, the wiki is not published, nothing is deployed, and no
-  issue is authorized for closure.
+  correction landed. A final whole-branch review then found and repaired the
+  same-class source seam, GDScript resource-policy gaps, WaveRun regeneration,
+  live WaveWall transforms, and residual shipped-content goldens. The settled
+  implementation is pushed through `c8744de`; documentation, the final
+  export/MCP evidence, and a last rebase remain. The branch is not integrated,
+  the wiki is not published, nothing is deployed, and no issue is authorized
+  for closure.
 - Keep this handoff and the temporary `AGENTS.md` in-flight section until an
   explicitly authorized merge. At merge, remove both together while retaining
   all canonical `AGENTS.md` policy.
@@ -58,10 +62,13 @@ state into a scene.
   `labels.rs`, and `paint.rs`. Same-facing coplanar overlapping faces merge
   into one superface and receive one bit-identical per-vertex label. Separate
   touching solids keep label separation of at least `MIN_SEP = 0.08`.
-- Sources and creatures retain fixed role labels and never enter world-face
-  colouring. The pre-rebase six-slot source-recolouring, K7 pile, and
-  source-starvation story is retired. The older solid-level object-id output is
-  compatibility observability, not the rendering or authoring model.
+- Sources never become world superfaces, but their semantic limb roles join the
+  same separation graph as world face classes. The level derives numeric labels
+  per source instance, so two touching copies retain their seam; creatures keep
+  fixed numeric role labels. The pre-rebase six-slot/K7 mechanism is retired,
+  while repairable source-role starvation is now a real shared-graph outcome.
+  The older solid-level object-id output is compatibility observability, not the
+  rendering or authoring model.
 - World labels are carried in mesh `CUSTOM0`, not assigned by cycling a list.
   `WaveObserver`'s superface membership/faults and mesh read-back tests are the
   relevant structural witnesses.
@@ -89,6 +96,13 @@ state into a scene.
   use a stricter generated identity: `WaveWall` type + private metadata + a
   typed `WaveRun` parent. `RunSeg1…N` names are for readable paths, not cleanup
   authority.
+- An authored `WaveWall` is an honest `Node3D` datum with an explicit collision
+  contract, not a dummy `StaticBody3D`. Its ownerless private top-level body,
+  skin, and collider share one exact canonical world frame with paint and
+  occlusion. The editor normalizes live ancestor edits before level derivation;
+  runtime wall geometry is immutable after ready. Invalid length, priority, or
+  transform input remains finite and produces one repairable warning owned by
+  the wall.
 - All designer knobs carry appropriate hints/docs, ten SVG class icons are
   registered, and both hand-written class rosters contain all 19 engine
   classes, including `WaveRestorer`, `WaveSpawn`, and `WaveRun`.
@@ -131,6 +145,10 @@ state into a scene.
 - Setters rebuild in-tree. Material injection is retained and propagated.
   Rebuild first removes exactly the generated segment set, then emits ownerless
   `WaveWall` children.
+- The editor scene signature includes each censused node generation. An
+  equivalent setter may recreate byte-identical RunSeg geometry, but the new
+  instance identities still force one repaint and replace every retained wall
+  handle before the next stable frame.
 - A WaveRun's own representable planar transform is absorbed into endpoints
   and openings and reset to identity. Y/tilt that cannot be represented warns;
   ancestor prefab transforms remain ordinary composition.
@@ -184,7 +202,7 @@ likely to be lost by reading only the pre-rebase plans:
 
 - `8bb9cb7` restored the designer-facing two-law boundary on top of main and
   translated the new-object checklist from flat object ids to per-face
-  superfaces/fixed roles/drawless data.
+  superfaces/semantic roles/drawless data.
 - `347401e` retained WaveRun's full level-relative wall addresses and
   reconciled source coverage with the fixed-role `CUSTOM0` vocabulary. The two
   obsolete source-recolouring-only commits were removed during history cleanup
@@ -202,15 +220,31 @@ likely to be lost by reading only the pre-rebase plans:
 - `517b483` clarified that generated RunSeg walls keep real level-relative
   paint addresses while their authored WaveRun owns the repairable editor
   warning.
+- `59efd5d` put semantic source roles into the shared separation graph. Two
+  touching same-class radios now carry distinct real `CUSTOM0` labels; source
+  assignments persist across limb rebuilds and starvation belongs to the
+  source a designer can move.
+- `0ba5ba0` closed Godot's other script doors: production resources cannot
+  embed GDScript, load anything under `res://tests/`, or autoload test content.
+- `97530a4` moved room-dependent tests onto code-built fixtures and retired the
+  remaining shipped name/count/placement goldens without weakening the laws.
+- `c8744de` made live walls one exact Node3D/private-body geometry and folded
+  censused instance identity into the editor watch, so equivalent WaveRun
+  rebuilds cannot leave placeholder paint or freed wall handles.
 
-Settled source census after the winding correction:
+Strict full-runner census at `c8744de` on 2026-08-13:
 
-- 406 Cargo tests.
-- 326 gdUnit cases in 31 suites. `ci/run_gdunit.sh` computes these totals from
+- 419 Cargo tests with all targets/features (417 in the default suite plus two
+  focused `editor-docs` feature tests).
+- 327 gdUnit cases in 31 suites. `ci/run_gdunit.sh` computes these totals from
   source and requires exact zero-error/zero-failure/zero-skip overall,
   executed-suite, and executed-case records.
 - 19 registered engine classes in both rosters.
 - 10 registered SVG icons.
+- Editor probes passed 7/7 in both slab modes, 11/11 source-blueprint plus
+  3/3 uninjected-source checks, 29/29 live-level plus 1/1 runtime-level checks,
+  and 16/16 prefab checks. `SKIP_EXPORT=1 ci/pipeline.sh` completed green at
+  this checkpoint.
 
 RED/GREEN and mutation evidence retained for closeout:
 
@@ -238,6 +272,17 @@ RED/GREEN and mutation evidence retained for closeout:
   failures, skips, duplicate summaries, empty suites, ANSI tricks, and nonzero
   runners. Removing any of the overall/suite/case witnesses makes its named
   mutation case red.
+- WaveRun's equivalent-setter regression began red with fresh placeholder
+  `CUSTOM0` labels and retained freed handles. Folding node instance identity
+  into the scene signature makes the next editor pass repaint the new
+  generation; the real editor probe pins safe labels, live paths, and an idle
+  stable follow-up frame.
+- Live WaveWall correction began red on oblique ancestors, singular/non-finite
+  input, runtime/editor divergence, and repeated physics writes. Pure transform,
+  length, and priority plans now feed one private top-level physics body and the
+  same analytic paint/occlusion frame. Split gdUnit cases and 29 editor checks
+  pin exact pose, signal/property forwarding, warning clearing, packing
+  exclusion, length-only rederivation, and no-write stability.
 - The winding correction began red when `godot_validate_meshes` reported all
   22 then-populated configured level-02 surfaces backwards under Godot's documented
   clockwise-front convention. Engine-bound box/outward-adapter cases and
@@ -255,11 +300,13 @@ they are not a substitute for the final post-rebase full pipeline.
 
 ## Remaining work before asking for integration
 
-1. Independently review the settled winding/prose correction without absorbing
-   the user's MCP settings or chair move; fix every finding before the full
-   gates.
-2. Run `SKIP_EXPORT=1 ci/pipeline.sh` and require the exact 406 Cargo,
-   326 gdUnit / 31-suite, 19-class, and ten-icon results.
+1. Finish and independently review the active prose correction without
+   absorbing the user's MCP settings or chair move. The implementation through
+   `c8744de` has independent approval.
+2. Treat the green `SKIP_EXPORT=1 ci/pipeline.sh` run at `c8744de` (419 Cargo
+   tests across default/editor-doc configurations, exact 327/327 gdUnit cases
+   in 31/31 suites, 19 classes, ten icons, and every editor probe) as a
+   checkpoint; rerun it after the final documentation/rebase state.
 3. Independently review `origin/main...HEAD` for spec compliance and code
    quality, fix findings, and rerun the complete gates.
 4. Run the full export/browser-smoke pipeline with an explicit non-deployable

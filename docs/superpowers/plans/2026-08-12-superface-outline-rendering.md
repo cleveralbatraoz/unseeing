@@ -489,8 +489,10 @@ This plan is the frozen design/execution route that produced the architecture
 the editor-authoring campaign inherited at merge base `dfbb69a`.
 
 - Campaign commit `8bb9cb7` ported its Godot/Rust authoring laws onto this
-  per-face model. World solids enter the superface graph; sources and creatures
-  retain fixed role labels; intentionally drawless data consumes no label.
+  per-face model. World solids enter the superface graph; sources remain
+  non-geometric but add semantic-role classes whose numeric labels are derived
+  per instance; creatures retain fixed numeric roles; intentionally drawless
+  data consumes no label.
   Any earlier campaign plan that describes six-slot source recolouring or a
   flat object-id seam as current is superseded.
 - Post-rebase fixes retain generated WaveRun wall paths relative to their
@@ -500,6 +502,6 @@ the editor-authoring campaign inherited at merge base `dfbb69a`.
   `CLAUDE.md` is only an adapter. Task 12's documentation step never authorizes
   a wiki push. Wiki publication, like integration and deployment, remains a
   separate user gate.
-- Current closeout evidence is 405 Cargo tests, 320 gdUnit cases in 31 suites,
-  19 registered classes, and ten icons. These totals supersede execution-time
-  count references without altering this plan's historical body.
+- The source-role checkpoint is 407 Cargo tests and 329 gdUnit cases in 31
+  suites, with 19 registered classes and ten icons. Final closeout recomputes
+  those totals; this note does not alter the plan's historical body.

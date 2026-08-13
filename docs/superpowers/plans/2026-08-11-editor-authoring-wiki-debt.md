@@ -33,16 +33,24 @@ Current source of truth:
   triangles and use the direct door. The world `data_pass.gdshader` is
   `cull_disabled`, but source geometry is load-bearing under
   `data_xray.gdshader`'s `cull_back` path.
-- Sources and creatures keep fixed role labels and do not consume world-face
-  labels. The SP2 six-slot source-recolouring, K7 source pile, and
-  source-starvation narrative was an intermediate implementation and is not
-  current wiki material. The old solid-granularity object-id report is only a
-  compatibility observability surface; describe the shipped rendering law in
-  terms of faces, superface classes, and `CUSTOM0` labels.
+- Sources remain outside world-superface merging, but their fixed semantic limb
+  roles become colourable classes in the same separation graph. Numeric source
+  labels are derived per placed instance; creatures keep fixed numeric roles.
+  The SP2 six-slot/K7 mechanism is obsolete, but shared-graph source starvation
+  and its repairable source warning are current. The old solid-granularity
+  object-id report is only compatibility observability; describe the shipped
+  rendering law in terms of faces, semantic roles, graph classes, and real
+  `CUSTOM0` labels.
 - Reusable content has plain `Node3D` roots composed from typed Rust nodes.
   Rust-generated preview children are ownerless derived data. WaveRun's
   generated segments are identified by type, private metadata, and typed
   parent; their readable `RunSeg1…N` names are not cleanup authority.
+- `WaveWall` is an authored `Node3D` datum with explicit collision properties
+  and relayed signals. Rust builds one ownerless private top-level `WaveBody`
+  with nested mesh/collider at the exact canonical snapped world frame; those
+  limbs never pack. Transforms and knobs update live in the editor, while the
+  runtime geometry snapshot is immutable after ready so retained paint and
+  occlusion cannot diverge.
 - `WaveRun.from`/`to` use the parent's local X/Z plane. Godot displays the
   second `Vector2` component as `y`; in this API it maps to the **parent's
   local Z axis**, never global/world Z. An opening pair is `(absolute start
@@ -57,9 +65,12 @@ Current source of truth:
   map, but an arbitrary designer-authored WaveLevel does not receive that
   planned editor/runtime warning. Do not publish the frozen SP2 claim as
   shipped behaviour; re-evaluate it as explicit authoring debt.
-- The settled source census is 406 Cargo tests and 326 gdUnit cases in 31
-  suites, with 19 registered classes and ten icons. Counts are verification
-  facts, not wiki mechanics.
+- The earlier source-role checkpoint ran 407 Cargo tests and 329 gdUnit cases
+  in 31 suites. The later `c8744de` live-wall checkpoint ran 417 default Cargo
+  tests plus two focused editor-doc tests (419 all-features), 327 gdUnit cases
+  in 31 suites, 19 registered classes, ten icons, and editor probes 7+7, 11+3,
+  29+1, and 16. Recompute at closeout; counts are verification facts, not wiki
+  mechanics.
 
 The reverted wiki commit `9778a00` is historical input only. Never cherry-pick
 or revive it verbatim: its SP2 palette/source model predates the superface
@@ -73,8 +84,9 @@ The authorized wiki pass should be one coherent rewrite, including:
   WaveRun's parent-local coordinates, level selection, and the configured F6
   workflow.
 - **Mechanics — Sound Sources**, **Mechanics — Rendering**, and **Mechanics —
-  Waves** for blueprint mode, fixed source/creature role labels, superfaces,
-  `CUSTOM0`, the Rust composition root, and the clockwise Godot mesh boundary.
+  Waves** for blueprint mode, per-instance source-role labels, fixed creature
+  roles, superfaces, `CUSTOM0`, the Rust composition root, and the clockwise
+  Godot mesh boundary.
   Rendering must distinguish conventional pure-generator winding from
   submitted `ArrayMesh` winding and the different consequences of the world's
   `cull_disabled` skin and sources' `cull_back` skin.
