@@ -806,31 +806,34 @@ mod tests {
     #[test]
     fn oversized_palette_is_an_explicit_atomic_error() {
         let mut input = request(Vec::new());
-        input.palette = vec![0.25; MAX_PALETTE_VALUES + 1];
+        input.palette = vec![0.25; 12];
         assert_eq!(
             plan(input),
             Err(PaintPlanError::RequestTooLarge {
                 domain: RequestDomain::PaletteValues,
-                actual: MAX_PALETTE_VALUES + 1,
-                limit: MAX_PALETTE_VALUES,
+                actual: 12,
+                limit: 11,
             })
         );
     }
 
     #[test]
-    fn oversized_entry_and_source_vectors_are_explicit_atomic_errors() {
-        let entries = (0..=MAX_PAINT_ENTRIES)
+    fn two_hundred_fifty_seven_entries_are_an_explicit_atomic_error() {
+        let entries = (0..257)
             .map(|index| box_entry([index as f64 * 10.0, 0.0, 0.0], [1.0; 3]))
             .collect();
         assert_eq!(
             plan(request(entries)),
             Err(PaintPlanError::RequestTooLarge {
                 domain: RequestDomain::Entries,
-                actual: MAX_PAINT_ENTRIES + 1,
-                limit: MAX_PAINT_ENTRIES,
+                actual: 257,
+                limit: 256,
             })
         );
+    }
 
+    #[test]
+    fn two_hundred_fifty_seven_sources_are_an_explicit_atomic_error() {
         let input = PaintRequest {
             entries: Vec::new(),
             sources: vec![
@@ -839,7 +842,7 @@ mod tests {
                     sweep_margin: 0.0,
                     roles: 0,
                 };
-                MAX_PAINT_SOURCES + 1
+                257
             ],
             palette: PALETTE.to_vec(),
         };
@@ -847,14 +850,14 @@ mod tests {
             plan(input),
             Err(PaintPlanError::RequestTooLarge {
                 domain: RequestDomain::Sources,
-                actual: MAX_PAINT_SOURCES + 1,
-                limit: MAX_PAINT_SOURCES,
+                actual: 257,
+                limit: 256,
             })
         );
     }
 
     #[test]
-    fn excessive_semantic_roles_are_rejected_even_when_sources_are_drawless() {
+    fn five_hundred_thirteen_semantic_roles_are_rejected_even_when_sources_are_drawless() {
         let input = PaintRequest {
             entries: Vec::new(),
             sources: vec![
@@ -862,8 +865,17 @@ mod tests {
                     area: None,
                     sweep_margin: 0.0,
                     roles: u8::MAX,
-                };
-                3
+                },
+                PaintSourceInput {
+                    area: None,
+                    sweep_margin: 0.0,
+                    roles: u8::MAX,
+                },
+                PaintSourceInput {
+                    area: None,
+                    sweep_margin: 0.0,
+                    roles: 3,
+                },
             ],
             palette: PALETTE.to_vec(),
         };
@@ -871,48 +883,86 @@ mod tests {
             plan(input),
             Err(PaintPlanError::RequestTooLarge {
                 domain: RequestDomain::SourceRoles,
-                actual: usize::from(u8::MAX) * 3,
-                limit: MAX_SOURCE_ROLES,
+                actual: 513,
+                limit: 512,
             })
         );
     }
 
     #[test]
-    fn exact_public_request_ceilings_are_admitted() {
-        let entries = (0..MAX_PAINT_ENTRIES)
+    fn exactly_two_hundred_fifty_six_entries_and_their_faces_are_admitted() {
+        let entries = (0..256)
             .map(|index| box_entry([index as f64 * 10.0, 0.0, 0.0], [1.0; 3]))
             .collect();
-        assert!(plan(request(entries)).is_ok());
+        let output = plan(request(entries)).unwrap();
+        assert_eq!(output.entry_commands.len(), 256);
+        assert_eq!(output.faces.len(), 1_536);
+    }
 
-        let mut sources = vec![
+    #[test]
+    fn exactly_two_hundred_fifty_six_sources_are_admitted() {
+        let sources = vec![
             PaintSourceInput {
                 area: None,
                 sweep_margin: 0.0,
                 roles: 0,
             };
-            MAX_PAINT_SOURCES
+            256
         ];
-        sources[0].roles = u8::MAX;
-        sources[1].roles = u8::MAX;
-        sources[2].roles = 2;
-        assert!(
-            plan(PaintRequest {
-                entries: Vec::new(),
-                sources,
-                palette: PALETTE.to_vec(),
-            })
-            .is_ok()
-        );
+        let output = plan(PaintRequest {
+            entries: Vec::new(),
+            sources,
+            palette: PALETTE.to_vec(),
+        })
+        .unwrap();
+        assert_eq!(output.source_commands.len(), 256);
+    }
 
+    #[test]
+    fn exactly_eleven_separated_palette_values_are_admitted() {
+        let output = plan(PaintRequest {
+            entries: Vec::new(),
+            sources: Vec::new(),
+            palette: vec![
+                0.15, 0.23, 0.31, 0.39, 0.47, 0.55, 0.63, 0.71, 0.79, 0.87, 0.95,
+            ],
+        })
+        .unwrap();
+        assert!(output.entry_commands.is_empty());
+        assert!(output.source_commands.is_empty());
+    }
+
+    #[test]
+    fn exactly_five_hundred_twelve_drawless_source_roles_are_admitted() {
+        let sources = vec![
+            PaintSourceInput {
+                area: None,
+                sweep_margin: 0.0,
+                roles: u8::MAX,
+            },
+            PaintSourceInput {
+                area: None,
+                sweep_margin: 0.0,
+                roles: u8::MAX,
+            },
+            PaintSourceInput {
+                area: None,
+                sweep_margin: 0.0,
+                roles: 2,
+            },
+        ];
+        let output = plan(PaintRequest {
+            entries: Vec::new(),
+            sources,
+            palette: PALETTE.to_vec(),
+        })
+        .unwrap();
+        assert_eq!(output.source_commands.len(), 3);
         assert!(
-            plan(PaintRequest {
-                entries: Vec::new(),
-                sources: Vec::new(),
-                palette: vec![
-                    0.15, 0.23, 0.31, 0.39, 0.47, 0.55, 0.63, 0.71, 0.79, 0.87, 0.95
-                ],
-            })
-            .is_ok()
+            output
+                .source_commands
+                .iter()
+                .all(|command| *command == PaintCommand::KeepExisting)
         );
     }
 
@@ -1624,7 +1674,7 @@ mod tests {
             ];
 
             let graph = add_source_role_classes(0, &[], &sources, &[], &[]).unwrap();
-            assert_eq!(graph.classes, MAX_SOURCE_ROLES);
+            assert_eq!(graph.classes, 512);
             assert_eq!(graph.separations.len(), 130_816);
             assert_eq!(graph.separations.first(), Some(&(0, 1)));
             assert_eq!(graph.separations.last(), Some(&(509, 511)));
