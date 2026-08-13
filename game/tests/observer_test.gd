@@ -697,14 +697,15 @@ func test_the_shipped_level_reports_its_faults_key() -> void:
 
 
 ## `superfaces` reports the class graph the last derive coloured, by name.
-## BorderNorth (the north border) and DividerNorth (a T-junction wall whose
-## own south end lands on BorderNorth's centerline) genuinely coplanar-MERGE
+## BorderNorth (the north border) and Divider/RunSeg1 (the north segment
+## emitted by a T-junction WaveRun whose own south end lands on
+## BorderNorth's centerline) genuinely coplanar-MERGE
 ## at that junction (`render::superface`, and
 ## `map_test.gd::test_a_junction_style_pair_merges_its_cap_and_separates_its_corner`
 ## proves it off the real mesh) — so some class in `superfaces` must list
 ## BOTH names among its members. Every class also carries at least one
 ## member, and no member name is ever repeated within its own class (a face
-## of DividerNorth's own corner sharing the SAME class as the merged cap
+## of Divider/RunSeg1's own corner sharing the SAME class as the merged cap
 ## would be exactly the bug a missing dedupe misses).
 func test_superfaces_groups_a_genuine_wall_junction_under_one_class() -> void:
 	var level := _shipped_level(Pulses.new())
@@ -725,12 +726,12 @@ func test_superfaces_groups_a_genuine_wall_junction_under_one_class() -> void:
 				. is_false()
 			)
 			seen[member] = true
-		if members.has("BorderNorth") and members.has("DividerNorth"):
+		if members.has("BorderNorth") and members.has("Divider/RunSeg1"):
 			junction_class = entry["class"]
 	(
 		assert_bool(junction_class != null)
 		. append_failure_message(
-			"no superface class lists both BorderNorth and DividerNorth as members"
+			"no superface class lists both BorderNorth and Divider/RunSeg1 as members"
 		)
 		. is_true()
 	)

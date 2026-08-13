@@ -5,7 +5,7 @@ extends GdUnitTestSuite
 ## a node dragged, deleted or mistyped in the editor trips a test rather
 ## than a play session: the wall table the sight shaders occlude by, the
 ## spawn and the dev demo tap the level derives, the census of shapes that
-## furnish it, and the object-id seam law across every touching pair.
+## furnish it, and the per-face label seam law across every touching pair.
 ##
 ## The two LAWS the map exists to make audible — how much of a source
 ## survives a wall, and what a wall costs against the volume ladder — are
@@ -52,7 +52,7 @@ const TOUCH_EPS := 0.01
 ## sibling fixtures, not something this GDScript suite re-derives.
 ##
 ## Walls are deliberately absent and are allowed to merge freely: the
-## 17-wall network merging into one drawn structure is the whole point of
+## 19-wall network merging into one drawn structure is the whole point of
 ## the campaign, and a non-wall solid that joins it is already caught by
 ## `WaveLevel`'s own wall-merge warning (pinned silent on this map by
 ## `level_test.gd::test_the_shipped_level_says_nothing_about_either_shader_ceiling`).
@@ -367,7 +367,9 @@ func test_shipped_level_exposes_and_injects_the_cat() -> void:
 ## deliberately absent: each is a MULTI-limb object whose parts SHARE one id
 ## on purpose, so that it reads as a single silhouette — a pairwise "must
 ## differ" law is exactly wrong for them.
-func _painted_boxes(node: Node, out: Array[Dictionary]) -> void:
+func _painted_boxes(node: Node, out: Array[Dictionary], root: Node = null) -> void:
+	if root == null:
+		root = node
 	for child: Node in node.get_children():
 		var skin := _skin(child)
 		if skin != null:
@@ -385,14 +387,14 @@ func _painted_boxes(node: Node, out: Array[Dictionary]) -> void:
 					out
 					. append(
 						{
-							"name": str(child.name),
+							"name": str(root.get_path_to(child)),
 							"box": skin.global_transform * skin.get_aabb(),
 							"oid": oid,
 							"labels": _labels_of(skin),
 						}
 					)
 				)
-		_painted_boxes(child, out)
+		_painted_boxes(child, out, root)
 
 
 ## Which solids the MERGE LAW ITSELF puts in one superface class with
@@ -508,7 +510,7 @@ func test_only_the_named_props_melt_into_a_neighbour() -> void:
 	_collect_walls(level, walls)
 	var wall_names := {}
 	for wall: WaveWall in walls:
-		wall_names[str(wall.name)] = true
+		wall_names[str(level.get_path_to(wall))] = true
 
 	var obs: WaveObserver = auto_free(WaveObserver.new())
 	obs.inject(level, null)
@@ -663,8 +665,9 @@ func test_shipped_walls_clear_the_floor_and_ceiling_labels() -> void:
 
 ## THE SUPERFACE LAW, live, off two REAL `WaveWall` meshes sampled straight
 ## off the SHIPPED map — the new form of the zero-fights pin. BorderNorth
-## (the north border, centerline z = 0.6) and DividerNorth (a T-junction
-## wall whose own south end lands ON BorderNorth's centerline) meet at
+## (the north border, centerline z = 0.6) and Divider/RunSeg1 (the north
+## segment emitted by a T-junction WaveRun whose own south end lands ON
+## BorderNorth's centerline) meet at
 ## world z = 0.6 (BorderNorth's centerline) − 0.15 (WALL_T) = 0.45 — hand
 ## derived, not read back off the built mesh — exactly the geometry
 ## `render::superface`'s own `a_junction_cap_merges_into_the_partners_flank`
@@ -675,7 +678,7 @@ func test_a_junction_style_pair_merges_its_cap_and_separates_its_corner() -> voi
 
 	var level := _shipped_level()
 	var a: WaveWall = level.find_child("BorderNorth", true, false)
-	var b: WaveWall = level.find_child("DividerNorth", true, false)
+	var b: WaveWall = level.get_node_or_null("Divider/RunSeg1") as WaveWall
 	assert_object(a).is_not_null()
 	assert_object(b).is_not_null()
 
@@ -696,7 +699,7 @@ func test_a_junction_style_pair_merges_its_cap_and_separates_its_corner() -> voi
 	var merged_label := _face_label(a_skin, a_face)
 	assert_float(_face_label(b_skin, b_face)).is_equal(merged_label)
 
-	# THE CORNER: DividerNorth's own east/west thickness face is
+	# THE CORNER: Divider/RunSeg1's own east/west thickness face is
 	# PERPENDICULAR to the merged plane and must differ by at least
 	# MIN_SEP — the crease the corner itself draws.
 	var perp_face := _face_with_centroid_x_above(b_skin, 6.5)

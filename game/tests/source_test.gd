@@ -229,11 +229,10 @@ func _limb_label(limb: MeshInstance3D) -> float:
 	return custom[0]
 
 
-## Every source's limbs are painted with object ids the world's colouring
-## then keeps clear of: a source stands ON world geometry (a fan on the
-## floor, a radio on a table), and where they touch there is no depth step,
-## so only an id difference can draw the seam.
-func test_sources_paint_ids_the_world_colouring_must_avoid() -> void:
+## Every source's limbs carry fixed role labels in CUSTOM0. Sources never
+## enter the world's superface colouring or merge with it; their few coherent
+## roles give the shader the stable seams within each source.
+func test_sources_paint_fixed_role_labels_into_custom0() -> void:
 	var level := _two_source_level(Vector3(3, 0, 3), Vector3(8, 0, 8))
 	for source: Node3D in level.sources():
 		var ids := {}
