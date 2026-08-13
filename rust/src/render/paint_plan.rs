@@ -99,6 +99,12 @@ pub enum PaintPlanError {
         first_entry: usize,
         second_entry: usize,
     },
+    AnchorSeparationConflict {
+        first_class: usize,
+        second_class: usize,
+        first_entry: usize,
+        second_entry: usize,
+    },
     ClassOverflow,
     InvalidOutputLabel {
         class: usize,
@@ -234,7 +240,7 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
         }
     }
 
-    let mut anchors: Vec<(usize, f64, usize)> = Vec::new();
+    let mut anchor_by_class = vec![None; classes];
     for (entry, input) in request.entries.iter().enumerate() {
         let Some(label) = input.anchor else { continue };
         let mut seen = Vec::new();
@@ -243,8 +249,11 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
                 continue;
             }
             seen.push(class);
-            if let Some(&(_, prior, first_entry)) = anchors.iter().find(|&&(c, _, _)| c == class) {
-                if prior.to_bits() != label.to_bits() {
+            let Some(slot) = anchor_by_class.get_mut(class) else {
+                return Err(PaintPlanError::ClassOverflow);
+            };
+            if let Some((prior, first_entry)) = *slot {
+                if f64::to_bits(prior) != label.to_bits() {
                     return Err(PaintPlanError::AnchorConflict {
                         class,
                         first_entry,
@@ -252,14 +261,30 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
                     });
                 }
             } else {
-                anchors.push((class, label, entry));
+                *slot = Some((label, entry));
             }
         }
     }
-    let direct_anchors: Vec<(usize, f64)> = anchors
+    let direct_anchors: Vec<(usize, f64)> = anchor_by_class
         .iter()
-        .map(|&(class, label, _)| (class, label))
+        .enumerate()
+        .filter_map(|(class, anchor)| anchor.map(|(label, _)| (class, label)))
         .collect();
+    for &(first_class, second_class) in &separations {
+        let first = anchor_by_class.get(first_class).copied().flatten();
+        let second = anchor_by_class.get(second_class).copied().flatten();
+        if let (Some((first_label, first_entry)), Some((second_label, second_entry))) =
+            (first, second)
+            && !labels::separated(first_label, second_label)
+        {
+            return Err(PaintPlanError::AnchorSeparationConflict {
+                first_class,
+                second_class,
+                first_entry,
+                second_entry,
+            });
+        }
+    }
 
     let mut source_commands = vec![PaintCommand::KeepExisting; request.sources.len()];
     let mut source_faults = Vec::new();
@@ -479,6 +504,7 @@ mod tests {
                 PaintPlanError::InvalidPaletteValue { slot: 0 },
             ),
             (vec![0.05], PaintPlanError::InvalidPaletteValue { slot: 0 }),
+            (vec![0.961], PaintPlanError::InvalidPaletteValue { slot: 0 }),
             (
                 vec![0.15, 0.229],
                 PaintPlanError::PaletteConflict {
@@ -525,6 +551,23 @@ mod tests {
     }
 
     #[test]
+    fn touching_separate_anchors_that_cannot_draw_a_seam_are_fatal() {
+        let mut first = box_entry([0.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
+        first.anchor = Some(0.15);
+        let mut second = box_entry([2.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
+        second.anchor = Some(0.20);
+        assert_eq!(
+            plan(request(vec![first, second])),
+            Err(PaintPlanError::AnchorSeparationConflict {
+                first_class: 0,
+                second_class: 1,
+                first_entry: 0,
+                second_entry: 1,
+            })
+        );
+    }
+
+    #[test]
     fn malformed_entry_keeps_its_original_index_and_does_not_shift_later_faces() {
         let bad = box_entry([0.0; 3], [0.0; 3]);
         let good = box_entry([5.0, 0.0, 0.0], [1.0; 3]);
@@ -543,6 +586,84 @@ mod tests {
                 .all(|face| face.entry == 1 && face.face.solid == 1)
         );
         assert!(matches!(out.entry_commands[1], PaintCommand::Relabel(_)));
+    }
+
+    #[test]
+    fn malformed_entry_areas_keep_existing_at_their_original_indices() {
+        let good = box_entry([0.0; 3], [1.0; 3]);
+        let mut reversed = box_entry([5.0, 0.0, 0.0], [1.0; 3]);
+        reversed.area = Box3 {
+            min: [6.0, -0.5, -0.5],
+            max: [4.0, 0.5, 0.5],
+        };
+        let mut poisoned = box_entry([10.0, 0.0, 0.0], [1.0; 3]);
+        poisoned.area.min[2] = f64::NAN;
+        let out = plan(request(vec![good, reversed, poisoned])).unwrap();
+        assert!(matches!(out.entry_commands[0], PaintCommand::Relabel(_)));
+        assert_eq!(out.entry_commands[1], PaintCommand::KeepExisting);
+        assert_eq!(out.entry_commands[2], PaintCommand::KeepExisting);
+        assert_eq!(
+            out.entry_faults,
+            vec![
+                IndexedEntryFault {
+                    entry: 1,
+                    fault: EntryFault::InvalidArea
+                },
+                IndexedEntryFault {
+                    entry: 2,
+                    fault: EntryFault::InvalidArea
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_source_areas_keep_existing_at_their_original_indices() {
+        let good = Box3::from_center_size([0.0; 3], [1.0; 3]);
+        let reversed = Box3 {
+            min: [2.0, 0.0, 0.0],
+            max: [1.0, 1.0, 1.0],
+        };
+        let mut poisoned = good;
+        poisoned.max[1] = f64::INFINITY;
+        let out = plan(PaintRequest {
+            entries: Vec::new(),
+            sources: vec![
+                PaintSourceInput {
+                    area: Some(good),
+                    sweep_margin: 0.0,
+                    roles: 1,
+                },
+                PaintSourceInput {
+                    area: Some(reversed),
+                    sweep_margin: 0.0,
+                    roles: 1,
+                },
+                PaintSourceInput {
+                    area: Some(poisoned),
+                    sweep_margin: 0.0,
+                    roles: 1,
+                },
+            ],
+            palette: PALETTE.to_vec(),
+        })
+        .unwrap();
+        assert!(matches!(out.source_commands[0], PaintCommand::Relabel(_)));
+        assert_eq!(out.source_commands[1], PaintCommand::KeepExisting);
+        assert_eq!(out.source_commands[2], PaintCommand::KeepExisting);
+        assert_eq!(
+            out.source_faults,
+            vec![
+                IndexedSourceFault {
+                    source: 1,
+                    fault: SourceFault::InvalidArea
+                },
+                IndexedSourceFault {
+                    source: 2,
+                    fault: SourceFault::InvalidArea
+                },
+            ]
+        );
     }
 
     #[test]

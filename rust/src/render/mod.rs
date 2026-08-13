@@ -14,6 +14,9 @@
 //!   the palette and role table: creatures and slabs take fixed numeric role
 //!   labels, while world faces and each source instance take separated labels
 //!   from a small reusable palette.
+//! - [`paint_plan`] — the pure, atomic level decision: validates the complete
+//!   face/source request and returns positional relabel/keep commands,
+//!   ownership, and faults before any Godot resource changes.
 //! - [`paint`] — the thin mesh boundary that bakes world-face or semantic-role
 //!   labels into `ArrayMesh` `CUSTOM0`; derivation and runtime builders share
 //!   it while the geometry and label decisions remain pure.

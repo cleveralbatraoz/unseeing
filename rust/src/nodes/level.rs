@@ -997,7 +997,7 @@ impl WaveLevel {
     /// derive-time paint pass: solids become `render::Shape`s, shapes
     /// become world-space faces, coplanar overlapping faces MERGE into one
     /// superface class ([`render::superfaces`]), and the resulting graph is
-    /// coloured ([`render::assign`]) so no two classes a seam must draw
+    /// coloured ([`render::paint_plan::plan`]) so no two classes a seam must draw
     /// between ever land within [`render::MIN_SEP`] of each other. The
     /// floor and ceiling carry dedicated role labels clear of every wall's,
     /// because every wall meets them — that seam must always draw; the
@@ -1090,20 +1090,13 @@ impl WaveLevel {
                 continue;
             };
             let node = source.clone().into_gd();
-            let text = match fault.fault {
-                render::paint_plan::SourceFault::InvalidArea => {
-                    "source paint bounds are non-finite or reversed — keeping its existing role labels."
-                }
-                render::paint_plan::SourceFault::InvalidSweepMargin => {
-                    "source sweep margin is not finite — keeping its existing role labels."
-                }
-            };
-            let message = format!("WaveLevel: {text}");
+            let path = root.get_path_to(&node).to_string();
+            let message = source_paint_fault_text(&path, fault.fault);
             if !editor {
                 godot_error!("{}", message);
             }
             self.node_faults.push(level_plan::PlacementFault {
-                path: root.get_path_to(&node).to_string(),
+                path,
                 text: message,
             });
         }
@@ -1930,4 +1923,40 @@ fn slab_center(extents: Vector2, lid: bool) -> Vector3 {
         -level_plan::SLAB_T * 0.5
     };
     Vector3::new(extents.x * 0.5, y as f32, extents.y * 0.5)
+}
+
+fn source_paint_fault_text(path: &str, fault: render::paint_plan::SourceFault) -> String {
+    match fault {
+        render::paint_plan::SourceFault::InvalidArea => format!(
+            "WaveLevel: source '{path}' has non-finite or reversed paint bounds — keeping its existing role labels."
+        ),
+        render::paint_plan::SourceFault::InvalidSweepMargin => format!(
+            "WaveLevel: source '{path}' has a non-finite sweep margin — keeping its existing role labels."
+        ),
+    }
+}
+
+#[cfg(test)]
+mod paint_fault_tests {
+    use super::*;
+
+    /// Current source implementations expose finite engine constants for
+    /// sweep margins, and Godot does not provide a reliable fixture API for a
+    /// poisoned mesh AABB. Pin the boundary's complete shared diagnostic here:
+    /// it includes the actionable level-relative owner and is used byte-for-
+    /// byte for both the runtime log and stored node fault.
+    #[test]
+    fn malformed_source_paint_faults_name_their_distinct_owners() {
+        assert_eq!(
+            source_paint_fault_text("Sources/FanA", render::paint_plan::SourceFault::InvalidArea),
+            "WaveLevel: source 'Sources/FanA' has non-finite or reversed paint bounds — keeping its existing role labels."
+        );
+        assert_eq!(
+            source_paint_fault_text(
+                "Sources/FanB",
+                render::paint_plan::SourceFault::InvalidSweepMargin
+            ),
+            "WaveLevel: source 'Sources/FanB' has a non-finite sweep margin — keeping its existing role labels."
+        );
+    }
 }

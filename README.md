@@ -30,7 +30,9 @@ Rust joins same-facing coplanar overlaps into **superfaces** and bakes one
 bit-identical class label into those faces' `CUSTOM0` vertices; faces that
 must draw a crease receive labels at least `MIN_SEP` (0.08) apart. Creatures
 use fixed numeric role labels; sound sources keep semantic limb roles while
-the level derives separated numeric labels for each placed instance. A
+the level derives separated numeric labels for each placed instance. The pure
+`rust/src/render/paint_plan.rs` owns that complete, atomic decision;
+`rust/src/render/paint.rs` is only the `ArrayMesh` read/write boundary. A
 fullscreen **hearing pass** turns that data into everything you see: thin
 white outlines, and only where waves have swept. Two kinds of line make them
 — silhouettes, where packed distance steps, and creases, where the face label

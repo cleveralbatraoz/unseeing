@@ -510,9 +510,11 @@ For a new reusable prop or room:
 
 This boundary is deliberate. Designers compose scenes, transforms, prefabs,
 and Inspector values in Godot. Rust owns rendering, physics, wave propagation,
-material injection, superface and semantic-role label derivation, and validation.
-GDScript in this repository is reserved for automated tests and editor probes,
-not level content.
+material injection, superface and semantic-role label derivation, and
+validation. Within Rust, `rust/src/render/paint_plan.rs` makes the complete
+paint decision atomically, while `rust/src/render/paint.rs` is only the Godot
+`ArrayMesh` boundary. GDScript in this repository is reserved for automated
+tests and editor probes, not level content.
 
 ## 9. Optional: connect an assistant through Godot MCP
 

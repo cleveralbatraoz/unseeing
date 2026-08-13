@@ -22,13 +22,14 @@ valid empty relabel command.
 
 An empty or malformed palette, a palette pair closer than
 `render::labels::MIN_SEP = 0.08`, an invalid level anchor, conflicting anchors
-on a merged class, class-count overflow, or an invalid allocated label rejects
-the whole request. Palette and level-anchor values must be finite and inside
-the inclusive sRGB-safe band `[0.15, 0.96]`; the standalone radio-preview
-`Role::Case = 0.05` exception never enters this level allocator. Identical
-anchors on a merged class deduplicate; different bit patterns conflict. The
-allocator entry point in `rust/src/render/labels.rs` is crate-private and is no
-longer a public malformed-float bypass.
+on a merged class, two anchored classes on a separation edge whose fixed
+labels do not clear `MIN_SEP`, class-count overflow, or an invalid allocated
+label rejects the whole request. Palette and level-anchor values must be finite
+and inside the inclusive sRGB-safe band `[0.15, 0.96]`; the standalone
+radio-preview `Role::Case = 0.05` exception never enters this level allocator.
+Identical anchors on a merged class deduplicate; different bit patterns
+conflict. The allocator entry point in `rust/src/render/labels.rs` is
+crate-private and is no longer a public malformed-float bypass.
 
 The merge, face, flank, source-role, label-separation, stable-order, and
 starvation laws do not change. Planning remains deterministic and platform

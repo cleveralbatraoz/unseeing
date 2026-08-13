@@ -24,7 +24,9 @@ the visible game.
   centerlines, the occluder table sound is muffled through, spawn, demo tap,
   and the per-face superface labels from what the designer placed.
 - `../rust/src/` — the engine: cargo-tested pure wave, viewmodel, level-plan,
-  and `render/` face/superface/label laws, plus the registered node adapters
+  and `render/` face/superface/label laws. `render/paint_plan.rs` owns the
+  complete atomic face/source paint decision; `render/paint.rs` only reads and
+  rewrites Godot `ArrayMesh` data. Registered node adapters are the classes
   the game places —
   `UnseeingGame` (the composition root), `WaveLevel`/`WaveWall`/`WaveProp`
   (level authoring), `SoundFan` (designer knobs for the hum voice),
@@ -140,7 +142,9 @@ ceiling use fixed numeric roles. The palette is not a limit on level size:
 distant classes reuse it freely. If one local arrangement demands more
 mutually separated labels than the palette can provide, the affected solids or
 sources and their `WaveLevel` show warnings and the game still runs, with the
-named seams at risk of disappearing.
+named seams at risk of disappearing. Invalid global paint constraints instead
+leave every existing mesh unchanged: the pure planner returns no partial
+command set for the `ArrayMesh` boundary to apply.
 
 Optional tooling: `../tools/setup-mcp.sh` installs the godot-mcp editor
 addon, which lets a connected MCP assistant drive this editor directly —
