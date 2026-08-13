@@ -127,7 +127,8 @@ if [ -z "$GODOT" ]; then
 fi
 [ -n "$GODOT" ] || {
   echo "bootstrap: FAILED godot not found"
-  echo "bootstrap: fix: brew install godot (macOS) or download 4.7.1.stable.official from godotengine.org and put it on PATH; then re-run, or set GODOT=/path/to/godot"
+  WANT="$(cat "$DIR/.godot-version" 2>/dev/null || printf '%s' 'the version pinned in .godot-version')"
+  echo "bootstrap: fix: brew install godot (macOS) or download $WANT from godotengine.org and put it on PATH; then re-run, or set GODOT=/path/to/godot"
   exit 2
 }
 HAVE="$("$GODOT" --version 2>/dev/null | head -1)"
@@ -169,4 +170,4 @@ case "$CENSUS" in
     ;;
 esac
 
-echo "bootstrap: OK — open game/project.godot in Godot 4.7.1 and double-click scenes/level_01.tscn"
+echo "bootstrap: OK — open game/project.godot in Godot $WANT and double-click scenes/level_01.tscn"

@@ -126,8 +126,11 @@ jobs:
       - name: Cross-check the Windows ARM64 engine
         shell: powershell
         run: |
-          rustup target add aarch64-pc-windows-msvc --toolchain 1.97.1
+          $pin = Select-String -Path rust/rust-toolchain.toml -Pattern '^channel\s*=\s*"([^"]+)"' | Select-Object -First 1
+          if (-not $pin) { throw 'rust/rust-toolchain.toml carries no channel pin' }
+          $toolchain = $pin.Matches[0].Groups[1].Value
+          rustup target add aarch64-pc-windows-msvc --toolchain $toolchain
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Push-Location rust
-          rustup run 1.97.1 cargo check --features editor-docs --target aarch64-pc-windows-msvc
+          rustup run $toolchain cargo check --features editor-docs --target aarch64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
