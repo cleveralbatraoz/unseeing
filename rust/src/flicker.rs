@@ -12,7 +12,7 @@
 //! maker runs, frame-comparison CI, the reproduction blob's restore). The
 //! Rust boundary is [`Randf`] itself — this module never touches a
 //! `RandomNumberGenerator` or any other Godot type; the engine layer
-//! (`WaveCore::flicker_probe`) owns the adapter that widens `randf()`'s f32
+//! (`crate::ffi`, driven by `UnseeingGame`) owns the adapter that widens `randf()`'s f32
 //! into the f64 this module computes with.
 
 /// A source of randomness the flicker law draws from — the boundary that

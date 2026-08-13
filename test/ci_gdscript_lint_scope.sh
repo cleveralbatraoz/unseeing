@@ -7,8 +7,9 @@
 # tests both functions in ci/gdscript_files.sh directly against the real game/
 # tree. Lint must widen to every authored script, while the permanent
 # engine/content law must reject any first-party GDScript outside game/tests/.
-# Both still exclude game/addons/ (third-party code; gdUnit4 alone is vendored
-# and lock-pinned) and game/.godot/ (import cache, never authored).
+# Both still exclude the known gdUnit4 and godot_mcp addon trees (third-party
+# code; gdUnit4 alone is vendored and lock-pinned) and game/.godot/ (import
+# cache, never authored). An unknown addon remains first-party and illegal.
 #
 # Pure POSIX sh, no network, no Godot — runs anywhere ci/pipeline.sh does.
 set -eu
@@ -27,10 +28,20 @@ PROBE_FILE="$PROBE_DIR/probe.gd"
 TEST_PROBE="$DIR/game/tests/ci_policy_probe_$$.gd"
 OUTSIDE_PROBE="$DIR/tools/ci_policy_probe_$$.gd"
 WORKTREE_PROBE="$DIR/.claude/worktrees/ci_policy_probe_$$/game/scripts/foreign.gd"
+FALLBACK_WORKTREE_PROBE="$DIR/.worktrees/ci_policy_probe_$$/game/scripts/foreign.gd"
 UNKNOWN_ADDON="$DIR/game/addons/ci_policy_probe_$$/runtime.gd"
 SPACE_PROBE="$DIR/game/tests/ci policy probe $$.gd"
+BUILTIN_PROBE="$DIR/game/scenes/ci_policy_builtin_$$.tscn"
+OPAQUE_PROBE="$DIR/game/scenes/ci_policy_opaque_$$.res"
+LEGAL_BUILTIN="$DIR/game/tests/ci policy built in $$.tscn"
 POLICY_OUT="$(mktemp)"
-cleanup() { rm -rf "$PROBE_DIR" "$DIR/game/.godot/ci_probe_$$.gd" "$TEST_PROBE" "$OUTSIDE_PROBE" "$SPACE_PROBE" "$(dirname "$UNKNOWN_ADDON")" "$(dirname "$(dirname "$(dirname "$WORKTREE_PROBE")")")" "$POLICY_OUT"; }
+cleanup() {
+  rm -rf "$PROBE_DIR" "$DIR/game/.godot/ci_probe_$$.gd" "$TEST_PROBE" \
+    "$OUTSIDE_PROBE" "$SPACE_PROBE" "$(dirname "$UNKNOWN_ADDON")" \
+    "$DIR/.claude/worktrees/ci_policy_probe_$$" \
+    "$DIR/.worktrees/ci_policy_probe_$$" "$BUILTIN_PROBE" "$OPAQUE_PROBE" \
+    "$LEGAL_BUILTIN" "$POLICY_OUT"
+}
 trap cleanup EXIT INT TERM HUP
 mkdir -p "$PROBE_DIR"
 printf 'extends Node\n' >"$PROBE_FILE"
@@ -38,9 +49,21 @@ printf 'extends Node\n' >"$TEST_PROBE"
 printf 'extends Node\n' >"$OUTSIDE_PROBE"
 mkdir -p "$(dirname "$WORKTREE_PROBE")"
 printf 'extends Node\n' >"$WORKTREE_PROBE"
+mkdir -p "$(dirname "$FALLBACK_WORKTREE_PROBE")"
+printf 'extends Node\n' >"$FALLBACK_WORKTREE_PROBE"
 mkdir -p "$(dirname "$UNKNOWN_ADDON")"
 printf 'extends Node\n' >"$UNKNOWN_ADDON"
 printf 'extends Node\n' >"$SPACE_PROBE"
+printf '%s\n' '[gd_scene load_steps=2 format=3]' \
+  '[sub_resource type="GDScript" id="GDScript_probe"]' \
+  'script/source = "extends Node"' \
+  '[node name="Probe" type="Node"]' \
+  'script = SubResource("GDScript_probe")' >"$BUILTIN_PROBE"
+# Binary .scn/.res resources are opaque to this cheap source gate and can hide
+# the same built-in script. First-party authoring therefore uses diffable
+# .tscn/.tres outside tests; the extension itself is the refusal witness here.
+printf 'opaque resource probe\n' >"$OPAQUE_PROBE"
+cp "$BUILTIN_PROBE" "$LEGAL_BUILTIN"
 
 FOUND="$(gdscript_files "$DIR")"
 
@@ -81,6 +104,11 @@ if printf '%s\n' "$VIOLATIONS" | grep -qxF "$WORKTREE_PROBE"; then
 else
   ok "nested agent worktrees are excluded from this checkout's policy scan"
 fi
+if printf '%s\n' "$VIOLATIONS" | grep -qxF "$FALLBACK_WORKTREE_PROBE"; then
+  bad "a fallback worktree's files were mistaken for this checkout"
+else
+  ok "fallback .worktrees are excluded from this checkout's policy scan"
+fi
 if printf '%s\n' "$VIOLATIONS" | grep -qxF "$UNKNOWN_ADDON"; then
   ok "an unknown addon cannot masquerade as exempt third-party code"
 else
@@ -90,6 +118,28 @@ if printf '%s\n' "$VIOLATIONS" | grep -qxF "$SPACE_PROBE"; then
   bad "a legal test path containing spaces was incorrectly rejected"
 else
   ok "a legal test path containing spaces remains permitted"
+fi
+
+if command -v gdscript_resource_policy_violations >/dev/null 2>&1; then
+  RESOURCE_VIOLATIONS="$(gdscript_resource_policy_violations "$DIR")"
+else
+  bad "embedded/opaque GDScript resource predicate is absent"
+  RESOURCE_VIOLATIONS=""
+fi
+if printf '%s\n' "$RESOURCE_VIOLATIONS" | grep -qxF "$BUILTIN_PROBE"; then
+  ok "a built-in GDScript in an exportable scene is rejected"
+else
+  bad "a built-in GDScript escaped through an exportable scene"
+fi
+if printf '%s\n' "$RESOURCE_VIOLATIONS" | grep -qxF "$OPAQUE_PROBE"; then
+  ok "an opaque binary Godot resource cannot hide shipped GDScript"
+else
+  bad "an opaque binary Godot resource escaped the inspectable-source policy"
+fi
+if printf '%s\n' "$RESOURCE_VIOLATIONS" | grep -qxF "$LEGAL_BUILTIN"; then
+  bad "a built-in GDScript under game/tests/ was incorrectly rejected"
+else
+  ok "test fixtures may still carry built-in GDScript"
 fi
 
 # Exercise the real executable boundary too: it must refuse the illegal file,
@@ -102,6 +152,15 @@ else
   bad "the production placement gate failed without naming the illegal script"
 fi
 rm -rf "$PROBE_DIR" "$OUTSIDE_PROBE" "$(dirname "$UNKNOWN_ADDON")"
+if "$DIR/ci/check_gdscript_policy.sh" >"$POLICY_OUT" 2>&1; then
+  bad "the production placement gate accepted embedded or opaque GDScript resources"
+elif grep -qF "$BUILTIN_PROBE" "$POLICY_OUT" \
+  && grep -qF "$OPAQUE_PROBE" "$POLICY_OUT"; then
+  ok "the production placement gate refuses and names both resource escapes"
+else
+  bad "the production placement gate did not name both resource escapes"
+fi
+rm -f "$BUILTIN_PROBE" "$OPAQUE_PROBE"
 if "$DIR/ci/check_gdscript_policy.sh" >"$POLICY_OUT" 2>&1; then
   ok "the production placement gate accepts a tests-only tree"
 else

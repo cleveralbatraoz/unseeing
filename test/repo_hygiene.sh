@@ -178,7 +178,7 @@ else
   rm -rf "$CANON_TMP"
 fi
 
-# --- pre-commit size guard --------------------------------------------------
+# --- pre-commit source guards -----------------------------------------------
 # Exercised in a scratch repo, never here: the guard's whole job is to reject
 # a commit, and the only honest way to prove it does is to stage something it
 # must reject. The hook is read from this tree (not core.hooksPath) so the
@@ -199,6 +199,14 @@ else
   mkdir -p "$TMP/repo/game/tests" "$TMP/repo/game/scripts"
   printf 'extends Node\n' > "$TMP/repo/game/tests/legal test.gd"
   printf 'extends Node\n' > "$TMP/repo/game/scripts/illegal.gd"
+  printf '%s\n' '[gd_scene load_steps=2 format=3]' \
+    '[sub_resource type="GDScript" id="GDScript_probe"]' \
+    'script/source = "extends Node"' \
+    '[node name="Probe" type="Node"]' \
+    'script = SubResource("GDScript_probe")' \
+    >"$TMP/repo/game/scripts/embedded.tscn"
+  cp "$TMP/repo/game/scripts/embedded.tscn" \
+    "$TMP/repo/game/tests/legal embedded scene.tscn"
 
   probe() { # probe <expected-exit> <label> [ALLOW_BIG value]
     want="$1"
@@ -225,6 +233,9 @@ else
   git -C "$TMP/repo" add "game/tests/legal test.gd"
   probe 0 "pre-commit accepts legal test GDScript whose path contains spaces"
 
+  git -C "$TMP/repo" add "game/tests/legal embedded scene.tscn"
+  probe 0 "pre-commit accepts a built-in test script whose path contains spaces"
+
   git -C "$TMP/repo" add game/scripts/illegal.gd
   probe 1 "pre-commit rejects staged first-party GDScript outside game/tests"
   if grep -q 'game/scripts/illegal.gd' "$TMP/out"; then
@@ -234,6 +245,17 @@ else
   fi
   git -C "$TMP/repo" reset -q HEAD -- game/scripts/illegal.gd 2>/dev/null \
     || git -C "$TMP/repo" rm --cached -q game/scripts/illegal.gd
+
+  git -C "$TMP/repo" add game/scripts/embedded.tscn
+  probe 1 "pre-commit rejects staged built-in GDScript outside game/tests"
+  if grep -q 'game/scripts/embedded.tscn' "$TMP/out"; then
+    ok "pre-commit names the embedded GDScript scene"
+  else
+    bad "pre-commit does not name the embedded GDScript scene"
+    sed 's/^/hygiene:      /' "$TMP/out"
+  fi
+  git -C "$TMP/repo" reset -q HEAD -- game/scripts/embedded.tscn 2>/dev/null \
+    || git -C "$TMP/repo" rm --cached -q game/scripts/embedded.tscn
 
   git -C "$TMP/repo" add huge.bin
   probe 1 "size guard rejects a 6 MiB staged file"
