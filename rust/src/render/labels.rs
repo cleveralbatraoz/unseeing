@@ -147,7 +147,7 @@ pub struct Labelling {
 /// rather than panicking; a class the palette cannot satisfy takes the
 /// least-contended slot it can, counted in `starved`, rather than failing
 /// the caller.
-pub fn assign(sf: &Superfaces, anchors: &[(usize, f64)], palette: &[f64]) -> Labelling {
+pub(crate) fn assign(sf: &Superfaces, anchors: &[(usize, f64)], palette: &[f64]) -> Labelling {
     let n = sf.classes;
 
     let mut anchor_label: Vec<Option<f64>> = vec![None; n];

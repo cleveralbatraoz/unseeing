@@ -292,7 +292,7 @@ impl INode3D for WaveLevel {
             // defining `process` below would otherwise enable per-frame
             // processing here too (gdext auto-enables it once the
             // INode3D::process override exists) and charge a running level
-            // an O(scene) census walk every frame for a poll only the
+            // one O(scene) census walk every idle frame for a poll only the
             // editor needs — so the runtime branch turns it back off
             // explicitly.
             self.base_mut().set_process(false);
@@ -310,7 +310,7 @@ impl INode3D for WaveLevel {
     /// mark the level dirty, and any one that forgot would be a silent
     /// stale-until-play bug with no test able to see it was missing. A
     /// signature folded fresh every frame cannot forget: it is the same
-    /// census `derive` itself would walk (~130 nodes, microseconds), so
+    /// census `derive` itself walks, so
     /// whatever `derive` reads, this watches, automatically, forever.
     /// Nothing here runs at run time — see the branch in [`INode3D::ready`]
     /// that turns processing back off outside the editor.
@@ -1018,341 +1018,163 @@ impl WaveLevel {
     /// per-solid slot; source role classes map through `classes_of_source`.
     fn paint_labels(&mut self, census: &Census, editor: bool) {
         let entries = self.paint_entries(census);
-
-        // the touch graph — the SAME law the retired per-solid
-        // `oid_palette::assign` used, over the SAME world boxes:
-        // `superfaces`'s own merge pass needs no touch information at all
-        // (it tests every face pair directly), but the separation rules
-        // (b)/(c) do, exactly as the old colouring needed the touch graph
-        // to know which solids must differ.
-        let areas: Vec<oid_palette::Box3> = entries.iter().map(|e| e.area).collect();
-        let mut touching: Vec<(usize, usize)> = Vec::new();
-        for i in 0..areas.len() {
-            for j in (i + 1)..areas.len() {
-                if areas[i].touches(&areas[j]) {
-                    touching.push((i, j));
-                }
-            }
-        }
-
-        // every entry's world-space faces, concatenated in entry order,
-        // alongside each face's own ORDINAL within its entry — for a
-        // well-formed (non-degenerate) shape this is simply its position
-        // in `render::faces`' own output, which is Task 5's ordinal
-        // contract: every builder emits its faces/triangles in the
-        // identical order `render::faces` re-derives them in.
-        //
-        // SLABS CONTRIBUTE REAL FACES HERE, same as any other box — the
-        // phantom-class workaround this comment used to describe is gone.
-        // `superface::superfaces`'s own SINGLETON COLLAPSE (Wave S) makes
-        // it safe: a floor or ceiling never genuinely MERGES with
-        // anything (anything resting on it presents an OPPOSITE-facing
-        // surface — a buried abutment, never a same-direction coplanar
-        // overlap), so it is alone in its own cluster and its six faces
-        // fold into ONE class before rule (a) ever runs, exactly as the
-        // spec's own law promises ("singletons keep today's exact look:
-        // one label across the whole solid"). That one real class is
-        // anchored to its role label through the NORMAL anchor path below
-        // — the same `(class, label)` mechanism any other fixed class
-        // takes — rather than a slab-specific phantom one.
-        let mut faces: Vec<render::Face> = Vec::new();
-        let mut ordinal_of_face: Vec<usize> = Vec::new();
-        let mut refused: Vec<bool> = vec![false; entries.len()];
-        for (i, entry) in entries.iter().enumerate() {
-            let entry_faces = render::faces(i, &entry.shape);
-            // THE ORDINAL CONTRACT'S OWN GUARD: `ordinal_of_face` below
-            // trusts that `render::faces`' i-th entry for this solid IS
-            // face ordinal i — true whenever every one of the shape's
-            // PLANAR faces survives (Task 5's contract), false the moment
-            // a degenerate size folds one away (`face_from_poly` refuses
-            // a collapsed polygon). Silently accepting a SHORT list here
-            // would mislabel every ordinal past the gap — not a face
-            // missing a colour, a face wearing another face's colour.
-            // Total instead: refuse this ONE solid outright — its faces
-            // never enter the census AND `refused` keeps the bake loop
-            // below from calling `paint_entry` for it at all, so its mesh
-            // keeps the placeholder ordinals its builder wrote rather than
-            // risking a silently wrong label on the ones that did survive.
-            // (Skipping the bake is the load-bearing half: `relabel` maps
-            // EVERY in-range placeholder ordinal, so a bake with the
-            // all-zero `labels_by_ordinal` this entry would get flattens
-            // the whole mesh to 0.0 — out of band, and 0.05 from
-            // `Role::Case`.)
-            //
-            // A column's own expectation is ONE LESS than
-            // `render::paint::face_count`'s own ordinal count, on
-            // purpose: that count spans every CUSTOM0 ordinal the MESH
-            // carries, flank included, but the flank has no plane at all
-            // and `render::faces` never emits an entry for it — a
-            // healthy column always reports exactly 2 (its two rims),
-            // never 3, and treating 3 as the target would refuse every
-            // column in the level.
-            let kind = entry.item.kind();
-            let expected = match kind {
-                render::paint::ShapeKind::Column => render::paint::face_count(kind) - 1,
-                _ => render::paint::face_count(kind),
-            };
-            if entry_faces.len() != expected {
+        let request = render::paint_plan::PaintRequest {
+            entries: entries
+                .iter()
+                .map(|entry| render::paint_plan::PaintEntryInput {
+                    area: entry.area,
+                    shape: entry.shape.clone(),
+                    kind: entry.item.kind(),
+                    anchor: match entry.item {
+                        PaintItem::Slab { lid } => Some(render::role_label(if lid {
+                            render::Role::Ceiling
+                        } else {
+                            render::Role::Floor
+                        })),
+                        _ => None,
+                    },
+                    is_wall: matches!(entry.item, PaintItem::Wall(_)),
+                })
+                .collect(),
+            sources: census
+                .sources
+                .iter()
+                .map(|source| {
+                    let area = mesh_world_box(&source.clone().into_gd());
+                    let bound = source.dyn_bind();
+                    render::paint_plan::PaintSourceInput {
+                        area,
+                        sweep_margin: bound.sweep_margin(),
+                        roles: bound.role_count(),
+                    }
+                })
+                .collect(),
+            palette: WORLD_OIDS.to_vec(),
+        };
+        let plan = match render::paint_plan::plan(request) {
+            Ok(plan) => plan,
+            Err(error) => {
                 let message = format!(
-                    "WaveLevel: '{}' built {} planar face(s) from its shape, not the {} it \
-                     should — a degenerate size folded one or more away. Its own seams cannot be \
-                     painted correctly this derive; skipping it rather than mislabeling by \
-                     position. Give every extent a real size.",
-                    entry.name,
-                    entry_faces.len(),
-                    expected
+                    "WaveLevel: paint planning rejected invalid input ({error:?}); keeping every existing label."
                 );
                 if !editor {
                     godot_error!("{}", message);
                 }
-                self.file_paint_fault(entry, message);
-                refused[i] = true;
-                continue;
+                self.level_faults.push(message);
+                return;
             }
-            ordinal_of_face.extend(0..entry_faces.len());
-            faces.extend(entry_faces);
-        }
+        };
 
-        let sf = render::superfaces(&faces, &touching);
-
-        // a column's curved flank has no plane at all — give it its own
-        // permanently-singleton class (see `render::paint::add_flank_classes`
-        // for the full justification)
-        let flank_solids: Vec<usize> = entries
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| matches!(e.item, PaintItem::Column(_)))
-            .map(|(i, _)| i)
-            .collect();
-        let (flank_class, classes1, seps1) =
-            render::paint::add_flank_classes(&sf, &faces, &touching, &flank_solids);
-        let mut flank_class_of: Vec<Option<usize>> = vec![None; entries.len()];
-        for (slot, &i) in flank_solids.iter().enumerate() {
-            flank_class_of[i] = Some(flank_class[slot]);
-        }
-
-        // every class (real or flank) each entry owns — the floor/ceiling
-        // anchors below fix ALL of a slab's own classes to its role label,
-        // and the source bans below need the full set of classes whatever
-        // touches a source actually owns
-        let mut classes_of_entry: Vec<Vec<usize>> = vec![Vec::new(); entries.len()];
-        for (fi, face) in faces.iter().enumerate() {
-            classes_of_entry[face.solid].push(sf.class_of[fi]);
-        }
-        for (i, flank) in flank_class_of.iter().enumerate() {
-            if let Some(flank) = *flank {
-                classes_of_entry[i].push(flank);
-            }
-        }
-
-        // the floor and ceiling anchor their own REAL classes to their
-        // fixed role label directly — the NORMAL `(class, label)` anchor
-        // path any other fixed class takes, now that a slab is a boxed
-        // singleton like any other and contributes real classes of its
-        // own (Wave S) rather than none at all. A slab's own six faces
-        // all collapsed to the SAME one class (the singleton law), so
-        // this anchors that one class, once, per slab — not a phantom
-        // class banning neighbours the way a source's swept envelope
-        // still needs below, since a source contributes no real face to
-        // the census at all.
-        let mut direct_anchors: Vec<(usize, f64)> = Vec::new();
-        for (i, entry) in entries.iter().enumerate() {
-            let PaintItem::Slab { lid } = entry.item else {
+        for fault in &plan.entry_faults {
+            let Some(entry) = entries.get(fault.entry) else {
                 continue;
             };
-            let role = if lid {
-                render::Role::Ceiling
-            } else {
-                render::Role::Floor
+            let message = match fault.fault {
+                render::paint_plan::EntryFault::WrongFaceCount { actual, expected } => format!(
+                    "WaveLevel: '{}' built {} planar face(s) from its shape, not the {} it should — a degenerate size folded one or more away. Its own seams cannot be painted correctly this derive; skipping it rather than mislabeling by position. Give every extent a real size.",
+                    entry.name, actual, expected
+                ),
+                render::paint_plan::EntryFault::InvalidArea => format!(
+                    "WaveLevel: '{}' has a non-finite or reversed paint bound; keeping its existing labels.",
+                    entry.name
+                ),
             };
-            let label = render::role_label(role);
-            let mut seen: Vec<usize> = Vec::new();
-            for &c in &classes_of_entry[i] {
-                if !seen.contains(&c) {
-                    seen.push(c);
-                    direct_anchors.push((c, label));
+            if !editor {
+                godot_error!("{}", message);
+            }
+            self.file_paint_fault(entry, message);
+        }
+        let root = self.base().clone().upcast::<Node>();
+        for fault in &plan.source_faults {
+            let Some(source) = census.sources.get(fault.source) else {
+                continue;
+            };
+            let node = source.clone().into_gd();
+            let text = match fault.fault {
+                render::paint_plan::SourceFault::InvalidArea => {
+                    "source paint bounds are non-finite or reversed — keeping its existing role labels."
                 }
-            }
-        }
-
-        // Sources stay OUT of the face census: their curved, animated limbs
-        // are not world superfaces. Their semantic limb roles still enter the
-        // SAME separation graph as colourable phantom classes. That preserves
-        // a fan's shell/blade crease, separates two touching same-class
-        // sources, and coordinates every touching world face without asking a
-        // designer for an identity knob.
-        let entry_areas: Vec<oid_palette::Box3> = entries.iter().map(|e| e.area).collect();
-        let mut source_slots: Vec<usize> = Vec::new();
-        let mut source_inputs: Vec<render::paint::SourceRoleInput> = Vec::new();
-        for (slot, source) in census.sources.iter().enumerate() {
-            let Some(source_area) = mesh_world_box(&source.clone().into_gd()) else {
-                continue; // a source that draws nothing can show no seam
+                render::paint_plan::SourceFault::InvalidSweepMargin => {
+                    "source sweep margin is not finite — keeping its existing role labels."
+                }
             };
-            let bound = source.dyn_bind();
-            let source_area = source_area.grown_flat(bound.sweep_margin());
-            source_slots.push(slot);
-            source_inputs.push(render::paint::SourceRoleInput {
-                area: source_area,
-                roles: bound.role_count(),
+            let message = format!("WaveLevel: {text}");
+            if !editor {
+                godot_error!("{}", message);
+            }
+            self.node_faults.push(level_plan::PlacementFault {
+                path: root.get_path_to(&node).to_string(),
+                text: message,
             });
         }
-        let render::paint::SourceRoleGraph {
-            classes: source_classes,
-            separations: source_separations,
-            classes_of_source,
-        } = render::paint::add_source_role_classes(
-            classes1,
-            &seps1,
-            &source_inputs,
-            &entry_areas,
-            &classes_of_entry,
-        );
-        let augmented = render::Superfaces {
-            class_of: sf.class_of.clone(),
-            classes: source_classes,
-            separations: source_separations,
-            cluster_of_solid: sf.cluster_of_solid.clone(),
-        };
-        let out = render::assign(&augmented, &direct_anchors, &WORLD_OIDS);
-        // Wave S: the singleton collapse (`render::superface::superfaces`)
-        // closed the gap that used to starve the palette here — a lone
-        // box now costs the world palette exactly what it always did
-        // before this campaign, and two touching, un-merged solids need
-        // ONE separation, not rule (a)'s old unscoped six. Loud again,
-        // matching the pre-superface `assign_oids` voice: a starved class
-        // is a seam that will not draw, and the shipped-map pin
-        // (`game/tests/map_test.gd::test_shipped_level_derives_with_no_starved_classes`)
-        // holds the count at zero. In the editor, file the same words for
-        // the warning triangle instead of flooding the output panel.
-        if out.starved > 0 {
+        if !plan.starved_classes.is_empty() {
             let message = format!(
-                "WaveLevel: {} face/source-role class(es) could not take a label distinct from \
-                 everything they touch — those seams will not draw. Spread the geometry or \
-                 widen WORLD_OIDS.",
-                out.starved
+                "WaveLevel: {} face/source-role class(es) could not take a label distinct from everything they touch — those seams will not draw. Spread the geometry or widen WORLD_OIDS.",
+                plan.starved_classes.len()
             );
             if !editor {
                 godot_error!("{}", message);
             }
             self.level_faults.push(message);
         }
-
-        // A class, unlike the retired object-id slot, may belong to more
-        // than one solid after coplanar faces merge. Walk every authored
-        // entry once and pin one warning to it if ANY class it owns starved;
-        // slabs have no separate scene node and remain represented by the
-        // level-wide warning above.
-        let root = self.base().clone().upcast::<Node>();
-        for entry_index in
-            render::paint::starved_entry_indices(&out.starved_classes, &classes_of_entry)
-        {
+        for &entry_index in &plan.starved_entries {
             let Some(entry) = entries.get(entry_index) else {
-                continue; // helper is total; retain that law at this boundary
+                continue;
             };
             let Some(node) = entry.item.node() else {
                 continue;
             };
             self.node_faults.push(level_plan::PlacementFault {
                 path: root.get_path_to(&node).to_string(),
-                text: "one or more face classes cannot take a label distinct from everything they \
-                       touch — those seams will not draw."
-                    .to_string(),
+                text: "one or more face classes cannot take a label distinct from everything they touch — those seams will not draw.".to_string(),
             });
         }
-        // Source-role phantom classes have no PaintEntry owner. File the same
-        // starvation on the source node whose semantic role a designer can
-        // move, and bake every chosen role label through the source trait.
-        for (source_index, role_classes) in source_slots.iter().copied().zip(&classes_of_source) {
+        for &source_index in &plan.starved_sources {
             let Some(source) = census.sources.get(source_index) else {
                 continue;
             };
-            let labels: Vec<f64> = role_classes
-                .iter()
-                .filter_map(|&class| out.label_of_class.get(class).copied())
-                .collect();
-            source.clone().dyn_bind_mut().set_role_labels(&labels);
-            if role_classes
-                .iter()
-                .any(|class| out.starved_classes.contains(class))
-            {
-                let node = source.clone().into_gd();
-                self.node_faults.push(level_plan::PlacementFault {
-                    path: root.get_path_to(&node).to_string(),
-                    text: "one or more source roles cannot take a label distinct from everything \
-                           they touch — those seams will not draw."
-                        .to_string(),
-                });
-            }
-        }
-        // bake: gather each entry's own labels by ordinal and rewrite its
-        // mesh's CUSTOM0 — the shader's own G-channel source now.
-        //
-        // A REFUSED entry is skipped entirely: it contributed no face to
-        // the census, so every one of its ordinals would bake the `0.0`
-        // fill below, and `relabel` would write that over all of its
-        // vertices. Leaving it alone is what actually keeps its
-        // placeholder ordinals on the mesh — pinned by
-        // `level_test.gd::test_a_degenerate_solid_is_refused_not_mislabelled`.
-        for (i, entry) in entries.iter().enumerate() {
-            if refused[i] {
-                continue;
-            }
-            let n = render::paint::face_count(entry.item.kind());
-            let mut labels_by_ordinal: Vec<f32> = vec![0.0; n];
-            for (fi, face) in faces.iter().enumerate() {
-                if face.solid == i {
-                    let ord = ordinal_of_face[fi];
-                    if let Some(slot) = labels_by_ordinal.get_mut(ord) {
-                        *slot = out.label_of_class[sf.class_of[fi]] as f32;
-                    }
-                }
-            }
-            if let Some(flank) = flank_class_of[i]
-                && let Some(slot) = labels_by_ordinal.get_mut(2)
-            {
-                *slot = out.label_of_class[flank] as f32;
-            }
-            self.paint_entry(&entry.item, &labels_by_ordinal);
+            let node = source.clone().into_gd();
+            self.node_faults.push(level_plan::PlacementFault {
+                path: root.get_path_to(&node).to_string(),
+                text: "one or more source roles cannot take a label distinct from everything they touch — those seams will not draw.".to_string(),
+            });
         }
 
-        // record what actually got baked, by FACE — not the ordinal-baked
-        // mesh bytes, but the exact `(class, label)` pair every face above
-        // was baked from, so the debug census reads the rendering
-        // subsystem's own numbers rather than a second derivation of them.
-        // Column flanks are deliberately absent: they have no polygon at
-        // all (`render::faces::column_faces` never emits one for the
-        // curved flank), so they can never enter a coplanar-overlap
-        // predicate in the first place.
-        self.face_census = faces
-            .iter()
-            .enumerate()
-            .map(|(fi, f)| FaceCensusEntry {
-                name: entries[f.solid].name.clone(),
-                face: f.clone(),
-                label: out.label_of_class[sf.class_of[fi]],
-                class: sf.class_of[fi],
+        for (entry, command) in entries.iter().zip(&plan.entry_commands) {
+            if let render::paint_plan::PaintCommand::Relabel(labels) = command {
+                let labels: Vec<f32> = labels.iter().map(|&label| label as f32).collect();
+                self.paint_entry(&entry.item, &labels);
+            }
+        }
+        for (source, command) in census.sources.iter().zip(&plan.source_commands) {
+            if let render::paint_plan::PaintCommand::Relabel(labels) = command {
+                source.clone().dyn_bind_mut().set_role_labels(labels);
+            }
+        }
+        self.face_census = plan
+            .faces
+            .into_iter()
+            .filter_map(|painted| {
+                entries.get(painted.entry).map(|entry| FaceCensusEntry {
+                    name: entry.name.clone(),
+                    face: painted.face,
+                    label: painted.label,
+                    class: painted.class,
+                })
             })
             .collect();
-
-        // the wall-merge voice: any non-wall solid sharing a MERGE cluster
-        // with a wall is drawn as part of the wall structure now — say so.
-        let is_wall: Vec<bool> = entries
-            .iter()
-            .map(|e| matches!(e.item, PaintItem::Wall(_)))
-            .collect();
-        let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
-        for warning in render::paint::wall_merge_warnings(&sf.cluster_of_solid, &is_wall, &names) {
+        for &entry_index in &plan.wall_merge_entries {
+            let Some(entry) = entries.get(entry_index) else {
+                continue;
+            };
+            let message = format!(
+                "WaveLevel: '{}' overlaps the wall structure and is drawn as part of it — its faces take the walls' labels and its pierce lines draw. Pull it clear of the wall if that was a nudge, or leave it if the bump is authored.",
+                entry.name
+            );
             if !editor {
-                godot_warn!("{}", warning.text);
+                godot_warn!("{}", message);
             }
-            if let Some(entry) = entries.get(warning.entry_index) {
-                self.file_paint_fault(entry, warning.text);
-            } else {
-                // The pure helper only emits indices inside the common
-                // input prefix; retain a total boundary if that contract
-                // ever changes rather than dropping a diagnostic.
-                self.level_faults.push(warning.text);
-            }
+            self.file_paint_fault(entry, message);
         }
     }
 
@@ -1593,7 +1415,9 @@ impl WaveLevel {
     /// resize with every node held still is a real change `derive` would
     /// answer differently, and the fold has to see it as one.
     ///
-    /// TWO CENSUS WALKS, deliberately, not one shared with `derive`. This
+    /// THREE CENSUS WALKS on a changed frame, deliberately: the signature
+    /// measurement, then `derive`'s own census, then its post-derive signature
+    /// refresh. An unchanged frame performs only the first. This
     /// runs every editor frame; `derive` runs only when the signature just
     /// computed differs from the last one — the ordinary case is a still
     /// scene, one walk, no second one to share. Threading a `&Census`
@@ -1601,7 +1425,7 @@ impl WaveLevel {
     /// `self.source_children` and the rest from it) would couple two
     /// pieces of code that change for different reasons — "what does the
     /// level derive" and "what does the level watch" — to save a walk that
-    /// is already microseconds at ~130 nodes. If this ever profiles hot,
+    /// is bounded by the authored scene size. If this ever profiles hot,
     /// that coupling is the next place to look, not before.
     fn scene_signature(&self) -> u64 {
         let census = self.census();

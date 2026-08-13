@@ -32,6 +32,7 @@ pub struct Face {
 /// already described in world space — any node transform is folded in by
 /// the caller before this point — so [`faces`] itself never fights a
 /// basis stack or a scale.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Shape {
     /// center, size, basis columns (unit, possibly rotated)
     Box3d {
