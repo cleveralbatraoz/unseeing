@@ -462,6 +462,31 @@ impl WaveLevel {
         render::paint::labelled_box(size, lift, labels)
     }
 
+    /// Debug-facing shim, the triangle path's sibling of
+    /// [`Self::debug_labelled_box`] and served for the same reason: no
+    /// SHIPPED caller of [`render::paint::resize_triangle_surface`] ever
+    /// varies the label it hands the same mesh — a column and a wedge
+    /// write placeholder ordinals, and every creature, viewmodel and
+    /// source limb bakes one constant role label — so the one behaviour
+    /// that separates that function from
+    /// [`render::paint::resize_triangle_surface_preserving_labels`] is
+    /// unreachable from any node, and would go untested without a door.
+    ///
+    /// Rebuilds `mesh` in place as ONE triangle whose three vertices all
+    /// carry `label`, exactly the way a per-frame builder rebuilds its own
+    /// limb buffer, and hands the same resource back.
+    #[func]
+    fn debug_triangle_surface(mesh: Gd<ArrayMesh>, label: f32) -> Gd<ArrayMesh> {
+        let mut mesh = mesh;
+        let triangles = [
+            (Vector3::ZERO, Vector3::UP, label),
+            (Vector3::RIGHT, Vector3::UP, label),
+            (Vector3::FORWARD, Vector3::UP, label),
+        ];
+        render::paint::resize_triangle_surface(&mut mesh, &triangles);
+        mesh
+    }
+
     /// Drive every sound source for one frame: advance its clockwork with
     /// the SIMULATED clock (so movie-maker runs and time scaling stay
     /// correct), then tell it how strongly its standing acoustic image is

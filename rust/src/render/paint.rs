@@ -174,22 +174,42 @@ pub fn resize_box_surface(mesh: &mut Gd<ArrayMesh>, size: Vector3, face_labels: 
 /// Replace the freshly built `arrays`' CUSTOM0 with the one `mesh` already
 /// carries, whenever it has one of exactly the same length.
 ///
-/// This is what makes a resize keep the derive-time paint. The label used
-/// to live in a per-instance shader uniform and survived a resize for
-/// free; it lives in the mesh now, so every path that rewrites the surface
-/// has to carry it, or a designer dragging a knob after `_ready` hands the
-/// shader raw ordinals (1.0 .. 5.0) where a label in [0.15, 0.96] belongs
-/// — creases at every internal face boundary, and a seam judged against a
-/// number no colouring ever chose.
+/// This is what makes a STATIC SOLID's resize keep the derive-time paint.
+/// The label used to live in a per-instance shader uniform and survived a
+/// resize for free; it lives in the mesh now, so a wall, a free prop, a
+/// slab, a column or a wedge rebuilding its own surface has to carry it,
+/// or a designer dragging a knob after `_ready` hands the shader raw
+/// ordinals (1.0 .. 5.0) where a label in [0.15, 0.96] belongs — creases
+/// at every internal face boundary, and a seam judged against a number no
+/// colouring ever chose.
 ///
-/// POSITIONAL, and sound because every resize in this vocabulary is
-/// shape-preserving in its vertex list: a box is always [`FACE_ORDER`]'s
-/// six quads in order (24 vertices), a column always `COLUMN_SEGMENTS *
-/// 12`, a wedge always its eight triangles — the knobs move where vertices
-/// ARE, never how many there are or which face each belongs to. The length
-/// check is the guard for that assumption rather than a formality: a
-/// future shape whose tessellation follows its size would fail it and fall
-/// back to the placeholders, which the level's next derive repaints.
+/// ONLY THOSE FIVE. The creatures, the viewmodel and the sound sources
+/// rebuild triangle surfaces too — `nodes::hero`'s cane and body,
+/// `nodes::cat`'s whole mesh, `nodes::fan`/`nodes::radio`'s limbs — and
+/// they must NOT come through here, which is why the triangle path has two
+/// entry points ([`resize_triangle_surface`] and
+/// [`resize_triangle_surface_preserving_labels`]) rather than one function
+/// with a flag. Two reasons, both load-bearing. Those builders choose their
+/// own label every call (a fixed `render::role_label`, baked into every
+/// vertex), so there is nothing to carry and a carry would silently freeze
+/// the first build's labels forever — their tessellations are
+/// fixed-resolution, so the length always matches and the branch always
+/// fires. And they run EVERY FRAME: `WaveHero::update` is called
+/// unconditionally from the composition root's `_process`, `WaveCat`
+/// rebuilds on nearly every physics frame, and `surface_get_arrays` below
+/// is an engine round trip that reconstructs the whole vertex/normal/CUSTOM0
+/// set (a synchronous device read on the RD backends) for ~3.9k + ~4.9k
+/// vertices, only to throw it away.
+///
+/// POSITIONAL, and sound because every resize on the paths that DO come
+/// through here is shape-preserving in its vertex list: a box is always
+/// [`FACE_ORDER`]'s six quads in order (24 vertices), a column always
+/// `COLUMN_SEGMENTS * 12`, a wedge always its eight triangles — the knobs
+/// move where vertices ARE, never how many there are or which face each
+/// belongs to. The length check is the guard for that assumption rather
+/// than a formality: a future shape whose tessellation follows its size
+/// would fail it and fall back to the placeholders, which the level's next
+/// derive repaints.
 ///
 /// What it does NOT do, and must not be read as doing: re-derive. The
 /// superface partition is a level-wide decision taken once, in
@@ -288,13 +308,39 @@ fn triangle_arrays(triangles: &[(Vector3, Vector3, f32)]) -> Array<Variant> {
 /// mesh by reference, so a rebuild has to land on every reference that
 /// mesh has.
 ///
-/// The CUSTOM0 ordinals in `triangles` are the placeholders a FIRST build
-/// needs; a rebuild carries over whatever the mesh already wears, the same
-/// way [`resize_box_surface`] does and for the same reason — see
-/// [`carry_labels_over`].
+/// The CUSTOM0 value in each triple is written STRAIGHT THROUGH — this is
+/// the entry point for every caller that already knows the label it wants
+/// on every vertex, which is every per-frame builder in the game
+/// (`nodes::hero`'s cane and body, `nodes::cat`'s mesh) and every sound
+/// source limb. A static solid whose label was chosen by the level's
+/// derive wants [`resize_triangle_surface_preserving_labels`] instead; see
+/// [`carry_labels_over`] for why that is a separate door and not a flag.
 pub fn resize_triangle_surface(mesh: &mut Gd<ArrayMesh>, triangles: &[(Vector3, Vector3, f32)]) {
+    submit_triangle_arrays(mesh, triangle_arrays(triangles));
+}
+
+/// [`resize_triangle_surface`], but keeping whatever CUSTOM0 the mesh
+/// already carries when the vertex count is unchanged — so a knob dragged
+/// after the level's derive does not undo the paint pass. The ordinals in
+/// `triangles` are then only the placeholders a FIRST build needs.
+///
+/// The two static solids built from triangles rather than indexed quads —
+/// a column and a wedge — are its only callers, and must stay so. The
+/// reasoning, and the cost of getting it wrong, is in
+/// [`carry_labels_over`].
+pub fn resize_triangle_surface_preserving_labels(
+    mesh: &mut Gd<ArrayMesh>,
+    triangles: &[(Vector3, Vector3, f32)],
+) {
     let mut arrays = triangle_arrays(triangles);
     carry_labels_over(mesh, &mut arrays);
+    submit_triangle_arrays(mesh, arrays);
+}
+
+/// Replace `mesh`'s single surface with `arrays` — the half the two entry
+/// points above share verbatim, kept in one place so they can never drift
+/// apart on the surface flag.
+fn submit_triangle_arrays(mesh: &mut Gd<ArrayMesh>, arrays: Array<Variant>) {
     mesh.clear_surfaces();
     mesh.add_surface_from_arrays_ex(PrimitiveType::TRIANGLES, &arrays)
         .flags(custom0_format())

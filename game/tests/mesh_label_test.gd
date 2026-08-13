@@ -72,3 +72,35 @@ func test_wrong_length_face_labels_is_refused() -> void:
 		Vector3.ONE, Vector3.ZERO, PackedFloat32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7])
 	)
 	assert_int(seven_mesh.get_surface_count()).is_equal(0)
+
+
+## THE PER-FRAME REBUILD MUST NOT INHERIT THE LAST FRAME'S LABEL.
+## `render::paint::resize_triangle_surface` is shared by two populations
+## that want opposite things. A column and a wedge are STATIC solids
+## rebuilt only when a designer drags a knob, and must keep the label the
+## level's derive already baked — that is
+## `resize_triangle_surface_preserving_labels`, pinned in level_test.gd.
+## The hero's cane and body and the cat's whole mesh are rebuilt EVERY
+## frame from a label their builder chose this frame; carrying the old
+## CUSTOM0 across there would freeze frame one's labels forever, because
+## the tessellations are fixed-resolution so the length always matches and
+## the carry always fires.
+##
+## No shipped caller varies its label today (every creature, viewmodel and
+## source limb bakes one constant role label), which is exactly why this
+## needs a door rather than a node: the trap is silent until the day one
+## does.
+func test_a_rebuilt_triangle_surface_takes_the_label_it_was_just_given() -> void:
+	var mesh := ArrayMesh.new()
+	mesh = WaveLevel.debug_triangle_surface(mesh, 0.25)
+	var first: PackedFloat32Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	assert_int(first.size()).is_equal(3)
+	for label: float in first:
+		assert_float(label).is_equal_approx(0.25, 1e-6)
+
+	# same mesh, same vertex count, a DIFFERENT label
+	mesh = WaveLevel.debug_triangle_surface(mesh, 0.63)
+	var second: PackedFloat32Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	assert_int(second.size()).is_equal(3)
+	for label: float in second:
+		assert_float(label).is_equal_approx(0.63, 1e-6)

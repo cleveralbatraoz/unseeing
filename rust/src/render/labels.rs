@@ -24,15 +24,27 @@
 //! it stands and it is not a pattern to copy. Safe, because the only
 //! question a label has to answer is whether the seams it must draw clear
 //! the hearing pass's crease floor (`smoothstep(0.04, 0.08, nrm)`,
-//! `hearing_post.gdshader`), and every label `Case` can meet clears it:
-//! `Floor` 0.15 (the radio stands on it) by 0.10, its own `Shell` fascia
-//! 0.33 by 0.28, and the whole world palette (`nodes::level::WORLD_OIDS`,
-//! lowest entry 0.25) by 0.20 or more. Measured end to end on the web
-//! build rather than assumed — the G channel round-trips linearly there,
-//! byte = 255 x label within a byte, so the 0.10 gap arrives as ~0.094 and
-//! still saturates the crease. Not a pattern to copy, because that margin
-//! is the smallest any pair in the table carries, and a SECOND label down
-//! here would have nothing to separate from `Case` against.
+//! `hearing_post.gdshader`), and every LABEL A DERIVE CAN HAND OUT clears
+//! it against `Case`: `Floor` 0.15 (the radio stands on it) by 0.10, its
+//! own `Shell` fascia 0.33 by 0.28, and the whole world palette
+//! (`nodes::level::WORLD_OIDS`, lowest entry 0.25) by 0.20 or more.
+//! Measured end to end on the web build rather than assumed — the G
+//! channel round-trips linearly there, byte = 255 x label within a byte,
+//! so the 0.10 gap arrives as ~0.094 and still saturates the crease.
+//!
+//! That scope is exact, not a hedge. Two values in the game DO come within
+//! `MIN_SEP` of `Case`, and both are placeholder ORDINALS rather than
+//! labels — a mesh's `CUSTOM0` before a derive has painted it, where
+//! ordinal 0 is `0.0`, five hundredths from `Case`. A solid wears them in
+//! the EDITOR (`WaveLevel::derive` returns before painting there), and on
+//! a solid the derive REFUSED out loud for a degenerate size (whose bake
+//! is skipped, so it keeps what its builder wrote). Neither is a state the
+//! colouring can produce, and the second announces itself by name; but the
+//! sentence above is a claim about the label table, so it says labels.
+//!
+//! Not a pattern to copy, because 0.10 is the smallest margin any pair in
+//! the table carries, and a SECOND label down here would have nothing to
+//! separate from `Case` against.
 //!
 //! # Colouring
 //!
