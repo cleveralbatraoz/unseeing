@@ -705,10 +705,10 @@ func test_an_unscaled_shape_is_left_alone() -> void:
 	assert_float(column.height).is_equal(0.9)
 
 
-## All three shapes reach the level through ONE door: the level hands out
-## the world skin and the flat object id without knowing which shape it has
-## — that is the whole point of the solid abstraction. A shape that answered
-## only some of it would silently lose its outline or its seams.
+## All three shapes reach material injection and recursive census through one
+## WaveSolid door; the explicit paint boundary then assigns their real per-face
+## labels from each shape's declared layout. A shape that answered only one
+## half would silently lose its preview, outline, or seams.
 func test_every_shape_answers_the_same_solid_door() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	var marker := WaveSpawn.new()

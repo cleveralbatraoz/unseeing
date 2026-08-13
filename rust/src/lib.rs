@@ -49,13 +49,13 @@
 //!   dimensions, axis snapping, centerlines, the dev demo tap.
 //! - [`prop_shape`] — the geometry of the shapes a prop can be: the
 //!   generated triangular prism the engine ships no primitive for.
-//! - [`oid_palette`] — which flat object id each box in the world carries,
-//!   colouring the touch graph so every seam between two objects draws.
+//! - [`oid_palette`] — the surviving world-box/touch primitives and shared
+//!   greedy-colouring kernel used by the per-face label allocator.
 //! - [`reproduce`] — one instant of the running world as a value: the
 //!   capture format, its hand-derived byte layout, the FNV-1a state hash,
 //!   and the field-naming diff a divergent restore is proved against.
 //! - [`observe`] — the wave engine described to an agent as data: pool,
-//!   eviction, occlusion, the object-id touch graph, the reflection fan —
+//!   eviction, occlusion, the face-label/superface census, the reflection fan —
 //!   snapshot and explain, never a rendered frame.
 //! - [`render`] — how the world is SEEN: per-vertex superface labels
 //!   replacing the per-instance object id, so overlapping solids agree on

@@ -29,7 +29,7 @@
 //!
 //! The outline pass still draws a line two ways (`hearing_post.gdshader`):
 //! a Laplacian of the packed distance in B catches SILHOUETTES, where the
-//! world steps away from itself; a difference of the flat object id in G
+//! world steps away from itself; a difference of per-vertex face labels in G
 //! catches CREASES, faded over `smoothstep(0.04, 0.08, ..)`. Where two
 //! boxes interpenetrate there is no depth step, so the silhouette term has
 //! nothing to bite on — the crease is the only thing that can draw their

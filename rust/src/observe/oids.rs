@@ -1,14 +1,11 @@
-//! The object-id budget, checked and explained.
+//! The label budget, checked and explained through a compatibility observer.
 //!
 //! Law #2: where two objects interpenetrate there is no depth step, so a
-//! difference in the flat object id is the ONLY thing that can draw their
-//! seam. Two touching solids sharing an id melt into one shape. This
-//! reports the touch graph, the id handed to each solid, and every pair
-//! closer than `render::MIN_SEP` — the SOLID-granularity law. It
-//! stays true for any two solids that never coplanar-MERGE
-//! (`render::superface`): the singleton collapse means a solid alone in
-//! its own cluster carries exactly one label across every one of its own
-//! faces, so a single bridged read genuinely speaks for the whole solid.
+//! difference in their touching face labels is the only thing that can draw
+//! their seam. [`coplanar_label_faults`] is the authoritative face-granularity
+//! census. The older `OidExplanation` below remains a solid-granularity debug
+//! bridge for singleton fixtures and reports the first real face label exposed
+//! by each node; production painting does not allocate a flat per-solid id.
 //!
 //! [`coplanar_label_faults`] is the superface campaign's own postcondition
 //! at FACE granularity, replacing the eye-band-gated, threshold-faded
@@ -189,9 +186,9 @@ mod tests {
         Box3::from_center_size([x, 0.5, 0.0], [1.0, 1.0, 1.0])
     }
 
-    /// Two touching boxes with identical ids melt into one silhouette:
+    /// Two singleton boxes with identical bridged labels melt into one silhouette:
     /// the crease is the ONLY line between interpenetrating solids, and it
-    /// comes from a difference in the flat object id. Delta 0 means no
+    /// comes from a difference in their touching face labels. Delta 0 means no
     /// line, and the explanation must say so as a violation.
     #[test]
     fn touching_boxes_with_equal_ids_are_a_violation() {

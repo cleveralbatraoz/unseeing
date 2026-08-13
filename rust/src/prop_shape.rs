@@ -6,11 +6,10 @@
 //!
 //! Only the WEDGE needs generated triangles: a box and a cylinder are
 //! engine primitives with engine colliders, but a triangular prism is
-//! neither. Its faces are emitted with EXPLICIT normals, because normals
-//! are not decoration in this renderer — the data pass packs them into the
-//! G channel as the crease id for any surface the level did not paint with
-//! a flat object id, and the outline pass draws a line wherever they step.
-//! A wedge with smeared normals would draw a smeared edge.
+//! neither. Its faces are emitted with explicit normals and separate face
+//! vertices so the derive-time paint pass can assign each planar face its
+//! own CUSTOM0 label. A wedge with smeared/shared face data would lose the
+//! slope boundary the outline must preserve.
 //!
 //! Winding is not load-bearing: the world skin renders `cull_disabled`
 //! (`data_pass.gdshader`), so a face is never dropped for facing away. The
@@ -181,8 +180,8 @@ pub fn wedge_slope_normal(size: Vector3) -> Vector3 {
 /// tall back face, two for the slope, and one for each triangular side.
 ///
 /// Every vertex lies on the bounding box `size`, so the level's world-box
-/// derivation (and therefore the object-id colouring) needs no special case
-/// for a wedge.
+/// derivation and per-face paint census need no geometric exception for a
+/// wedge beyond selecting this explicit face layout.
 #[must_use]
 pub fn wedge_triangles(size: Vector3) -> Vec<(Vector3, Vector3)> {
     let [a, b, d, e, c, f] = wedge_hull(size);

@@ -79,7 +79,7 @@ func _judge(slab_floor: Node3D, lid: Node3D) -> void:
 	var editor := Engine.is_editor_hint()
 	print("# slabs: mode=%s" % ("editor" if editor else "run"))
 	# hidden, never skipped: the pair is what the extents knob reshapes,
-	# what the object-id colouring anchors on and what the seam census
+	# what the fixed slab labels anchor on and what the superface census
 	# reports, so a level carrying one slab in the editor and two in the
 	# game would answer all three differently without saying so
 	_check("the level built a floor slab", slab_floor != null)
