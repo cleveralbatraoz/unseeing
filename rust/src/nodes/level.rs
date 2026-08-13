@@ -258,6 +258,10 @@ pub struct WaveLevel {
     /// scene that has not changed since the level entered the tree does
     /// not re-derive on its very first editor frame.
     last_signature: u64,
+    /// Read-only observability for the editor watch. A pass may stage wall
+    /// geometry, but it must reseed the resulting signature rather than run a
+    /// redundant second derive on the next idle frame.
+    derive_count: u64,
     base: Base<Node3D>,
 }
 
@@ -316,8 +320,8 @@ impl INode3D for WaveLevel {
         }
         let sig = self.scene_signature();
         if sig != self.last_signature {
-            self.last_signature = sig;
             self.derive();
+            self.last_signature = self.scene_signature();
         }
     }
 
@@ -495,6 +499,23 @@ impl WaveLevel {
     #[func]
     fn wall_segments(&self) -> PackedVector4Array {
         PackedVector4Array::from(&self.segments[..])
+    }
+
+    /// Read-only observability for the names parallel to
+    /// [`Self::wall_segments`]. The editor probe reads this exact retained
+    /// table after a WaveRun rebuild; deriving names from the current tree
+    /// instead would conceal freed handles in the table the renderer and
+    /// [`super::observer::WaveObserver`] actually use.
+    #[func(rename = wall_names)]
+    fn observed_wall_names(&self) -> PackedStringArray {
+        self.wall_names().iter().map(GString::from).collect()
+    }
+
+    /// Number of complete derive passes this level has run. This is a narrow
+    /// editor-performance witness, never authored or captured state.
+    #[func]
+    fn derive_count(&self) -> i64 {
+        i64::try_from(self.derive_count).unwrap_or(i64::MAX)
     }
 
     /// The inflated wall OCCLUDER rects (`sight::wall_rect`), truncated to
@@ -815,10 +836,18 @@ impl WaveLevel {
     /// through the `#[func]` forwarders (`get_configuration_warnings`,
     /// `faults_for`), synchronously, never through the dock's cached copy.
     fn derive(&mut self) {
+        self.derive_count = self.derive_count.saturating_add(1);
         let editor = Engine::singleton().is_editor_hint();
         self.level_faults.clear();
         self.node_faults.clear();
-        let census = self.census();
+        let mut census = self.census();
+        // Canonicalize walls explicitly before reading any wall-owned
+        // geometry. A rederive may be requested in the same callback that
+        // changed a nested prefab transform, before WaveWall's editor process
+        // has run; staging here removes that ambient process-order dependency.
+        for wall in &mut census.walls {
+            wall.bind_mut().prepare_for_derive();
+        }
         self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
         self.push_wall_table(editor);
         self.report_pack_range(editor);
@@ -1580,16 +1609,24 @@ impl WaveLevel {
         let mut nodes: Vec<level_plan::SignatureNode> = Vec::new();
         for solid in &census.solids {
             let node = solid.clone().into_gd();
+            let aabb = node
+                .clone()
+                .try_cast::<WaveWall>()
+                .ok()
+                .and_then(|wall| wall.bind().signature_aabb())
+                .or_else(|| skin_local_aabb(&node));
             nodes.push(level_plan::SignatureNode {
                 path: root.get_path_to(&node).to_string(),
+                instance_identity: node.instance_id().to_i64(),
                 transform: transform_floats(&node),
-                aabb: skin_local_aabb(&node),
+                aabb,
             });
         }
         for source in &census.sources {
             let node = source.clone().into_gd();
             nodes.push(level_plan::SignatureNode {
                 path: root.get_path_to(&node).to_string(),
+                instance_identity: node.instance_id().to_i64(),
                 transform: transform_floats(&node),
                 aabb: None,
             });
@@ -1598,6 +1635,7 @@ impl WaveLevel {
             let node = cat.clone().upcast::<Node>();
             nodes.push(level_plan::SignatureNode {
                 path: root.get_path_to(&node).to_string(),
+                instance_identity: node.instance_id().to_i64(),
                 transform: transform_floats(&node),
                 aabb: None,
             });
@@ -1606,6 +1644,7 @@ impl WaveLevel {
             let node = spawn.clone().upcast::<Node>();
             nodes.push(level_plan::SignatureNode {
                 path: root.get_path_to(&node).to_string(),
+                instance_identity: node.instance_id().to_i64(),
                 transform: transform_floats(&node),
                 aabb: None,
             });
@@ -1662,11 +1701,13 @@ pub(super) struct PaintedSolid {
 
 /// What the debug observer ([`super::observer`]) reads back off a level.
 ///
-/// None of it is `#[func]`: the designer-facing API does not grow for a
-/// debugging tool. Nothing here is stored either — every accessor
-/// re-derives from the scene as it stands, so the observer reports the
-/// world the renderer will actually draw rather than a mirrored copy that
-/// can drift away from it.
+/// Most of it is not `#[func]`: the designer-facing API does not grow for a
+/// debugging tool. The sole read-only forwarding surface is `wall_names`,
+/// paired with the already-public wall segment table so the editor probe can
+/// catch a stale retained generation. Nothing here is stored independently —
+/// every accessor reads the level state or scene as it stands, so the observer
+/// reports the world the renderer will actually draw rather than a mirrored
+/// copy that can drift away from it.
 impl WaveLevel {
     /// The wave pool the composition root injected, exactly as it was
     /// handed over — the `WaveCore` itself, upcast to `RefCounted`. The
@@ -1923,9 +1964,9 @@ fn collect(node: &Gd<Node>, census: &mut Census) {
 
 /// The 12 floats of a node's global transform — basis columns (X, Y, Z)
 /// then origin — the pose half of [`WaveLevel::scene_signature`]. Every
-/// censused node is Node3D-derived (a solid stands on `StaticBody3D`, a
-/// source and the cat on their own `Node3D`-family bases, a spawn on
-/// `Marker3D`), so the cast is total in the scenes this ever runs
+/// censused node is Node3D-derived (walls and runs are authored Node3D
+/// data, other solids stand on their own Node3D-family bases, and a spawn
+/// stands on `Marker3D`), so the cast is total in the scenes this ever runs
 /// against; a node that somehow were not simply contributes the identity
 /// transform, which still moves the signature the instant any sibling's
 /// path or AABB does.

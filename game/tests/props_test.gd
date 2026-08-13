@@ -319,10 +319,236 @@ func test_spawn_under_a_rotated_prefab_uses_global_yaw() -> void:
 	assert_float(level.spawn_yaw()).is_equal_approx(PI * 0.5, 0.0001)
 
 
+## A wall authored inside an obliquely turned, tilted, non-uniformly scaled
+## room still has ONE world pose. Godot cannot round-trip an exact global
+## transform through that parent bit-for-bit, so the container node itself is
+## not evidence. The generated mesh, collider, painted wall table and physics
+## ray must instead consume the same stored canonical transform: exact unit
+## quadrant basis, the requested composed origin, and no frame-to-frame write
+## loop.
+func test_wall_under_an_oblique_prefab_has_one_canonical_world_pose() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = Vector2(20, 20)
+	var room := Node3D.new()
+	var wall_local := Vector3(1.25, 0, -0.75)
+	var room_basis := Basis.from_euler(Vector3(0.17, 0.37, -0.11)).scaled(Vector3(2.3, 3.1, 0.47))
+	var room_origin := Vector3(7, -(room_basis * wall_local).y, 11)
+	room.transform = Transform3D(room_basis, room_origin)
+	var wall := WaveWall.new()
+	wall.position = wall_local
+	var requested_origin := room.transform * wall.position
+	room.add_child(wall)
+	level.add_child(room)
+	level.add_child(_spawn(Vector3(1, 0, 1)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var writes_after_snap: int = wall.call("normalization_writes")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	assert_int(wall.call("normalization_writes")).is_equal(writes_after_snap)
+	var expected_limb_origin := requested_origin + Vector3.UP * 1.5
+	for limb: Node3D in [_skin(wall), _collider(wall)]:
+		assert_vector(limb.global_transform.origin).is_equal(expected_limb_origin)
+		assert_vector(limb.global_transform.basis.x).is_equal(Vector3.RIGHT)
+		assert_vector(limb.global_transform.basis.y).is_equal(Vector3.UP)
+		assert_vector(limb.global_transform.basis.z).is_equal(Vector3.BACK)
+	var paint_frame: Transform3D = wall.call("paint_frame")
+	assert_vector(paint_frame.origin).is_equal(expected_limb_origin)
+	assert_vector(paint_frame.basis.x).is_equal(Vector3.RIGHT)
+	assert_vector(paint_frame.basis.y).is_equal(Vector3.UP)
+	assert_vector(paint_frame.basis.z).is_equal(Vector3.BACK)
+	var expected_segment := Vector4(
+		requested_origin.x - 2.0, requested_origin.z, requested_origin.x + 2.0, requested_origin.z
+	)
+	assert_array(level.wall_segments()).contains_exactly([expected_segment])
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var query := PhysicsRayQueryParameters3D.create(
+		expected_limb_origin + Vector3(0, 0, -1), expected_limb_origin + Vector3(0, 0, 1)
+	)
+	var hit := get_viewport().world_3d.direct_space_state.intersect_ray(query)
+	assert_bool(hit.has("collider")).is_true()
+	if hit.has("collider"):
+		var physics_body := hit["collider"] as StaticBody3D
+		assert_object(physics_body).is_not_same(wall)
+		assert_object(physics_body.get_parent()).is_same(wall)
+		assert_vector(hit["position"]).is_equal_approx(
+			expected_limb_origin + Vector3(0, 0, -0.15), Vector3.ONE * 0.00001
+		)
+		assert_vector(hit["normal"]).is_equal(Vector3.FORWARD)
+	assert_array(wall.get_configuration_warnings()).is_empty()
+
+
+## WaveWall is an honest Node3D datum, but its private physics body must relay
+## CollisionObject3D's three designer-facing signals with the exact inherited
+## input_event schema and payload.
+func test_wave_wall_relay_matches_collision_object_signal_contract() -> void:
+	var input_schema := ClassDB.class_get_signal("WaveWall", "input_event")
+	var input_args: Array = input_schema.get("args", [])
+	assert_int(input_args.size()).is_equal(5)
+	if input_args.size() == 5:
+		var camera_arg: Dictionary = input_args[0]
+		var event_arg: Dictionary = input_args[1]
+		var position_arg: Dictionary = input_args[2]
+		var normal_arg: Dictionary = input_args[3]
+		var shape_arg: Dictionary = input_args[4]
+		assert_str(str(camera_arg.get("name"))).is_equal("camera")
+		assert_int(camera_arg.get("type")).is_equal(TYPE_OBJECT)
+		assert_str(str(camera_arg.get("class_name"))).is_equal("Node")
+		assert_str(str(event_arg.get("name"))).is_equal("event")
+		assert_int(event_arg.get("type")).is_equal(TYPE_OBJECT)
+		assert_str(str(event_arg.get("class_name"))).is_equal("InputEvent")
+		assert_int(position_arg.get("type")).is_equal(TYPE_VECTOR3)
+		assert_int(normal_arg.get("type")).is_equal(TYPE_VECTOR3)
+		assert_int(shape_arg.get("type")).is_equal(TYPE_INT)
+	var wall: WaveWall = auto_free(WaveWall.new())
+	add_child(wall)
+	var body := _wall_body(wall)
+	assert_object(body).is_not_null()
+	if body == null:
+		return
+	var mouse_counts := [0, 0]
+	wall.mouse_entered.connect(func() -> void: mouse_counts[0] += 1)
+	wall.mouse_exited.connect(func() -> void: mouse_counts[1] += 1)
+	body.emit_signal("mouse_entered")
+	body.emit_signal("mouse_exited")
+	assert_array(mouse_counts).contains_exactly([1, 1])
+	var camera: Camera3D = auto_free(Camera3D.new())
+	var event := InputEventAction.new()
+	var payloads: Array[Array] = []
+	wall.input_event.connect(
+		func(
+			got_camera: Node, got_event: InputEvent, at: Vector3, normal: Vector3, idx: int
+		) -> void:
+			payloads.append([got_camera, got_event, at, normal, idx])
+	)
+	body.emit_signal("input_event", camera, event, Vector3(1, 2, 3), Vector3.FORWARD, 7)
+	assert_int(payloads.size()).is_equal(1)
+	if not payloads.is_empty():
+		assert_object(payloads[0][0]).is_same(camera)
+		assert_object(payloads[0][1]).is_same(event)
+		assert_vector(payloads[0][2]).is_equal(Vector3(1, 2, 3))
+		assert_vector(payloads[0][3]).is_equal(Vector3.FORWARD)
+		assert_int(payloads[0][4]).is_equal(7)
+
+
+## Every collision property WaveWall explicitly promises reaches its private
+## body immediately after ready; re-entering equal values performs no second
+## PhysicsServer or resource write.
+func test_wave_wall_live_collision_knobs_sync_private_body() -> void:
+	var wall: WaveWall = auto_free(WaveWall.new())
+	add_child(wall)
+	var body := _wall_body(wall)
+	assert_object(body).is_not_null()
+	if body == null:
+		return
+	var material := PhysicsMaterial.new()
+	var before: int = wall.call("body_contract_writes")
+	wall.collision_layer = 16
+	wall.collision_mask = 32
+	wall.collision_priority = 3.5
+	wall.ray_pickable = false
+	wall.input_capture_on_drag = true
+	wall.physics_material_override = material
+	assert_int(body.collision_layer).is_equal(16)
+	assert_int(body.collision_mask).is_equal(32)
+	assert_float(body.collision_priority).is_equal(3.5)
+	assert_bool(body.input_ray_pickable).is_false()
+	assert_bool(body.input_capture_on_drag).is_true()
+	assert_object(body.physics_material_override).is_same(material)
+	assert_int(wall.call("body_contract_writes")).is_equal(before + 6)
+	before = wall.call("body_contract_writes")
+	wall.collision_layer = 16
+	wall.collision_mask = 32
+	wall.collision_priority = 3.5
+	wall.ray_pickable = false
+	wall.input_capture_on_drag = true
+	wall.physics_material_override = material
+	assert_int(wall.call("body_contract_writes")).is_equal(before)
+
+
+## Generated physics is an implementation limb, never authored scene data.
+## Packing a ready wall excludes the body/mesh/collider; the new instance
+## rebuilds exactly one private set when it enters the tree.
+func test_wave_wall_generated_body_stays_out_of_authored_scene() -> void:
+	var wall: WaveWall = auto_free(WaveWall.new())
+	add_child(wall)
+	var body := _wall_body(wall)
+	assert_object(body).is_not_null()
+	if body == null:
+		return
+	assert_object(body.owner).is_null()
+	assert_object(_skin(wall).owner).is_null()
+	assert_object(_collider(wall).owner).is_null()
+	var packed := PackedScene.new()
+	assert_int(packed.pack(wall)).is_equal(OK)
+	var round_trip: WaveWall = auto_free(packed.instantiate() as WaveWall)
+	assert_int(round_trip.find_children("*", "StaticBody3D", true, false).size()).is_equal(0)
+	assert_int(round_trip.find_children("*", "MeshInstance3D", true, false).size()).is_equal(0)
+	assert_int(round_trip.find_children("*", "CollisionShape3D", true, false).size()).is_equal(0)
+	add_child(round_trip)
+	var rebuilt_body := _wall_body(round_trip)
+	assert_object(rebuilt_body).is_not_null()
+	if rebuilt_body == null:
+		return
+	assert_int(round_trip.find_children("*", "MeshInstance3D", true, false).size()).is_equal(1)
+	assert_int(round_trip.find_children("*", "CollisionShape3D", true, false).size()).is_equal(1)
+
+
+## Runtime wall geometry is immutable after ready, but an invalid authored
+## parent still has to fail safely on entry. Zero scale makes its affine
+## inverse undefined: the wall stores one repairable warning, performs no
+## doomed normalization write and leaves the live repair loop to the editor
+## probe that can actually exercise `Engine.is_editor_hint()`.
+func test_wall_refuses_a_singular_authored_parent_at_ready() -> void:
+	var room: Node3D = auto_free(Node3D.new())
+	room.position = Vector3(7, 0, 11)
+	room.scale = Vector3.ZERO
+	var wall := WaveWall.new()
+	wall.name = "SingularWall"
+	room.add_child(wall)
+	var authored_warning := (
+		"WaveWall: an ancestor transform is singular, non-finite, or too large to represent, "
+		+ "so this wall cannot normalize its global basis. Repair zero scale or non-finite values, "
+		+ "or reduce the ancestor's scale or position; it will snap automatically when the ancestor "
+		+ "is representable."
+	)
+	var runtime_warning := "WaveWall 'SingularWall': " + authored_warning.trim_prefix("WaveWall: ")
+	var enter := func() -> void: add_child(room)
+	await assert_error(enter).is_push_warning(runtime_warning)
+	assert_array(wall.get_configuration_warnings()).contains([authored_warning])
+	assert_int(wall.call("normalization_writes")).is_equal(0)
+
+
+## A poisoned authored wall value is different from a poisoned ancestor: with
+## a safe parent the ready boundary can restore it immediately. Before any
+## prior valid placement exists, preserve each finite origin lane, use zero for
+## poisoned lanes, retain the finite yaw and hold one precise warning. The pure
+## transition and editor probe separately pin later acknowledgment/clearing.
+func test_wall_recovers_its_own_nonfinite_authored_transform_at_ready() -> void:
+	var wall: WaveWall = auto_free(WaveWall.new())
+	wall.name = "PoisonedWall"
+	wall.rotation.y = PI * 0.5
+	wall.position = Vector3(NAN, 5, INF)
+	var authored_warning := (
+		"WaveWall: its transform contained NaN or infinity. Every finite position lane was "
+		+ "preserved and the rest was restored from its last valid placement. Move the wall "
+		+ "once to acknowledge and clear this warning."
+	)
+	var runtime_warning := "WaveWall 'PoisonedWall': " + authored_warning.trim_prefix("WaveWall: ")
+	var enter := func() -> void: add_child(wall)
+	await assert_error(enter).is_push_warning(runtime_warning)
+	assert_array(wall.get_configuration_warnings()).contains([authored_warning])
+	assert_vector(wall.global_position).is_equal(Vector3(0, 5, 0))
+	assert_vector(wall.global_transform.basis.x).is_equal(Vector3(0, 0, -1))
+	assert_vector(wall.global_transform.basis.y).is_equal(Vector3.UP)
+	assert_vector(wall.global_transform.basis.z).is_equal(Vector3.RIGHT)
+	assert_array(wall.get_configuration_warnings()).contains([authored_warning])
+
+
 func _skin(body: Node) -> MeshInstance3D:
-	for child: Node in body.get_children():
-		if child is MeshInstance3D:
-			return child as MeshInstance3D
+	for child: Node in body.find_children("*", "MeshInstance3D", true, false):
+		return child as MeshInstance3D
 	return null
 
 
@@ -334,10 +560,70 @@ func _shape(body: Node) -> Shape3D:
 
 
 func _collider(body: Node) -> CollisionShape3D:
-	for child: Node in body.get_children():
-		if child is CollisionShape3D:
-			return child as CollisionShape3D
+	for child: Node in body.find_children("*", "CollisionShape3D", true, false):
+		return child as CollisionShape3D
 	return null
+
+
+func _wall_body(wall: WaveWall) -> StaticBody3D:
+	for child: Node in wall.get_children():
+		if (
+			child is StaticBody3D
+			and child.has_meta("_unseeing_wave_wall_body")
+			and child.get_meta("_unseeing_wave_wall_body") == true
+		):
+			return child as StaticBody3D
+	return null
+
+
+## Scene deserialization calls exported setters before a node has its authored
+## name. Invalid length is repaired silently then and logged exactly once from
+## ready with that final name; neither mesh nor BoxShape ever sees poison. A
+## negative infinity also proves the rejected magnitude does not queue the
+## separate, false SignFold diagnostic.
+func test_invalid_wall_length_is_named_and_repaired_before_geometry_builds() -> void:
+	var wall: WaveWall = auto_free(WaveWall.new())
+	wall.name = "BadLength"
+	wall.length = -INF
+	var authored_warning := (
+		"WaveWall: length was non-finite or too large for Godot geometry. The last finite "
+		+ "wall length was preserved; enter a finite value that fits the editor to clear this warning."
+	)
+	var runtime_warning := "WaveWall 'BadLength': " + authored_warning.trim_prefix("WaveWall: ")
+	var enter := func() -> void: add_child(wall)
+	await assert_error(enter).is_push_warning(runtime_warning)
+	assert_float(wall.length).is_equal(4.0)
+	assert_vector(_skin(wall).mesh.get_aabb().size).is_equal(Vector3(4.3, 3, 0.3))
+	assert_vector((_collider(wall).shape as BoxShape3D).size).is_equal(Vector3(4.3, 3, 0.3))
+	assert_array(wall.get_configuration_warnings()).contains([authored_warning])
+
+
+## Collision priority has Godot's strict positive finite domain. A whole chain
+## of bad pre-tree setter values still becomes one named ready diagnostic, one
+## safe exported value and one safe generated-body value; a genuine later edit
+## clears the warning and reaches physics immediately.
+func test_invalid_wall_collision_priority_repairs_once_and_clears_on_edit() -> void:
+	var wall: WaveWall = auto_free(WaveWall.new())
+	wall.name = "BadPriority"
+	wall.collision_priority = NAN
+	wall.collision_priority = INF
+	wall.collision_priority = 0.0
+	var authored_warning := (
+		"WaveWall: collision priority was non-finite, too large, or not positive. Its last "
+		+ "valid value (or the default before one existed) was restored; edit Collision Priority "
+		+ "to clear this warning."
+	)
+	var runtime_warning := "WaveWall 'BadPriority': " + authored_warning.trim_prefix("WaveWall: ")
+	var enter := func() -> void: add_child(wall)
+	await assert_error(enter).is_push_warning(runtime_warning)
+	assert_float(wall.collision_priority).is_equal(1.0)
+	var body := _wall_body(wall)
+	assert_object(body).is_not_null()
+	assert_float(body.collision_priority).is_equal(1.0)
+	assert_array(wall.get_configuration_warnings()).contains([authored_warning])
+	wall.collision_priority = 2.5
+	assert_float(body.collision_priority).is_equal(2.5)
+	assert_array(wall.get_configuration_warnings()).is_empty()
 
 
 ## The world box a shape actually draws — what the eye is shown, and the

@@ -626,9 +626,8 @@ func test_two_flush_props_report_no_fault() -> void:
 
 ## The first mesh limb a node built for itself.
 func _skin_of(body: Node) -> MeshInstance3D:
-	for child: Node in body.get_children():
-		if child is MeshInstance3D:
-			return child as MeshInstance3D
+	for child: Node in body.find_children("*", "MeshInstance3D", true, false):
+		return child as MeshInstance3D
 	return null
 
 

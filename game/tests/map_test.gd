@@ -20,9 +20,8 @@ const TOUCH_EPS := 0.01
 
 ## The first mesh limb a node built for itself.
 func _skin(body: Node) -> MeshInstance3D:
-	for child: Node in body.get_children():
-		if child is MeshInstance3D:
-			return child as MeshInstance3D
+	for child: Node in body.find_children("*", "MeshInstance3D", true, false):
+		return child as MeshInstance3D
 	return null
 
 

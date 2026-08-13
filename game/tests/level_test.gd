@@ -44,9 +44,8 @@ func _spawn_marker(at: Vector3, yaw: float) -> WaveSpawn:
 
 ## The first mesh limb a node built for itself.
 func _skin(body: Node) -> MeshInstance3D:
-	for child: Node in body.get_children():
-		if child is MeshInstance3D:
-			return child as MeshInstance3D
+	for child: Node in body.find_children("*", "MeshInstance3D", true, false):
+		return child as MeshInstance3D
 	return null
 
 
@@ -61,10 +60,9 @@ func _box(body: Node) -> Vector3:
 
 
 func _box_shape(body: Node) -> BoxShape3D:
-	for child: Node in body.get_children():
-		if child is CollisionShape3D:
-			var col := child as CollisionShape3D
-			return col.shape as BoxShape3D
+	for child: Node in body.find_children("*", "CollisionShape3D", true, false):
+		var col := child as CollisionShape3D
+		return col.shape as BoxShape3D
 	return null
 
 
@@ -116,19 +114,31 @@ func _level_holding(node: Node3D) -> WaveLevel:
 ## How many limbs a node has built for itself — one mesh and one collider
 ## is a whole shape; anything more is a ghost of an earlier build.
 func _limbs(body: Node) -> int:
-	var n := 0
-	for child: Node in body.get_children():
-		if child is MeshInstance3D or child is CollisionShape3D:
-			n += 1
-	return n
+	return (
+		body.find_children("*", "MeshInstance3D", true, false).size()
+		+ body.find_children("*", "CollisionShape3D", true, false).size()
+	)
+
+
+func _generated_wall_bodies(wall: WaveWall) -> Array[StaticBody3D]:
+	var out: Array[StaticBody3D] = []
+	for child: Node in wall.get_children():
+		if (
+			child is StaticBody3D
+			and child.has_meta("_unseeing_wave_wall_body")
+			and child.get_meta("_unseeing_wave_wall_body") == true
+		):
+			out.append(child as StaticBody3D)
+	return out
 
 
 ## The floor/ceiling slabs the level built for itself — its own direct
-## StaticBody3D children that are not authored walls or props.
+## StaticBody3D children that are not authored props. WaveWall is an honest
+## Node3D datum now; its one private StaticBody lives below it, never here.
 func _slabs(level: WaveLevel) -> Array[StaticBody3D]:
 	var out: Array[StaticBody3D] = []
 	for child: Node in level.get_children():
-		if child is StaticBody3D and not child is WaveWall and not child is WaveProp:
+		if child is StaticBody3D and not child is WaveProp:
 			out.append(child as StaticBody3D)
 	return out
 
@@ -246,31 +256,45 @@ func test_a_scaled_room_cannot_stretch_a_wall_past_its_occluder() -> void:
 ## one pair when it is done.
 func test_a_duplicated_wall_does_not_double_its_geometry() -> void:
 	var wall: WaveWall = auto_free(_wall(4.0, Vector3.ZERO, false))
+	var guest := StaticBody3D.new()
+	guest.name = "WaveBody"
+	wall.add_child(guest)
 	add_child(wall)
 	var copy: WaveWall = auto_free(wall.duplicate() as WaveWall)
+	copy.length = 9.0
 	add_child(copy)
 	(
 		assert_int(_limbs(copy))
 		. append_failure_message("the duplicate readied onto the limbs it was copied with")
 		. is_equal(2)
 	)
-	copy.length = 9.0
 	(
 		assert_vector(_box(copy))
 		. append_failure_message("a ghost mesh is drawn ahead of the one the knob reshapes")
 		. is_equal(Vector3(9.3, 3, 0.3))
 	)
 	assert_vector(_box(wall)).is_equal(Vector3(4.3, 3, 0.3))
+	assert_int(_generated_wall_bodies(wall).size()).is_equal(1)
+	assert_int(_generated_wall_bodies(copy).size()).is_equal(1)
+	var original_guests := wall.find_children("WaveBody", "StaticBody3D", false, false)
+	var copied_guests := copy.find_children("WaveBody", "StaticBody3D", false, false)
+	assert_int(original_guests.size()).is_equal(1)
+	assert_int(copied_guests.size()).is_equal(1)
+	assert_bool(original_guests[0].has_meta("_unseeing_wave_wall_body")).is_false()
+	assert_bool(copied_guests[0].has_meta("_unseeing_wave_wall_body")).is_false()
 
 
-## The length knob reshapes a placed wall live — mesh and collider
-## together, the way a designer drags a number in the Inspector.
-func test_wall_length_knob_reshapes_live() -> void:
+## Runtime level geometry is a derived snapshot: changing one limb after ready
+## would desynchronise its retained paint and occlusion tables. The editor has
+## a live setter (pinned by editor_level_probe); run mode deliberately ignores
+## a post-ready write instead of moving only the mesh and collider.
+func test_wall_length_knob_is_immutable_after_runtime_ready() -> void:
 	var wall: WaveWall = auto_free(_wall(4.0, Vector3.ZERO, false))
 	add_child(wall)
 	wall.length = 9.0
-	assert_vector(_box(wall)).is_equal(Vector3(9.3, 3, 0.3))
-	assert_vector(_box_shape(wall).size).is_equal(Vector3(9.3, 3, 0.3))
+	assert_float(wall.length).is_equal(4.0)
+	assert_vector(_box(wall)).is_equal(Vector3(4.3, 3, 0.3))
+	assert_vector(_box_shape(wall).size).is_equal(Vector3(4.3, 3, 0.3))
 
 
 ## A wall's one knob answers a minus sign the way every prop knob does.

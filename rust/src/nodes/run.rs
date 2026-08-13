@@ -42,6 +42,12 @@ pub(super) fn generated_segments(node: &Gd<Node>) -> Vec<Gd<Node>> {
         .collect()
 }
 
+/// An authored axis-aligned wall run with optional doorway openings.
+///
+/// Set `from` and `to` in the parent's local X/Z plane. Each `openings` entry
+/// is `(absolute coordinate on the selected axis, width)`. WaveRun rebuilds
+/// its ownerless `RunSeg` WaveWall children automatically; edit these three
+/// properties rather than the generated children.
 #[derive(GodotClass)]
 #[class(tool, init, base=Node3D)]
 pub struct WaveRun {
@@ -245,5 +251,22 @@ impl WaveRun {
                 godot_warn!("{}", warning);
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "editor-docs"))]
+mod tests {
+    /// The release editor build must carry a class overview, not only three
+    /// member snippets: this is the text a designer sees before touching a
+    /// WaveRun's endpoint and doorway controls.
+    #[test]
+    fn wave_run_class_description_reaches_editor_docs() {
+        let xml = godot::docs::gather_xml_docs()
+            .find(|xml| xml.contains("<class name=\"WaveRun\""))
+            .expect("WaveRun must register an editor-docs XML class");
+        assert!(
+            xml.contains("An authored axis-aligned wall run"),
+            "WaveRun editor XML has no class overview: {xml}"
+        );
     }
 }

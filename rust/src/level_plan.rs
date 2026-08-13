@@ -20,7 +20,7 @@
 
 use std::f64::consts::FRAC_PI_2;
 
-use godot::builtin::{Basis, Vector2, Vector3, Vector4};
+use godot::builtin::{Basis, Transform3D, Vector2, Vector3, Vector4};
 
 use crate::oid_palette::Box3;
 
@@ -43,6 +43,8 @@ pub const SOURCE_THROUGH: f64 = 0.3;
 
 /// Half-thickness of a wall in meters.
 pub const WALL_T: f64 = 0.15;
+/// Largest designer wall accepted by the f32 Godot geometry boundary.
+pub const MAX_WALL_LENGTH: f64 = 10_000.0;
 
 /// Thickness of the floor and ceiling slabs.
 pub const SLAB_T: f64 = 0.1;
@@ -418,11 +420,46 @@ pub fn run_segments(from: Vector2, to: Vector2, openings: &[(f64, f64)]) -> RunP
 /// refuses it and keeps whatever size it had.
 #[must_use]
 pub fn wall_box(length: f64) -> Vector3 {
+    let length = sanitize_wall_length(length, 4.0).value;
     Vector3::new(
         (length.abs() + WALL_T * 2.0) as f32,
         WALL_H as f32,
         (WALL_T * 2.0) as f32,
     )
+}
+
+/// A wall length safe for every downstream representation: the f64 authored
+/// knob, f32 ArrayMesh/BoxShape size, and f32 centerline endpoints.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WallLengthPlan {
+    pub value: f64,
+    pub repaired: bool,
+}
+
+/// Fold a finite sign and reject any magnitude that would narrow to NaN/Inf
+/// in Godot geometry. Invalid input keeps the last valid value, or the 4 m
+/// class default if the supplied fallback is itself malformed.
+#[must_use]
+pub fn sanitize_wall_length(raw: f64, fallback: f64) -> WallLengthPlan {
+    let valid = |value: f64| {
+        let magnitude = value.abs();
+        value.is_finite()
+            && magnitude <= MAX_WALL_LENGTH
+            && (magnitude + WALL_T * 2.0).is_finite()
+            && ((magnitude + WALL_T * 2.0) as f32).is_finite()
+            && ((magnitude * 0.5) as f32).is_finite()
+    };
+    if valid(raw) {
+        WallLengthPlan {
+            value: raw.abs(),
+            repaired: false,
+        }
+    } else {
+        WallLengthPlan {
+            value: if valid(fallback) { fallback.abs() } else { 4.0 },
+            repaired: true,
+        }
+    }
 }
 
 /// Whether the level DRAWS one of the two slabs it built. The pair is
@@ -495,6 +532,343 @@ pub fn quadrant_basis(quadrant: u8) -> Basis {
     Basis::from_cols(x, Vector3::new(0.0, 1.0, 0.0), z)
 }
 
+/// Collapse any wall basis — including inherited prefab rotation, scale,
+/// tilt, degeneracy, or non-finite lanes — onto the nearest exact unit
+/// quarter turn. This is the whole deterministic placement law; the Godot
+/// node adapter only decides when a changed global transform must apply it.
+#[must_use]
+pub fn normalized_wall_basis(basis: Basis) -> Basis {
+    quadrant_basis(basis_quadrant(basis))
+}
+
+/// Whether Godot can map an exact global wall transform back through its
+/// current parent. This is a domain result, not an assertion: zero scale and
+/// non-finite Inspector input are representable scene states even though no
+/// finite affine inverse (and therefore no safe global write) exists for them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallParentTransformState {
+    /// The parent is absent or has a finite inverse.
+    Representable,
+    /// The finite parent basis has no inverse, usually because one scale lane
+    /// is zero.
+    Singular,
+    /// The parent or its computed inverse contains NaN or infinity.
+    NonFinite,
+}
+
+/// The repair state a live wall owns between editor frames. This is domain
+/// memory rather than an engine handle: exact local/parent samples identify an
+/// unchanged composed placement, `last_finite` repairs poisoned lanes, and the
+/// fault names the one designer action still required.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct WallTransformMemory {
+    pub normalized_local: Option<Transform3D>,
+    pub normalized_parent: Option<Transform3D>,
+    pub last_finite: Option<Transform3D>,
+    /// The last finite local pose Godot actually retained after a successful
+    /// write. Recovery must happen in this authored coordinate space before a
+    /// parent multiplication can spread one poisoned lane across all three.
+    pub last_finite_local: Option<Transform3D>,
+    pub fault: Option<WallTransformFault>,
+    /// A repaired own-input fault still awaiting a real edit. An ancestor
+    /// fault temporarily takes presentation priority without erasing this
+    /// acknowledgment debt.
+    pub pending_own_acknowledgment: bool,
+}
+
+/// A repairable authored-transform fault, deliberately free of presentation
+/// text so the Godot adapter can give editor and runtime channels the same
+/// words without putting engine logging into this law.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallTransformFault {
+    Ancestor,
+    Own,
+}
+
+/// One complete pure decision for a wall process frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WallTransformPlan {
+    pub memory: WallTransformMemory,
+    pub write_global: Option<Transform3D>,
+    pub announce_snap: bool,
+}
+
+/// State for the one numeric physics knob WaveWall deliberately exposes.
+/// The authored node is a Node3D datum, not a dummy PhysicsBody proxy, so
+/// broader inherited body state does not leak into this law.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct WallPriorityMemory {
+    pub last_valid: Option<f32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WallPriorityPlan {
+    pub value: f32,
+    pub memory: WallPriorityMemory,
+    pub repaired: bool,
+    pub warn: bool,
+}
+
+/// Collision priority is narrower than an arbitrary scalar: Godot requires a
+/// finite f32 greater than zero. Invalid input keeps the last valid value, or
+/// the engine default before one exists.
+#[must_use]
+pub fn sanitize_wall_priority(raw: f32, fallback: Option<f32>) -> (f32, bool) {
+    let valid = |value: f32| value.is_finite() && value > 0.0;
+    if valid(raw) {
+        (raw, false)
+    } else {
+        (fallback.filter(|value| valid(*value)).unwrap_or(1.0), true)
+    }
+}
+
+/// Repair an invalid priority, and clear its warning on the next valid setter
+/// call. The Node3D boundary stores the repaired backing field directly (it
+/// does not re-enter this setter), so even re-entering the displayed value is
+/// an unambiguous designer acknowledgment.
+#[must_use]
+pub fn plan_wall_priority(raw: f32, mut memory: WallPriorityMemory) -> WallPriorityPlan {
+    let (value, repaired) = sanitize_wall_priority(raw, memory.last_valid);
+    if repaired {
+        memory.last_valid = Some(value);
+        return WallPriorityPlan {
+            value,
+            memory,
+            repaired: true,
+            warn: true,
+        };
+    }
+    memory.last_valid = Some(value);
+    WallPriorityPlan {
+        value,
+        memory,
+        repaired: false,
+        warn: false,
+    }
+}
+
+/// Classify the complete parent-global transform before the Godot adapter
+/// calls `set_global_transform`. Checking the inverse as well as the input
+/// closes the subnormal finite case where division would overflow.
+#[must_use]
+pub fn wall_parent_transform_state(
+    parent: Option<Transform3D>,
+    desired_global: Transform3D,
+) -> WallParentTransformState {
+    if !desired_global.is_finite() {
+        return WallParentTransformState::NonFinite;
+    }
+    let Some(parent) = parent else {
+        return WallParentTransformState::Representable;
+    };
+    if !parent.is_finite() {
+        return WallParentTransformState::NonFinite;
+    }
+    let determinant = parent.basis.determinant();
+    if !determinant.is_finite() {
+        return WallParentTransformState::NonFinite;
+    }
+    if determinant == 0.0 {
+        return WallParentTransformState::Singular;
+    }
+    let inverse = parent.affine_inverse();
+    if !inverse.is_finite() || !(inverse * desired_global).is_finite() {
+        return WallParentTransformState::NonFinite;
+    }
+    WallParentTransformState::Representable
+}
+
+/// Recover a finite global wall placement from poisoned external input. Each
+/// finite origin lane is authored data and survives independently; an invalid
+/// lane falls back to the last wholly finite placement (or zero before one
+/// exists). A finite, non-zero planar X direction still chooses the new yaw
+/// even if another basis lane is poisoned; otherwise the last valid yaw wins.
+/// The result is always finite and carries an exact unit quadrant basis.
+#[must_use]
+pub fn recover_wall_transform(current: Transform3D, fallback: Option<Transform3D>) -> Transform3D {
+    let fallback = fallback
+        .filter(Transform3D::is_finite)
+        .unwrap_or(Transform3D::IDENTITY);
+    let lane = |current: f32, fallback: f32| {
+        if current.is_finite() {
+            current
+        } else {
+            fallback
+        }
+    };
+    let origin = Vector3::new(
+        lane(current.origin.x, fallback.origin.x),
+        lane(current.origin.y, fallback.origin.y),
+        lane(current.origin.z, fallback.origin.z),
+    );
+    let x = current.basis.col_a();
+    let basis = if x.x.is_finite() && x.z.is_finite() && (x.x != 0.0 || x.z != 0.0) {
+        normalized_wall_basis(current.basis)
+    } else {
+        normalized_wall_basis(fallback.basis)
+    };
+    Transform3D::new(basis, origin)
+}
+
+/// Repair untrusted authored LOCAL input before it is composed through a
+/// parent. Matrix multiplication can spread one NaN/Inf position lane across
+/// every world lane (`0 * Inf` is NaN), so recovering a poisoned global pose
+/// is too late to preserve the finite values the designer entered.
+#[must_use]
+pub fn recover_wall_local(current: Transform3D, fallback: Option<Transform3D>) -> Transform3D {
+    let fallback = fallback
+        .filter(Transform3D::is_finite)
+        .unwrap_or(Transform3D::IDENTITY);
+    let lane = |current: f32, fallback: f32| {
+        if current.is_finite() {
+            current
+        } else {
+            fallback
+        }
+    };
+    let origin = Vector3::new(
+        lane(current.origin.x, fallback.origin.x),
+        lane(current.origin.y, fallback.origin.y),
+        lane(current.origin.z, fallback.origin.z),
+    );
+    let basis = if current.basis.is_finite() {
+        current.basis
+    } else {
+        let x = current.basis.col_a();
+        if x.x.is_finite() && x.z.is_finite() && (x.x != 0.0 || x.z != 0.0) {
+            normalized_wall_basis(current.basis)
+        } else {
+            fallback.basis
+        }
+    };
+    Transform3D::new(basis, origin)
+}
+
+/// Decide every live-wall transform transition without touching the scene
+/// tree. A stable local/parent pair is a settled generation even when Godot's
+/// inverse/recomposition leaves a few low bits of dust in the global basis.
+/// Poisoned own input is repaired once and keeps its warning across idle
+/// frames; the next finite authored edit clears it. A singular/non-finite
+/// ancestor produces no write at all and is retried only as a pure read until
+/// it becomes representable.
+#[must_use]
+pub fn plan_wall_transform(
+    current_global: Transform3D,
+    current_local: Transform3D,
+    parent: Option<Transform3D>,
+    mut memory: WallTransformMemory,
+) -> WallTransformPlan {
+    let own_input_is_finite = current_local.is_finite();
+    let authored_wall_edit = own_input_is_finite
+        && memory
+            .normalized_local
+            .is_some_and(|normalized| normalized != current_local);
+    if authored_wall_edit {
+        memory.pending_own_acknowledgment = false;
+    } else if !own_input_is_finite {
+        memory.pending_own_acknowledgment = true;
+    }
+
+    if memory.normalized_local == Some(current_local) && memory.normalized_parent == parent {
+        return WallTransformPlan {
+            memory,
+            write_global: None,
+            announce_snap: false,
+        };
+    }
+
+    let repaired_local = if own_input_is_finite {
+        current_local
+    } else {
+        recover_wall_local(current_local, memory.last_finite_local)
+    };
+    let composed = parent.map_or(repaired_local, |parent| parent * repaired_local);
+    if !composed.is_finite() {
+        if own_input_is_finite {
+            memory.normalized_local = Some(current_local);
+            memory.normalized_parent = parent;
+            memory.last_finite_local = Some(current_local);
+        }
+        memory.fault = Some(WallTransformFault::Ancestor);
+        return WallTransformPlan {
+            memory,
+            write_global: None,
+            announce_snap: false,
+        };
+    }
+    let desired = Transform3D::new(normalized_wall_basis(composed.basis), composed.origin);
+    if wall_parent_transform_state(parent, desired) != WallParentTransformState::Representable {
+        if own_input_is_finite {
+            memory.normalized_local = Some(current_local);
+            memory.normalized_parent = parent;
+            memory.last_finite_local = Some(current_local);
+        }
+        memory.fault = Some(WallTransformFault::Ancestor);
+        return WallTransformPlan {
+            memory,
+            write_global: None,
+            announce_snap: false,
+        };
+    }
+
+    if !own_input_is_finite {
+        memory.last_finite = Some(desired);
+        memory.fault = Some(WallTransformFault::Own);
+        return WallTransformPlan {
+            memory,
+            write_global: Some(desired),
+            announce_snap: false,
+        };
+    }
+
+    memory.fault = memory
+        .pending_own_acknowledgment
+        .then_some(WallTransformFault::Own);
+    if composed.basis == desired.basis {
+        memory.last_finite = Some(composed);
+        memory.last_finite_local = Some(current_local);
+        memory.normalized_local = Some(current_local);
+        memory.normalized_parent = parent;
+        return WallTransformPlan {
+            memory,
+            write_global: None,
+            announce_snap: false,
+        };
+    }
+
+    memory.last_finite = Some(desired);
+    WallTransformPlan {
+        memory,
+        write_global: Some(desired),
+        announce_snap: current_global.is_finite()
+            && !wall_bases_close(current_global.basis, desired.basis),
+    }
+}
+
+/// Record the actual local transform Godot produced for a successful global
+/// write. Keeping that engine round-trip sample makes the next unchanged frame
+/// a pure cache hit instead of relying on bit-identical global recomposition.
+#[must_use]
+pub fn settle_wall_write(
+    mut memory: WallTransformMemory,
+    actual_local: Transform3D,
+    parent: Option<Transform3D>,
+) -> WallTransformMemory {
+    memory.normalized_local = Some(actual_local);
+    memory.normalized_parent = parent;
+    if actual_local.is_finite() {
+        memory.last_finite_local = Some(actual_local);
+    }
+    memory
+}
+
+fn wall_bases_close(a: Basis, b: Basis) -> bool {
+    let eps = 1e-4;
+    (a.col_a() - b.col_a()).length() < eps
+        && (a.col_b() - b.col_b()).length() < eps
+        && (a.col_c() - b.col_c()).length() < eps
+}
+
 /// A wall node's centerline as the classic segment quad (x1, z1, x2, z2):
 /// the node's floor position swept half the length each way along its
 /// snapped axis. Even quadrants run along world X, odd along world Z.
@@ -506,11 +880,28 @@ pub fn quadrant_basis(quadrant: u8) -> Basis {
 /// anything new that trusts the quad's declared order would not.
 #[must_use]
 pub fn wall_segment(center: Vector3, length: f64, quadrant: u8) -> Vector4 {
-    let half = (length.abs() * 0.5) as f32;
+    let length = sanitize_wall_length(length, 4.0).value;
+    let half = length * 0.5;
+    let lane = |value: f32| if value.is_finite() { value } else { 0.0 };
+    let center = Vector3::new(lane(center.x), lane(center.y), lane(center.z));
+    let shifted = |value: f32, delta: f64| {
+        let result = (f64::from(value) + delta) as f32;
+        if result.is_finite() { result } else { value }
+    };
     if quadrant.is_multiple_of(2) {
-        Vector4::new(center.x - half, center.z, center.x + half, center.z)
+        Vector4::new(
+            shifted(center.x, -half),
+            center.z,
+            shifted(center.x, half),
+            center.z,
+        )
     } else {
-        Vector4::new(center.x, center.z - half, center.x, center.z + half)
+        Vector4::new(
+            center.x,
+            shifted(center.z, -half),
+            center.x,
+            shifted(center.z, half),
+        )
     }
 }
 
@@ -1157,17 +1548,22 @@ pub fn pack_range_budget(diagonal: f64, range: f64) -> Option<Budget> {
 }
 
 /// One censused node's contribution to [`scene_signature`]: where a
-/// designer finds it, its global pose, and — for a solid — its skin
-/// mesh's LOCAL AABB (position then size, six floats). The AABB is what a
-/// transform alone cannot see: a designer dragging a `radius` or `size`
-/// knob reshapes this box without the node's own transform moving a
-/// millimetre, so the condition-watch would miss every knob edit without
-/// it — this is the field the mutation check names directly.
+/// designer finds it, which live Godot object currently occupies that address,
+/// its global pose, and — for a solid — its skin mesh's LOCAL AABB (position
+/// then size, six floats). Identity catches generation changes whose authored
+/// geometry stays byte-identical: a WaveRun setter frees and recreates its
+/// ownerless RunSeg walls at the same path, pose and AABB, and the fresh meshes
+/// still need derivation. The AABB catches a `radius` or `size` knob reshaping
+/// one existing object without moving it.
 #[derive(Debug, Clone)]
 pub struct SignatureNode {
     /// The node's address under the level root — the same handle every
     /// other derived report (`PlacedSolid`, `SpawnCandidate`) quotes.
     pub path: String,
+    /// Opaque live-object generation supplied by the engine boundary. It is
+    /// compared only by folding its bits; the pure planner never interprets
+    /// or resolves an engine handle.
+    pub instance_identity: i64,
     /// The node's global transform: basis columns (X, Y, Z, three floats
     /// each) then origin — twelve floats, the same twelve a `Transform3D`
     /// is built from.
@@ -1207,13 +1603,19 @@ fn fnv_f32(hash: u64, value: f32) -> u64 {
     fnv_bytes(hash, &value.to_bits().to_le_bytes())
 }
 
+/// Fold one opaque engine identity without assigning it any domain meaning.
+#[must_use]
+fn fnv_i64(hash: u64, value: i64) -> u64 {
+    fnv_bytes(hash, &value.to_le_bytes())
+}
+
 /// The level's condition-watch signature: one `u64` FNV-1a fold over the
-/// level's own `extents` knob, then every censused node's path, global
-/// transform and (for a solid) skin AABB, in the order given — SCENE
-/// order, the same deterministic walk order every other derivation leans
-/// on, so the same scene always folds to the same number and a designer
-/// reordering the Scene dock is a real authoring edit the signature is
-/// right to notice.
+/// level's own `extents` knob, then every censused node's path, live-object
+/// identity, global transform and (for a solid) skin AABB, in SCENE order —
+/// the same deterministic walk order every other derivation leans on. The
+/// same unchanged live scene generation therefore always folds to the same
+/// number, while reordering the Scene dock is a real edit and a newly loaded
+/// copy deliberately carries new engine identities.
 ///
 /// `extents` folds FIRST and outside the per-node loop, not as a synthetic
 /// node, because it is not a censused node's property at all: it is read
@@ -1227,12 +1629,11 @@ fn fnv_f32(hash: u64, value: f32) -> u64 {
 /// AABB) closes the extents section before the first node's path bytes
 /// begin, so nothing after it can be misread as more extents floats.
 ///
-/// Every node folds a boundary byte after its path and a presence byte
-/// before its AABB (`1` then six floats, or a bare `0`), so the fold can
-/// never confuse a node with a shorter path and a longer transform for one
-/// with a longer path and a shorter one, and a solid whose AABB
-/// disappears between two frames (its mesh torn down, about to be
-/// rebuilt) changes the signature even though nothing else about it did.
+/// Every node folds a boundary byte after its path, its fixed-width opaque
+/// identity, then a presence byte before its AABB (`1` then six floats, or a
+/// bare `0`). The fold therefore distinguishes a replacement generation even
+/// when every authored geometric byte agrees, and still notices a solid whose
+/// AABB disappears while its mesh is being rebuilt.
 #[must_use]
 pub fn scene_signature(extents: [f32; 2], nodes: &[SignatureNode]) -> u64 {
     let mut hash = FNV_OFFSET;
@@ -1241,7 +1642,8 @@ pub fn scene_signature(extents: [f32; 2], nodes: &[SignatureNode]) -> u64 {
     hash = fnv_byte(hash, 2); // extents/nodes boundary
     for node in nodes {
         hash = fnv_bytes(hash, node.path.as_bytes());
-        hash = fnv_byte(hash, 0); // path/transform boundary
+        hash = fnv_byte(hash, 0); // path/identity boundary
+        hash = fnv_i64(hash, node.instance_identity);
         for &f in &node.transform {
             hash = fnv_f32(hash, f);
         }
@@ -2004,6 +2406,45 @@ mod tests {
         assert_eq!(wall_box(18.8), Vector3::new(19.1, 3.0, 0.3));
     }
 
+    /// A finite f64 can still overflow the f32 mesh/collider boundary. The
+    /// knob keeps its last valid geometry for every non-finite or narrowing-
+    /// overflow input, while ordinary signs remain magnitudes.
+    #[test]
+    fn wall_length_refuses_every_value_that_would_poison_godot_geometry() {
+        assert_eq!(
+            sanitize_wall_length(-7.4, 4.0),
+            WallLengthPlan {
+                value: 7.4,
+                repaired: false
+            }
+        );
+        for bad in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1.0e300,
+            f64::MAX,
+        ] {
+            assert_eq!(
+                sanitize_wall_length(bad, 9.0),
+                WallLengthPlan {
+                    value: 9.0,
+                    repaired: true
+                }
+            );
+        }
+        assert_eq!(sanitize_wall_length(f64::NAN, f64::NAN).value, 4.0);
+        assert!(wall_box(sanitize_wall_length(f64::MAX, 9.0).value).is_finite());
+        for malformed in [
+            Vector3::new(f32::MAX, 0.0, f32::MAX),
+            Vector3::new(f32::NAN, 0.0, f32::INFINITY),
+        ] {
+            for quadrant in 0..4 {
+                assert!(wall_segment(malformed, f64::MAX, quadrant).is_finite());
+            }
+        }
+    }
+
     /// A designer's minus sign is a typo, not a wall pointing backwards.
     /// Left raw it is three different bugs at once: a padded extent that
     /// `BoxShape3D` refuses (leaving the collider at its default cube while
@@ -2116,6 +2557,372 @@ mod tests {
             assert_eq!(basis.col_b(), up, "quadrant {k} y column");
             assert_eq!(basis.col_c(), z, "quadrant {k} z column");
         }
+    }
+
+    /// Live editor transforms carry scale and free-hand rotation back onto a
+    /// wall after `_ready`. Normalizing the inherited WORLD basis must return
+    /// the same exact unit quadrant family as initial placement, including a
+    /// deterministic identity fallback for poisoned input.
+    #[test]
+    fn wall_basis_normalization_discards_inherited_scale_exactly() {
+        let inherited = Basis::from_cols(
+            Vector3::new(0.0, 0.0, -0.5),
+            Vector3::new(0.0, 3.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+        );
+        let snapped = normalized_wall_basis(inherited);
+        assert_eq!(snapped.col_a(), Vector3::new(0.0, 0.0, -1.0));
+        assert_eq!(snapped.col_b(), Vector3::new(0.0, 1.0, 0.0));
+        assert_eq!(snapped.col_c(), Vector3::new(1.0, 0.0, 0.0));
+
+        let poisoned = Basis::from_cols(
+            Vector3::new(f32::NAN, 0.0, f32::INFINITY),
+            Vector3::ZERO,
+            Vector3::ZERO,
+        );
+        assert_eq!(normalized_wall_basis(poisoned), Basis::IDENTITY);
+    }
+
+    /// A global basis can only be written through an ancestor whose inverse
+    /// exists and remains finite. Zero scale and poisoned transforms are
+    /// ordinary editor inputs, not permission for the adapter to call into
+    /// Godot's singular affine inverse or retry that failed write forever.
+    #[test]
+    fn wall_parent_transform_classifies_every_representability_failure() {
+        assert_eq!(
+            wall_parent_transform_state(None, Transform3D::IDENTITY),
+            WallParentTransformState::Representable
+        );
+        assert_eq!(
+            wall_parent_transform_state(Some(Transform3D::IDENTITY), Transform3D::IDENTITY),
+            WallParentTransformState::Representable
+        );
+        assert_eq!(
+            wall_parent_transform_state(
+                Some(Transform3D::new(
+                    Basis::from_scale(Vector3::new(-2.0, 3.0, 0.5)),
+                    Vector3::new(7.0, 0.0, 11.0),
+                )),
+                Transform3D::IDENTITY,
+            ),
+            WallParentTransformState::Representable
+        );
+        assert_eq!(
+            wall_parent_transform_state(
+                Some(Transform3D::new(
+                    Basis::from_scale(Vector3::new(1.0, 0.0, 1.0)),
+                    Vector3::ZERO,
+                )),
+                Transform3D::IDENTITY,
+            ),
+            WallParentTransformState::Singular
+        );
+        assert_eq!(
+            wall_parent_transform_state(
+                Some(Transform3D::new(
+                    Basis::IDENTITY,
+                    Vector3::new(f32::NAN, 0.0, 0.0),
+                )),
+                Transform3D::IDENTITY,
+            ),
+            WallParentTransformState::NonFinite
+        );
+        assert_eq!(
+            wall_parent_transform_state(
+                Some(Transform3D::new(
+                    Basis::from_scale(Vector3::new(f32::MAX, f32::MAX, f32::MAX)),
+                    Vector3::ZERO,
+                )),
+                Transform3D::IDENTITY,
+            ),
+            WallParentTransformState::NonFinite,
+            "a finite basis whose determinant overflows must be rejected before inverse()"
+        );
+        assert_eq!(
+            wall_parent_transform_state(
+                Some(Transform3D::new(
+                    Basis::from_cols(
+                        Vector3::new(f32::INFINITY, 0.0, 0.0),
+                        Vector3::UP,
+                        Vector3::BACK,
+                    ),
+                    Vector3::ZERO,
+                )),
+                Transform3D::IDENTITY,
+            ),
+            WallParentTransformState::NonFinite
+        );
+        let subnormal = f32::from_bits(1);
+        assert_eq!(
+            wall_parent_transform_state(
+                Some(Transform3D::new(
+                    Basis::from_scale(Vector3::new(subnormal, 1.0, 1.0)),
+                    Vector3::ZERO,
+                )),
+                Transform3D::IDENTITY,
+            ),
+            WallParentTransformState::NonFinite
+        );
+        assert_eq!(
+            wall_parent_transform_state(
+                Some(Transform3D::new(
+                    Basis::from_scale(Vector3::new(0.01, 1.0, 1.0)),
+                    Vector3::new(f32::MAX, 0.0, 0.0),
+                )),
+                Transform3D::IDENTITY,
+            ),
+            WallParentTransformState::NonFinite
+        );
+        assert_eq!(
+            wall_parent_transform_state(
+                Some(Transform3D::IDENTITY),
+                Transform3D::new(Basis::IDENTITY, Vector3::new(f32::INFINITY, 0.0, 0.0)),
+            ),
+            WallParentTransformState::NonFinite
+        );
+    }
+
+    /// A poisoned wall transform is repaired lane-by-lane from its last valid
+    /// placement: finite position input survives, the invalid lanes fall back,
+    /// and a valid planar X direction still chooses the authored quadrant even
+    /// if an irrelevant basis lane was NaN.
+    #[test]
+    fn wall_transform_recovery_preserves_every_finite_authored_lane() {
+        let fallback = Transform3D::new(quadrant_basis(1), Vector3::new(7.0, 2.0, 11.0));
+        let poisoned = Transform3D::new(
+            Basis::from_cols(
+                Vector3::new(-1.0, 0.0, 0.0),
+                Vector3::new(0.0, f32::NAN, 0.0),
+                Vector3::new(0.0, 0.0, f32::INFINITY),
+            ),
+            Vector3::new(f32::NAN, 5.0, f32::INFINITY),
+        );
+        let recovered = recover_wall_transform(poisoned, Some(fallback));
+        assert_eq!(recovered.origin, Vector3::new(7.0, 5.0, 11.0));
+        assert_eq!(recovered.basis, quadrant_basis(2));
+        assert!(recovered.is_finite());
+
+        let no_history = recover_wall_transform(
+            Transform3D::new(
+                Basis::from_cols(
+                    Vector3::new(f32::NAN, 0.0, f32::INFINITY),
+                    Vector3::ZERO,
+                    Vector3::ZERO,
+                ),
+                Vector3::new(f32::NAN, f32::NEG_INFINITY, 3.0),
+            ),
+            None,
+        );
+        assert_eq!(no_history.origin, Vector3::new(0.0, 0.0, 3.0));
+        assert_eq!(no_history.basis, Basis::IDENTITY);
+        assert!(no_history.is_finite());
+    }
+
+    /// Recovery happens before parent composition. With IEEE arithmetic one
+    /// infinite local lane contaminates every world lane through zero-times-
+    /// infinity terms, but the finite authored Y value must still survive.
+    #[test]
+    fn parented_wall_recovery_preserves_finite_local_lanes_before_composition() {
+        let parent = Transform3D::new(Basis::IDENTITY, Vector3::new(8.0, 0.0, 12.0));
+        let initial = plan_wall_transform(
+            parent,
+            Transform3D::IDENTITY,
+            Some(parent),
+            WallTransformMemory::default(),
+        );
+        let memory = initial.memory;
+        let poisoned_local =
+            Transform3D::new(Basis::IDENTITY, Vector3::new(f32::NAN, 5.0, f32::INFINITY));
+        let contaminated_global = parent * poisoned_local;
+        assert!(!contaminated_global.is_finite());
+
+        let repaired =
+            plan_wall_transform(contaminated_global, poisoned_local, Some(parent), memory);
+        assert_eq!(repaired.memory.fault, Some(WallTransformFault::Own));
+        assert_eq!(
+            repaired.write_global.expect("poison must be repaired"),
+            Transform3D::new(Basis::IDENTITY, Vector3::new(8.0, 5.0, 12.0))
+        );
+    }
+
+    /// Collision priority accepts only positive finite f32 values. Every
+    /// malformed reading retains the last valid value (or Godot's default),
+    /// including a malformed fallback supplied by an untrusted caller.
+    #[test]
+    fn wall_priority_repairs_every_value_godot_refuses() {
+        assert_eq!(sanitize_wall_priority(2.5, None), (2.5, false));
+        for invalid_priority in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                sanitize_wall_priority(invalid_priority, Some(2.5)),
+                (2.5, true)
+            );
+        }
+        assert_eq!(sanitize_wall_priority(0.0, Some(-4.0)), (1.0, true));
+        assert_eq!(sanitize_wall_priority(0.0, Some(f32::NAN)), (1.0, true));
+    }
+
+    /// The backing field is repaired without re-entering the setter. Any later
+    /// valid setter call is therefore a genuine acknowledgment, including a
+    /// designer re-entering the displayed repaired value.
+    #[test]
+    fn wall_priority_repair_warning_clears_on_the_next_valid_setter_call() {
+        let first = plan_wall_priority(f32::NAN, WallPriorityMemory::default());
+        assert!(first.repaired);
+        assert!(first.warn);
+        assert_eq!(first.value, 1.0);
+
+        let echo = plan_wall_priority(first.value, first.memory);
+        assert!(!echo.repaired);
+        assert!(!echo.warn);
+
+        let edited = plan_wall_priority(2.5, first.memory);
+        assert!(!edited.repaired);
+        assert!(!edited.warn);
+    }
+
+    /// A finite wall never owns its ancestor's poison. Once the ancestor is
+    /// repaired the warning clears without demanding an unrelated wall move;
+    /// finite composition overflow is classified the same way.
+    #[test]
+    fn wall_transform_attributes_parent_poison_and_overflow_to_the_parent() {
+        let local = Transform3D::new(Basis::IDENTITY, Vector3::new(1.0, 2.0, 3.0));
+        let poisoned_parent = Transform3D::new(Basis::IDENTITY, Vector3::new(f32::NAN, 0.0, 0.0));
+        let blocked = plan_wall_transform(
+            poisoned_parent * local,
+            local,
+            Some(poisoned_parent),
+            WallTransformMemory::default(),
+        );
+        assert_eq!(blocked.memory.fault, Some(WallTransformFault::Ancestor));
+        assert!(!blocked.memory.pending_own_acknowledgment);
+
+        let repaired =
+            plan_wall_transform(local, local, Some(Transform3D::IDENTITY), blocked.memory);
+        assert_eq!(repaired.memory.fault, None);
+        assert!(!repaired.memory.pending_own_acknowledgment);
+
+        let overflowing_parent = Transform3D::new(
+            Basis::from_scale(Vector3::new(f32::MAX, 1.0, 1.0)),
+            Vector3::ZERO,
+        );
+        let overflow_local = Transform3D::new(Basis::IDENTITY, Vector3::new(2.0, 2.0, 3.0));
+        let overflow = plan_wall_transform(
+            overflowing_parent * overflow_local,
+            overflow_local,
+            Some(overflowing_parent),
+            WallTransformMemory::default(),
+        );
+        assert_eq!(overflow.memory.fault, Some(WallTransformFault::Ancestor));
+        assert!(!overflow.memory.pending_own_acknowledgment);
+        assert!(overflow.write_global.is_none());
+    }
+
+    /// The live-wall transition is stable across engine float round-trips,
+    /// holds a poisoned-input warning across idle frames, and clears it only
+    /// after a genuinely new finite authored placement. This pins the state
+    /// machine independently of Godot process ordering.
+    #[test]
+    fn wall_transform_plan_settles_and_keeps_recovery_faults_until_an_edit() {
+        let parent = Transform3D::new(
+            Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.0, 0.73, 0.0))
+                .scaled(Vector3::new(2.0, 3.0, 0.5)),
+            Vector3::new(7.0, 0.0, 11.0),
+        );
+        let current = parent;
+        let first = plan_wall_transform(
+            current,
+            Transform3D::IDENTITY,
+            Some(parent),
+            WallTransformMemory::default(),
+        );
+        assert!(first.write_global.is_some());
+        let memory = settle_wall_write(first.memory, Transform3D::IDENTITY, Some(parent));
+        let settled = plan_wall_transform(
+            Transform3D::new(
+                Basis::from_cols(
+                    Vector3::new(1.0, 0.0, 7.0e-9),
+                    Vector3::UP,
+                    Vector3::new(-7.0e-9, 0.0, 1.0),
+                ),
+                Vector3::new(7.0, 0.0, 11.0),
+            ),
+            Transform3D::IDENTITY,
+            Some(parent),
+            memory,
+        );
+        assert!(settled.write_global.is_none());
+        assert_eq!(settled.memory, memory);
+
+        let poisoned =
+            Transform3D::new(Basis::IDENTITY, Vector3::new(f32::NAN, 5.0, f32::INFINITY));
+        let repaired =
+            plan_wall_transform(poisoned, poisoned, None, WallTransformMemory::default());
+        assert_eq!(repaired.memory.fault, Some(WallTransformFault::Own));
+        let repaired_global = repaired.write_global.expect("poison must be repaired");
+        let repaired_memory = settle_wall_write(repaired.memory, repaired_global, None);
+        for _ in 0..3 {
+            let idle = plan_wall_transform(repaired_global, repaired_global, None, repaired_memory);
+            assert_eq!(idle.memory.fault, Some(WallTransformFault::Own));
+            assert!(idle.write_global.is_none());
+        }
+        let parent_only = Transform3D::new(Basis::IDENTITY, Vector3::new(9.0, 0.0, 12.0));
+        let inherited_move = plan_wall_transform(
+            parent_only * repaired_global,
+            repaired_global,
+            Some(parent_only),
+            repaired_memory,
+        );
+        assert_eq!(
+            inherited_move.memory.fault,
+            Some(WallTransformFault::Own),
+            "moving only an ancestor must not acknowledge the wall's own repaired input"
+        );
+        let singular_parent = Transform3D::new(
+            Basis::from_scale(Vector3::new(0.0, 1.0, 1.0)),
+            Vector3::ZERO,
+        );
+        let blocked = plan_wall_transform(
+            repaired_global,
+            repaired_global,
+            Some(singular_parent),
+            repaired_memory,
+        );
+        assert_eq!(blocked.memory.fault, Some(WallTransformFault::Ancestor));
+        assert!(blocked.memory.pending_own_acknowledgment);
+        let unblocked = plan_wall_transform(
+            repaired_global,
+            repaired_global,
+            Some(Transform3D::IDENTITY),
+            blocked.memory,
+        );
+        assert_eq!(
+            unblocked.memory.fault,
+            Some(WallTransformFault::Own),
+            "repairing an ancestor must restore the still-unacknowledged own fault"
+        );
+        let changed_while_blocked = Transform3D::new(Basis::IDENTITY, Vector3::new(3.0, 5.0, 0.0));
+        let acknowledged_while_blocked = plan_wall_transform(
+            singular_parent * changed_while_blocked,
+            changed_while_blocked,
+            Some(singular_parent),
+            blocked.memory,
+        );
+        assert_eq!(
+            acknowledged_while_blocked.memory.fault,
+            Some(WallTransformFault::Ancestor)
+        );
+        assert!(!acknowledged_while_blocked.memory.pending_own_acknowledgment);
+        let repaired_after_acknowledgment = plan_wall_transform(
+            changed_while_blocked,
+            changed_while_blocked,
+            Some(Transform3D::IDENTITY),
+            acknowledged_while_blocked.memory,
+        );
+        assert_eq!(repaired_after_acknowledgment.memory.fault, None);
+        let moved = Transform3D::new(Basis::IDENTITY, Vector3::new(4.0, 5.0, 6.0));
+        let acknowledged = plan_wall_transform(moved, moved, None, unblocked.memory);
+        assert_eq!(acknowledged.memory.fault, None);
+        assert!(!acknowledged.memory.pending_own_acknowledgment);
     }
 
     /// A wall's centerline runs along its snapped axis: even quadrants
@@ -2688,6 +3495,7 @@ mod tests {
     fn still_node(path: &str) -> SignatureNode {
         SignatureNode {
             path: path.to_string(),
+            instance_identity: 7,
             transform: [
                 1.0, 0.0, 0.0, // basis X
                 0.0, 1.0, 0.0, // basis Y
@@ -2707,6 +3515,21 @@ mod tests {
         assert_eq!(
             scene_signature(STILL_EXTENTS, &scene),
             scene_signature(STILL_EXTENTS, &scene.clone())
+        );
+    }
+
+    /// Rebuilding a WaveRun replaces its ownerless RunSeg wall with a new
+    /// Godot object at the same path, pose and AABB. Identity is the only
+    /// condition that changes, and therefore the only signal that can make
+    /// the editor level repaint the fresh mesh and replace its freed handle.
+    #[test]
+    fn replacing_a_node_generation_alone_moves_the_signature() {
+        let original = still_node("Doorway/RunSeg1");
+        let mut replacement = original.clone();
+        replacement.instance_identity = 8;
+        assert_ne!(
+            scene_signature(STILL_EXTENTS, &[original]),
+            scene_signature(STILL_EXTENTS, &[replacement])
         );
     }
 
