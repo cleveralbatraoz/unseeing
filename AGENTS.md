@@ -187,12 +187,42 @@ adapters, not a home for domain logic; expose only node classes, typed signals,
 designer-facing `#[export]` knobs, and in-editor docs. The pure Rust modules are
 the single behavioural source for native desktop and wasm builds.
 
+The engine/content split is two enforceable laws:
+
+- **Law 1 — everything a designer meets is a Godot object.** Every gameplay
+  entity ships as a registered Rust tool node that works when dragged into the
+  editor, or as a plain `.tscn` prefab composed from those nodes. A drawing
+  node builds named blueprint limbs idempotently; an intentionally drawless
+  datum says so explicitly. Each node is reached by recursive level census or
+  has an explicit exclusion. World solids enter the per-face superface paint;
+  creatures and sources use fixed role labels; drawless data consumes no
+  label. Warnings are stored for editor triangles and printed only at runtime,
+  with both the Godot virtual and callable forwarder. Designer-facing
+  composition is scenes, nodes, signals, and Inspector properties, never
+  custom Resources or generated intermediate files. Triggers and sequences
+  are registered Rust nodes with typed signals. GDScript is tests and probes
+  only, permanently.
+- **Law 2 — everything else lives in Rust.** Pure laws belong in cargo-tested
+  modules; registered nodes remain thin boundary adapters around that logic.
+
+For every new designer-facing class, verify the complete new-object checklist:
+tool registration; named-child clearing and ownerless rebuilding, or an
+explicit drawless declaration; recursive census or an explicit exclusion;
+per-face superface labels, fixed role labels, or an explicit label-free
+classification; dual-channel warnings plus the callable forwarder and
+boot-pattern coverage; ranged/suffixed Inspector hints and `editor-docs`
+documentation; SVG icon and exact manifest count; both hand-written class
+rosters; dependency injection before tree entry and no self-wiring; simulated
+clocks and seeded randomness only; capture/restore coverage when stateful;
+runtime portability checks rather than architecture conditional compilation;
+cargo, gdUnit, editor-probe, and deliberate mutation evidence.
+
 - Keep functions small enough that their domain, result, and dependencies are
   evident. Explicitly model inputs and outputs; do not conceal coupling merely
   to shorten a signature.
-- Godot is the visible game: editor-authored scenes and thin, statically typed
-  GDScript for triggers, sequences, and tuning. Author levels in the editor;
-  derive technical contracts from scenes.
+- Godot is the visible game: editor-authored scenes composed from registered
+  Rust nodes. Author levels in the editor and derive technical contracts from
+  scenes; shipped GDScript is forbidden.
 - `#![deny(unsafe_code)]` applies. The sole exception is the targeted
   `unsafe impl ExtensionLibrary` required by gdext; add no other exception.
 - Native Rust uses the stable pin in `rust/rust-toolchain.toml`. Web alone
