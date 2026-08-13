@@ -196,6 +196,9 @@ else
   dd if=/dev/zero of="$TMP/repo/huge.bin" bs=1024 count=6144 2>/dev/null
   # a space in the name — the guard must not word-split its file list
   printf 'small\n' > "$TMP/repo/tiny file.txt"
+  mkdir -p "$TMP/repo/game/tests" "$TMP/repo/game/scripts"
+  printf 'extends Node\n' > "$TMP/repo/game/tests/legal test.gd"
+  printf 'extends Node\n' > "$TMP/repo/game/scripts/illegal.gd"
 
   probe() { # probe <expected-exit> <label> [ALLOW_BIG value]
     want="$1"
@@ -218,6 +221,19 @@ else
 
   git -C "$TMP/repo" add "tiny file.txt"
   probe 0 "size guard passes a small file"
+
+  git -C "$TMP/repo" add "game/tests/legal test.gd"
+  probe 0 "pre-commit accepts legal test GDScript whose path contains spaces"
+
+  git -C "$TMP/repo" add game/scripts/illegal.gd
+  probe 1 "pre-commit rejects staged first-party GDScript outside game/tests"
+  if grep -q 'game/scripts/illegal.gd' "$TMP/out"; then
+    ok "pre-commit names the illegal GDScript path"
+  else
+    bad "pre-commit does not name the illegal GDScript path"
+  fi
+  git -C "$TMP/repo" reset -q HEAD -- game/scripts/illegal.gd 2>/dev/null \
+    || git -C "$TMP/repo" rm --cached -q game/scripts/illegal.gd
 
   git -C "$TMP/repo" add huge.bin
   probe 1 "size guard rejects a 6 MiB staged file"

@@ -37,17 +37,26 @@ if [ "${ALLOW_BIG:-}" != "1" ]; then
   fi
 fi
 
-# Third-party addon code under game/addons/ is excluded from formatting:
-# gdUnit4 is vendored and lock-pinned; godot_mcp is ignored and per-machine.
-gd_files="$(git diff --cached --name-only --diff-filter=ACMR -- '*.gd' ':!game/addons/')"
+# The only third-party exceptions are the known gdUnit4 and godot_mcp paths.
+# An unknown addon is first-party until policy explicitly says otherwise.
+gd_files="$(git diff --cached --name-only --diff-filter=ACMR -- '*.gd' \
+  ':!game/addons/gdUnit4/**' ':!game/addons/godot_mcp/**')"
 if [ -n "$gd_files" ]; then
+  illegal_gd="$(printf '%s\n' "$gd_files" | awk '$0 !~ /^game\/tests\//')"
+  if [ -n "$illegal_gd" ]; then
+    echo "pre-commit: first-party GDScript is tests/probes only; shipped behavior belongs in Rust:"
+    printf '%s\n' "$illegal_gd" | sed 's/^/  /'
+    exit 1
+  fi
   command -v gdformat >/dev/null 2>&1 && command -v gdlint >/dev/null 2>&1 || {
     echo "pre-commit: gdformat/gdlint not found (pipx install 'gdtoolkit==4.*')"
     exit 1
   }
-  gdformat --check $gd_files || {
-    echo "pre-commit: unformatted GDScript — run: gdformat $gd_files"
-    exit 1
-  }
-  gdlint $gd_files
+  printf '%s\n' "$gd_files" | while IFS= read -r gd_file; do
+    gdformat --check "$gd_file" || {
+      echo "pre-commit: unformatted GDScript — run: gdformat '$gd_file'"
+      exit 1
+    }
+    gdlint "$gd_file"
+  done
 fi

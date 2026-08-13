@@ -44,6 +44,8 @@ echo "ci: boot-error gate self-test"
 "$DIR/test/ci_boot_error_gate.sh" || exit 1
 echo "ci: gdscript lint scope self-test"
 "$DIR/test/ci_gdscript_lint_scope.sh" || exit 1
+echo "ci: GDScript tests/probes-only placement"
+"$DIR/ci/check_gdscript_policy.sh" || exit 1
 echo "ci: gdUnit source/summary gate self-test"
 "$DIR/test/ci_gdunit_gate.sh" || exit 1
 echo "ci: POSIX designer-bootstrap self-test"
@@ -120,10 +122,16 @@ GDLINT="$(command -v gdlint || echo "$HOME/.local/bin/gdlint")"
   echo "ci: FAILED gdformat/gdlint not found (pipx install 'gdtoolkit==4.*')"
   exit 2
 }
+# The placement checker runs in its own process; source the shared functions in
+# this shell for the independent format/lint stage too.
 . "$DIR/ci/gdscript_files.sh"
-GD_FILES="$(gdscript_files "$DIR")"
-"$GDFORMAT" --check $GD_FILES || { echo "ci: format check FAILED (run gdformat on the files above)"; exit 1; }
-"$GDLINT" $GD_FILES || { echo "ci: lint FAILED"; exit 1; }
+gdscript_files "$DIR" | while IFS= read -r gd_file; do
+  "$GDFORMAT" --check "$gd_file" || {
+    echo "ci: format check FAILED (run gdformat on $gd_file)"
+    exit 1
+  }
+  "$GDLINT" "$gd_file" || { echo "ci: lint FAILED ($gd_file)"; exit 1; }
+done
 echo "ci: format + lint OK"
 
 echo "ci: import + headless boot check"

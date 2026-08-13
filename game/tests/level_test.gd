@@ -13,8 +13,8 @@ extends GdUnitTestSuite
 ## line its problem is reported on. A gdUnit4 suite is a list of cases, not
 ## a class with an API: every case is a public method, so the 20-method
 ## ceiling counts coverage rather than surface. Suppressed in the two
-## suites that outgrew it and nowhere else, so the rule keeps its teeth
-## over `game/scripts/`.)
+## suites that outgrew it and nowhere else, so the rule keeps its teeth over
+## every test/probe GDScript the project permits.)
 ##
 ## The SHIPPED scene's own invariants live next door, in map_test.gd. The
 ## shipped-scene cases here are deliberate exceptions, and they are not
