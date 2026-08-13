@@ -15,7 +15,7 @@ The authoring boundary stays visible throughout this guide:
 | --- | --- |
 | Level scenes and plain-root prefabs | Runtime composition and recursive discovery |
 | Placement, rotation, wall endpoints, openings, and source knobs | Geometry, collision, sound waves, and validation |
-| `WaveSpawn`, `WaveRun`, solids, sources, and room instances | Player setup, materials, object IDs, and the hearing pass |
+| `WaveSpawn`, `WaveRun`, solids, sources, and room instances | Player setup, materials, per-face and fixed-role labels, and the hearing pass |
 | The `UnseeingGame` **Level Scene** resource choice | Safe inject-before-add wiring of the selected `WaveLevel` |
 
 Level design never requires editing Rust or writing GDScript.
@@ -79,6 +79,11 @@ Each row ends with its branch in square brackets. Change directory to the path
 on the row for the work you intend to edit. While the editor-authoring campaign
 has not been merged, that branch is `worktree-editor-authoring-campaign`. After
 it is merged, use the normal `main` checkout.
+
+For this in-flight campaign, the usual repository-relative checkout is
+`.claude/worktrees/editor-authoring-campaign`. That is a temporary hidden
+directory, not the durable `main` checkout. The absolute path printed by
+`git worktree list` is authoritative if your host placed it elsewhere.
 
 Verify the selected directory before continuing:
 
@@ -289,6 +294,56 @@ gizmos or the Inspector. Save with **Command+S** on macOS or **Ctrl+S** on
 Windows and Linux. Do not attach a GDScript to a level: the supported authoring
 vocabulary is already exposed as typed Godot nodes.
 
+### Move a chair visually
+
+This is a complete first edit using the shipped chair in level 01:
+
+1. Double-click `scenes/level_01.tscn` in FileSystem.
+2. In the Scene dock, select the top-level **Chair** instance. Select the
+   plain prefab root, not its `Seat`, `Leg`, or `Back` pieces; moving the root
+   keeps the whole chair together.
+3. Move the mouse over the 3D viewport and press **F** to centre the view on
+   the selected chair.
+4. Press **W** to enter Move mode. Drag the red arrow for X, the blue arrow
+   for Z, or the red/blue plane handle to move across the floor. The green
+   arrow is Y (height), so leave it alone when the chair should stay grounded.
+5. For an exact placement, expand **Transform** in the Inspector and type the
+   desired **Position** values. Godot uses X/Z for the floor and Y for height;
+   a floor-standing chair keeps Y at `0`.
+6. Save the level. **Command+Z** on macOS or **Ctrl+Z** on Windows/Linux undoes
+   an unwanted move.
+
+Only this chair instance moves; the reusable `chair.tscn` remains unchanged.
+To inspect the text change from the same checkout, run:
+
+```sh
+git diff -- game/scenes/level_01.tscn
+```
+
+Godot may also normalize scene syntax or mint `unique_id` values when it
+saves. Review the whole diff and keep the intended `Chair` position change;
+do not treat unrelated serialized noise as part of the design edit.
+
+### Change the 3D point of view
+
+With the default Godot navigation scheme and the pointer over the 3D viewport:
+
+- Press **F** to focus the selected node.
+- Hold the **middle mouse button** and drag to orbit.
+- Hold **Shift+middle mouse button** and drag to pan.
+- Use the mouse wheel to zoom; **Ctrl+middle mouse button** and drag is the
+  continuous zoom alternative.
+- Hold the **right mouse button** for freelook. Move the mouse to look; use
+  **W A S D** to fly, **E** to rise, and **Q** to descend. Release the button
+  to leave freelook.
+- Drag the orientation gizmo at the viewport's upper right to orbit, or click
+  one of its coloured circles for an exact orthogonal side, top, or front
+  view. **Keypad 5** toggles perspective and orthogonal projection.
+
+These keys affect the editor camera only while the 3D viewport has focus; they
+do not move the game character. For a trackpad-oriented scheme, open **Editor
+Settings → Editors → 3D → Navigation** and select **Tablet/Trackpad**.
+
 To add one of those nodes, select its intended parent in the Scene dock, select
 the **+** button (**Add Child Node**), type the class name such as `WaveSpawn`
 or `WaveRun`, select the matching result, and select **Create**. If a custom
@@ -327,14 +382,21 @@ scene; the engine rebuilds them.
 
 ### Editing a WaveRun opening
 
-`WaveRun.From` and `WaveRun.To` are `(X, Z)` coordinates in the parent scene.
-The dominant changing axis is the run's axis; X wins an exact tie. Keep runs
-axis-aligned so a diagonal does not have to be folded with a warning.
+`WaveRun.From` and `WaveRun.To` are `(X, Z)` coordinates in the parent's local
+space. The dominant changing axis is the run's axis; X wins an exact tie. Keep
+runs axis-aligned so a diagonal does not have to be folded with a warning.
 
 Godot's generic `Vector2` editor labels those two boxes **x** and **y**. For a
-WaveRun endpoint, read them as **world X** and **world Z**: the displayed `y`
-box is horizontal Z, not elevation. WaveRun is planar and has no endpoint
-height field.
+WaveRun endpoint, read them as **parent-local X** and **parent-local Z**: the
+displayed `y` box is horizontal Z, not elevation. WaveRun is planar and has no
+endpoint height field.
+
+Moving or rotating the `WaveRun` node with the viewport gizmo is also
+supported. The engine folds that node's planar transform into **From**, **To**,
+and **Openings**, then resets the node transform to identity so there is still
+one source of authored truth. A transform on an ancestor room prefab remains
+ordinary composition. Y translation or tilt cannot be represented by this
+planar vocabulary, so it is discarded with a warning.
 
 Each element of **Openings** is a `Vector2` whose displayed fields mean:
 
@@ -355,9 +417,9 @@ clearer for authored content.
 A yellow warning triangle in the Scene dock is an authoring fault, not
 decoration. Hover it to read the message. Typical causes include duplicate
 spawns, overlapping or unfloored solids, an invalid run, or too many mutually
-touching objects for the outline-id palette. Fix the placement or Inspector
-value and give the editor a frame to re-evaluate; the warning should clear by
-itself.
+separated face classes for the five-label world palette. Fix the placement or
+Inspector value and give the editor a frame to re-evaluate; the warning should
+clear by itself.
 
 ## 7. Run the game or a selected level
 
@@ -440,9 +502,9 @@ For a new reusable prop or room:
 
 This boundary is deliberate. Designers compose scenes, transforms, prefabs,
 and Inspector values in Godot. Rust owns rendering, physics, wave propagation,
-material injection, object-id assignment, and validation. GDScript in this
-repository is reserved for automated tests and editor probes, not level
-content.
+material injection, superface and fixed-role label derivation, and validation.
+GDScript in this repository is reserved for automated tests and editor probes,
+not level content.
 
 ## 9. Optional: connect an assistant through Godot MCP
 

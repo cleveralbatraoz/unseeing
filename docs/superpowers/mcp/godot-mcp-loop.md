@@ -8,8 +8,9 @@ and looking at it.*
 
 Debugging Unseeing used to mean rendering frames and staring at them. That is
 slow, expensive in context, and mute about causes: a picture can show that a
-seam did not draw, but it cannot say that two solids were handed the same
-object id.
+seam did not draw, but it cannot say whether the participating faces were
+intentionally joined into one superface or carried labels without the required
+separation.
 
 `WaveObserver` answers those questions as structured data. **godot-mcp** is
 what lets you ask them from inside a conversation, against a running game,
@@ -26,8 +27,8 @@ safe to commit.
 - **The MCP client half ships in-tree.** `.mcp.json` at the repo root
   declares the `godot-mcp` server (`npx -y
   @satelliteoflove/godot-mcp@<pinned version>`, no serve flags needed — the
-  plain invocation speaks MCP over stdio). Claude Code and any other client
-  that reads `.mcp.json` picks this up with no setup step at all.
+  plain invocation speaks MCP over stdio). Any MCP client that reads
+  `.mcp.json` picks this up with no setup step at all.
 - **The addon half installs on demand, per machine.** Run
   `tools/setup-mcp.sh` from the repo root: it checks for Node 20+, then runs
   the pinned `npx @satelliteoflove/godot-mcp@<version> --install-addon

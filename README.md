@@ -24,22 +24,23 @@ touches.
 ## How it works
 
 Everything visible is sound. A **data pass** renders the world not as an
-image but as data — how recently a wave swept each point, which object it
-belongs to, and camera distance — packed into color channels (the object id
-is a flat per-instance value, falling back to a normal-derived one for
-anything the level has not tagged; deliberately: the depth texture
-is unreliable on WebGL2, and the web build is a first-class target). A
+image but as data — how recently a wave swept each point, a per-vertex face
+label, and camera distance — packed into color channels. At level derivation,
+Rust joins same-facing coplanar overlaps into **superfaces** and bakes one
+bit-identical class label into those faces' `CUSTOM0` vertices; faces that
+must draw a crease receive labels at least `MIN_SEP` (0.08) apart. Sources
+and creatures use fixed role labels from the same rendering subsystem. A
 fullscreen **hearing pass** turns that data into everything you see: thin
 white outlines, and only where waves have swept. Two kinds of line make them
-— silhouettes, where the world steps away from itself, and creases, where
-the object id changes — so a wall or a table reads as **one** shape with its
-own edge rather than a heap of box corners, and the seam where two things
-meet still draws. Expanding wave shells are ray-traced in air and occluded
-by the world, so obstacles carve visible bites out of the rings. **Echo reflections** sample the world
-with physics ray fans from every sound — each struck surface point becomes a
-secondary emitter firing exactly when the wavefront arrives, and anything in
-acoustic shadow stays silent. No texture assets exist — the world is nothing
-but thin white lines on black.
+— silhouettes, where packed distance steps, and creases, where the face label
+changes. Flush overlaps therefore melt without a depth-fighting seam, while
+bends, steps, and separate touching solids still draw. Expanding wave shells
+are ray-traced in air and occluded by the world, so obstacles carve visible
+bites out of the rings. **Echo reflections** sample the world with physics ray
+fans from every sound — each struck surface point becomes a secondary emitter
+firing exactly when the wavefront arrives, and anything in acoustic shadow
+stays silent. No texture assets exist — the world is nothing but thin white
+lines on black.
 
 See `game/README.md` for the architecture and porting status.
 
@@ -70,11 +71,12 @@ repository-local setup and upgrade guide in [docs/agent-workflow.md](docs/agent-
 The agent plugin is developer tooling and is excluded from game and deployment
 artifacts.
 
-- `rust/` — the wave/physics core as a GDExtension (godot-rust). Pure math
-  lives in engine-free modules under plain `cargo test`; the `ffi` module is
-  the only place engine types appear. `rust/build-wasm.sh` builds the
-  single-threaded wasm for the web export (toolchain pins and their reasons
-  are documented in the script).
+- `rust/` — the wave/physics core as a GDExtension (godot-rust). Pure laws
+  live in engine-free modules under plain `cargo test`; registered adapters
+  under `rust/src/nodes/` and the narrow `ffi` boundary translate between
+  those laws and Godot types. `rust/build-wasm.sh` builds the single-threaded
+  wasm for the web export (toolchain pins and their reasons are documented in
+  the script).
 - `ci/pipeline.sh` — the full gauntlet: vendored-framework integrity check,
   cargo fmt/clippy/test + release build, format + lint gate, headless boot
   check, unit tests (`game/tests/`), the wasm core build, clean Web export,

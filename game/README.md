@@ -19,22 +19,20 @@ the visible game.
   `../rust/src/demo_tap.rs`); the only GDScript left in the project is
   test- and probe-facing, under `tests/`.
 - `scenes/level_01.tscn` and `scenes/level_02.tscn` — levels authored in the
-  editor: `WaveWall`
-  and `WaveProp` boxes, the `SoundFan`, the companion `WaveCat`, and a
-  typed `WaveSpawn` datum under a `WaveLevel` root that derives the technical
-  contracts (wall centerlines and the occluder table sound is muffled
-  through, spawn, demo tap, and the object ids that keep every seam
-  drawable) from what the designer placed.
-- `../rust/src/` — the engine: pure wave / viewmodel / level-plan /
-  object-id modules (cargo-tested) and the registered node classes the
-  game places —
+  editor from typed walls, runs, solid pieces, sources, creatures, spawns,
+  and reusable plain-root prefabs. Their `WaveLevel` root derives wall
+  centerlines, the occluder table sound is muffled through, spawn, demo tap,
+  and the per-face superface labels from what the designer placed.
+- `../rust/src/` — the engine: cargo-tested pure wave, viewmodel, level-plan,
+  and `render/` face/superface/label laws, plus the registered node adapters
+  the game places —
   `UnseeingGame` (the composition root), `WaveLevel`/`WaveWall`/`WaveProp`
   (level authoring), `SoundFan` (designer knobs for the hum voice),
   `WaveCat` (the companion's gait, brain and paw voice), `UnseeingPlayer`
   (movement, mouse look, cane tap modes), `HeroBody` (viewmodel meshes,
   head-bob, footsteps).
-- `shaders/data_pass.gdshader` — world rendered as data: reveal, flat
-  object id, camera distance.
+- `shaders/data_pass.gdshader` — world rendered as data: reveal, the
+  per-vertex `CUSTOM0` face or role label, and camera distance.
 - `shaders/hearing_post.gdshader` — outlines + wave shells; the only pass
   the player ever sees.
 
@@ -74,8 +72,8 @@ correct-worktree check and the full-game runner scene.
    quit and relaunch Godot — only then does the scene come back exactly
    as it was. Once it has, sound sources and the cat show their blueprint
    shapes right there in the editor viewport, and a yellow triangle on a
-   node means the level found a fault with it — hover the triangle to
-   read why.
+   node means the engine found an authoring fault there — hover the triangle
+   to read why.
 2. Open `game/project.godot` in Godot and double-click a level scene. To
    make another level, create a `WaveLevel` scene; no code or GDScript belongs
    in it. Select `UnseeingGame` in a copy of `main.tscn` and assign that scene
@@ -122,21 +120,24 @@ correct-worktree check and the full-game runner scene.
    the exact level-01 fallback. The dedicated tutorial above gives every click.
 9. The `WaveLevel` root derives everything technical from what
    you placed — wall centerlines and the occluder table every source's
-   silhouette is muffled through, the demo tap, and the flat object id
-   each box carries so its outline stays separate from whatever it
-   touches; the test suite gates the rest on every commit.
+   silhouette is muffled through, the demo tap, and how every solid face
+   participates in the outline. Same-facing coplanar overlaps become one
+   superface with a bit-identical label, so their depth fight disappears;
+   bends, steps, and faces whose seam must draw receive separated labels.
+   The test suite gates the rest on every commit.
 
-Nothing about those object ids needs setting by hand, and it is worth
-knowing why: the engine looks at which boxes actually MEET and gives
-neighbours different ids, so boxes at opposite ends of the map share freely
-and a level of any size needs only a handful. Push enough boxes into one
-another that no arrangement separates them all and the level says so loudly
-in the output — and still runs, with those few seams unlined.
+Nothing about those labels needs setting by hand. The engine colours the
+superface separation graph from five reusable world labels, while sources,
+creatures, the floor, and the ceiling use fixed role labels. The palette is
+not a limit on level size: distant face classes reuse it freely. If one local
+arrangement demands more mutually separated labels than the palette can
+provide, the affected solids and their `WaveLevel` show warnings and the game
+still runs, with the named seams at risk of disappearing.
 
 Optional tooling: `../tools/setup-mcp.sh` installs the godot-mcp editor
-addon, which lets a Claude session drive this editor directly — freeze the
-clock, step frames, inject input, read the placement faults above as
-structured data — instead of a screenshot and a guess. See
+addon, which lets a connected MCP assistant drive this editor directly —
+freeze the clock, step frames, inject input, and read the placement faults
+above as structured data — instead of a screenshot and a guess. See
 `../docs/superpowers/mcp/godot-mcp-loop.md` for the loop; it is a developer
 convenience, never a build dependency.
 
@@ -157,7 +158,7 @@ convenience, never a build dependency.
 | Wave/physics core as GDExtension Rust module | done (`rust/`: pure modules + `WaveCore`, driven directly by the `UnseeingGame` composition root; `Pulses` survives only as a `tests/` test shim) |
 | Fan / player / hero body as Rust engine nodes | done (`rust/src/nodes/`: SoundFan, UnseeingPlayer, HeroBody replace their .gd scripts; demo movie frames byte-identical across the port) |
 | Companion cat (gait, brain, paw voice) | done (`rust/src/cat_*.rs` + `WaveCat` in `scenes/level_01.tscn`) |
-| One outline per object, every seam drawn | done (`rust/src/oid_palette.rs` colours the touch graph; the shipped scene is pinned by `tests/level_test.gd`) |
+| One outline per object, intended overlaps melted, real bends and seams drawn | done (`../rust/src/render/` derives and paints the superface graph; mesh `CUSTOM0` read-backs are pinned by `tests/map_test.gd` and `tests/level_test.gd`) |
 | gdUnit4 test framework migration | done (`tests/`, headless CLI in `ci/pipeline.sh`) |
 | Vendored framework pinned + reproducible | done (`ci/gdunit4.lock`, `ci/vendor-gdunit4.sh`; self-updater off) |
 | Editor-authored levels (the engine/content split) | done (two levels, reusable props/rooms, typed spawns/runs, and an Inspector level picker; see Authoring levels) |
