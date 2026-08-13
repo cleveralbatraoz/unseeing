@@ -599,13 +599,12 @@ merge gate.
   the only scene tried and must have a `WaveLevel` root. Level 02 demonstrates
   the reusable room, typed spawn, fan, chair, and interior run entirely as
   scene composition (`rust/src/nodes/game.rs`, `game/scenes/level_02.tscn`).
-- Correct the playable current-scene workflow: duplicate the small
-  `main.tscn` runner, choose the desired level in its `UnseeingGame` node's
-  **Level Scene** property, and press F6 while that configured runner is open.
-  A raw `WaveLevel` scene is authoring content, not a composition root, so it
-  intentionally refuses to run without the runner's material and pulse
-  injection. F5 runs the project main scene and its configured picker. Do not
-  call F6 “Run Custom Scene.”
+- Correct the run workflow: a raw `WaveLevel` tab is content without the
+  player, hearing pass, materials, or wave pool and is not a playable F6
+  target. Duplicate `main.tscn`, select its `UnseeingGame` root, assign the
+  desired level to `level_scene`, and choose **Run Current Scene** or press F6
+  from that runner tab. F5 runs the shipped main project scene and therefore
+  follows its own `level_scene` picker. Do not call F6 “Run Custom Scene”.
 
 ### Research — Editor Authoring corrections
 

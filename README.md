@@ -55,11 +55,14 @@ One Godot project, exported everywhere — no per-platform code:
 
 ## Development
 
-Open `game/project.godot` in Godot (version pinned in `.godot-version`,
-enforced by CI) and press play. Renderer is `gl_compatibility` — required
-for the Web export. One-time setup: `git config core.hooksPath .githooks`
-and `pipx install "gdtoolkit==4.*"` — every commit is gated by `gdformat`
-and `gdlint`.
+For the complete first-time setup, correct-worktree check, editor tour, and
+code-free level-running workflow, follow
+[Opening and running Unseeing in Godot](docs/opening-in-godot.md). The short
+version is to run `tools/bootstrap.sh`, open `game/project.godot` in the Godot
+version pinned by `.godot-version`, and press play. Renderer is
+`gl_compatibility` — required for the Web export. One-time contributor setup:
+`git config core.hooksPath .githooks` and `pipx install "gdtoolkit==4.*"` —
+every commit is gated by `gdformat` and `gdlint`.
 
 Claude Code and Codex App/CLI contributors should follow the pinned,
 repository-local setup and upgrade guide in [docs/agent-workflow.md](docs/agent-workflow.md).

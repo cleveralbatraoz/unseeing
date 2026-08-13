@@ -48,6 +48,10 @@ first place does take one terminal step, though: nothing ships as a
 downloadable binary yet (that gap is issue #38), so building the Rust
 library yourself is the only way in today.
 
+First time opening the repository? Follow the complete
+[Godot editor tutorial](../docs/opening-in-godot.md), including the
+correct-worktree check and the full-game runner scene.
+
 1. Build the engine once so the editor knows the engine nodes: run
    `../tools/bootstrap.sh` (needed after a fresh clone or an engine
    change). It installs `rustup` if you don't already have one — the
@@ -109,9 +113,13 @@ library yourself is the only way in today.
    diagonal warns and folds, and negative widths act as magnitudes. You can
    also drag `scenes/rooms/doorway_8m.tscn` or `room_16x16.tscn` and rotate the
    whole plain-root prefab normally.
-8. With a level scene open, use **Run Current Scene** (F6). This is the useful
-   authoring loop: Godot runs that `WaveLevel` directly. Use F5 only when you
-   want `main.tscn` and its **Level Scene** selection.
+8. A raw `WaveLevel` is content, not a playable composition: F6 from the level
+   tab has no player, hearing pass, material injection or wave pool. For the
+   useful authoring loop, duplicate `main.tscn`, assign the desired level to
+   the copy's `UnseeingGame` **Level Scene** picker, and use **Run Current
+   Scene** (F6) from that runner tab. This stays entirely in Godot and keeps the
+   shipped default untouched. F5 always runs `main.tscn`; its empty picker is
+   the exact level-01 fallback. The dedicated tutorial above gives every click.
 9. The `WaveLevel` root derives everything technical from what
    you placed — wall centerlines and the occluder table every source's
    silhouette is muffled through, the demo tap, and the flat object id

@@ -26,8 +26,10 @@ green.
   warnings update and clear.
 - [ ] Place and rotate a nested WaveSpawn; confirm the player faces its global
   direction.
-- [ ] Assign level 02 to `UnseeingGame.level_scene`, run main, then open level 02
-  and use **Run Current Scene** (F6).
+- [ ] Assign level 02 to the `level_scene` picker of a code-free
+  `UnseeingGame` runner, make that runner the active tab, and use **Run Current
+  Scene** (F6); confirm the player and hearing pass exist around the selected
+  level.
 
 ## Integration choice — user decides
 

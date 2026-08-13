@@ -233,7 +233,13 @@ simulated clock + seeded randomness only).
   are independently pinned.
 - **Documentation close:** the in-repo authoring guide now teaches typed
   spawns, plain-root prop/room prefabs, absolute-start WaveRun openings, the
-  level resource picker, and Godot's actual **Run Current Scene** / F6 loop.
+  level resource picker, and the actual full-game **Run Current Scene** / F6
+  loop: a code-free `UnseeingGame` runner with its **Level Scene** assigned.
+  A follow-up opening audit caught and removed the earlier false claim that a
+  raw `WaveLevel` tab was playable by itself; it lacks the composition root's
+  player, hearing pass, material and wave-pool injection. The dedicated
+  `docs/opening-in-godot.md` now carries the complete first-time tutorial and
+  the reasoning behind that boundary.
   Wiki changes remain debt only and the close checklist separates the human
   editor, integration, wiki, deployment, and issue-closure authorizations.
   Final automated milestone: 339 Cargo tests; 289/289 gdUnit cases in 31/31
@@ -307,7 +313,7 @@ simulated clock + seeded randomness only).
    Scene-dock warning triangles appear/clear on drag (SP1), blueprint
    shapes + Create Node icons (SP1), starved-source triangle when a 7th
    node joins a cluster (SP2), prefab drag + WaveRun editing + the
-   level_scene knob + Run Custom Scene (SP3).
+   level_scene knob + F6 from a configured `UnseeingGame` runner (SP3).
 3. Present the integration menu — merge to main / PR / keep the branch —
    **the user decides.** Merging happens in the shared checkout
    `/Users/dmgalchenko/unseeing` against a clean tree only.

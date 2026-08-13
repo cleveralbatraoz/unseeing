@@ -62,7 +62,8 @@ touch `game/project.godot` to do this for you.
 `game/addons/godot_mcp/` is in `.gitignore`, and `test/repo_hygiene.sh` pins
 that from both directions — nothing under the path may be tracked, and the
 ignore rule must still cover it. Three reasons, all load-bearing (the same
-three CLAUDE.md's own godot-mcp paragraph names):
+three the authoritative `AGENTS.md` godot-mcp policy names; `CLAUDE.md` is
+only its adapter):
 
 1. `deploy.sh` ships the tree by `git archive` into a bare repo whose
    post-receive hook untars it. Anything committed under `game/addons/`
