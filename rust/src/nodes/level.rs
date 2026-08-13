@@ -124,7 +124,7 @@ struct Census {
 
 /// Which concrete thing a [`PaintEntry`] is — the level's own two slabs
 /// have no `Skin`-carrying node of their own (no indirection needed to
-/// reach their mesh), while every authored solid paints itself back
+/// reach their mesh), while every solid node (authored or derived) paints itself back
 /// through its own `paint()` method; see [`WaveLevel::paint_entry`].
 enum PaintItem {
     Slab { lid: bool },
@@ -146,9 +146,10 @@ impl PaintItem {
         }
     }
 
-    /// The authored scene node this paint entry came from. The two slabs
-    /// belong to the level itself, so only authored solids have a node a
-    /// configuration warning can be pinned to.
+    /// The solid scene node this paint entry came from. The two slabs belong
+    /// to the level itself, so only solid entries have a node address. A
+    /// generated RunSeg wall keeps that derived address here; `faults_for`
+    /// forwards it to the authored WaveRun that owns the repairable data.
     fn node(&self) -> Option<Gd<Node>> {
         match self {
             PaintItem::Slab { .. } => None,
@@ -161,7 +162,7 @@ impl PaintItem {
 }
 
 /// One item [`WaveLevel::paint_labels`] colours: a floor/ceiling slab or an
-/// authored solid, carrying its world-space `render::Shape` (what
+/// solid node (authored or derived), carrying its world-space `render::Shape` (what
 /// `render::faces` builds faces from) and the world box the touch graph
 /// reasons about — the SAME box the retired per-solid `oid_palette::assign`
 /// used, measured the identical way.
