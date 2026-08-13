@@ -934,3 +934,70 @@ func test_a_degenerate_solid_is_refused_not_mislabelled() -> void:
 	assert_int(refused.size()).is_equal(24)
 	for vertex: int in range(24):
 		assert_float(refused[vertex]).is_equal(float(vertex / 4))
+
+
+## The label lives in the MESH now, not in a per-instance uniform, so
+## every path that rewrites a solid's surface has to carry it across — a
+## knob dragged after the level derived once used to overwrite the whole
+## CUSTOM0 array with `nodes::solid::BOX_ORDINALS`, handing the shader G
+## values of 1..5 where a label in [0.15, 0.96] belongs. Every internal
+## face boundary of that solid would then crease, and its seam with the
+## floor it stands on would be judged against a number no colouring ever
+## chose.
+##
+## The wall stands well inside the default 20x20 extents so the placement
+## laws stay silent and the only behaviour under test is the resize.
+## 0.15 is the floor slab's own fixed role label
+## (`render::labels::role_label(Role::Floor)`) and 0.08 is MIN_SEP, both
+## written out here rather than read back from the code that chose them.
+func test_a_resize_after_the_derive_keeps_the_painted_labels() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var wall := _wall(4.0, Vector3(5, 0, 5), false)
+	wall.name = "ResizedWall"
+	level.add_child(wall)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+
+	var painted: PackedFloat32Array = _skin(wall).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	assert_int(painted.size()).is_equal(24)
+	for label: float in painted:
+		assert_float(label).is_between(0.15, 0.96)
+
+	wall.length = 6.0
+	var resized: PackedFloat32Array = _skin(wall).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	assert_int(resized.size()).is_equal(24)
+	for vertex: int in range(24):
+		assert_float(resized[vertex]).is_equal(painted[vertex])
+	# and the seam with the floor it stands on still draws
+	for label: float in resized:
+		assert_float(absf(label - 0.15)).is_greater_equal(0.08)
+
+
+## The same law on the OTHER resize path: a column and a wedge rebuild
+## their whole triangle list rather than resizing a box surface
+## (`render::paint::resize_triangle_surface`), and the vertex count of
+## both is fixed by their tessellation, never by the knob — so the labels
+## carry across position for position exactly as a box's do.
+func test_a_rebuilt_triangle_solid_keeps_the_painted_labels() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var column := WaveColumn.new()
+	column.name = "ResizedColumn"
+	column.radius = 0.3
+	column.height = 1.0
+	column.position = Vector3(10, 0, 10)
+	level.add_child(column)
+	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+
+	var painted: PackedFloat32Array = _skin(column).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	assert_int(painted.size()).is_equal(384)  # COLUMN_SEGMENTS * 12
+	for label: float in painted:
+		assert_float(label).is_between(0.15, 0.96)
+
+	column.radius = 0.5
+	var resized: PackedFloat32Array = _skin(column).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	assert_int(resized.size()).is_equal(384)
+	for vertex: int in range(384):
+		assert_float(resized[vertex]).is_equal(painted[vertex])

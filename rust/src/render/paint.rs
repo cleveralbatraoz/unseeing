@@ -156,12 +156,65 @@ pub fn labelled_box(size: Vector3, lift: Vector3, face_labels: [f32; 6]) -> Gd<A
 /// stale ghost limb frozen at its old size instead of resizing with the
 /// original, which is the exact bug `clear_limbs` exists to guard against
 /// after a duplicate re-enters the tree.
+/// `face_labels` is what a mesh with NOTHING to carry over is built with —
+/// the placeholder ordinals, on a first build. A mesh that already has a
+/// surface keeps whatever CUSTOM0 it is wearing ([`carry_labels_over`]),
+/// which after the level's derive-time bake is the solid's real per-face
+/// labels: the label lives in the mesh now, and a knob drag must not
+/// silently undo the paint pass.
 pub fn resize_box_surface(mesh: &mut Gd<ArrayMesh>, size: Vector3, face_labels: [f32; 6]) {
-    let arrays = labelled_box_arrays(size, Vector3::ZERO, face_labels);
+    let mut arrays = labelled_box_arrays(size, Vector3::ZERO, face_labels);
+    carry_labels_over(mesh, &mut arrays);
     mesh.clear_surfaces();
     mesh.add_surface_from_arrays_ex(PrimitiveType::TRIANGLES, &arrays)
         .flags(custom0_format())
         .done();
+}
+
+/// Replace the freshly built `arrays`' CUSTOM0 with the one `mesh` already
+/// carries, whenever it has one of exactly the same length.
+///
+/// This is what makes a resize keep the derive-time paint. The label used
+/// to live in a per-instance shader uniform and survived a resize for
+/// free; it lives in the mesh now, so every path that rewrites the surface
+/// has to carry it, or a designer dragging a knob after `_ready` hands the
+/// shader raw ordinals (1.0 .. 5.0) where a label in [0.15, 0.96] belongs
+/// — creases at every internal face boundary, and a seam judged against a
+/// number no colouring ever chose.
+///
+/// POSITIONAL, and sound because every resize in this vocabulary is
+/// shape-preserving in its vertex list: a box is always [`FACE_ORDER`]'s
+/// six quads in order (24 vertices), a column always `COLUMN_SEGMENTS *
+/// 12`, a wedge always its eight triangles — the knobs move where vertices
+/// ARE, never how many there are or which face each belongs to. The length
+/// check is the guard for that assumption rather than a formality: a
+/// future shape whose tessellation follows its size would fail it and fall
+/// back to the placeholders, which the level's next derive repaints.
+///
+/// What it does NOT do, and must not be read as doing: re-derive. The
+/// superface partition is a level-wide decision taken once, in
+/// `WaveLevel::derive`, and a solid that changes size after that may
+/// genuinely belong in a different merge cluster. Carrying the labels
+/// keeps the solid in band and keeps its OLD separations; it does not
+/// recompute them.
+fn carry_labels_over(mesh: &Gd<ArrayMesh>, arrays: &mut Array<Variant>) {
+    if mesh.get_surface_count() == 0 {
+        return;
+    }
+    let slot = ArrayType::CUSTOM0.ord() as usize;
+    let Some(Ok(kept)) = mesh
+        .surface_get_arrays(0)
+        .get(slot)
+        .map(|v| v.try_to::<PackedFloat32Array>())
+    else {
+        return;
+    };
+    let Some(Ok(fresh)) = arrays.get(slot).map(|v| v.try_to::<PackedFloat32Array>()) else {
+        return;
+    };
+    if kept.len() == fresh.len() {
+        arrays.set(slot, &kept.to_variant());
+    }
 }
 
 /// The shape kinds a static solid's builder paints — one entry per shape
@@ -234,8 +287,14 @@ fn triangle_arrays(triangles: &[(Vector3, Vector3, f32)]) -> Array<Variant> {
 /// [`resize_box_surface`]'s doc comment gives: `Node.duplicate()` shares a
 /// mesh by reference, so a rebuild has to land on every reference that
 /// mesh has.
+///
+/// The CUSTOM0 ordinals in `triangles` are the placeholders a FIRST build
+/// needs; a rebuild carries over whatever the mesh already wears, the same
+/// way [`resize_box_surface`] does and for the same reason — see
+/// [`carry_labels_over`].
 pub fn resize_triangle_surface(mesh: &mut Gd<ArrayMesh>, triangles: &[(Vector3, Vector3, f32)]) {
-    let arrays = triangle_arrays(triangles);
+    let mut arrays = triangle_arrays(triangles);
+    carry_labels_over(mesh, &mut arrays);
     mesh.clear_surfaces();
     mesh.add_surface_from_arrays_ex(PrimitiveType::TRIANGLES, &arrays)
         .flags(custom0_format())
