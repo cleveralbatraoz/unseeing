@@ -18,6 +18,9 @@ two focused `editor-docs` tests (459/459 all targets/features), 328/328 gdUnit
 cases in 31/31 suites, every editor probe, release/wasm builds, web export,
 browser smoke, and G-channel checks. It used an explicit non-deployable
 destination and verified that destination remained absent.
+The later superface-totality and renderer-label regressions raise the fresh
+all-target/all-feature Cargo count to 464/464; the full cross-layer pipeline
+must be rerun at the final integrated tree before merge.
 
 ## Automated close
 

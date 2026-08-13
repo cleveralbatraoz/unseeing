@@ -1,11 +1,9 @@
 //! Pure, atomic derivation of the labels a level boundary later applies.
 
-use std::collections::BTreeSet;
-
 use crate::oid_palette::Box3;
 use crate::render::faces::{Face, Shape, bounds, faces, paint_ordinal_count, planar_face_count};
 use crate::render::labels;
-use crate::render::superface::{Superfaces, superfaces};
+use crate::render::superface::{SeparationBuilder, Superfaces, superfaces};
 
 const LABEL_MIN: f64 = 0.15;
 const LABEL_MAX: f64 = 0.96;
@@ -14,38 +12,6 @@ pub const MAX_PAINT_SOURCES: usize = 256;
 pub const MAX_PALETTE_VALUES: usize = 11;
 pub const MAX_SOURCE_ROLES: usize = 512;
 type Separations = Vec<(usize, usize)>;
-
-struct SeparationBuilder {
-    ordered: Separations,
-    seen: BTreeSet<(usize, usize)>,
-}
-
-impl SeparationBuilder {
-    fn from_existing(existing: &[(usize, usize)]) -> Self {
-        let mut builder = Self {
-            ordered: Vec::with_capacity(existing.len()),
-            seen: BTreeSet::new(),
-        };
-        for &(a, b) in existing {
-            builder.add(a, b);
-        }
-        builder
-    }
-
-    fn add(&mut self, a: usize, b: usize) {
-        if a == b {
-            return;
-        }
-        let pair = if a < b { (a, b) } else { (b, a) };
-        if self.seen.insert(pair) {
-            self.ordered.push(pair);
-        }
-    }
-
-    fn finish(self) -> Separations {
-        self.ordered
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SourceRoleInput {
@@ -98,14 +64,14 @@ pub(crate) fn add_flank_classes(
     let mut flank_classes = reserved(flank_solids.len());
     let cluster_span = sf
         .cluster_of_solid
-        .iter()
+        .values()
         .copied()
         .max()
         .map(|max| max.checked_add(1).ok_or(PaintPlanError::ClassOverflow))
         .transpose()?
         .unwrap_or(0);
     let mut cluster_sizes = filled(cluster_span, 0usize);
-    for &cluster in &sf.cluster_of_solid {
+    for &cluster in sf.cluster_of_solid.values() {
         let Some(size) = cluster_sizes.get_mut(cluster) else {
             return Err(PaintPlanError::ClassOverflow);
         };
@@ -114,7 +80,7 @@ pub(crate) fn add_flank_classes(
     for &solid in flank_solids {
         let singleton = sf
             .cluster_of_solid
-            .get(solid)
+            .get(&solid)
             .and_then(|cluster| cluster_sizes.get(*cluster))
             .is_some_and(|&size| size == 1);
         if singleton
@@ -733,7 +699,7 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
         .enumerate()
         .filter_map(|(entry, input)| {
             (accepted[entry] && input.is_wall)
-                .then(|| sf.cluster_of_solid.get(entry).copied())
+                .then(|| sf.cluster_of_solid.get(&entry).copied())
                 .flatten()
         })
         .collect();
@@ -746,7 +712,7 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
                 && accepted[entry]
                 && sf
                     .cluster_of_solid
-                    .get(entry)
+                    .get(&entry)
                     .is_some_and(|cluster| wall_clusters.contains(cluster)))
             .then_some(entry)
         })
@@ -924,12 +890,61 @@ mod tests {
             entries: Vec::new(),
             sources: Vec::new(),
             palette: vec![
-                0.15, 0.23, 0.31, 0.39, 0.47, 0.55, 0.63, 0.71, 0.79, 0.87, 0.95,
+                0.15, 0.231, 0.312, 0.393, 0.474, 0.555, 0.636, 0.717, 0.798, 0.879, 0.96,
             ],
         })
         .unwrap();
         assert!(output.entry_commands.is_empty());
         assert!(output.source_commands.is_empty());
+    }
+
+    /// Palette clearance is a renderer contract, not an f64-only arithmetic
+    /// contract. These values are nominally 0.08 apart as f64s, but their
+    /// CUSTOM0 f32 representations differ by only 0.07999998; two roles on
+    /// one source would therefore miss the shader's 0.08 upper knee.
+    #[test]
+    fn two_source_roles_reject_a_palette_pair_that_narrows_below_the_shader_knee() {
+        let input = PaintRequest {
+            entries: Vec::new(),
+            sources: vec![PaintSourceInput {
+                area: Some(Box3::from_center_size([0.0; 3], [1.0; 3])),
+                sweep_margin: 0.0,
+                roles: 2,
+            }],
+            palette: vec![0.31, 0.39],
+        };
+        assert_eq!(
+            plan(input),
+            Err(PaintPlanError::PaletteConflict {
+                first: 0,
+                second: 1,
+            })
+        );
+    }
+
+    /// The pure plan reports the exact values the boundary will write to
+    /// CUSTOM0, widened back to f64 only for the engine-independent contract.
+    /// Keeping the original decimal here would let diagnostics claim a gap
+    /// different from the one the shader actually receives.
+    #[test]
+    fn two_source_roles_report_their_exact_post_narrow_custom0_labels() {
+        let input = PaintRequest {
+            entries: Vec::new(),
+            sources: vec![PaintSourceInput {
+                area: Some(Box3::from_center_size([0.0; 3], [1.0; 3])),
+                sweep_margin: 0.0,
+                roles: 2,
+            }],
+            palette: vec![0.31, 0.391],
+        };
+        let output = plan(input).unwrap();
+        assert_eq!(
+            output.source_commands,
+            vec![PaintCommand::Relabel(vec![
+                f64::from(0.31_f32),
+                f64::from(0.391_f32),
+            ])]
+        );
     }
 
     #[test]
@@ -1218,7 +1233,7 @@ mod tests {
         assert_eq!(out.source_commands[0], PaintCommand::KeepExisting);
         assert_eq!(out.source_commands[1], PaintCommand::KeepExisting);
         assert!(
-            matches!(out.source_commands[2], PaintCommand::Relabel(ref labels) if labels == &vec![0.25, 0.34])
+            matches!(out.source_commands[2], PaintCommand::Relabel(ref labels) if labels == &vec![0.25, f64::from(0.34_f32)])
         );
         assert_eq!(
             out.source_faults,
@@ -1323,10 +1338,6 @@ mod tests {
         // add_flank_classes
         // ---------------------------------------------------------------
 
-        fn separated(a: f64, b: f64) -> bool {
-            (a - b).abs() >= labels::MIN_SEP - 1e-9
-        }
-
         /// An empty `flank_solids` is a pure no-op: `sf`'s own class count and
         /// separations pass through untouched, so a level with no columns pays
         /// nothing for this pass.
@@ -1381,7 +1392,7 @@ mod tests {
             assert_eq!(all[7].normal, [0.0, 1.0, 0.0]);
             // the abutment: never merged, so the rims collapsed to ONE class
             assert_eq!(sf.class_of[6], sf.class_of[7]);
-            assert_ne!(sf.cluster_of_solid[0], sf.cluster_of_solid[1]);
+            assert_ne!(sf.cluster_of_solid[&0], sf.cluster_of_solid[&1]);
 
             let (flank_class, classes, seps) =
                 add_flank_classes(&sf, &all, &touching, &[1]).unwrap();
@@ -1406,7 +1417,10 @@ mod tests {
             assert_eq!(flank_label, out.label_of_class[sf.class_of[7]]);
             // the outer seam still draws: the column (rims+flank, one class)
             // differs from the floor's own class
-            assert!(separated(flank_label, out.label_of_class[sf.class_of[0]]));
+            assert!(labels::separated(
+                flank_label,
+                out.label_of_class[sf.class_of[0]]
+            ));
         }
 
         /// Two columns standing flush against each other must not let their
@@ -1494,7 +1508,7 @@ mod tests {
             // the merge actually happened: block and post share ONE
             // multi-member cluster now, neither is a singleton
             assert_eq!(sf.class_of[3], sf.class_of[7]);
-            assert_eq!(sf.cluster_of_solid[0], sf.cluster_of_solid[1]);
+            assert_eq!(sf.cluster_of_solid[&0], sf.cluster_of_solid[&1]);
 
             let (flank_class, classes, seps) =
                 add_flank_classes(&sf, &all, &touching, &[1]).unwrap();
@@ -1513,8 +1527,14 @@ mod tests {
             let out = labels::assign(&augmented, &[], &PALETTE);
             assert_eq!(out.starved, 0);
             let flank_label = out.label_of_class[flank];
-            assert!(separated(flank_label, out.label_of_class[sf.class_of[6]]));
-            assert!(separated(flank_label, out.label_of_class[sf.class_of[0]]));
+            assert!(labels::separated(
+                flank_label,
+                out.label_of_class[sf.class_of[6]]
+            ));
+            assert!(labels::separated(
+                flank_label,
+                out.label_of_class[sf.class_of[0]]
+            ));
         }
 
         /// Wave S review finding (MINOR 1): a `flank_solids` entry naming a
@@ -1524,11 +1544,9 @@ mod tests {
         /// of THIS function's own contract, not a currently-reachable path —
         /// used to fall back to a fresh, wholly UNCONSTRAINED class: free to
         /// land on whatever slot a touching neighbour already uses, a silent
-        /// melt. `far` (solid 2) exists only to push `solid_count` past
-        /// index 1, so solid 1 still gets a valid (trivial, singleton)
-        /// cluster entry rather than an out-of-range one — the exact
-        /// shape `is_singleton`'s `.get(solid)` needs to read `true` and
-        /// reach the orphan-fallback arm at all.
+        /// melt. `far` (solid 2) proves the cluster map is sparse: the absent
+        /// solid 1 gets no invented entry, while the orphan fallback still
+        /// allocates a constrained flank class from the explicit touch input.
         #[test]
         fn a_flank_naming_a_faceless_solid_still_separates_from_its_touching_neighbours() {
             let block = Shape::Box3d {
@@ -1545,11 +1563,8 @@ mod tests {
             all.extend(faces(2, &far)); // solid 1 deliberately absent
             let touching = [(0, 1)];
             let sf = superfaces(&all, &touching);
-            assert_eq!(sf.cluster_of_solid.len(), 3);
-            // solid 1 got a real, trivial singleton cluster despite
-            // contributing no face at all — the premise the fallback branch
-            // needs to even be reached
-            assert_ne!(sf.cluster_of_solid[0], sf.cluster_of_solid[1]);
+            assert_eq!(sf.cluster_of_solid.len(), 2);
+            assert!(!sf.cluster_of_solid.contains_key(&1));
 
             let (flank_class, classes, seps) =
                 add_flank_classes(&sf, &all, &touching, &[1]).unwrap();
@@ -1573,7 +1588,7 @@ mod tests {
             assert_eq!(out.starved, 0);
             let flank_label = out.label_of_class[flank];
             for &c in &sf.class_of[0..6] {
-                assert!(separated(flank_label, out.label_of_class[c]));
+                assert!(labels::separated(flank_label, out.label_of_class[c]));
             }
         }
 
@@ -1640,7 +1655,7 @@ mod tests {
                     class_of: vec![0],
                     classes: graph.classes,
                     separations: graph.separations,
-                    cluster_of_solid: vec![0],
+                    cluster_of_solid: [(0, 0)].into_iter().collect(),
                 },
                 &[],
                 &PALETTE,
@@ -1648,7 +1663,10 @@ mod tests {
             assert_eq!(out.starved, 0);
             for a in 0..5 {
                 for b in (a + 1)..5 {
-                    assert!(separated(out.label_of_class[a], out.label_of_class[b]));
+                    assert!(labels::separated(
+                        out.label_of_class[a],
+                        out.label_of_class[b]
+                    ));
                 }
             }
         }
@@ -1721,13 +1739,16 @@ mod tests {
                     class_of: vec![],
                     classes: graph.classes,
                     separations: graph.separations,
-                    cluster_of_solid: vec![],
+                    cluster_of_solid: std::collections::BTreeMap::new(),
                 },
                 &[],
                 &PALETTE,
             );
             assert_eq!(out.starved, 0);
-            assert!(separated(out.label_of_class[0], out.label_of_class[1]));
+            assert!(labels::separated(
+                out.label_of_class[0],
+                out.label_of_class[1]
+            ));
             assert_eq!(out.label_of_class[0], out.label_of_class[2]);
             assert_eq!(out.label_of_class[1], out.label_of_class[3]);
         }

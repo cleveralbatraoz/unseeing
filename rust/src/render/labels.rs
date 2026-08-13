@@ -111,23 +111,31 @@ pub const fn role_label(role: Role) -> f64 {
 /// authority, and no gate compares this constant against it.
 pub const MIN_SEP: f64 = 0.08;
 
-/// Slack on the separation test: a palette laid out on exact decimal steps
-/// misses its own nominal gap by an ULP — `0.31 - 0.23` is
-/// `0.0799999999999999`, just under [`MIN_SEP`] — and a law that rejected
-/// the palette it was written for would be worse than no law.
-const SLACK: f64 = 1e-9;
+/// The shader and `ArrayMesh::CUSTOM0` both consume 32-bit lanes. Public
+/// planning inputs remain f64 for the engine-independent domain, but this is
+/// the canonical renderer representation reported by every assigned label.
+/// Invalid values have no renderer representation.
+pub fn renderer_label(label: f64) -> Option<f64> {
+    let narrowed = label as f32;
+    narrowed.is_finite().then(|| f64::from(narrowed))
+}
 
-/// Do two labels draw a full-strength seam between them?
+/// Do two labels draw a full-strength seam between them after the exact
+/// narrowing and subtraction the shader performs? Comparing the source f64s
+/// is insufficient: `0.31` and `0.39` look nominally 0.08 apart there, but
+/// their CUSTOM0 lanes subtract to `0.07999998_f32`, below the shader knee.
 pub fn separated(a: f64, b: f64) -> bool {
-    (a - b).abs() >= MIN_SEP - SLACK
+    let (a, b) = (a as f32, b as f32);
+    a.is_finite() && b.is_finite() && (a - b).abs() >= MIN_SEP as f32
 }
 
 /// The outcome: one label per superface class, in class-index order
-/// (`label_of_class.len() == sf.classes`), plus how many colourable
-/// classes — those with no anchor — the palette could not satisfy. The
-/// class indices are retained so editor diagnostics can point at the nodes
-/// whose faces could not be separated. Anchored classes never starve: they
-/// do not compete for a palette slot in the first place.
+/// (`label_of_class.len() == sf.classes`), each already narrowed to the exact
+/// CUSTOM0 f32 value and widened back to f64 for the pure contract, plus how
+/// many colourable classes — those with no anchor — the palette could not
+/// satisfy. The class indices are retained so editor diagnostics can point at
+/// the nodes whose faces could not be separated. Anchored classes never
+/// starve: they do not compete for a palette slot in the first place.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Labelling {
     pub label_of_class: Vec<f64>,
@@ -146,20 +154,26 @@ pub struct Labelling {
 /// starved; an anchor naming a class outside `0..sf.classes` is ignored
 /// rather than panicking; a class the palette cannot satisfy takes the
 /// least-contended slot it can, counted in `starved`, rather than failing
-/// the caller.
+/// the caller. Finite assigned inputs are returned through
+/// [`renderer_label`], so diagnostics and the later mesh boundary share one
+/// numeric representation.
 pub(crate) fn assign(sf: &Superfaces, anchors: &[(usize, f64)], palette: &[f64]) -> Labelling {
     let n = sf.classes;
 
     let mut anchor_label: Vec<Option<f64>> = vec![None; n];
     for &(class, label) in anchors {
-        if class < n {
+        if class < n
+            && let Some(label) = renderer_label(label)
+        {
             anchor_label[class] = Some(label);
         }
     }
 
+    let no_label = renderer_label(oid_palette::NO_OID).unwrap_or(0.0);
+
     if palette.is_empty() {
         let label_of_class: Vec<f64> = (0..n)
-            .map(|c| anchor_label[c].unwrap_or(oid_palette::NO_OID))
+            .map(|c| anchor_label[c].unwrap_or(no_label))
             .collect();
         let starved_classes: Vec<usize> = (0..n).filter(|&c| anchor_label[c].is_none()).collect();
         let starved = starved_classes.len();
@@ -210,18 +224,18 @@ pub(crate) fn assign(sf: &Superfaces, anchors: &[(usize, f64)], palette: &[f64])
         .collect();
     let starved = starved_classes.len();
 
-    let mut label_of_class = vec![oid_palette::NO_OID; n];
+    let mut label_of_class = vec![no_label; n];
     for c in 0..n {
         label_of_class[c] = if let Some(label) = anchor_label[c] {
             label
         } else if let Some(local) = local_of[c] {
-            palette[chosen[local]]
+            renderer_label(palette[chosen[local]]).unwrap_or(no_label)
         } else {
             // Unreachable by construction: every class is either anchored
             // or in `colourable`. Kept as a safe fallback, never a panic,
             // matching this crate's total-function doctrine everywhere
             // else.
-            oid_palette::NO_OID
+            no_label
         };
     }
 
@@ -261,6 +275,12 @@ mod tests {
         superfaces(&all, &[(0, 1)])
     }
 
+    fn palette_contains_renderer_label(label: f64) -> bool {
+        PALETTE
+            .iter()
+            .any(|&candidate| candidate as f32 == label as f32)
+    }
+
     /// The role table, spot-checked against the brief's exact numbers —
     /// the break this catches is a transposed row or a copy from the
     /// wrong id in `oid_palette`'s own budget table.
@@ -289,7 +309,11 @@ mod tests {
         let out = assign(&sf, &[], &PALETTE);
         assert_eq!(out.starved, 0);
         assert_eq!(out.label_of_class.len(), sf.classes);
-        assert!(out.label_of_class.iter().all(|l| PALETTE.contains(l)));
+        assert!(
+            out.label_of_class
+                .iter()
+                .all(|&label| palette_contains_renderer_label(label))
+        );
         assert_eq!(
             out.label_of_class[sf.class_of[4]],
             out.label_of_class[sf.class_of[10]]
@@ -324,7 +348,7 @@ mod tests {
             class_of: vec![0, 1],
             classes: 2,
             separations: vec![],
-            cluster_of_solid: vec![0, 1],
+            cluster_of_solid: [(0, 0), (1, 1)].into_iter().collect(),
         };
         let out = assign(&sf, &[], &PALETTE);
         assert_eq!(out.starved, 0);
@@ -349,13 +373,17 @@ mod tests {
             class_of: (0..n).collect(),
             classes: n,
             separations,
-            cluster_of_solid: (0..n).collect(),
+            cluster_of_solid: (0..n).map(|solid| (solid, solid)).collect(),
         };
         let out = assign(&sf, &[], &PALETTE);
         assert_eq!(out.label_of_class.len(), n);
         assert_eq!(out.starved, 2);
         assert_eq!(out.starved_classes, vec![5, 6]);
-        assert!(out.label_of_class.iter().all(|l| PALETTE.contains(l)));
+        assert!(
+            out.label_of_class
+                .iter()
+                .all(|&label| palette_contains_renderer_label(label))
+        );
     }
 
     /// An anchor's own class takes its given label directly, and a class
@@ -367,11 +395,11 @@ mod tests {
             class_of: vec![0, 1, 2],
             classes: 3,
             separations: vec![(0, 1)],
-            cluster_of_solid: vec![0, 1, 2],
+            cluster_of_solid: [(0, 0), (1, 1), (2, 2)].into_iter().collect(),
         };
         let out = assign(&sf, &[(0, 0.15)], &PALETTE);
         assert_eq!(out.starved, 0);
-        assert_eq!(out.label_of_class[0], 0.15);
+        assert_eq!(out.label_of_class[0], f64::from(0.15_f32));
         // class 2 never separates from the anchor and is unconstrained
         assert_eq!(out.label_of_class[2], PALETTE[0]);
     }
@@ -385,13 +413,13 @@ mod tests {
             class_of: vec![0, 1],
             classes: 2,
             separations: vec![(0, 1)],
-            cluster_of_solid: vec![0, 1],
+            cluster_of_solid: [(0, 0), (1, 1)].into_iter().collect(),
         };
         // 0.20 sits within MIN_SEP (0.08) of PALETTE[0] (0.25, gap 0.05)
         // but clear of every other entry (next-closest is 0.34, gap 0.14).
         let out = assign(&sf, &[(0, 0.20)], &PALETTE);
         assert_eq!(out.starved, 0);
-        assert_eq!(out.label_of_class[0], 0.20);
+        assert_eq!(out.label_of_class[0], f64::from(0.20_f32));
         assert_ne!(out.label_of_class[1], PALETTE[0]);
         assert!(separated(out.label_of_class[1], 0.20));
     }
@@ -405,7 +433,7 @@ mod tests {
             class_of: vec![0, 1],
             classes: 2,
             separations: vec![(0, 1)],
-            cluster_of_solid: vec![0, 1],
+            cluster_of_solid: [(0, 0), (1, 1)].into_iter().collect(),
         };
         let with_bogus = assign(&sf, &[(9, 0.5)], &PALETTE);
         let without = assign(&sf, &[], &PALETTE);
@@ -423,13 +451,13 @@ mod tests {
             class_of: vec![0, 1],
             classes: 2,
             separations: vec![(0, 1), (0, 5), (5, 1)],
-            cluster_of_solid: vec![0, 1],
+            cluster_of_solid: [(0, 0), (1, 1)].into_iter().collect(),
         };
         let clean = Superfaces {
             class_of: vec![0, 1],
             classes: 2,
             separations: vec![(0, 1)],
-            cluster_of_solid: vec![0, 1],
+            cluster_of_solid: [(0, 0), (1, 1)].into_iter().collect(),
         };
         assert_eq!(
             assign(&with_bogus, &[], &PALETTE),
@@ -444,7 +472,7 @@ mod tests {
             class_of: vec![],
             classes: 0,
             separations: vec![],
-            cluster_of_solid: vec![],
+            cluster_of_solid: std::collections::BTreeMap::new(),
         };
         assert_eq!(
             assign(&empty_sf, &[], &PALETTE),
@@ -458,7 +486,7 @@ mod tests {
             class_of: vec![0, 1],
             classes: 2,
             separations: vec![],
-            cluster_of_solid: vec![0, 1],
+            cluster_of_solid: [(0, 0), (1, 1)].into_iter().collect(),
         };
         let out = assign(&sf, &[], &[]);
         assert_eq!(

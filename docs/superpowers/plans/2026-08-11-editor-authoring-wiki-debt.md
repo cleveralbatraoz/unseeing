@@ -34,6 +34,14 @@ Current source of truth:
   labels; separate touching solids retain `MIN_SEP = 0.08` label clearance.
   The pure owners are `rust/src/render/faces.rs`, `superface.rs`, `labels.rs`,
   and `paint_plan.rs`; `paint.rs` is the Godot mesh-layout/submission boundary.
+  `superface.rs` treats solid identifiers as opaque sparse keys (including
+  `usize::MAX`) and records only solids that contributed faces; its separation
+  builder uses deterministic logarithmic membership while retaining first
+  insertion order. `labels.rs::separated` judges clearance after the exact f32
+  CUSTOM0 narrowing and subtraction performed by the renderer, and assigned
+  labels report that same f32 representation widened to f64 for pure
+  diagnostics. Nominal f64 gaps such as `0.31`/`0.39` are rejected when their
+  rendered gap falls below the shader's 0.08 knee.
 - Godot 4.7 treats clockwise `ArrayMesh` triangles as front-facing. Pure box,
   wedge, column, and torus geometry stays conventional counter-clockwise and
   outward (`cross.dot(outward_normal) > 0`); `rust/src/render/paint.rs`
@@ -119,8 +127,10 @@ Current source of truth:
   29+1, and 16. The final post-fix pipeline at `32d6278` then ran 459/459
   all-target/all-feature Cargo tests and 328/328 gdUnit cases in 31/31 suites,
   plus the same editor-probe totals, release/wasm builds, web export, browser
-  smoke, and G-channel checks. Recompute after any later code change; counts are
-  verification facts, not wiki mechanics.
+  smoke, and G-channel checks. The later superface-totality and renderer-label
+  regressions raise the fresh all-target/all-feature Cargo gate to 464/464;
+  the full cross-layer pipeline remains to be rerun on the integrated tree.
+  Counts are verification facts, not wiki mechanics.
 
 The reverted wiki commit `9778a00` is historical input only. Never cherry-pick
 or revive it verbatim: its SP2 palette/source model predates the superface
@@ -290,7 +300,8 @@ captures a knob drag without a bespoke setter hook per class. Two separate
 census walks exist on purpose (`process`/`scene_signature` vs. `derive()`
 each call `census()` themselves) rather than one shared object threaded
 through both: `derive()` mutates far more state than a signature fold
-needs, and the walk is microseconds at ~130 nodes.
+needs. The walk scales with the authored census; no isolated timing claim was
+measured for it.
 
 Wiki edit: replace *Mechanics — Level and Objects* §2's opening sentence
 (now false); replace the whole closing subsection "### What the recipe does

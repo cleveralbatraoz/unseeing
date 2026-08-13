@@ -180,3 +180,20 @@ bilinear tap at unlucky phase halves a diff onto the dead floor).
   spike task first: if `CUSTOM0` cannot ride the current mesh path on
   Compatibility/web, the fallback is baking labels into an unused UV
   channel — same law, different slot.
+
+## Implementation precision erratum (2026-08-14)
+
+Two implementation details close domains the original design left implicit
+without changing its merge or seam decisions. `rust/src/render/superface.rs`
+treats `Face::solid` as an opaque sparse identifier: only identifiers present
+in the face slice receive cluster entries, so a huge or `usize::MAX` key cannot
+become `max + 1` allocation state. Separation edges use logarithmic deterministic
+membership but retain their first insertion order; the admitted dense K512
+fixture contains exactly 130,816 pairs.
+
+`rust/src/render/labels.rs` owns the renderer-number contract. Palette and
+anchor separation is evaluated after narrowing both operands to the f32 lanes
+written to `CUSTOM0` and performing the f32 subtraction used by the shader.
+Assigned labels report that exact f32 value widened to f64 for pure diagnostics.
+Thus a nominal f64 pair such as 0.31/0.39 is refused because its rendered gap is
+below `MIN_SEP = 0.08`, while every accepted seam clears the actual shader knee.

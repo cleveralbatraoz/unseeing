@@ -1119,7 +1119,14 @@ impl WaveLevel {
 
         for (entry, command) in entries.iter().zip(&plan.entry_commands) {
             if let render::paint_plan::PaintCommand::Relabel(labels) = command {
-                let labels: Vec<f32> = labels.iter().map(|&label| label as f32).collect();
+                let labels: Vec<f32> = labels
+                    .iter()
+                    .map(|&label| {
+                        let narrowed = label as f32;
+                        debug_assert_eq!(label, f64::from(narrowed));
+                        narrowed
+                    })
+                    .collect();
                 self.paint_entry(&entry.item, &labels);
             }
         }

@@ -56,6 +56,8 @@
 //! implementation detail of union-by-rank and not part of this module's
 //! contract). No hashing, no `HashMap` iteration reaches the output.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use super::faces::Face;
 
 /// Faces whose planes sit within this of each other are coplanar,
@@ -107,16 +109,16 @@ pub struct Superfaces {
     /// Class pairs that must take labels `labels::MIN_SEP` apart, each
     /// stored once as `(min, max)` and deduplicated.
     pub separations: Vec<(usize, usize)>,
-    /// Solid index -> cluster index: the connected components of the
-    /// MERGE relation lifted to solids (two solids share a cluster iff
-    /// some face of one merged with some face of the other, possibly
-    /// transitively). Sized to `max(face.solid) + 1` — every index UP TO
-    /// that maximum gets an entry, including a solid that contributed no
-    /// face to this call (a trivial cluster of one, since it can never
-    /// have merged with anything); only a solid index ABOVE the maximum
-    /// (never referenced by any face) has no entry at all. Used by
-    /// paint's wall-merge warning and by this module's own tests.
-    pub cluster_of_solid: Vec<usize>,
+    /// Sparse solid identifier -> cluster index: the connected components
+    /// of the MERGE relation lifted to solids (two solids share a cluster
+    /// iff some face of one merged with some face of the other, possibly
+    /// transitively). Only identifiers actually named by `faces` have an
+    /// entry. Identifiers are opaque caller keys, so even `usize::MAX`
+    /// consumes one map entry rather than defining an allocation length.
+    /// Cluster indices themselves are normalized by first face appearance;
+    /// the `BTreeMap` supplies deterministic logarithmic lookup without
+    /// letting key order define that numbering.
+    pub cluster_of_solid: BTreeMap<usize, usize>,
 }
 
 /// Build the superface graph: which of `faces` merge into one class, and
@@ -146,16 +148,36 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
     // normalized yet at this point — root equality IS "same class" here,
     // and normalizing twice (once now, once again after the singleton
     // collapse below) would be wasted work for the same answer.
-    let solid_count = faces.iter().map(|f| f.solid).max().map_or(0, |m| m + 1);
+    let mut solid_ids = Vec::new();
+    let mut dense_of_solid = BTreeMap::new();
+    let mut solid_of_face = Vec::with_capacity(n);
+    for face in faces {
+        let dense = match dense_of_solid.get(&face.solid) {
+            Some(&dense) => dense,
+            None => {
+                let dense = solid_ids.len();
+                solid_ids.push(face.solid);
+                dense_of_solid.insert(face.solid, dense);
+                dense
+            }
+        };
+        solid_of_face.push(dense);
+    }
+    let solid_count = solid_ids.len();
     let mut solid_uf = UnionFind::new(solid_count);
     for i in 0..n {
         for j in (i + 1)..n {
             if faces[i].solid != faces[j].solid && face_uf.find(i) == face_uf.find(j) {
-                solid_uf.union(faces[i].solid, faces[j].solid);
+                solid_uf.union(solid_of_face[i], solid_of_face[j]);
             }
         }
     }
-    let (cluster_of_solid, clusters) = normalize(&mut solid_uf, solid_count);
+    let (cluster_of_dense_solid, clusters) = normalize(&mut solid_uf, solid_count);
+    let cluster_of_solid: BTreeMap<usize, usize> = solid_ids
+        .iter()
+        .copied()
+        .zip(cluster_of_dense_solid.iter().copied())
+        .collect();
 
     // --- the singleton collapse: a solid alone in its own cluster (no
     // face of it ever won a cross-solid merge edge) folds ALL its own
@@ -163,18 +185,19 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
     // Determinism: each singleton solid's faces union onto its own FIRST
     // face in input order, never a hash or a hunt for a "canonical" one.
     let mut cluster_size = vec![0usize; clusters];
-    for &c in &cluster_of_solid {
+    for &c in &cluster_of_dense_solid {
         cluster_size[c] += 1;
     }
     let is_singleton_solid: Vec<bool> = (0..solid_count)
-        .map(|s| cluster_size[cluster_of_solid[s]] == 1)
+        .map(|s| cluster_size[cluster_of_dense_solid[s]] == 1)
         .collect();
     let mut singleton_anchor: Vec<Option<usize>> = vec![None; solid_count];
-    for (i, f) in faces.iter().enumerate() {
-        if is_singleton_solid[f.solid] {
-            match singleton_anchor[f.solid] {
+    for (i, _) in faces.iter().enumerate() {
+        let solid = solid_of_face[i];
+        if is_singleton_solid[solid] {
+            match singleton_anchor[solid] {
                 Some(anchor) => face_uf.union(anchor, i),
-                None => singleton_anchor[f.solid] = Some(i),
+                None => singleton_anchor[solid] = Some(i),
             }
         }
     }
@@ -183,11 +206,11 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
 
     // faces grouped by solid, input order preserved within each group
     let mut faces_of_solid: Vec<Vec<usize>> = vec![Vec::new(); solid_count];
-    for (i, f) in faces.iter().enumerate() {
-        faces_of_solid[f.solid].push(i);
+    for (i, &solid) in solid_of_face.iter().enumerate() {
+        faces_of_solid[solid].push(i);
     }
 
-    let mut separations: Vec<(usize, usize)> = Vec::new();
+    let mut separations = SeparationBuilder::new();
 
     // rule (a): two faces of ONE solid sharing a polygon edge — scoped to
     // MULTI-MEMBER clusters, matching the spec's own text. The explicit
@@ -201,11 +224,11 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
     for i in 0..n {
         for j in (i + 1)..n {
             if faces[i].solid == faces[j].solid
-                && !is_singleton_solid[faces[i].solid]
+                && !is_singleton_solid[solid_of_face[i]]
                 && class_of[i] != class_of[j]
                 && polygons_share_an_edge(&faces[i].poly, &faces[j].poly)
             {
-                add_separation(&mut separations, class_of[i], class_of[j]);
+                separations.add(class_of[i], class_of[j]);
             }
         }
     }
@@ -213,18 +236,22 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
     // rules (b)/(c): touching solids. Rule (b)'s branch below is likewise
     // scoped to multi-member clusters, but needs no separate guard: a
     // singleton solid's cluster has exactly one member (itself), so
-    // `cluster_of_solid[sa] == cluster_of_solid[sb]` for `sa != sb` is
+    // equal cluster entries for `sa` and `sb` with `sa != sb` are
     // already impossible whenever either side is a singleton — every
     // touching pair naming one takes rule (c)'s branch by construction.
     for &(sa, sb) in touching {
-        if sa == sb || sa >= solid_count || sb >= solid_count {
+        if sa == sb {
             continue;
         }
-        if cluster_of_solid[sa] == cluster_of_solid[sb] {
+        let (Some(&dense_a), Some(&dense_b)) = (dense_of_solid.get(&sa), dense_of_solid.get(&sb))
+        else {
+            continue;
+        };
+        if cluster_of_dense_solid[dense_a] == cluster_of_dense_solid[dense_b] {
             // (b): same MULTI-MEMBER cluster — fine-grained, per touching
             // face pair
-            for &i in &faces_of_solid[sa] {
-                for &j in &faces_of_solid[sb] {
+            for &i in &faces_of_solid[dense_a] {
+                for &j in &faces_of_solid[dense_b] {
                     if class_of[i] == class_of[j] {
                         continue; // merged
                     }
@@ -232,7 +259,7 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
                         continue; // buried abutment
                     }
                     if polygons_within_patch_eps(&faces[i].poly, &faces[j].poly) {
-                        add_separation(&mut separations, class_of[i], class_of[j]);
+                        separations.add(class_of[i], class_of[j]);
                     }
                 }
             }
@@ -241,9 +268,9 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
             // singleton solid contributes exactly ONE class here (the
             // collapse above), so two touching singletons see exactly
             // one cross-pair — the pre-superface two-label law, restored.
-            for &i in &faces_of_solid[sa] {
-                for &j in &faces_of_solid[sb] {
-                    add_separation(&mut separations, class_of[i], class_of[j]);
+            for &i in &faces_of_solid[dense_a] {
+                for &j in &faces_of_solid[dense_b] {
+                    separations.add(class_of[i], class_of[j]);
                 }
             }
         }
@@ -252,26 +279,52 @@ pub fn superfaces(faces: &[Face], touching: &[(usize, usize)]) -> Superfaces {
     Superfaces {
         class_of,
         classes,
-        separations,
+        separations: separations.finish(),
         cluster_of_solid,
     }
 }
 
-/// Record `(a, b)` as a separated class pair, normalized to `(min, max)`
-/// and deduplicated. A class never separates from itself — defensive
-/// totality, not a currently load-bearing branch: every call site already
-/// gates on `class_of[i] != class_of[j]` (rules (a) and (b) explicitly,
-/// rule (c) implicitly, since two faces in the same class imply their
-/// solids share a cluster, which rule (c)'s own branch has already
-/// excluded) before ever reaching here. Kept anyway, because this
-/// function's own contract should hold for ANY caller, not just today's.
-fn add_separation(seps: &mut Vec<(usize, usize)>, a: usize, b: usize) {
-    if a == b {
-        return;
+/// Deterministic separation membership with first-insertion output order.
+/// `BTreeSet` makes repeated membership logarithmic without exposing its
+/// key-sorted iteration order as part of the render contract.
+pub(crate) struct SeparationBuilder {
+    ordered: Vec<(usize, usize)>,
+    seen: BTreeSet<(usize, usize)>,
+}
+
+impl SeparationBuilder {
+    pub(crate) fn new() -> Self {
+        Self {
+            ordered: Vec::new(),
+            seen: BTreeSet::new(),
+        }
     }
-    let pair = if a < b { (a, b) } else { (b, a) };
-    if !seps.contains(&pair) {
-        seps.push(pair);
+
+    pub(crate) fn from_existing(existing: &[(usize, usize)]) -> Self {
+        let mut builder = Self {
+            ordered: Vec::with_capacity(existing.len()),
+            seen: BTreeSet::new(),
+        };
+        for &(a, b) in existing {
+            builder.add(a, b);
+        }
+        builder
+    }
+
+    /// Record `(a, b)` normalized to `(min, max)`, once. A class never
+    /// separates from itself — defensive totality for any future caller.
+    pub(crate) fn add(&mut self, a: usize, b: usize) {
+        if a == b {
+            return;
+        }
+        let pair = if a < b { (a, b) } else { (b, a) };
+        if self.seen.insert(pair) {
+            self.ordered.push(pair);
+        }
+    }
+
+    pub(crate) fn finish(self) -> Vec<(usize, usize)> {
+        self.ordered
     }
 }
 
@@ -786,6 +839,15 @@ mod tests {
         all
     }
 
+    fn isolated_face(solid: usize, offset: f64) -> Face {
+        Face {
+            normal: [1.0, 0.0, 0.0],
+            offset,
+            poly: vec![],
+            solid,
+        }
+    }
+
     /// THE issue-14 case: wall B's south end cap (global index 10, its own
     /// -Z face) lands exactly in wall A's south flank plane (global index
     /// 4, wall A's own -Z face) — both z=-0.15, both normal [0,0,-1], and
@@ -897,7 +959,7 @@ mod tests {
 
         let sf = superfaces(&all, &[(0, 1)]);
         assert_ne!(sf.class_of[3], sf.class_of[8]);
-        assert_ne!(sf.cluster_of_solid[0], sf.cluster_of_solid[1]);
+        assert_ne!(sf.cluster_of_solid[&0], sf.cluster_of_solid[&1]);
         assert!(
             sf.separations
                 .contains(&ordered(sf.class_of[3], sf.class_of[8]))
@@ -1035,7 +1097,7 @@ mod tests {
 
         let sf = superfaces(&all, &[(0, 1)]);
         assert_eq!(sf.classes, 2);
-        assert_ne!(sf.cluster_of_solid[0], sf.cluster_of_solid[1]);
+        assert_ne!(sf.cluster_of_solid[&0], sf.cluster_of_solid[&1]);
         assert_ne!(sf.class_of[0], sf.class_of[6]);
         assert_eq!(
             sf.separations,
@@ -1126,6 +1188,57 @@ mod tests {
         assert!(sf.class_of.is_empty());
         assert!(sf.separations.is_empty());
         assert!(sf.cluster_of_solid.is_empty());
+    }
+
+    /// Solid identifiers are opaque caller keys, not allocation lengths. A
+    /// maximum identifier used by one face must consume one sparse cluster
+    /// entry and return normally; `max + 1` used to overflow before any
+    /// geometric work could answer.
+    #[test]
+    fn maximum_solid_identifier_is_one_sparse_cluster_not_an_overflow() {
+        let sf = superfaces(&[isolated_face(usize::MAX, 0.0)], &[]);
+        assert_eq!(sf.classes, 1);
+        assert_eq!(sf.class_of, vec![0]);
+        assert_eq!(sf.cluster_of_solid.len(), 1);
+    }
+
+    /// A million-wide hole in the caller's identifier space represents no
+    /// solids and must allocate no million-entry table. Both contributed
+    /// faces remain ordinary singleton classes and the sparse cluster census
+    /// names only those two solids.
+    #[test]
+    fn huge_sparse_solid_identifiers_consume_one_cluster_entry_each() {
+        let sf = superfaces(&[isolated_face(3, 0.0), isolated_face(1_000_003, 2.0)], &[]);
+        assert_eq!(sf.classes, 2);
+        assert_eq!(sf.class_of, vec![0, 1]);
+        assert_eq!(sf.cluster_of_solid.len(), 2);
+    }
+
+    /// The maximum graph admitted by the paint subsystem can be dense. It
+    /// must contain every unordered pair exactly once while retaining the
+    /// caller's first-insertion order. A linear `Vec::contains` scan per
+    /// insertion makes this realistic K512 case quadratic in edge count
+    /// (quartic in the number of solids).
+    #[test]
+    fn dense_k512_graph_has_every_edge_once_in_first_insertion_order() {
+        const SOLIDS: usize = 512;
+        let all: Vec<Face> = (0..SOLIDS)
+            .map(|solid| isolated_face(solid, solid as f64 * 2.0))
+            .collect();
+        let mut touching = Vec::with_capacity(261_632);
+        for first in 0..SOLIDS {
+            for second in (first + 1)..SOLIDS {
+                touching.push((first, second));
+                touching.push((second, first));
+            }
+        }
+
+        let sf = superfaces(&all, &touching);
+        assert_eq!(sf.classes, SOLIDS);
+        assert_eq!(sf.separations.len(), 130_816);
+        assert_eq!(sf.separations.first(), Some(&(0, 1)));
+        assert_eq!(sf.separations.get(1), Some(&(0, 2)));
+        assert_eq!(sf.separations.last(), Some(&(510, 511)));
     }
 
     /// A `touching` pair naming a solid this call never received a face
@@ -1500,7 +1613,7 @@ mod tests {
         // the two merges that build the cluster: post~slab, lid~post
         assert_eq!(sf.class_of[8], sf.class_of[2]); // post's -Y ~ slab's -Y
         assert_eq!(sf.class_of[12], sf.class_of[6]); // lid's -X ~ post's -X
-        assert_eq!(sf.cluster_of_solid[0], sf.cluster_of_solid[2]);
+        assert_eq!(sf.cluster_of_solid[&0], sf.cluster_of_solid[&2]);
 
         // the abutment itself never merges...
         assert_ne!(sf.class_of[3], sf.class_of[14]);
@@ -1534,7 +1647,7 @@ mod tests {
     fn same_cluster_pairs_that_never_touch_are_not_blanket_separated() {
         let all = junction_faces();
         let sf = superfaces(&all, &[(0, 1)]);
-        assert_eq!(sf.cluster_of_solid[0], sf.cluster_of_solid[1]);
+        assert_eq!(sf.cluster_of_solid[&0], sf.cluster_of_solid[&1]);
         assert_eq!(sf.class_of[4], sf.class_of[10]);
 
         assert!(
