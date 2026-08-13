@@ -229,12 +229,21 @@ pub const COLUMN_SEGMENTS: usize = 32;
 /// shaded; the flank's radial normal varies smoothly per vertex, the way
 /// the `CylinderMesh` primitive this replaces shaded it.
 ///
-/// Every triangle's winding is hand-derived (see the module tests): a fan
-/// walking increasing angle points DOWN, the mirrored walk points UP, and
-/// a flank quad wound `(bottom[i], top[i], top[i+1])` /
-/// `(bottom[i], top[i+1], bottom[i+1])` points radially outward — each
-/// checked independently by recomputing the winding's own cross product
-/// rather than trusting this comment.
+/// Every triangle's winding is hand-derived: a fan walking increasing
+/// angle points DOWN, the mirrored walk points UP, and a flank quad wound
+/// `(bottom[i], top[i], top[i+1])` / `(bottom[i], top[i+1], bottom[i+1])`
+/// points radially outward.
+///
+/// The module's two winding tests hold that derivation to THIS function's
+/// own output — every segment, all four triangles of it, cross-producing
+/// the emitted vertices rather than a literal transcribed from this
+/// comment. That is worth stating because it was not true until a review
+/// found `column_caps_wind_outward` cross-producing a hand-typed pair of
+/// triangles and never calling `column_triangles` at all: the caps'
+/// winding was unprotected, and it is not cosmetic — the world skin
+/// renders `cull_disabled`, but `nodes::fan`/`nodes::radio`'s
+/// `labelled_cyl` builds every source limb from this geometry and renders
+/// it through `data_xray.gdshader`, which is `cull_back`.
 #[must_use]
 pub fn column_triangles(radius: f32, half_height: f32) -> Vec<(Vector3, Vector3, f32)> {
     let n = COLUMN_SEGMENTS;
@@ -632,50 +641,69 @@ mod tests {
         }
     }
 
-    /// Every bottom-cap triangle winds toward −Y (outward, seen from
-    /// below) and every top-cap triangle toward +Y — the fan's mirrored
-    /// walk, checked by recomputing each triangle's own cross product
-    /// rather than trusting the doc comment that derives it.
+    /// Every EMITTED bottom-cap triangle winds toward −Y (outward, seen
+    /// from below) and every emitted top-cap triangle toward +Y — the
+    /// fan's mirrored walk, recomputed from each triangle's own cross
+    /// product rather than trusted from the doc comment that derives it.
+    ///
+    /// Driven off `column_triangles`, which is the whole point: this test
+    /// used to cross-product a hand-typed pair of literal triangles and
+    /// never call the function at all, so swapping the emitted caps' push
+    /// order passed it and the entire rest of the suite. The stakes are
+    /// not only the level's props — `nodes::fan`/`nodes::radio`'s
+    /// `labelled_cyl` builds every source limb from this same geometry and
+    /// renders it through `data_xray.gdshader`, whose `cull_back` would
+    /// make an inverted cap vanish out of the acoustic image entirely.
+    ///
+    /// Every segment, not just one: the ring walks all four quadrants, and
+    /// a sign slip that only bites where a cosine turns negative is
+    /// exactly the kind one sample misses.
     #[test]
     fn column_caps_wind_outward() {
-        for (v0, v1, v2, want) in [
-            // a bottom-cap triangle: (center, ring[i], ring[i+1])
-            (
-                Vector3::new(0.0, -1.0, 0.0),
-                Vector3::new(1.0, -1.0, 0.0),
-                Vector3::new(0.0, -1.0, 1.0),
-                Vector3::DOWN,
-            ),
-            // a top-cap triangle: (center, ring[i+1], ring[i])
-            (
-                Vector3::new(0.0, 1.0, 0.0),
-                Vector3::new(0.0, 1.0, 1.0),
-                Vector3::new(1.0, 1.0, 0.0),
-                Vector3::UP,
-            ),
-        ] {
-            let cross = (v1 - v0).cross(v2 - v0);
-            assert!(
-                cross.dot(want) > 0.0,
-                "triangle {v0:?},{v1:?},{v2:?} does not wind toward {want:?}"
-            );
+        let tris = column_triangles(1.0, 1.0);
+        assert_eq!(tris.len(), COLUMN_SEGMENTS * 12);
+        for seg in 0..COLUMN_SEGMENTS {
+            // each segment emits one 12-vertex block: bottom cap, top cap,
+            // then the flank's two triangles
+            let base = seg * 12;
+            for (first, want) in [(base, Vector3::DOWN), (base + 3, Vector3::UP)] {
+                let (v0, v1, v2) = (tris[first].0, tris[first + 1].0, tris[first + 2].0);
+                let cross = (v1 - v0).cross(v2 - v0);
+                assert!(
+                    cross.dot(want) > 0.0,
+                    "segment {seg}'s cap triangle {v0:?},{v1:?},{v2:?} does not wind toward \
+                     {want:?} (cross {cross:?})"
+                );
+            }
         }
     }
 
-    /// A flank quad winds radially outward — the same independent
-    /// cross-product check, at a concrete angle rather than trusting the
-    /// derivation in [`column_triangles`]'s doc comment.
+    /// Both of every segment's flank triangles wind radially outward — the
+    /// same independent cross-product check, over the whole ring rather
+    /// than the single first-segment sample this used to take.
+    ///
+    /// The outward direction is read off the triangle's OWN first vertex,
+    /// which `column_triangles` always emits as that segment's bottom-rim
+    /// point: its horizontal offset from the axis is the outward direction
+    /// there, by definition of a ring centred on the axis. Nothing about
+    /// it depends on the winding under test, and no angle is recomputed
+    /// from the code's own `TAU / n` step.
     #[test]
     fn column_flank_winds_radially_outward() {
         let tris = column_triangles(1.0, 1.0);
-        // segment 0 -> 1 sits at the very start of the ring, where the
-        // outward direction is +X
-        let (a, d, c) = (tris[6].0, tris[7].0, tris[8].0); // bottom[0], top[0], top[1]
-        let cross = (d - a).cross(c - a);
-        assert!(
-            cross.x > 0.0,
-            "flank triangle does not wind toward +X: {cross:?}"
-        );
+        for seg in 0..COLUMN_SEGMENTS {
+            let base = seg * 12;
+            for first in [base + 6, base + 9] {
+                let (v0, v1, v2) = (tris[first].0, tris[first + 1].0, tris[first + 2].0);
+                let cross = (v1 - v0).cross(v2 - v0);
+                let outward = Vector3::new(v0.x, 0.0, v0.z);
+                assert!(
+                    cross.dot(outward) > 0.0,
+                    "segment {seg}'s flank triangle {v0:?},{v1:?},{v2:?} does not wind outward \
+                     (cross {cross:?}, outward {outward:?})"
+                );
+            }
+        }
     }
 
     /// Total on the shapes a designer can type by accident: zero radius or
