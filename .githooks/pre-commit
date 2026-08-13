@@ -62,11 +62,13 @@ if [ -n "$gd_files" ]; then
 fi
 
 # A built-in GDScript has no .gd path: Godot serializes it inside a text
-# scene/resource. Inspect the STAGED blob, not the working tree, and reject
-# opaque binary resources outside tests because this hook cannot prove they
-# contain no script. This closes the same shipped-code escape as CI.
+# scene/resource. Production can also regain test behavior indirectly by
+# instancing any resource under res://tests/, or by autoloading one from
+# project.godot. Inspect STAGED blobs, not the working tree, and reject opaque
+# binary resources outside tests because this hook cannot prove they contain
+# no script. This closes the same shipped-code escapes as CI.
 godot_resources="$(git diff --cached --name-only --diff-filter=ACMR -- \
-  '*.tscn' '*.tres' '*.scn' '*.res' \
+  '*.tscn' '*.tres' '*.scn' '*.res' game/project.godot \
   ':!game/tests/**' ':!game/addons/gdUnit4/**' ':!game/addons/godot_mcp/**')"
 if [ -n "$godot_resources" ]; then
   illegal_resources="$(printf '%s\n' "$godot_resources" \
@@ -75,12 +77,29 @@ if [ -n "$godot_resources" ]; then
           || [ "${resource%.res}" != "$resource" ]; then
           printf '%s\n' "$resource"
         elif git show ":$resource" 2>/dev/null \
-          | grep -q '^\[sub_resource type="GDScript"\([[:space:]]\|\]\)'; then
+          | grep -Eq \
+            -e '^\[sub_resource[^]]*[[:space:]]type[[:space:]]*=[[:space:]]*"GDScript"([[:space:]]|\])' \
+            -e '^\[ext_resource[^]]*[[:space:]]path[[:space:]]*=[[:space:]]*"res://tests/[^"]*"'; then
           printf '%s\n' "$resource"
         fi
-      done)"
+      done
+      if git diff --cached --name-only --diff-filter=ACMR -- game/project.godot \
+        | grep -qxF game/project.godot; then
+        if git show :game/project.godot 2>/dev/null | LC_ALL=C awk '
+          /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+            in_autoload = ($0 ~ /^[[:space:]]*\[autoload\][[:space:]]*$/)
+            next
+          }
+          in_autoload && /^[[:space:]]*[^;#][^=]*=[[:space:]]*"\*?res:\/\/tests\/[^\"]*"[[:space:]]*$/ {
+            found = 1
+          }
+          END { exit(found ? 0 : 1) }
+        '; then
+          printf '%s\n' game/project.godot
+        fi
+      fi)"
   if [ -n "$illegal_resources" ]; then
-    echo "pre-commit: embedded or opaque GDScript-capable production resources are forbidden:"
+    echo "pre-commit: scripted, test-linked, or opaque production resources are forbidden:"
     printf '%s\n' "$illegal_resources" | sed 's/^/  /'
     echo "pre-commit: keep production scenes/resources text and code-free; use Rust nodes"
     exit 1

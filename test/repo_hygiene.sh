@@ -196,7 +196,7 @@ else
   dd if=/dev/zero of="$TMP/repo/huge.bin" bs=1024 count=6144 2>/dev/null
   # a space in the name — the guard must not word-split its file list
   printf 'small\n' > "$TMP/repo/tiny file.txt"
-  mkdir -p "$TMP/repo/game/tests" "$TMP/repo/game/scripts"
+  mkdir -p "$TMP/repo/game/tests" "$TMP/repo/game/scripts" "$TMP/repo/game"
   printf 'extends Node\n' > "$TMP/repo/game/tests/legal test.gd"
   printf 'extends Node\n' > "$TMP/repo/game/scripts/illegal.gd"
   printf '%s\n' '[gd_scene load_steps=2 format=3]' \
@@ -207,6 +207,14 @@ else
     >"$TMP/repo/game/scripts/embedded.tscn"
   cp "$TMP/repo/game/scripts/embedded.tscn" \
     "$TMP/repo/game/tests/legal embedded scene.tscn"
+  printf '%s\n' '[gd_scene load_steps=2 format=3]' \
+    '[ext_resource type = "PackedScene" path = "res://tests/legal embedded scene.tscn" id="1_test"]' \
+    '[node name="Production" type="Node"]' \
+    '[node name="TestFixture" parent="." instance=ExtResource("1_test")]' \
+    >"$TMP/repo/game/scripts/transitive.tscn"
+  printf '%s\n' '[application]' 'config/name="Hook fixture"' '' '[autoload]' \
+    'TestFixture="*res://tests/legal embedded scene.tscn"' \
+    >"$TMP/repo/game/project.godot"
 
   probe() { # probe <expected-exit> <label> [ALLOW_BIG value]
     want="$1"
@@ -256,6 +264,26 @@ else
   fi
   git -C "$TMP/repo" reset -q HEAD -- game/scripts/embedded.tscn 2>/dev/null \
     || git -C "$TMP/repo" rm --cached -q game/scripts/embedded.tscn
+
+  git -C "$TMP/repo" add game/scripts/transitive.tscn
+  probe 1 "pre-commit rejects a production scene referencing scripted test content"
+  if grep -q 'game/scripts/transitive.tscn' "$TMP/out"; then
+    ok "pre-commit names the transitive test-resource scene"
+  else
+    bad "pre-commit does not name the transitive test-resource scene"
+  fi
+  git -C "$TMP/repo" reset -q HEAD -- game/scripts/transitive.tscn 2>/dev/null \
+    || git -C "$TMP/repo" rm --cached -q game/scripts/transitive.tscn
+
+  git -C "$TMP/repo" add game/project.godot
+  probe 1 "pre-commit rejects project.godot autoloading scripted test content"
+  if grep -q 'game/project.godot' "$TMP/out"; then
+    ok "pre-commit names the illegal project autoload"
+  else
+    bad "pre-commit does not name the illegal project autoload"
+  fi
+  git -C "$TMP/repo" reset -q HEAD -- game/project.godot 2>/dev/null \
+    || git -C "$TMP/repo" rm --cached -q game/project.godot
 
   git -C "$TMP/repo" add huge.bin
   probe 1 "size guard rejects a 6 MiB staged file"
