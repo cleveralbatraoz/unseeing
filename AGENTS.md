@@ -9,10 +9,19 @@ traces. Physics and sound-wave propagation must be exact.
 - Render black and white, with thin outlines only: no textures, fills,
   materials, or visual noise. The world is revealed only by sound, touch, and
   wind waves.
-- Draw one outline per object and every seam between objects. Anything that
-  can touch another object needs an object id at least 0.08 clear of it. The
-  id budget and graph colouring live in `rust/src/oid_palette.rs`; never cycle
-  through a list of ids.
+- Draw one silhouette per object. Where two solids overlap, outline them
+  together: faces that are same-facing and coplanar merge into one superface
+  and share one per-vertex label bit-for-bit, so the seam melts by
+  construction. Bends and steps still draw — a room corner, a shelf edge, a
+  crate's pierce line. Seams between *separate* touching solids draw too, and
+  need labels at least `MIN_SEP` = 0.08 apart. Creatures and sound sources
+  never merge with the world. Labels live in the sRGB-safe band
+  `[0.15, 0.96]`, with one grandfathered exception (the radio chassis's
+  `Role::Case` at 0.05); put new labels in the band. The merge law lives in
+  `rust/src/render/superface.rs` (`COPLANAR_EPS`, `PATCH_EPS`) and the
+  colouring and role table in `rust/src/render/labels.rs` (`MIN_SEP`); never
+  assign labels by cycling a list. Get the merge predicate wrong and either a
+  real corner melts invisible or two flush surfaces z-fight in G.
 - Keep UI and UX simple and minimal.
 - `game/` is the sole Godot 4.7 project and source of truth. Export that same
   project to web, macOS, and Windows; never make platform implementations.
@@ -51,7 +60,8 @@ verification-before-completion before success claims, requesting-code-review
 after every task and before merge, and using-git-worktrees at task start.
 
 Plans must carry these global constraints into every implementer brief: the
-perception laws and object-id clearance above, supported platforms, the two
+perception laws, the label clearance and superface merge law above, supported
+platforms, the two
 code layers below, commit rules, and attribution ban. Commit steps state that
 a commit is made but do not prescribe a literal commit message.
 
@@ -144,7 +154,7 @@ dependencies enter.
   rely on call order, scene-tree location, initialization timing, or another
   undocumented ambient guarantee. Circular dependencies and knowledge of a
   concrete collaborator where a smaller contract suffices are forbidden.
-  Decoupling is what lets the wave law, object-id allocator, or gait model be
+  Decoupling is what lets the wave law, label allocator, or gait model be
   replaced and tested without constructing the rest of the game.
 - **Every function must be total over its declared input domain.** For every
   value its type and public contract admit, it must return a defined result;
@@ -216,8 +226,12 @@ codebase before accepting it. A subagent report is never proof; inspect the
 diff and rerun the evidence.
 
 Prefer structured state over screenshots when debugging. `WaveObserver` and
-`rust/src/observe/` expose pulse, eviction, object-id, crossing, and reflection
-state. Use gdUnit4, the godot-mcp loop documented in
+`rust/src/observe/` expose pulse, eviction, superface class and coplanar label
+fault, the older solid-granularity object-id, crossing, and reflection state.
+A structured invariant is evidence only when something other than the code
+under test produced the data it reads: `faults` is a postcondition over the
+class graph, so what reached the GPU is pinned by the tests that read mesh
+`CUSTOM0` back and by the web G-channel gate, never by `faults` alone. Use gdUnit4, the godot-mcp loop documented in
 `docs/superpowers/mcp/godot-mcp-loop.md`, or a dump scene. Screenshots are a
 last resort and reveal a missing observability surface. `explain_ray` reports
 Rust's belief and cannot prove GLSL agrees. Keep `game/addons/godot_mcp/`
