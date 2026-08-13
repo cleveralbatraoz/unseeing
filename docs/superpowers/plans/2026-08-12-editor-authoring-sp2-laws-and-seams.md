@@ -122,3 +122,26 @@ Every task's requirements implicitly include this section.
 1. **Spec coverage:** census retirement (T2/T3 — #22), source seams with the law landing red-capable in sequence (T1/T4/T5 — #16/#36), nesting (T7 — #35), courtyard (T8 — #45), buried-prop heir (T6 — the inventory's one unguarded law). All eleven panel-required changes are task items: sixth slot + capacity doc (T1/T9), sequencing (T4/T5 split), spacing-law test (T1), two-domain mapping + gap-skip (T4), source warnings forwarders (T4), out-of-level defaults (T4), seam walk feeds sources (T5 via explain_oids), starving-pile-with-source test (T5), density-ceiling prose + fault text (T4/T9), editor-watch geometry note (T4), palette pairwise test kept (T1).
 2. **Placeholders:** none — each task cites the measured inventory lines it acts on.
 3. **Type consistency:** `ColouredNode` two-domain enum (T4) consumed by starved faults and tests; `role_count`/`set_role_oids` (T4) consumed by T5 fixtures; six-slot `WORLD_OIDS` (T1) consumed by T4's K6 case.
+
+## Post-rebase supersession (2026-08-13)
+
+This plan freezes an intermediate SP2 architecture. Its census-retirement,
+nested-solid-box, placement-warning freshness, and slab-inclusive pack-range
+outcomes survive, but the source-colouring mechanism does not.
+
+- Rebasing onto `origin/main` at `dfbb69a` made per-face superfaces canonical.
+  The six-slot palette, source role recolouring, K6/K7 capacity examples,
+  two-domain starved mapping, and source-starvation triangle are retired.
+  Sources and creatures keep fixed role labels outside world-face colouring;
+  world solids receive per-face `CUSTOM0` labels.
+- `game/tests/source_seam_test.gd` was removed after the rebase because its
+  premise was the retired source-recolouring implementation. Current seam
+  evidence comes from the superface graph, real mesh-label read-back, and
+  fixed-role clearance tests.
+- The rendering laws now are: merge same-facing coplanar overlapping faces
+  bit-identically; keep labels on separate touching solids at least
+  `MIN_SEP = 0.08` apart. The owners are
+  `rust/src/render/superface.rs`, `labels.rs`, and `paint.rs`.
+- Any wiki draft derived from this plan, including reverted commit `9778a00`,
+  must be rewritten rather than revived verbatim. `AGENTS.md` is current policy
+  authority; `CLAUDE.md` is only its adapter.

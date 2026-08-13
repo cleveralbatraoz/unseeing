@@ -482,3 +482,24 @@ pub fn assign(sf: &Superfaces, anchors: &[(usize, f64)], palette: &[f64]) -> Lab
   Acceptable per the granularity rule; no TBDs remain. ✓
 - Type consistency: `Face`/`Shape`/`Superfaces`/`Labelling` names match
   across Tasks 2–6; ordinal contract named in 5 and consumed in 6. ✓
+
+## Campaign rebase note (2026-08-13)
+
+This plan is the frozen design/execution route that produced the architecture
+the editor-authoring campaign inherited at merge base `dfbb69a`.
+
+- Campaign commit `73702bd` ported its Godot/Rust authoring laws onto this
+  per-face model. World solids enter the superface graph; sources and creatures
+  retain fixed role labels; intentionally drawless data consumes no label.
+  Any earlier campaign plan that describes six-slot source recolouring or a
+  flat object-id seam as current is superseded.
+- Post-rebase fixes retain generated WaveRun wall paths relative to their
+  `WaveLevel`, route generated-segment faults to the authored run, and verify
+  prefab seams by reading the two actual touching `CUSTOM0` face labels.
+- `AGENTS.md` now owns the perception law and new-object checklist;
+  `CLAUDE.md` is only an adapter. Task 12's documentation step never authorizes
+  a wiki push. Wiki publication, like integration and deployment, remains a
+  separate user gate.
+- Current closeout evidence is 405 Cargo tests, 320 gdUnit cases in 31 suites,
+  19 registered classes, and ten icons. These totals supersede execution-time
+  count references without altering this plan's historical body.

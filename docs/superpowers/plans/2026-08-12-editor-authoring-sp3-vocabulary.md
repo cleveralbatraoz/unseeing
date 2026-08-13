@@ -100,3 +100,27 @@ Every task's requirements implicitly include this section.
 1. **Spec coverage:** prefabs (#41 — T2), endpoint walls/doorways (#42 — T3), typed spawn (T1), level knob + editor launch (#39 — T4), write-back (T5). The spec's rooms/*.tscn stretch is deliberately folded into level_02's dogfood rather than a separate room library — the vocabulary is proven; the library grows by use (recorded as a scope note, not silent).
 2. **Placeholders:** none; open micro-decisions (WaveRun's warning opening word, level_02 authoring route) are named with their constraint and decided in-task.
 3. **Type consistency:** `Census.spawns: Vec<Gd<WaveSpawn>>` (T1) consumed by T2's yaw fixture; `run_segments`/`RunSeg` (T3) consumed by its own node; the knob (T4) consumed by game_root's new case; roster/icon counts ripple 17→18→19 and eight→nine→ten across T1/T3 in order.
+
+## Post-rebase supersession (2026-08-13)
+
+SP3 is implemented; this plan remains a frozen pre-implementation brief. The
+following corrections control any later review:
+
+- `openings` entries are `(absolute start coordinate on the selected
+  parent-local axis, width)`, never offsets from `from`. In Godot's displayed
+  `Vector2`, the second component named `y` maps to the **parent's local Z
+  coordinate**, not world Z.
+- Generated `RunSeg1…N` names are readable diagnostic paths, not deletion
+  authority. Rebuild cleanup requires a `WaveWall` with the private generated
+  metadata under a typed `WaveRun` parent.
+- The shipped library includes separate plain-root chair, table, doorway, and
+  `room_16x16` scenes; it was not merely folded into level 02. A raw
+  `WaveLevel` is not a playable F6 target. Use **Run Current Scene** from a
+  configured `UnseeingGame` runner; never call that action “Run Custom Scene.”
+- The six-slot/source-colouring perception bullets and their mutations were
+  superseded by the `dfbb69a` superface architecture. Sources/creatures keep
+  fixed role labels; world solids receive per-face labels. `AGENTS.md` owns the
+  current new-object checklist.
+- Historical task deltas are not closeout expectations. The current measured
+  baseline at `cdf4f3b` is 405 Cargo tests, 320 gdUnit cases in 31 suites, 19
+  classes, and ten icons.

@@ -1,27 +1,77 @@
-# Editor Authoring SP1 — Wiki Debt
+# Editor-Authoring Campaign — Wiki Debt
 
-**Push at campaign merge, not before.** The wiki describes *shipped*
-behaviour, and `worktree-editor-authoring-campaign` is unmerged — editing
-the wiki now would describe code nobody on `main` can run yet. This file is
-the ledger so none of it gets lost between now and merge: every claim below
-carries the file:line that makes it true today, on this branch, at
-`93f4140` (SP1's last commit, `2ff5bdf..93f4140` over the plan's twelve
-tasks). It also folds in a second, older debt: nine claims in
-*Research — Editor Authoring* went stale on 2026-08-11 when the 15-issue
-campaign landed on `main` at `3f376cf` — before this branch's first commit
-— and were never written back either. Whoever merges this campaign should
-do one pass over the wiki, not two. Sections explicitly labelled as dated
-addenda were recorded after `93f4140` and name their newer evidence boundary;
-they do not retroactively change the historical SP1 snapshot.
+**Do not publish without a separate user authorization.** Integration does not
+implicitly authorize a wiki edit or push. The branch is still unmerged, so the
+live wiki must continue describing `main` until the user approves a post-merge
+publication pass.
 
-Scope check against the campaign spec
-(`docs/superpowers/specs/2026-08-11-editor-authoring-campaign-design.md`):
-SP1 closes the "Blind placement" blocker (#30–#34) and #38-as-scoped
-(binary delivery) in full, plus #44. It does **not** touch #22
-(census-pinned gate), #16/#35/#36/#45 (source-seam and nesting hazards), or
-#39/#41/#42 (run/ship, hand arithmetic, vocabulary) — those stay open,
-sub-projects 2–4's scope, and nothing below should be read as resolving
-them.
+## 2026-08-13 post-rebase supersession
+
+The campaign was rebased onto `origin/main` at `dfbb69a`; `cdf4f3b` is the
+strict gdUnit-runner milestone, followed by live-contract cleanup through at
+least `696517e` and this active documentation closeout. Because the shared
+branch can advance during closeout, recompute HEAD before publication. The
+older material below is retained as a dated research/evidence ledger, not as
+prose to paste into the wiki. Its file:line citations describe the commit
+boundary each section names and must be re-derived against the integrated tree
+before publication.
+
+Current source of truth:
+
+- `AGENTS.md` owns project policy and the engine/content/perception laws.
+  `CLAUDE.md` is only an adapter that includes it; do not describe CLAUDE.md as
+  an independent architecture or workflow authority.
+- The rebased renderer paints world solids per face. Same-facing coplanar
+  overlapping faces merge into one superface with bit-identical per-vertex
+  labels; separate touching solids retain `MIN_SEP = 0.08` label clearance.
+  The owners are `rust/src/render/superface.rs`, `labels.rs`, and `paint.rs`.
+- Sources and creatures keep fixed role labels and do not consume world-face
+  labels. The SP2 six-slot source-recolouring, K7 source pile, and
+  source-starvation narrative was an intermediate implementation and is not
+  current wiki material. The old solid-granularity object-id report is only a
+  compatibility observability surface; describe the shipped rendering law in
+  terms of faces, superface classes, and `CUSTOM0` labels.
+- Reusable content has plain `Node3D` roots composed from typed Rust nodes.
+  Rust-generated preview children are ownerless derived data. WaveRun's
+  generated segments are identified by type, private metadata, and typed
+  parent; their readable `RunSeg1…N` names are not cleanup authority.
+- `WaveRun.from`/`to` use the parent's local X/Z plane. Godot displays the
+  second `Vector2` component as `y`; in this API it maps to the **parent's
+  local Z axis**, never global/world Z. An opening pair is `(absolute start
+  coordinate on the selected parent-local axis, width)`, not an offset from
+  `from`.
+- A raw `WaveLevel` is level content, not a complete F6 game. **Run Current
+  Scene** requires an active code-free `UnseeingGame` runner whose
+  `level_scene` property selects the level.
+- The measured closeout baseline is 405 Cargo tests, 320 gdUnit cases in 31
+  suites, 19 registered classes, and ten icons. Counts are verification facts,
+  not wiki mechanics.
+
+The reverted wiki commit `9778a00` is historical input only. Never cherry-pick
+or revive it verbatim: its SP2 palette/source model predates the superface
+rebase. During an authorized publication pass, inspect it for still-useful
+research, then rewrite every retained claim against the current code.
+
+The authorized wiki pass should be one coherent rewrite, including:
+
+- **Mechanics — Level and Objects** and a new **Mechanics — Adding an
+  Object** page for typed nodes, warnings, `WaveSpawn`, plain-root prefabs,
+  WaveRun's parent-local coordinates, level selection, and the configured F6
+  workflow.
+- **Mechanics — Sound Sources**, **Mechanics — Rendering**, and **Mechanics —
+  Waves** for blueprint mode, fixed source/creature role labels, superfaces,
+  `CUSTOM0`, and the Rust composition root.
+- **Mechanics Overview**, **Engineering — Build, Test, Deploy**, and
+  **Engineering — Debugging and Observability** for the Rust `UnseeingGame`
+  root, tests/probes-only GDScript, cross-platform bootstrap, exact gdUnit
+  summary gate, and current observability vocabulary.
+- **Research — Editor Authoring** for resolved/unverified claims, with stale
+  class/icon counts and the intermediate SP2 model removed rather than layered
+  around.
+
+The sections below preserve how the debt was discovered. Sections 1–4 are
+dated SP1/SP4 snapshots; any SP2 statements inside them are superseded above.
+Section 5 is the SP3 publication inventory as corrected by this supersession.
 
 ---
 
@@ -605,8 +655,8 @@ fix it is looking at `main.gd::capture_env`").
 
 ## 5. SP3 — authored vocabulary and reusable composition
 
-This section is debt only. Do not apply it to the wiki before the campaign's
-merge gate.
+This section is debt only. Apply it only during the separately authorized wiki
+publication pass, after integration and after rechecking its citations.
 
 ### Mechanics — Levels and Objects
 
@@ -623,12 +673,15 @@ merge gate.
   data, never authored children (`game/tests/probe/editor_prefab_probe.gd`).
 - Document `WaveRun.from`, `to`, and `openings`. Endpoints are parent-local
   X/Z coordinates. Godot displays each `Vector2` as `x` and `y`; in this
-  planar authoring API that displayed `y` means world Z. Each opening is
-  `(absolute start coordinate on the selected axis, width)`, with negative
-  width treated by magnitude. Runs normalize reversed endpoints, choose the
-  dominant axis with X winning ties, warn while folding diagonals, merge/clamp
-  openings, and emit every positive residual as ownerless `RunSeg1…N` walls
-  (`rust/src/level_plan.rs`, `rust/src/nodes/run.rs`).
+  planar authoring API that displayed `y` means the parent's local Z
+  coordinate. Each opening is `(absolute start coordinate on the selected
+  parent-local axis, width)`, with negative width treated by magnitude. Runs
+  normalize reversed endpoints, choose the dominant axis with X winning ties,
+  warn while folding diagonals, merge/clamp openings, and emit every positive
+  residual as ownerless `RunSeg1…N` walls (`rust/src/level_plan.rs`,
+  `rust/src/nodes/run.rs`). Generated segments are selected for rebuilding by
+  type + private metadata + typed parent; their names make diagnostic paths
+  readable but do not authorize deletion.
 - Add the level-selection recipe: `UnseeingGame.level_scene` is a PackedScene
   picker; empty means the exact level-01 fallback, while a selected scene is
   the only scene tried and must have a `WaveLevel` root. Level 02 demonstrates

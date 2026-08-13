@@ -382,17 +382,18 @@ func test_the_shipped_level_has_no_object_id_violations() -> void:
 	assert_float(e["min_sep"]).is_equal_approx(0.08, 0.0001)
 	# the whole picture, named: the engine's own slabs ("Floor"/"Ceiling",
 	# built by every level regardless of what a designer authored), and one
-	# entry per id a source paints its own limbs with — each of which a
-	# wall or a crate may melt into. WHICH wall stands there is this map's
-	# own census, not this law, so it is not named here.
+	# entry per fixed role label a source paints its own limbs with — each
+	# label is excluded from nearby world-face classes so a wall or crate
+	# cannot melt into the source. WHICH wall stands there is this map's own
+	# census, not this law, so it is not named here.
 	var names: Array = e["names"]
 	assert_array(names).contains(["Floor", "Ceiling"])
 	var has_fan_limb := false
 	for n: String in names:
 		if n.begins_with("Fan @"):
 			has_fan_limb = true
-	# T4 law-shapes the id half of this naming too, once source colouring
-	# lands ("Fan @0.33" is the current scheme, not this suite's to rewrite)
+	# The numeric suffix is the source limb's fixed role label; sources do
+	# not consume or compete for the reusable world-face labels.
 	(
 		assert_bool(has_fan_limb)
 		. append_failure_message("no 'Fan @<oid>' entry in %s" % [names])
@@ -505,12 +506,13 @@ func test_the_oid_census_includes_the_levels_creatures() -> void:
 	assert_array(real_violations).is_empty()
 
 
-## The census measures a source by the box it SWEEPS, exactly as the colouring
-## did — not by the single pose it happens to hold. assign_oids grows a
-## source's anchor by its sweep_margin before it colours anything around it;
-## a check built from the ungrown box is weaker than the law it explains, and
-## would hand back "no such pair, no violations" for a prop the fan's guard
-## ring reaches on half of every cycle.
+## The compatibility census measures a source by the box it SWEEPS, exactly as
+## the face labeller does — not by the single pose it happens to hold.
+## WaveLevel::paint_labels grows each fixed-role proximity anchor by the
+## source's sweep_margin before assigning nearby world-face labels; a check
+## built from the ungrown box is weaker than the law it explains, and would
+## hand back "no such pair, no violations" for a prop the fan's guard ring
+## reaches on half of every cycle.
 ##
 ## Hand-derived from the fan's own build dimensions (rust/src/nodes/fan.rs),
 ## and measured from the FAN, so the pair may stand anywhere on the floor:
@@ -542,11 +544,10 @@ func test_the_oid_census_measures_a_source_by_what_it_sweeps() -> void:
 	var seams: Array[String] = []
 	for pair: Dictionary in e["pairs"]:
 		seams.append("%s|%s" % [pair["name_a"], pair["name_b"]])
-	# pairs come back in ascending census order, and the census lists the
-	# painted solids before the sources — so the prop is the a side.
-	# T4 rewrites these to read ids off the fan's own limbs instead of the
-	# current fixed "Fan @0.33"/"@0.63" scheme — a CODE-BUILT fixture, not
-	# shipped census, but one that still pins today's constants until then.
+	# Pairs come back in ascending census order, with painted solids before
+	# fixed-role source anchors, so the prop is the a side. Shell and Moving
+	# intentionally keep their role labels; this code-built fixture pins the
+	# proximity exclusion against those real labels, not a shipped-map census.
 	assert_array(seams).contains(["SweptNeighbour|Fan @0.33", "SweptNeighbour|Fan @0.63"])
 	assert_array(e["violations"]).is_empty()
 

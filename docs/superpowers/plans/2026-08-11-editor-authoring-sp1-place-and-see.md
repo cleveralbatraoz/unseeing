@@ -657,3 +657,22 @@ The wiki describes **shipped** behaviour, and this branch is unmerged — so the
 1. **Spec coverage:** SP1 spec section ↔ tasks: tool sources/cat (1–3), editor derive + warnings (4–7), knob polish + icons + docs (8–10), bootstrap (11), write-back (12). The spec's "re-derives on child add/remove and transform changes, debounced" is met by the signature watch (7) — a deliberate refinement recorded there.
 2. **Placeholders:** none — every step carries code, an exact command, or a file:line.
 3. **Type consistency:** `LIMBS` consts per class; `PlacementFault { path, text }` (4) consumed in 5–6; `faults_for(&self, node: &Gd<Node>) -> PackedStringArray` (5) consumed in 6; `rederive()` (5) used by probes (6–7); probe names and mode-lines consistent (`# sources:` / `# level:`).
+
+## Post-rebase supersession (2026-08-13)
+
+This plan is a frozen record of SP1's fail-first execution; do not rewrite its
+task bodies or reuse their old counts as current gates.
+
+- `AGENTS.md`, not `CLAUDE.md`, now owns policy, the two-layer law, and the
+  new-object checklist. `CLAUDE.md` is only an adapter.
+- The plan's `starved_slots`/flat object-id warning model describes the branch
+  before the `dfbb69a` superface rebase. Current world solids are painted per
+  face; sources/creatures use fixed role labels. Preserve SP1's durable
+  outcomes—live warnings, truthful paths, tool blueprints, knob hints/docs,
+  icons, and bootstrap—but translate wiki prose to superface labels.
+- Named-limb clearing remains correct for each class's known blueprint limbs.
+  It must not be generalized to WaveRun: later generated segments are selected
+  by `WaveWall` type, private metadata, and typed `WaveRun` parent.
+- Task 11's Windows-manual boundary is superseded by the cross-platform
+  bootstrap spec already linked above. Current verification is 405 Cargo tests,
+  320 gdUnit cases in 31 suites, 19 registered classes, and ten icons.

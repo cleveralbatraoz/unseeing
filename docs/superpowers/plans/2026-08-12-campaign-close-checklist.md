@@ -1,48 +1,101 @@
-# Editor Authoring Campaign — Close Checklist
+# Editor-Authoring Campaign — Close Checklist
 
-This is a gate, not authorization. Do not merge, push rewritten history,
-publish the wiki, deploy, or close issues merely because every box below is
-green.
+**Current record:** 2026-08-13, after the rebase onto `origin/main` at
+`dfbb69a`. This checklist is a gate, never authorization. Green boxes do not
+authorize integration, a push, wiki publication, deployment, or issue closure.
+
+Current expected baseline: 405 Cargo tests; 320 gdUnit cases in 31 suites; 19
+registered classes; ten icons. The gdUnit totals are computed from source by
+the CI runner and must exactly match its zero-error terminal summaries.
 
 ## Automated close
 
-- [ ] Review `origin/main...HEAD` for specification coverage and code quality.
-- [ ] Run formatting, linting, all 339 Cargo tests, all 291 gdUnit cases in all
-  31 suites, editor probes, 19-class census, and ten-icon manifest.
-- [ ] Run the full export/browser smoke pipeline with an explicitly
-  non-deployable destination. Never invoke deployment tooling.
-- [ ] Confirm the handoff and its temporary `AGENTS.md` section remain until
-  integration.
+- [ ] Confirm the merge base is `dfbb69a`, inspect the shared worktree status,
+  and account for every change without overwriting concurrent/user work.
+- [ ] Review `origin/main...HEAD` for campaign-spec compliance, architecture,
+  truthful prose, and code quality. Fix findings and review the resulting diff
+  again.
+- [ ] Run Rust formatting, Clippy with warnings denied, all 405 Cargo tests, the
+  `editor-docs` build, and the release build.
+- [ ] Import with Godot 4.7, then run all 320 gdUnit cases in all 31 suites
+  through `ci/run_gdunit.sh`. Require the exact overall, executed-suite, and
+  executed-case records with zero errors, failures, skips, or orphans.
+- [ ] Run repository hygiene, vendored-addon verification, GDScript
+  formatting/lint, boot-error gate, determinism/restore probes, all editor
+  probes, both 19-class rosters, and the ten-icon manifest.
+- [ ] Run `SKIP_EXPORT=1 ci/pipeline.sh` after all focused fixes are green.
+- [ ] Run the full export/browser-smoke pipeline with an explicit
+  non-deployable destination and verify it copied/deployed nothing. Never call
+  `deploy.sh` during campaign verification.
+- [ ] With the final release library imported, use Godot MCP to check every
+  automatable editor item below and record the exact project/addon/Godot
+  versions and any remaining editor errors.
+- [ ] Confirm this handoff and only the temporary `AGENTS.md` in-flight section
+  remain ready for removal at an explicitly authorized merge.
 
 ## One consolidated human editor session
 
-- [ ] Hover warning triangles, create and clear a bad placement, duplicate
-  `WaveSpawn`, then clear its loser warning.
-- [ ] Find the fan/radio/cat blueprints and all ten authoring icons.
-- [ ] Create the seventh mutually touching object and observe the source's
-  starvation warning.
-- [ ] Drag, rotate, and save/reload chair, table, doorway, and room prefabs.
-- [ ] Edit WaveRun endpoints and opening pairs; verify generated wall pieces and
-  warnings update and clear.
-- [ ] Place and rotate a nested WaveSpawn; confirm the player faces its global
-  direction.
-- [ ] Assign level 02 to the `level_scene` picker of a code-free
-  `UnseeingGame` runner, make that runner the active tab, and use **Run Current
-  Scene** (F6); confirm the player and hearing pass exist around the selected
-  level.
+Ask for this only after the automated and MCP passes have exhausted what can be
+proved without the user.
 
-## Integration choice — user decides
+- [ ] Hover warning triangles on intentionally invalid authored nodes, repair
+  their transforms/knobs, and confirm the warnings clear without reopening the
+  scene.
+- [ ] Find all ten class icons and inspect the fan, radio, and cat blueprint
+  geometry in the Create Node/editor workflow.
+- [ ] Drag, rotate, duplicate, save, reload, and independently edit chair,
+  table, doorway, and room prefabs; confirm no derived limbs become authored
+  Scene-dock children.
+- [ ] Edit WaveRun endpoints and opening pairs. Confirm Inspector `Vector2.y`
+  controls the parent's local Z coordinate, generated segments rebuild, and
+  diagonal/invalid warnings appear and clear.
+- [ ] Place and rotate a WaveSpawn, including one nested under a rotated plain
+  `Node3D`; confirm the player wakes at it and faces the composed global
+  direction. Duplicate it once and confirm loser warnings name the duplicate,
+  then remove it and confirm the warnings clear.
+- [ ] Assign level 02 to **Level Scene** on a code-free `UnseeingGame` runner,
+  make that runner tab active, and choose **Run Current Scene** (F6). Confirm
+  the player, hearing pass, level geometry, source, and demo crossing work.
+- [ ] Confirm a raw `WaveLevel` tab is treated as level content, not presented
+  as a complete standalone F6 game.
 
-- [ ] Choose exactly one: merge locally, push/open a PR, or retain the local
-  branch. A merge choice authorizes only the merge.
-- [ ] At merge, remove this campaign handoff and only the temporary in-flight
-  section of `AGENTS.md`; retain the canonical policy.
+## Authorization 1 — integration choice
 
-## Separate post-merge authorizations
+- [ ] The user chooses exactly one: merge locally, push/open a PR, or keep the
+  local branch. No choice may be inferred from completing this checklist.
+- [ ] A local merge is performed only in the clean shared checkout on the
+  expected `main` branch.
+- [ ] At merge, remove the active campaign handoff and only its temporary
+  `AGENTS.md` in-flight section. Retain the canonical project policy.
+- [ ] A merge choice authorizes only that merge. Pushing a branch/PR requires
+  the push/PR choice explicitly.
 
-- [ ] Wiki publication: revive reverted wiki commit `9778a00`, add the
-  Mechanics — Adding an Object page, and apply all four campaign debt sections.
-- [ ] Deployment: only from a clean shared `main`, only after an explicit user
-  instruction, using the repository's gated deployment workflow.
-- [ ] Issue closure with evidence links: #16, #22, #30, #31, #32, #33, #34,
-  #35, #36, scoped #38, #39, #41, #42, #44, #45.
+## Authorization 2 — wiki publication
+
+- [ ] Obtain an explicit wiki-publication instruction after integration.
+- [ ] Re-read the current code and live wiki, then apply the current debt in
+  `2026-08-11-editor-authoring-wiki-debt.md`, including the new
+  **Mechanics — Adding an Object** page.
+- [ ] Treat reverted commit `9778a00` only as historical research. Do not
+  cherry-pick, revive, or publish it verbatim: its six-slot source-colouring
+  model predates the superface rebase. Rewrite applicable prose around
+  per-face labels, merged superfaces, fixed source/creature roles, and current
+  file owners.
+- [ ] Review and push the wiki as its own authorized action.
+
+## Authorization 3 — deployment
+
+- [ ] Obtain a separate explicit deployment instruction after an approved
+  merge.
+- [ ] Deploy only from a clean shared `main` whose native/wasm cores were built
+  from that exact tree, using the repository's gated deployment workflow.
+- [ ] Do not infer deployment authority from merge, PR, or wiki authority.
+
+## Authorization 4 — issue closure
+
+- [ ] Obtain a separate explicit issue-closure instruction.
+- [ ] Attach current evidence to each applicable issue before closing: #16,
+  #22, #30, #31, #32, #33, #34, #35, #36, scoped #38, #39, #41, #42,
+  #44, and #45.
+- [ ] Do not infer issue-closure authority from merge, wiki, or deployment
+  authority.

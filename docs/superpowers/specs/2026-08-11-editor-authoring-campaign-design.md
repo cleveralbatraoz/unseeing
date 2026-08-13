@@ -267,3 +267,24 @@ re-derive either fact from scratch.
    same release `editor-docs` feature, imports, and requires the same 19-class
    census. The complete current design is frozen separately in
    `docs/superpowers/specs/2026-08-13-cross-platform-bootstrap-design.md`.
+
+### Post-rebase supersession (2026-08-13)
+
+4. **The superface rebase superseded SP2's implementation model.** This spec's
+   free-placement outcome remains law, but its historical six-slot
+   source-recolouring/K7 route is no longer how the branch achieves it. After
+   rebasing onto `origin/main` at `dfbb69a`, world solids receive per-face
+   `CUSTOM0` labels from the superface graph while sources and creatures keep
+   fixed role labels. Same-facing coplanar overlapping faces merge
+   bit-identically; separate touching solids keep `MIN_SEP = 0.08`. The current
+   owners are `rust/src/render/superface.rs`, `labels.rs`, and `paint.rs`; the
+   old solid-level object-id output is compatibility observability only.
+5. **Policy and completion language moved to `AGENTS.md`.** `CLAUDE.md` is now
+   only a three-line adapter, so success criterion 6's reference to the razor
+   being stated there is historical. The enforceable two-law split and
+   new-object checklist live in `AGENTS.md`, and GDScript is tests/probes-only,
+   not designer-facing residue. At `cdf4f3b` the automated census is 405 Cargo
+   tests, 320 gdUnit cases in 31 suites, 19 classes, and ten icons. Feature
+   implementation is complete, but human-editor, integration, wiki,
+   deployment, and issue-closure gates remain separate; none is authorized by
+   this spec or by a green checklist.

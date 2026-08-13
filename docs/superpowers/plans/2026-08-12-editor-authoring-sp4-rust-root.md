@@ -128,3 +128,21 @@ Every task's requirements implicitly include this section. Copied from CLAUDE.md
 1. **Spec coverage:** razor enforced by structure (T4-6), main.gd gone (T6), residue minimized (T6-7), CLAUDE.md law (T9) — spec §SP4 complete; the settings sentence resolved as an erratum, not silently.
 2. **Placeholders:** none; where a task depends on merged-main code the implementer must read (`restore_transaction_test.gd` fixtures), the task says read-first explicitly.
 3. **Type consistency:** `Randf`/`Flicker::state()`/`DemoTap::next_at()` (T2/3) consumed by T5's env trio; T4's observability surface consumed by T6's migrations; `max_pulses` (T1) referenced by T6's shim move.
+
+## Post-rebase supersession (2026-08-13)
+
+This plan is the frozen migration record. `UnseeingGame`, pure Flicker/DemoTap
+laws, restore semantics, and the code-free `main.tscn` root remain current.
+
+- The policy/razor references to `CLAUDE.md` are historical. `AGENTS.md` now
+  owns the enforceable engine/content split and says GDScript is tests and
+  probes only; `CLAUDE.md` merely includes it.
+- A selected level remains content under `UnseeingGame`, not an independently
+  playable raw `WaveLevel`. The later `level_scene` property preserves one
+  inject-before-add path and is the code-free F6 authoring boundary.
+- Class/count predictions inside individual tasks record their execution
+  moment. Current closeout counts are 405 Cargo tests, 320 gdUnit cases in 31
+  suites, 19 registered classes, and ten icons.
+- Task 9's wiki work remains debt. Integration does not authorize wiki
+  publication, deployment, or issue closure; each requires its own user
+  decision.
