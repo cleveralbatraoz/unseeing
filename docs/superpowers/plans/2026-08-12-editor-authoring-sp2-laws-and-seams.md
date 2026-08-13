@@ -130,6 +130,10 @@ nested-solid-box, other placement-warning freshness, and slab-inclusive
 pack-range outcomes survive, but the source-colouring mechanism and the
 planned buried-in-wall runtime heir do not.
 
+The body records the old pre-rebase baseline `b920f07`. Its live rewritten
+pre-SP2 boundary is `9b3773e`; use that SHA for ancestry and retain the old one
+only when reproducing the dated 315-Cargo/269-gdUnit measurement.
+
 - Rebasing onto `origin/main` at `dfbb69a` made per-face superfaces canonical.
   The six-slot palette, old positional source recolouring, and K6/K7 examples
   are retired. Sources remain outside world-face merging, but their semantic

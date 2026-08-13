@@ -29,17 +29,25 @@ intermediate architecture.
 - `e5f874c` is the strict gdUnit-runner milestone. Post-milestone contract
   cleanup includes `1ab7f82`, `e01469d`, `5e647da`, and `517b483`; the
   handoff/wiki closeout is committed at `5eb7263`. History was then cleaned
-  without changing the final tree. Further closeout commits may still move
-  HEAD, so recompute the range, inspect `git status`, and preserve concurrent
-  or user-owned changes before acting.
+  without changing the final tree. The branch pushed through `fd048b8`, then
+  the current adversarial session added the pure paint-plan, temporal-totality,
+  fixed-anchor, and archive-boundary commits listed in the decision ledger
+  below. Further closeout commits may still move HEAD, so recompute the range,
+  inspect `git status`, and preserve concurrent or user-owned changes before
+  acting.
 - The planned feature implementation and the closeout `ArrayMesh` winding
-  correction landed. A final whole-branch review then found and repaired the
+  correction landed. Whole-branch review then found and repaired the
   same-class source seam, GDScript resource-policy gaps, WaveRun regeneration,
-  live WaveWall transforms, and residual shipped-content goldens. The settled
-  implementation is pushed through `c8744de`; documentation, the final
-  export/MCP evidence, and a last rebase remain. The branch is not integrated,
-  the wiki is not published, nothing is deployed, and no issue is authorized
-  for closure.
+  live WaveWall transforms, residual shipped-content goldens, a non-atomic
+  paint boundary, malformed temporal input, impossible fixed-label separation,
+  and developer MCP files leaking into deployment archives. The last pushed
+  checkpoint is `fd048b8`; the current local review series begins at `861cc45`
+  and includes `b64e337`, `fcf6075`, `3164ba3`, `5beab1d`, `6e4cfc9`, and
+  `f832826`. The temporal and final paint series have independent approval;
+  complete whole-session/whole-branch review, export/MCP evidence, the last
+  rebase, and all post-rebase gates remain. The branch is not integrated, the
+  wiki is not published, nothing is deployed, and no issue is authorized for
+  closure.
 - Keep this handoff and the temporary `AGENTS.md` in-flight section until an
   explicitly authorized merge. At merge, remove both together while retaining
   all canonical `AGENTS.md` policy.
@@ -58,10 +66,12 @@ state into a scene.
 - Rust is the hidden engine. Pure, total modules own geometry, labelling,
   movement, wave, restore, and scheduling laws. Registered Godot classes are
   thin adapters that validate Inspector/tree input and apply explicit results.
-- World solids are painted per face through `rust/src/render/superface.rs`,
-  `labels.rs`, and `paint.rs`. Same-facing coplanar overlapping faces merge
-  into one superface and receive one bit-identical per-vertex label. Separate
-  touching solids keep label separation of at least `MIN_SEP = 0.08`.
+- World solids are painted per face through `rust/src/render/faces.rs`,
+  `superface.rs`, `labels.rs`, and `paint_plan.rs`; `paint.rs` is only the
+  Godot `ArrayMesh` layout/submission boundary. Same-facing coplanar overlapping
+  faces merge into one superface and receive one bit-identical per-vertex
+  label. Separate touching solids keep label separation of at least
+  `MIN_SEP = 0.08`.
 - Sources never become world superfaces, but their semantic limb roles join the
   same separation graph as world face classes. The level derives numeric labels
   per source instance, so two touching copies retain their seam; creatures keep
@@ -231,6 +241,50 @@ likely to be lost by reading only the pre-rebase plans:
 - `c8744de` made live walls one exact Node3D/private-body geometry and folded
   censused instance identity into the editor watch, so equivalent WaveRun
   rebuilds cannot leave placeholder paint or freed wall handles.
+- `861cc45` moved the complete face/source paint decision into pure
+  `render::paint_plan`. Request-wide planning and label-assignment failures now
+  refuse before the Godot boundary mutates any mesh or source role, while
+  repairable entry/source faults retain their original census owners and
+  existing labels.
+- `b64e337` made frame advancement, restored flicker state, demo appointments,
+  and random samples total over their admitted input. The shared
+  renderer-visible time horizon is a pure contract; the Godot root applies the
+  returned transition and warns once when it repairs native temporal input.
+- `fcf6075` rejects fixed-label separation conflicts inside the pure planner,
+  before any paint command escapes, and closes malformed-bound/source-owner
+  and palette-capacity mutation gaps without changing the valid merge law.
+- `3164ba3` keeps `.mcp.json` and `tools/setup-mcp.sh` in developer checkouts
+  while excluding both from the exact `git archive` deployment boundary. The
+  repository-hygiene test proves both sides and fails if either exclusion is
+  removed.
+- `5beab1d` consolidated the renderer-visible horizon and clock transition in
+  `rust/src/temporal.rs`; Flicker and DemoTap consume the same pure contract
+  and the Godot root only applies it. Its focused run passed 11 DemoTap, ten
+  Flicker, and five temporal tests. Moving the last-fire boundary past the
+  horizon and moving the horizon itself each failed their intended tests.
+- `6e4cfc9` made pure shapes the sole owner of conservative entry bounds,
+  validates source bounds after sweep growth, and refuses oversized requests
+  before quadratic graph work. Flank, source-role, starvation, and role-state
+  laws moved into the atomic planner; `render::paint` remains only the Godot
+  mesh-layout/submission boundary. Its first independent review found
+  super-pairwise duplicate searches and overbroad fallible-allocation prose;
+  those findings were fixed rather than accepted as debt.
+- `f832826` closes that paint review with deterministic logarithmic membership
+  checks that preserve edge insertion order, truthful request/allocation prose,
+  shape-owned ordinal contracts, and direct conservative-bound fixtures. The
+  final independent verdict is approved: 32/32 focused planner tests and
+  454/454 all-target/all-feature Rust tests passed; the maximum admitted K512
+  graph produced exactly 130,816 unique pairs in 0.09 seconds of test-body
+  time (0.44 seconds for the Cargo process). Direct bounds, deduplication, and
+  request-ceiling tests provide the final mutation sensitivity.
+
+History references rewritten by the rebase must not be read as missing work.
+The live equivalents are `93f4140` → `4897683`, `2ff5bdf` → `1e88abf`,
+`c0ecba9` → `3f4f0eb`, and `6cc6c54` → `f8aeb2f`. The old merge checkpoint
+`e0c0250` has no merge-commit descendant: `6a9e0e1` is the corresponding
+linear pre-SP4 boundary on the rebased branch, whose actual base is `dfbb69a`.
+The old final-review baseline `b920f07` was folded into the rewritten Rust-root
+paper trail; use `9b3773e`, the live pre-SP2 boundary, for current ancestry.
 
 Strict full-runner census at `c8744de` on 2026-08-13:
 
@@ -245,6 +299,17 @@ Strict full-runner census at `c8744de` on 2026-08-13:
   3/3 uninjected-source checks, 29/29 live-level plus 1/1 runtime-level checks,
   and 16/16 prefab checks. `SKIP_EXPORT=1 ci/pipeline.sh` completed green at
   this checkpoint.
+
+Current local focused evidence after `f832826` (not a substitute for the final
+post-rebase pipeline):
+
+- 454/454 Cargo tests with all targets and features, with formatting and Clippy
+  warnings denied.
+- 328 authored gdUnit cases in 31 suites by the same source-census predicate as
+  `ci/run_gdunit.sh`; final execution and exact terminal summaries remain a
+  close gate.
+- Repository hygiene passed with both developer MCP files present in the
+  checkout and absent from `git archive HEAD`.
 
 RED/GREEN and mutation evidence retained for closeout:
 
@@ -300,20 +365,22 @@ they are not a substitute for the final post-rebase full pipeline.
 
 ## Remaining work before asking for integration
 
-1. Finish and independently review the active prose correction without
-   absorbing the user's MCP settings or chair move. The implementation through
-   `c8744de` has independent approval.
+1. Finish independent review of every current-session commit and the complete
+   `origin/main...HEAD` branch diff. Preserve the user's MCP/editor state and
+   any concurrent changes; review reports are evidence only after the findings
+   have been checked against the actual diff and focused tests.
 2. Treat the green `SKIP_EXPORT=1 ci/pipeline.sh` run at `c8744de` (419 Cargo
    tests across default/editor-doc configurations, exact 327/327 gdUnit cases
    in 31/31 suites, 19 classes, ten icons, and every editor probe) as a
    checkpoint; rerun it after the final documentation/rebase state.
-3. Independently review `origin/main...HEAD` for spec compliance and code
-   quality, fix findings, and rerun the complete gates.
-4. Run the full export/browser-smoke pipeline with an explicit non-deployable
+3. Run the full export/browser-smoke pipeline with an explicit non-deployable
    destination. Do not invoke deployment tooling.
-5. Repeat the corrected three-state MCP mesh gate after the final build, then
+4. Repeat the corrected three-state MCP mesh gate after the final build, then
    ask the user only for the remaining visual/interactive checks in one
    consolidated editor session.
+5. Fetch and rebase the current branch onto the latest `main` only after the
+   pre-rebase diff is reviewed and green. Re-review the rewritten commits and
+   rerun every focused, pipeline, export/browser, and MCP gate afterward.
 6. Present exactly one integration menu: merge locally, push/open a PR, or keep
    the local branch. Do nothing with that choice until the user explicitly
    selects it.

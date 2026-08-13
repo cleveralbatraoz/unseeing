@@ -234,7 +234,8 @@ re-derive either fact from scratch.
 
 1. **The settings sentence was written on a false premise.** Sub-project
    4's description above says "The settings overlay's *layout* stays a
-   `.tscn`; its logic moves to Rust." Re-verified at `c0ecba9`: no settings
+   `.tscn`; its logic moves to Rust." Re-verified at the rewritten equivalent
+   `3f4f0eb` (historical pre-rebase SHA `c0ecba9`): no settings
    `.gd` or `.tscn` ever existed on this branch or on `main` — logic AND
    layout were already fully Rust (`rust/src/nodes/settings.rs`, 643
    lines, `SettingsMenu`). There was nothing to extract. Resolved by

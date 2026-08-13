@@ -16,6 +16,14 @@ prose to paste into the wiki. Its file:line citations describe the commit
 boundary each section names and must be re-derived against the integrated tree
 before publication.
 
+Rebase map for the dated ledger below: `93f4140` → `4897683`, `2ff5bdf` →
+`1e88abf`, `c0ecba9` → `3f4f0eb`, and `6cc6c54` → `f8aeb2f`. The historical
+merge `e0c0250` became the linear `6a9e0e1` pre-SP4 boundary after replay onto
+`dfbb69a`; the historical final-review point `b920f07` became the rewritten
+Rust-root paper-trail boundary at `9b3773e`. References retained below describe
+their dated measurement, but current ancestry and publication citations must
+use the mapped commit.
+
 Current source of truth:
 
 - `AGENTS.md` owns project policy and the engine/content/perception laws.
@@ -24,7 +32,8 @@ Current source of truth:
 - The rebased renderer paints world solids per face. Same-facing coplanar
   overlapping faces merge into one superface with bit-identical per-vertex
   labels; separate touching solids retain `MIN_SEP = 0.08` label clearance.
-  The owners are `rust/src/render/superface.rs`, `labels.rs`, and `paint.rs`.
+  The pure owners are `rust/src/render/faces.rs`, `superface.rs`, `labels.rs`,
+  and `paint_plan.rs`; `paint.rs` is the Godot mesh-layout/submission boundary.
 - Godot 4.7 treats clockwise `ArrayMesh` triangles as front-facing. Pure box,
   wedge, column, and torus geometry stays conventional counter-clockwise and
   outward (`cross.dot(outward_normal) > 0`); `rust/src/render/paint.rs`
@@ -41,6 +50,34 @@ Current source of truth:
   object-id report is only compatibility observability; describe the shipped
   rendering law in terms of faces, semantic roles, graph classes, and real
   `CUSTOM0` labels.
+- Paint derivation is now one atomic pure request owned by
+  `rust/src/render/paint_plan.rs`. The Godot adapter in
+  `rust/src/nodes/level.rs` translates authored shapes and sources, calls the
+  planner, and applies returned commands only after a complete `Ok`. The pure
+  shape vocabulary derives every entry's conservative world bound so an
+  independent AABB cannot disagree with the geometry it describes; source
+  bounds are validated after sweep growth. Public request ceilings reject
+  oversized work before quadratic graph building; checked class/pair capacities
+  and deterministic logarithmic separation dedup bound the admitted work.
+  Repairable malformed entries/sources keep their original census ownership
+  and existing labels; invalid palette/anchor/allocation state refuses the
+  whole request before any mesh or source role changes. **Mechanics —
+  Rendering**, **Mechanics — Level and Objects**, and the new **Mechanics —
+  Adding an Object** page must name `PaintRequest`/`PaintPlan` as the pure
+  owner, `rust/src/render/paint.rs` as the `ArrayMesh` submission boundary,
+  and distinguish local repairable faults from atomic global refusal.
+- Simulation time has one renderer-visible domain owned by
+  `rust/src/temporal.rs`: `RENDERER_VISIBLE_TIME_HORIZON` is `2^18` seconds,
+  the final power-of-two instant where an f32 shader clock still advances at
+  60 Hz. Invalid/reversed frame deltas advance by zero, huge finite advances
+  saturate, malformed restored flicker fields repair to constructor values,
+  and malformed demo appointments repair to the first due instant (`0.6`
+  seconds). `rust/src/flicker.rs` and `rust/src/demo_tap.rs` consume that pure
+  contract; `rust/src/nodes/game.rs` is only the boundary that applies it and
+  warns once. **Mechanics — Waves**, **Mechanics Overview**, and **Engineering
+  — Debugging and Observability** must document the shared horizon, repair
+  semantics, valid seeded-trace preservation, and the pure owner rather than
+  presenting each consumer as an independent clock.
 - Reusable content has plain `Node3D` roots composed from typed Rust nodes.
   Rust-generated preview children are ownerless derived data. WaveRun's
   generated segments are identified by type, private metadata, and typed
@@ -69,8 +106,10 @@ Current source of truth:
   in 31 suites. The later `c8744de` live-wall checkpoint ran 417 default Cargo
   tests plus two focused editor-doc tests (419 all-features), 327 gdUnit cases
   in 31 suites, 19 registered classes, ten icons, and editor probes 7+7, 11+3,
-  29+1, and 16. Recompute at closeout; counts are verification facts, not wiki
-  mechanics.
+  29+1, and 16. The approved `f832826` paint review then ran 454/454
+  all-target/all-feature Cargo tests; the current gdUnit source census is 328
+  cases in 31 suites, pending the final executed post-rebase gate. Recompute at
+  closeout; counts are verification facts, not wiki mechanics.
 
 The reverted wiki commit `9778a00` is historical input only. Never cherry-pick
 or revive it verbatim: its SP2 palette/source model predates the superface
@@ -354,7 +393,8 @@ per-triple and a single host-arch build can never satisfy them, unlike the
 macOS/Linux keys, which both point at the one host-native
 `rust/target/release/` artifact.
 
-Test counts as of this branch's HEAD (`93f4140`): **286 cargo tests**
+Test counts as of this branch's rewritten SP1 checkpoint (`4897683`): **286
+cargo tests**
 (`rust/`, `cargo test`), **231 gdUnit4 cases across 28 suites**
 (`game/tests/`, including the two new suites this sub-project added,
 `knob_hint_test.gd` and `icon_manifest_test.gd`). Both figures are already
@@ -377,7 +417,7 @@ a third unpushed revision of the same two numbers).
 ### 2026-08-13 addendum — native bootstrap on every desktop
 
 This addendum records the cross-platform bootstrap follow-up on the completed
-campaign branch; it is intentionally newer than the `93f4140` SP1 snapshot
+campaign branch; it is intentionally newer than the `4897683` SP1 snapshot
 above. The native bootstrap pair is the one-command contract:
 `tools/bootstrap.sh` on macOS/Linux and `tools\bootstrap.cmd` (delegating to
 `tools/bootstrap.ps1`) on Windows. The POSIX path `game/README.md`'s authoring
@@ -410,7 +450,7 @@ route and pinned Rust target alongside x86_64.
 
 ## 3. Research — Editor Authoring
 
-### Claims resolved by SP1 (this branch, `2ff5bdf..93f4140`)
+### Claims resolved by SP1 (this branch, `1e88abf..4897683`)
 
 - **#30 sources visible** — §3(ii)'s "`SoundFan` (`fan.rs:58`), `SoundRadio`
   (`radio.rs:63`) and `WaveCat` (`cat.rs:52`) are `#[class(init, …)]` with
@@ -545,13 +585,14 @@ into the registered `UnseeingGame` node (`rust/src/nodes/game.rs`) — level
 instancing, injection order, player/hero/observer/restorer wiring, the
 settings-menu construction (added LAST — unchanged law), the per-frame
 globals (clock, flicker), the demo tap schedule, and the
-capture_env/apply_env/restore_blob trio. Landed `e0c0250..c0ecba9`
-(nine tasks, `6cc6c54`..`c0ecba9`). Closes the "`main.gd` is gone;
+capture_env/apply_env/restore_blob trio. Landed after the linear pre-SP4
+boundary `6a9e0e1` through `3f4f0eb` (nine tasks beginning at `f8aeb2f`).
+Closes the "`main.gd` is gone;
 GDScript in the repo is designer-facing only; the razor is stated in
 CLAUDE.md" success criterion. Does **not** touch #22, #16/#35/#36/#45, or
 #39/#41/#42 — unchanged from SP1's own scope note above.
 
-Measured at `c0ecba9`: `game/scripts/` does not exist — git tracks no
+Measured at `3f4f0eb`: `game/scripts/` does not exist — git tracks no
 such path at all (`git ls-tree -r HEAD --name-only game/ | grep -c
 '^game/scripts/'` → 0), the same fact CLAUDE.md's own phrasing already
 carries precisely ("`game/scripts/` carries nothing," not "is empty").

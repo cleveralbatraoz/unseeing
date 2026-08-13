@@ -134,6 +134,11 @@ Every task's requirements implicitly include this section. Copied from CLAUDE.md
 This plan is the frozen migration record. `UnseeingGame`, pure Flicker/DemoTap
 laws, restore semantics, and the code-free `main.tscn` root remain current.
 
+The body's merged-tree baseline `e0c0250` is a historical merge commit with no
+ancestor after the linear rebase. The corresponding live pre-SP4 boundary is
+`6a9e0e1` on top of `dfbb69a`; use it for current ancestry while retaining the
+old SHA only when reproducing the dated 304-Cargo/259-gdUnit measurement.
+
 - The policy/razor references to `CLAUDE.md` are historical. `AGENTS.md` now
   owns the enforceable engine/content split and says GDScript is tests and
   probes only; `CLAUDE.md` merely includes it.

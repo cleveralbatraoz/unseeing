@@ -10,6 +10,10 @@ suites, with 19 registered classes and ten icons. Recompute after the final
 rebase and require exact zero-error terminal summaries rather than trusting
 these literals alone. The same checkpoint passed slab probes 7+7,
 source probes 11+3, live-level probes 29+1, and the 16-check prefab probe.
+The later approved paint review at `f832826` passed 454/454 all-target,
+all-feature Cargo tests; the current gdUnit source census is 328 cases in 31
+suites, but those are still pre-rebase focused/source facts rather than the
+required final executed gate.
 
 ## Automated close
 
@@ -18,6 +22,10 @@ source probes 11+3, live-level probes 29+1, and the 16-check prefab probe.
 - [ ] Review `origin/main...HEAD` for campaign-spec compliance, architecture,
   truthful prose, and code quality. Fix findings and review the resulting diff
   again.
+- [ ] Re-review every commit created in the current closeout session, including
+  its test-first evidence and mutations. Obtain independent code-quality,
+  adversarial/critic, and architecture/design verdicts; verify every finding
+  against the commit diff before accepting or rejecting it.
 - [ ] Run Rust formatting, Clippy with warnings denied, the final source-censused
   Cargo total, the `editor-docs` build, and the release build.
 - [ ] Import with Godot 4.7, then run the final source-censused gdUnit cases and
@@ -27,6 +35,10 @@ source probes 11+3, live-level probes 29+1, and the 16-check prefab probe.
 - [ ] Run repository hygiene, vendored-addon verification, GDScript
   formatting/lint, boot-error gate, determinism/restore probes, all editor
   probes, both 19-class rosters, and the ten-icon manifest.
+- [ ] Require repository hygiene to prove `.mcp.json` and
+  `tools/setup-mcp.sh` still exist in a developer checkout but are absent from
+  `git archive HEAD`; removing either `export-ignore` rule must make the named
+  archive regression fail.
 - [ ] Run `SKIP_EXPORT=1 ci/pipeline.sh` after all focused fixes are green.
 - [ ] Run the full export/browser-smoke pipeline with an explicit
   non-deployable destination and verify it copied/deployed nothing. Never call
@@ -47,6 +59,10 @@ source probes 11+3, live-level probes 29+1, and the 16-check prefab probe.
   `tools/probe_editor_sources.sh` must pass its 11 editor checks and three
   uninjected-runtime checks. The MCP validator cannot walk the edited-scene
   root.
+- [ ] Fetch and rebase the current branch onto the latest `main` only after the
+  complete pre-rebase branch review and gates are recorded. Then re-review the
+  rewritten commit range and repeat every focused, pipeline, export/browser,
+  and three-state MCP gate; pre-rebase evidence is not a substitute.
 - [ ] Confirm this handoff and only the temporary `AGENTS.md` in-flight section
   remain ready for removal at an explicitly authorized merge.
 
