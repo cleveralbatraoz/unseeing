@@ -5,7 +5,7 @@
 #
 # Godot's own parse/shader failures, plus every engine node class that
 # refuses to run half-wired rather than limp: WaveLevel (level integrity —
-# starved object ids, no SpawnPoint marker, more walls than the sight
+# starved superface classes, no typed WaveSpawn, more walls than the sight
 # shaders have slots for), SoundFan/SoundRadio/WaveCat/UnseeingPlayer/
 # hero_body (composition-root injection), UnseeingGame (the composition
 # root itself: a shader or the level scene that fails to load). This is
@@ -29,8 +29,7 @@
 # in the pipeline flaky, which is worse than the hole it used to have.
 #
 # WaveWall and WaveRun are here for classes that only WARN today (wall.rs,
-# run.rs). The
-# quarter-turn snap). That is on purpose and it is not speculative
+# run.rs, including the quarter-turn snap). That is on purpose and it is not speculative
 # widening: the volume a message is said at is a run-time choice —
 # level.rs:765-766 sends one level_plan Budget text to godot_error! or
 # godot_warn! depending on severity — so "which classes can error" is not a

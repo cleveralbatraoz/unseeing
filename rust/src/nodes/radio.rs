@@ -191,9 +191,9 @@ impl SoundRadio {
         body.add_child(&collider);
     }
 
-    /// The fascia: speaker grille, tuning scale, two dials and the
-    /// antenna. All one object id, so the set reads as a face against the
-    /// case rather than as five loose parts.
+    /// The fascia: speaker grille, tuning scale, two dials and the antenna.
+    /// All use fixed source-role labels, so the set reads as one radio face
+    /// against the case rather than five world-coloured loose parts.
     fn build_fascia(&mut self) {
         let skin = self.data_mat.clone();
         let mut node = self.base().clone().upcast::<Node3D>();

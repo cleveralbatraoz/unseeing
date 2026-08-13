@@ -178,8 +178,8 @@ impl WaveSolid for WaveProp {
 /// A round obstacle — barrel, pipe, pillar, stove flue. The node stands at
 /// the cylinder's BASE, so `y = 0` puts it on the floor. Its silhouette is
 /// the one curve in a world of corners, which is the whole reason it
-/// exists: with a flat object id across it, the outline pass draws no
-/// interior seam and the shape reads purely as its rounded outline.
+/// exists: its per-face labels preserve bends while the outline pass draws
+/// the curved silhouette without inventing flat-box corners.
 #[derive(GodotClass)]
 #[class(tool, init, base=StaticBody3D)]
 pub struct WaveColumn {

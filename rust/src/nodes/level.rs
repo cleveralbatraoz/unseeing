@@ -9,16 +9,20 @@
 //! tap — via the pure [`level_plan`] math, so a designer who moves a wall
 //! has moved the contracts with it.
 //!
-//! THE LEVEL NAMES NO SHAPES AND NO SOURCES. It walks its subtree once and
-//! sorts drawn gameplay children into two abstractions: [`WaveSolid`] —
+//! The level's recursive census, material injection and warning-forwarding
+//! paths name no concrete solid or source classes. They sort drawn gameplay
+//! children into two abstractions: [`WaveSolid`] —
 //! anything the waves can strike, box or column or wedge or wall — and
 //! [`SoundSource`] — anything that makes the world's own sound, fan or
 //! radio. Typed cats, runs and spawn data join that same recursive census
 //! through their registered classes. The two heterogeneous families are
 //! Rust traits published to the engine with `#[godot_dyn]`, so
 //! [`godot::obj::Gd::try_dynify`] recognises a child by what it CAN DO
-//! rather than by what class it is. A new prop shape or a new kind of
-//! source is a new file; nothing in this one changes.
+//! rather than by what class it is. New source kinds therefore compose
+//! through their trait alone. A genuinely new solid geometry also declares
+//! its exhaustive planar-face/mesh representation in this module's explicit
+//! paint boundary; dynamic census removes traversal coupling, not that shape
+//! law.
 //!
 //! Occlusion decision: a source's waves are stopped by the WALLS themselves
 //! — source→surface sight in the data core — not clipped to a derived room
@@ -348,15 +352,15 @@ impl WaveLevel {
     ) {
         // Order is not a preference here, it is the whole contract. By the
         // time the level is in the tree, `derive` has already run: it pushed
-        // an EMPTY wall table to skins that did not exist, and it coloured
-        // every wall and prop without the sources' ids as anchors — so a
+        // an EMPTY wall table to skins that did not exist, and it labelled
+        // every wall and prop without the sources' fixed roles as anchors — so a
         // source injected now would render with seams that silently do not
         // draw, in a world whose walls no longer occlude. Nothing later can
         // repair either. Say so rather than limp.
         if self.base().is_inside_tree() {
             godot_error!(
                 "WaveLevel: inject() after the level entered the tree — the wall table and the \
-                 object-id colouring were already derived without it. Inject BEFORE add_child()."
+                 per-face labels were already derived without it. Inject BEFORE add_child()."
             );
         }
         self.data_mat = Some(data_mat.clone());
@@ -1617,8 +1621,9 @@ impl WaveLevel {
     }
 }
 
-/// One painted box as the object-id colouring sees it: what it is called,
-/// the world box it fills, and the flat id it actually carries.
+/// One painted solid as observer compatibility sees it: what it is called,
+/// the world box it fills, and the first real face label exposed by the
+/// legacy solid-granularity `oid()` bridge.
 ///
 /// Used to also carry a `swept` flag marking a sound source's box as a
 /// SWEPT ENVELOPE (limbs' union grown by `sweep_margin`) rather than drawn

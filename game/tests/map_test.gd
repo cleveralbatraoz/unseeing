@@ -362,34 +362,32 @@ func test_shipped_level_exposes_and_injects_the_cat() -> void:
 		assert_object(cat.data_mat).is_not_null()
 
 
-## Every authored solid in the level that carries a flat object id, paired
-## with the world box it fills. The sound sources and the cat are
-## deliberately absent: each is a MULTI-limb object whose parts SHARE one id
-## on purpose, so that it reads as a single silhouette — a pairwise "must
-## differ" law is exactly wrong for them.
+## Every authored world solid carrying per-face CUSTOM0 labels, paired with
+## the world box it fills. Sound sources and the cat are deliberately absent:
+## they use fixed role labels rather than the world-superface palette.
 func _painted_boxes(node: Node, out: Array[Dictionary], root: Node = null) -> void:
 	if root == null:
 		root = node
 	for child: Node in node.get_children():
 		var skin := _skin(child)
 		if skin != null:
-			var oid := -1.0
+			var bridge_label := -1.0
 			if child is WaveWall:
-				oid = (child as WaveWall).oid()
+				bridge_label = (child as WaveWall).oid()
 			elif child is WaveProp:
-				oid = (child as WaveProp).oid()
+				bridge_label = (child as WaveProp).oid()
 			elif child is WaveColumn:
-				oid = (child as WaveColumn).oid()
+				bridge_label = (child as WaveColumn).oid()
 			elif child is WaveWedge:
-				oid = (child as WaveWedge).oid()
-			if oid >= 0.0:
+				bridge_label = (child as WaveWedge).oid()
+			if bridge_label >= 0.0:
 				(
 					out
 					. append(
 						{
 							"name": str(root.get_path_to(child)),
 							"box": skin.global_transform * skin.get_aabb(),
-							"oid": oid,
+							"bridge_label": bridge_label,
 							"labels": _labels_of(skin),
 						}
 					)
@@ -535,15 +533,15 @@ func test_only_the_named_props_melt_into_a_neighbour() -> void:
 	)
 
 
-## Ids are reused wherever no pixel shows two boxes meeting — that reuse is
+## Labels are reused wherever no pixel shows two boxes meeting — that reuse is
 ## what lets a five-entry palette dress a level of any size. A run that gave
-## every box its own id would pass the seam law above while proving nothing.
-func test_shipped_level_reuses_ids_between_distant_boxes() -> void:
+## every box a unique label would pass the seam law above while proving nothing.
+func test_shipped_level_reuses_labels_between_distant_boxes() -> void:
 	var boxes: Array[Dictionary] = []
 	_painted_boxes(_shipped_level(), boxes)
 	var distinct := {}
 	for box: Dictionary in boxes:
-		distinct[box["oid"]] = true
+		distinct[box["bridge_label"]] = true
 	assert_int(distinct.size()).is_less(boxes.size())
 
 
@@ -1091,14 +1089,10 @@ func test_the_room_bound_follows_the_extents_knob() -> void:
 	assert_array(_strays(_one_crate_level(Vector2(28, 28), crate_at))).is_empty()
 
 
-## The seam law's tightest pair, and the one the box census cannot see: a
-## SOURCE against the world it stands on. The id budget deliberately leaves
-## a source's shell (0.33) only 0.01 from a world palette entry (0.34), and
-## the only thing keeping them apart is the Fixed anchor the level feeds the
-## colouring. Where a source and a solid touch there is no depth step, so an
-## id difference under the shader's knee is the difference between a seam
-## and two objects melted into one.
-func test_no_solid_melts_into_a_sound_source_it_touches() -> void:
+## The seam law's tightest cross-domain pair: a fixed-role sound source
+## against the world face classes it touches. Check every real world-face
+## label, not the retired first-face bridge, against every source role label.
+func test_world_faces_clear_the_fixed_source_roles_they_touch() -> void:
 	var level := _shipped_level()
 	var boxes: Array[Dictionary] = []
 	_painted_boxes(level, boxes)
@@ -1109,12 +1103,15 @@ func test_no_solid_melts_into_a_sound_source_it_touches() -> void:
 			var box: AABB = solid["box"]
 			if not box.grow(TOUCH_EPS).intersects(reach):
 				continue
-			var oid: float = solid["oid"]
-			for source_oid: float in _source_oids(source):
-				if absf(oid - source_oid) < MIN_OID_SEP:
-					melted.append(
-						"%s(%.2f) touches %s(%.2f)" % [solid["name"], oid, source.name, source_oid]
-					)
+			for world_label: float in solid["labels"]:
+				for role_label: float in _source_labels(source):
+					if absf(world_label - role_label) < MIN_OID_SEP:
+						melted.append(
+							(
+								"%s(%.2f) touches %s role(%.2f)"
+								% [solid["name"], world_label, source.name, role_label]
+							)
+						)
 	(
 		assert_array(melted)
 		. append_failure_message("solids melted into a source: %s" % str(melted))
@@ -1144,12 +1141,12 @@ func _limbs(node: Node, out: Array[MeshInstance3D]) -> Array[MeshInstance3D]:
 	return out
 
 
-## Every distinct flat id a source paints its limbs with, read back off each
+## Every distinct fixed role label a source paints its limbs with, read back off each
 ## limb's own mesh (CUSTOM0) so the test cannot drift from what the data
 ## pass writes — CUSTOM0 is the shader's own G-channel source now, not a
 ## per-instance uniform.
-func _source_oids(source: Node) -> Array[float]:
-	var ids: Array[float] = []
+func _source_labels(source: Node) -> Array[float]:
+	var labels: Array[float] = []
 	for limb: MeshInstance3D in _limbs(source, [] as Array[MeshInstance3D]):
 		var mesh: ArrayMesh = limb.mesh
 		if mesh == null or mesh.get_surface_count() == 0:
@@ -1157,7 +1154,7 @@ func _source_oids(source: Node) -> Array[float]:
 		var custom: PackedFloat32Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
 		if custom.is_empty():
 			continue
-		var oid: float = custom[0]
-		if oid >= 0.0 and not ids.has(oid):
-			ids.append(oid)
-	return ids
+		var label: float = custom[0]
+		if label >= 0.0 and not labels.has(label):
+			labels.append(label)
+	return labels

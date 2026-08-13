@@ -19,7 +19,7 @@
 //! naming a concrete class; material injection and warning forwarding are
 //! therefore shared rather than copied into a class-name switch. A genuinely
 //! new geometry still has to declare its planar-face representation at the
-//! paint boundary in `level.rs`/`render::paint`—the dynamic trait removes
+//! paint boundary in `level.rs`/`render::paint` — the dynamic trait removes
 //! census coupling, not that explicit exhaustive shape law. It is the same
 //! census mechanism [`super::source`] uses for sound sources, applied to the
 //! other half of the world.

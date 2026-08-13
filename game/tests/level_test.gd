@@ -743,7 +743,7 @@ func test_the_shipped_level_says_nothing_about_either_shader_ceiling() -> void:
 
 ## Injection is ordered, and the order is the contract: by the time the
 ## level is in the tree it has already pushed an empty wall table and
-## coloured every id without the sources' anchors. A late inject cannot
+## labelled every face without the sources' fixed-role anchors. A late inject cannot
 ## repair either, so it is refused loudly rather than half-honoured — the
 ## alternative is a world that renders with seams that silently do not draw.
 func test_late_injection_reports_rather_than_limping() -> void:
@@ -756,7 +756,7 @@ func test_late_injection_reports_rather_than_limping() -> void:
 	await (assert_error(late).is_push_error(
 		(
 			"WaveLevel: inject() after the level entered the tree — the wall table and the "
-			+ "object-id colouring were already derived without it. Inject BEFORE add_child()."
+			+ "per-face labels were already derived without it. Inject BEFORE add_child()."
 		)
 	))
 
