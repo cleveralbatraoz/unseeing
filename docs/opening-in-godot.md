@@ -513,7 +513,10 @@ and Inspector values in Godot. Rust owns rendering, physics, wave propagation,
 material injection, superface and semantic-role label derivation, and
 validation. Within Rust, `rust/src/render/paint_plan.rs` makes the complete
 paint decision atomically, while `rust/src/render/paint.rs` is only the Godot
-`ArrayMesh` boundary. GDScript in this repository is reserved for automated
+`ArrayMesh` submission/layout boundary. The planner derives solid touch bounds
+from `render::faces::Shape`, validates grown source sweeps, and rejects requests
+above its named entry/source/palette/role ceilings before quadratic graph work.
+GDScript in this repository is reserved for automated
 tests and editor probes, not level content.
 
 ## 9. Optional: connect an assistant through Godot MCP

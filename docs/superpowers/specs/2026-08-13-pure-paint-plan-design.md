@@ -6,19 +6,21 @@ boundary measures authored entries and sources, calls
 request returns `Ok`. `rust/src/render/paint.rs` remains the `ArrayMesh`
 submission boundary.
 
-`PaintRequest` carries world-space shapes and bounds, shape kinds, optional
-level anchors, wall classification, source bounds/sweep margins/role counts,
-and the candidate palette. `PaintPlan` returns one positional command for
+`PaintRequest` carries world-space shapes, shape kinds, optional level anchors,
+wall classification, source bounds/sweep margins/role counts, and the candidate
+palette. The pure shape vocabulary derives each entry's conservative world
+bound; there is no independent entry AABB that can disagree with its geometry.
+`PaintPlan` returns one positional command for
 every entry and source, the exact painted-face census, starvation owners, wall
 merge owners, and indexed repairable faults. Rejected entries and sources use
 `KeepExisting`; accepted ones use `Relabel`. Original census indices survive
 rejection and drawless-source filtering.
 
-Malformed entry bounds or an incorrect exact planar-face count are local,
+Malformed shape-derived entry bounds or an incorrect exact planar-face count are local,
 repairable faults. A source with no area is intentionally drawless and silent.
-Malformed source bounds or a NaN/infinite sweep margin are indexed source
-faults; finite non-positive margins mean zero growth. Zero source roles is a
-valid empty relabel command.
+Malformed source bounds, a NaN/infinite sweep margin, or a finite margin whose
+post-growth sweep overflows are indexed source faults; finite non-positive
+margins mean zero growth. Zero source roles is a valid empty relabel command.
 
 An empty or malformed palette, a palette pair closer than
 `render::labels::MIN_SEP = 0.08`, an invalid level anchor, conflicting anchors
@@ -36,4 +38,7 @@ starvation laws do not change. Planning remains deterministic and platform
 independent: graph ties use census/class indices, never float sorting or hash
 iteration. The planned algorithm retains the existing pairwise geometry and
 touch complexity and performs checked capacity/class arithmetic before the
-boundary mutates a mesh or source.
+boundary mutates a mesh or source. Public requests are bounded before
+quadratic work by `paint_plan::{MAX_PAINT_ENTRIES, MAX_PAINT_SOURCES,
+MAX_PALETTE_VALUES, MAX_SOURCE_ROLES}`; over-limit requests and fallible
+working-memory reservation return explicit `PaintPlanError` variants atomically.

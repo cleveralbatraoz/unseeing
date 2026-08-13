@@ -14,6 +14,8 @@
 //! its two flat rims can ever coplanar-merge with anything, which is
 //! exactly the property the merge law needs.
 
+use crate::oid_palette::Box3;
+
 /// A solid's bounded planar face, world space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Face {
@@ -48,6 +50,81 @@ pub enum Shape {
         radius: f64,
         half_height: f64,
     },
+}
+
+/// The smallest axis-aligned world box enclosing `shape`, or `None` when
+/// malformed/non-finite coordinates cannot describe a safe paint extent.
+/// This is derived beside the shape vocabulary so touch decisions never trust
+/// an independently supplied bound that can drift away from the geometry.
+#[must_use]
+pub fn bounds(shape: &Shape) -> Option<Box3> {
+    let finite = |point: &[f64; 3]| point.iter().all(|coordinate| coordinate.is_finite());
+    let (min, max) = match shape {
+        Shape::Box3d {
+            center,
+            size,
+            basis,
+        } => {
+            if !finite(center) || !finite(size) || !basis.iter().all(finite) {
+                return None;
+            }
+            let half = [
+                size[0].abs() * 0.5,
+                size[1].abs() * 0.5,
+                size[2].abs() * 0.5,
+            ];
+            let mut reach = [0.0; 3];
+            for world_axis in 0..3 {
+                reach[world_axis] = (0..3)
+                    .map(|local_axis| basis[local_axis][world_axis].abs() * half[local_axis])
+                    .sum();
+            }
+            let min = std::array::from_fn(|axis| center[axis] - reach[axis]);
+            let max = std::array::from_fn(|axis| center[axis] + reach[axis]);
+            (min, max)
+        }
+        Shape::Wedge { hull } => {
+            if !hull.iter().all(finite) {
+                return None;
+            }
+            let mut min = hull[0];
+            let mut max = hull[0];
+            for point in hull.iter().skip(1) {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(point[axis]);
+                    max[axis] = max[axis].max(point[axis]);
+                }
+            }
+            (min, max)
+        }
+        Shape::Column {
+            center,
+            radius,
+            half_height,
+        } => {
+            if !finite(center) || !radius.is_finite() || !half_height.is_finite() {
+                return None;
+            }
+            let radius = radius.abs();
+            let half_height = half_height.abs();
+            (
+                [
+                    center[0] - radius,
+                    center[1] - half_height,
+                    center[2] - radius,
+                ],
+                [
+                    center[0] + radius,
+                    center[1] + half_height,
+                    center[2] + radius,
+                ],
+            )
+        }
+    };
+    min.iter()
+        .chain(&max)
+        .all(|coordinate| coordinate.is_finite())
+        .then_some(Box3 { min, max })
 }
 
 fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {

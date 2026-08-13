@@ -210,7 +210,8 @@ impl SourceRig {
     /// semantic role. The node remains the sole owner of its mesh resources;
     /// the level supplies values and never reaches into limb structure.
     pub(crate) fn set_role_labels(&mut self, labels: &[f64]) {
-        self.assigned_labels = render::paint::update_role_labels(&self.assigned_labels, labels);
+        self.assigned_labels =
+            render::paint_plan::update_role_labels(&self.assigned_labels, labels);
         for (limb, role) in &mut self.limbs {
             let Some(label) = self.assigned_labels.get(*role).and_then(|label| *label) else {
                 continue;

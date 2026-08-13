@@ -173,7 +173,6 @@ impl PaintItem {
 /// workaround unnecessary, so every entry now carries one.
 struct PaintEntry {
     name: String,
-    area: oid_palette::Box3,
     shape: render::Shape,
     item: PaintItem,
 }
@@ -1022,7 +1021,6 @@ impl WaveLevel {
             entries: entries
                 .iter()
                 .map(|entry| render::paint_plan::PaintEntryInput {
-                    area: entry.area,
                     shape: entry.shape.clone(),
                     kind: entry.item.kind(),
                     anchor: match entry.item {
@@ -1173,16 +1171,14 @@ impl WaveLevel {
 
     /// One item per floor/ceiling slab and per authored solid — everything
     /// [`Self::paint_labels`] colours — with the `render::Shape` each
-    /// builds its faces from and the world box the touch graph reasons
-    /// about, both measured the identical way the old colouring measured
-    /// them.
+    /// builds its faces and derives its touch bound from.
     fn paint_entries(&self, census: &Census) -> Vec<PaintEntry> {
         let mut entries = Vec::new();
         let root = self.base().clone().upcast::<Node>();
         for slab in &self.slabs {
-            let Some(area) = mesh_world_box(&slab.skin.clone().upcast()) else {
+            if mesh_world_box(&slab.skin.clone().upcast()).is_none() {
                 continue; // a slab with no mesh draws no seam
-            };
+            }
             // the same world-space Box3d shape a wall or a prop reads off
             // its own node (`WaveWall::world_shape` et al.) — a slab's
             // BODY carries its world position (built at lift ZERO, never
@@ -1195,22 +1191,20 @@ impl WaveLevel {
             };
             entries.push(PaintEntry {
                 name: if slab.lid { "Ceiling" } else { "Floor" }.to_string(),
-                area,
                 shape,
                 item: PaintItem::Slab { lid: slab.lid },
             });
         }
         for solid in &census.solids {
             let node = solid.clone().into_gd();
-            let Some(area) = mesh_world_box(&node) else {
+            if mesh_world_box(&node).is_none() {
                 continue; // draws nothing, so it can show no seam
-            };
+            }
             let name = root.get_path_to(&node).to_string();
             if let Ok(wall) = node.clone().try_cast::<WaveWall>() {
                 let shape = wall.bind().world_shape();
                 entries.push(PaintEntry {
                     name,
-                    area,
                     shape,
                     item: PaintItem::Wall(wall),
                 });
@@ -1218,7 +1212,6 @@ impl WaveLevel {
                 let shape = prop.bind().world_shape();
                 entries.push(PaintEntry {
                     name,
-                    area,
                     shape,
                     item: PaintItem::Prop(prop),
                 });
@@ -1226,7 +1219,6 @@ impl WaveLevel {
                 let shape = column.bind().world_shape();
                 entries.push(PaintEntry {
                     name,
-                    area,
                     shape,
                     item: PaintItem::Column(column),
                 });
@@ -1234,7 +1226,6 @@ impl WaveLevel {
                 let shape = wedge.bind().world_shape();
                 entries.push(PaintEntry {
                     name,
-                    area,
                     shape,
                     item: PaintItem::Wedge(wedge),
                 });
