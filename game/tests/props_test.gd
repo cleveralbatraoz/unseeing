@@ -85,18 +85,71 @@ func test_wave_run_emits_named_materialized_walls() -> void:
 		assert_object(wall.owner).is_null()
 
 
-## Setter rebuilds clear their previous derived children before emitting the
-## new residuals, so Inspector edits and Ctrl+D ghosts cannot double walls.
-func test_wave_run_setters_rebuild_idempotently() -> void:
+## Construction setters are authored before tree entry. Repeating one there
+## must still leave ready() with exactly one generated set for the final data;
+## the editor-only live rebuild is pinned by editor_level_probe instead.
+func test_wave_run_construction_setters_emit_one_generation_at_ready() -> void:
 	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(10, 0)))
-	add_child(run)
-	assert_int(run.get_child_count()).is_equal(1)
 	run.openings = [Vector2(4, 2)]
+	run.openings = [Vector2(4, 2)]
+	add_child(run)
 	assert_int(run.get_child_count()).is_equal(2)
 	assert_str(run.get_child(0).name).is_equal("RunSeg1")
 	assert_str(run.get_child(1).name).is_equal("RunSeg2")
-	run.openings = [Vector2(4, 2)]
-	assert_int(run.get_child_count()).is_equal(2)
+
+
+## Runtime WaveLevel state is one derived snapshot. Rebuilding a WaveRun after
+## ready frees the wall handles retained beside its paint and occlusion tables.
+## All three properties and the planar transform door therefore refuse edits:
+## authored data, RunSeg identities, painted bytes, names, and centerlines stay
+## on the exact generation the level derived, even through manual rederive.
+func test_runtime_wave_run_edits_keep_the_derived_generation_exact() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn(Vector3.ZERO))
+	var run := _run(Vector2(4, 4), Vector2(10, 4), [Vector2(6, 2)])
+	run.name = "Doorway"
+	level.add_child(run)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var first := run.get_node("RunSeg1") as WaveWall
+	var second := run.get_node("RunSeg2") as WaveWall
+	var first_generation := first.get_instance_id()
+	var second_generation := second.get_instance_id()
+	var first_labels: PackedFloat32Array = _skin(first).mesh.surface_get_arrays(0)[
+		Mesh.ARRAY_CUSTOM0
+	]
+	var second_labels: PackedFloat32Array = _skin(second).mesh.surface_get_arrays(0)[
+		Mesh.ARRAY_CUSTOM0
+	]
+	var derived_segments: PackedVector4Array = level.wall_segments().duplicate()
+	var derived_names := level.call("wall_names") as PackedStringArray
+
+	run.from = Vector2(1, 1)
+	run.to = Vector2(14, 1)
+	run.openings = PackedVector2Array([Vector2(3, 5)])
+	run.transform = Transform3D(Basis.from_euler(Vector3(0, PI * 0.5, 0)), Vector3(3, 0, 2))
+	await get_tree().process_frame
+
+	assert_vector(run.from).is_equal(Vector2(4, 4))
+	assert_vector(run.to).is_equal(Vector2(10, 4))
+	assert_array(run.openings).contains_exactly([Vector2(6, 2)])
+	assert_bool(run.transform.is_equal_approx(Transform3D.IDENTITY)).is_true()
+	assert_int((run.get_node("RunSeg1") as WaveWall).get_instance_id()).is_equal(first_generation)
+	assert_int((run.get_node("RunSeg2") as WaveWall).get_instance_id()).is_equal(second_generation)
+	assert_array(level.call("wall_names")).is_equal(derived_names)
+	assert_array(level.wall_segments()).is_equal(derived_segments)
+	(
+		assert_array(_skin(run.get_node("RunSeg1")).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0])
+		. is_equal(first_labels)
+	)
+	(
+		assert_array(_skin(run.get_node("RunSeg2")).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0])
+		. is_equal(second_labels)
+	)
+
+	level.rederive()
+	assert_array(level.call("wall_names")).is_equal(derived_names)
+	assert_array(level.wall_segments()).is_equal(derived_segments)
 
 
 ## Openings are authored data, not a preview detail: packing and instantiating
@@ -115,10 +168,10 @@ func test_wave_run_openings_survive_scene_pack_and_reload() -> void:
 	assert_array(restored.openings).is_equal([Vector2(2, 1), Vector2(7, 2)])
 
 
-## Rebuild owns only children it generated. A designer may use the same prefix
-## for an annotation or authored child without the engine deleting their work.
-func test_wave_run_rebuild_preserves_a_designer_owned_runseg_child() -> void:
-	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(10, 0)))
+## The ready-time rebuild owns only children it generated. A designer may use
+## the same prefix for an annotation or authored child without losing work.
+func test_wave_run_ready_rebuild_preserves_a_designer_owned_runseg_child() -> void:
+	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(10, 0), [Vector2(4, 2)]))
 	var note := Marker3D.new()
 	note.name = "RunSegReference"
 	run.add_child(note)
@@ -131,30 +184,27 @@ func test_wave_run_rebuild_preserves_a_designer_owned_runseg_child() -> void:
 	var enter := func() -> void: add_child(run)
 	await assert_error(enter).is_success()
 	assert_bool(is_instance_valid(note)).is_true()
-	assert_bool(is_instance_valid(wall)).is_true()
-	run.openings = [Vector2(4, 2)]
-	assert_bool(is_instance_valid(note)).is_true()
 	assert_object(note.get_parent()).is_same(run)
 	assert_bool(is_instance_valid(wall)).is_true()
 	assert_object(wall.get_parent()).is_same(run)
 
 
-## Dragging an already-readied tool node is the ordinary editor gesture. Its
-## planar pose must become endpoint data and the node must return to identity.
-func test_wave_run_absorbs_a_planar_drag_after_ready() -> void:
+## A game-mode WaveRun has already contributed walls to its owning level's
+## immutable derived snapshot. A later planar write is refused and reset
+## without changing the saved endpoints; editor-mode absorption is pinned by
+## the live editor probe.
+func test_wave_run_refuses_a_planar_drag_after_runtime_ready() -> void:
 	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(4, 0)))
 	add_child(run)
 	run.position = Vector3(3, 0, 4)
 	run.rotation.y = PI * 0.5
 	await get_tree().process_frame
 	assert_bool(run.transform.is_equal_approx(Transform3D.IDENTITY)).is_true()
-	# The translation is applied first, then the quarter-turn Godot stores in
-	# the local basis: (0,0)->(4,-3), (4,0)->(4,-7).
-	assert_vector(run.from).is_equal_approx(Vector2(4, -3), Vector2.ONE * 0.0001)
-	assert_vector(run.to).is_equal_approx(Vector2(4, -7), Vector2.ONE * 0.0001)
+	assert_vector(run.from).is_equal(Vector2.ZERO)
+	assert_vector(run.to).is_equal(Vector2(4, 0))
 
 
-func test_wave_run_diagonal_warning_clears_with_the_endpoints() -> void:
+func test_wave_run_runtime_endpoint_write_keeps_the_derived_warning() -> void:
 	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(4, 4)))
 	add_child(run)
 	var warnings := run.get_configuration_warnings()
@@ -163,7 +213,8 @@ func test_wave_run_diagonal_warning_clears_with_the_endpoints() -> void:
 		return
 	assert_str(warnings[0]).contains("dominant X axis")
 	run.to = Vector2(4, 0)
-	assert_array(run.get_configuration_warnings()).is_empty()
+	assert_vector(run.to).is_equal(Vector2(4, 4))
+	assert_array(run.get_configuration_warnings()).is_equal(warnings)
 
 
 ## A placed run absorbs its own planar pose into parent-local endpoint data;
@@ -186,7 +237,7 @@ func test_wave_run_translates_opening_coordinates_with_its_pose() -> void:
 	assert_vector(run.openings[0]).is_equal_approx(Vector2(4, 2), Vector2.ONE * 0.0001)
 
 
-func test_wave_run_warns_when_y_scale_is_discarded() -> void:
+func test_wave_run_runtime_transform_write_keeps_the_ready_warning() -> void:
 	var run: WaveRun = auto_free(_run(Vector2.ZERO, Vector2(4, 0)))
 	run.scale = Vector3(1, 2, 1)
 	add_child(run)
@@ -199,7 +250,7 @@ func test_wave_run_warns_when_y_scale_is_discarded() -> void:
 	run.position = Vector3(1, 0, 0)
 	await get_tree().process_frame
 	assert_bool(run.transform.is_equal_approx(Transform3D.IDENTITY)).is_true()
-	assert_array(run.get_configuration_warnings()).is_empty()
+	assert_array(run.get_configuration_warnings()).is_equal(warnings)
 
 
 ## Scene text and plugins can hand an extension non-finite transforms even

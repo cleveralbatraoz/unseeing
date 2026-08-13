@@ -117,9 +117,12 @@ correct-worktree check and the full-game runner scene.
    coordinates in its parent's local space. Each **Openings** pair is
    `(absolute start coordinate on the selected axis, width)`; for example
    `(6.5, 3)` removes 6.5..9.5 m. The dominant axis is used (X on a tie), a
-   diagonal warns and folds, and negative widths act as magnitudes. You can
-   also drag `scenes/rooms/doorway_8m.tscn` or `room_16x16.tscn` and rotate the
-   whole plain-root prefab normally.
+   diagonal warns and folds, and negative widths act as magnitudes. Endpoint,
+   opening, and planar-transform edits rebuild live in the editor. Once a game
+   run enters the tree, those same writes are ignored: the generated walls,
+   painted labels, and occluder handles stay on the one exact snapshot the
+   level derived at ready. You can also drag `scenes/rooms/doorway_8m.tscn` or
+   `room_16x16.tscn` and rotate the whole plain-root prefab normally.
 8. A raw `WaveLevel` is content, not a playable composition: F6 from the level
    tab has no player, hearing pass, material injection or wave pool. For the
    useful authoring loop, duplicate `main.tscn`, assign the desired level to

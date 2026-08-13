@@ -92,7 +92,12 @@ Current source of truth:
   second `Vector2` component as `y`; in this API it maps to the **parent's
   local Z axis**, never global/world Z. An opening pair is `(absolute start
   coordinate on the selected parent-local axis, width)`, not an offset from
-  `from`.
+  `from`. Construction setters are live before tree entry and all authoring
+  edits remain live in the editor. Runtime ready freezes the generated RunSeg
+  generation: later endpoint, opening, or WaveRun-transform writes are ignored
+  so retained paint, occlusion, labels, and wall handles stay exact. The pure
+  lifecycle decision is `level_plan::authored_geometry_edit_is_live`; the
+  Godot boundary is `rust/src/nodes/run.rs`.
 - A raw `WaveLevel` is level content, not a complete F6 game. **Run Current
   Scene** requires an active code-free `UnseeingGame` runner whose
   `level_scene` property selects the level.
@@ -756,7 +761,12 @@ publication pass, after integration and after rechecking its citations.
   residual as ownerless `RunSeg1…N` walls (`rust/src/level_plan.rs`,
   `rust/src/nodes/run.rs`). Generated segments are selected for rebuilding by
   type + private metadata + typed parent; their names make diagnostic paths
-  readable but do not authorize deletion.
+  readable but do not authorize deletion. Construction and editor authoring
+  stay live; after runtime ready, endpoint, opening, and WaveRun-transform
+  writes are ignored rather than freeing the generated walls retained by the
+  level's paint/occlusion snapshot. The complete four-state lifecycle rule is
+  pure in `rust/src/level_plan.rs`; `rust/src/nodes/run.rs` supplies only tree
+  and editor-mode boundary values.
 - Add the level-selection recipe: `UnseeingGame.level_scene` is a PackedScene
   picker; empty means the exact level-01 fallback, while a selected scene is
   the only scene tried and must have a `WaveLevel` root. Level 02 demonstrates

@@ -152,16 +152,24 @@ state into a scene.
 - The pure law normalizes reversed endpoints, selects the dominant axis with X
   winning ties, folds diagonals with a warning, rejects non-finite/zero runs,
   clamps/sorts/merges openings, and emits every positive residual segment.
-- Setters rebuild in-tree. Material injection is retained and propagated.
-  Rebuild first removes exactly the generated segment set, then emits ownerless
-  `WaveWall` children.
+- Construction setters are live before tree entry, and setters rebuild in-tree
+  only in editor mode. Material injection is retained and propagated. An
+  editor rebuild first removes exactly the generated segment set, then emits
+  ownerless `WaveWall` children.
 - The editor scene signature includes each censused node generation. An
   equivalent setter may recreate byte-identical RunSeg geometry, but the new
   instance identities still force one repaint and replace every retained wall
   handle before the next stable frame.
 - A WaveRun's own representable planar transform is absorbed into endpoints
-  and openings and reset to identity. Y/tilt that cannot be represented warns;
-  ancestor prefab transforms remain ordinary composition.
+  and openings and reset to identity during construction or editor authoring.
+  Y/tilt that cannot be represented warns; ancestor prefab transforms remain
+  ordinary composition.
+- Runtime ready freezes the generated generation exactly like WaveWall's
+  geometry snapshot. Later endpoint, opening, or local-transform writes are
+  ignored without freeing/rebuilding RunSeg walls; properties, identity,
+  `CUSTOM0`, centerlines, and the level's retained wall names stay unchanged.
+  `level_plan::authored_geometry_edit_is_live` owns the complete pure lifecycle
+  table and both node boundaries supply only `inside_tree`/editor-mode values.
 - Generated wall faults are surfaced on the authored WaveRun because its
   endpoints/openings are what a designer can repair. Level-relative paths keep
   repeated `RunSeg1` leaf names distinct.
@@ -342,6 +350,12 @@ RED/GREEN and mutation evidence retained for closeout:
   into the scene signature makes the next editor pass repaint the new
   generation; the real editor probe pins safe labels, live paths, and an idle
   stable follow-up frame.
+- The later runtime WaveRun regression began red with changed exported data,
+  replaced RunSeg identities, `<freed wall …>` retained names, ordinal
+  `CUSTOM0`, and changed centerlines after manual rederive. The shared pure
+  four-state lifecycle rule and runtime boundary guards keep that whole
+  ready-time generation exact while the existing editor probe keeps live
+  rebuild coverage.
 - Live WaveWall correction began red on oblique ancestors, singular/non-finite
   input, runtime/editor divergence, and repeated physics writes. Pure transform,
   length, and priority plans now feed one private top-level physics body and the

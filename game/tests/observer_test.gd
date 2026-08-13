@@ -761,34 +761,6 @@ func test_wall_names_stay_pinned_to_the_table_they_name() -> void:
 	assert_array(_wall_names(obs)).is_equal(before)
 
 
-## A WaveRun setter replaces its ownerless children even when the normalized
-## authored geometry is unchanged. Once the level derives that generation,
-## its debug table must name the new live walls by LEVEL-relative paths —
-## never preserve the freed handles from the preceding generation, and never
-## collapse two runs' repeated RunSeg leaf names into an ambiguous leaf.
-func test_rederived_wave_run_names_the_live_replacement_generation() -> void:
-	var level: WaveLevel = auto_free(WaveLevel.new())
-	level.add_child(_spawn_marker())
-	var run := WaveRun.new()
-	run.name = "Doorway"
-	run.from = Vector2(4, 4)
-	run.to = Vector2(10, 4)
-	run.openings = PackedVector2Array([Vector2(6, 2)])
-	level.add_child(run)
-	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
-	add_child(level)
-	var first_generation := (run.get_node("RunSeg1") as WaveWall).get_instance_id()
-	var obs := _observer()
-	obs.inject(level, null)
-
-	run.openings = run.openings.duplicate()
-	assert_int((run.get_node("RunSeg1") as WaveWall).get_instance_id()).is_not_equal(
-		first_generation
-	)
-	level.rederive()
-	assert_array(_wall_names(obs)).is_equal(["Doorway/RunSeg1", "Doorway/RunSeg2"])
-
-
 ## The composition root opens the window: main hands the observer the level
 ## it built and the hero's OWN eye, so a snapshot taken off the live scene
 ## answers rather than refusing. Read back from the real main scene — a

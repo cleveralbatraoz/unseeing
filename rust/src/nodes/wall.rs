@@ -384,7 +384,10 @@ impl WaveWall {
     /// three different ways, so the sign never gets past here.
     #[func]
     pub(crate) fn set_length(&mut self, length: f64) {
-        if self.base().is_inside_tree() && !Engine::singleton().is_editor_hint() {
+        if !level_plan::authored_geometry_edit_is_live(
+            self.base().is_inside_tree(),
+            Engine::singleton().is_editor_hint(),
+        ) {
             return;
         }
         let plan = level_plan::sanitize_wall_length(length, self.length);

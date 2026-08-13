@@ -35,6 +35,11 @@ required final executed gate.
 - [ ] Run repository hygiene, vendored-addon verification, GDScript
   formatting/lint, boot-error gate, determinism/restore probes, all editor
   probes, both 19-class rosters, and the ten-icon manifest.
+- [ ] Require the runtime WaveRun regression to preserve ready-time exported
+  data, RunSeg identities, `CUSTOM0`, centerlines, and retained wall names
+  across endpoint/opening/transform writes and an explicit rederive. Keep the
+  editor-level probe's live equivalent-setter rebuild green, and mutation-
+  check both the setter and transform-notification runtime guards.
 - [ ] Require repository hygiene to prove `.mcp.json` and
   `tools/setup-mcp.sh` still exist in a developer checkout but are absent from
   `git archive HEAD`; removing either `export-ignore` rule must make the named

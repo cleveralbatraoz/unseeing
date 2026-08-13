@@ -62,6 +62,15 @@ pub const DEMO_TAP_MARGIN: f64 = 0.2;
 /// Two segment coordinates within this are the same axis line.
 pub const AXIS_EPS: f32 = 0.001;
 
+/// Whether a designer-authored geometry edit may change the live derived
+/// object. Before tree entry every setter is scene construction. After ready,
+/// the editor remains live while runtime keeps the exact snapshot its owning
+/// level derived.
+#[must_use]
+pub const fn authored_geometry_edit_is_live(inside_tree: bool, editor: bool) -> bool {
+    !inside_tree || editor
+}
+
 /// One positive wall left after carving openings from an authored run.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RunSeg {
@@ -1665,6 +1674,17 @@ mod tests {
     use godot::builtin::EulerOrder;
 
     use super::*;
+
+    /// Removing either live door, or opening the runtime door, breaks this
+    /// lifecycle table. Scene construction happens before tree entry; only
+    /// the editor may keep changing authored geometry after ready.
+    #[test]
+    fn runtime_freezes_authored_geometry_but_construction_and_editor_stay_live() {
+        assert!(authored_geometry_edit_is_live(false, false));
+        assert!(authored_geometry_edit_is_live(false, true));
+        assert!(authored_geometry_edit_is_live(true, true));
+        assert!(!authored_geometry_edit_is_live(true, false));
+    }
 
     #[test]
     fn divider_run_reproduces_both_shipped_segments() {

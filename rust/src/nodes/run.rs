@@ -45,9 +45,11 @@ pub(super) fn generated_segments(node: &Gd<Node>) -> Vec<Gd<Node>> {
 /// An authored axis-aligned wall run with optional doorway openings.
 ///
 /// Set `from` and `to` in the parent's local X/Z plane. Each `openings` entry
-/// is `(absolute coordinate on the selected axis, width)`. WaveRun rebuilds
-/// its ownerless `RunSeg` WaveWall children automatically; edit these three
-/// properties rather than the generated children.
+/// is `(absolute coordinate on the selected axis, width)`. During construction
+/// and editor authoring, WaveRun rebuilds its ownerless `RunSeg` WaveWall
+/// children automatically; edit these three properties rather than the
+/// generated children. Runtime ready freezes that generated geometry so the
+/// level's retained paint and occlusion snapshot cannot drift.
 #[derive(GodotClass)]
 #[class(tool, init, base=Node3D)]
 pub struct WaveRun {
@@ -84,6 +86,10 @@ impl INode3D for WaveRun {
         if matches!(what, Node3DNotification::LOCAL_TRANSFORM_CHANGED)
             && self.base().get_transform() != Transform3D::IDENTITY
         {
+            if !self.authored_geometry_edit_is_live() {
+                self.base_mut().set_transform(Transform3D::IDENTITY);
+                return;
+            }
             self.absorb_planar_transform();
             self.rebuild();
         }
@@ -103,6 +109,9 @@ impl INode3D for WaveRun {
 impl WaveRun {
     #[func]
     fn set_from(&mut self, value: Vector2) {
+        if !self.authored_geometry_edit_is_live() {
+            return;
+        }
         self.from = value;
         self.rebuild_if_ready();
     }
@@ -114,6 +123,9 @@ impl WaveRun {
 
     #[func]
     fn set_to(&mut self, value: Vector2) {
+        if !self.authored_geometry_edit_is_live() {
+            return;
+        }
         self.to = value;
         self.rebuild_if_ready();
     }
@@ -125,6 +137,9 @@ impl WaveRun {
 
     #[func]
     fn set_openings(&mut self, value: PackedVector2Array) {
+        if !self.authored_geometry_edit_is_live() {
+            return;
+        }
         self.openings = value;
         self.rebuild_if_ready();
     }
@@ -146,6 +161,13 @@ impl WaveRun {
                 WaveSolid::set_material(&mut *wall.bind_mut(), material);
             }
         }
+    }
+
+    fn authored_geometry_edit_is_live(&self) -> bool {
+        level_plan::authored_geometry_edit_is_live(
+            self.base().is_inside_tree(),
+            Engine::singleton().is_editor_hint(),
+        )
     }
 
     fn rebuild_if_ready(&mut self) {

@@ -366,7 +366,9 @@ The normal building blocks are:
   geometry is fixed after the scene enters the tree.
 - `WaveRun`: a long wall or doorway described by endpoints and openings. It
   generates its `RunSeg1...N` wall children; do not edit those generated
-  children directly.
+  children directly. Make endpoint, opening, and transform edits in the editor;
+  after runtime ready those authoring writes are ignored so the generated
+  walls cannot drift from the level's retained paint and occlusion snapshot.
 - `WaveProp`, `WaveColumn`, and `WaveWedge`: solid object pieces discovered by
   the level regardless of how deeply they are nested under a prefab root.
 - `SoundFan` and `SoundRadio`: visible sound-source blueprints with designer
@@ -397,12 +399,15 @@ WaveRun endpoint, read them as **parent-local X** and **parent-local Z**: the
 displayed `y` box is horizontal Z, not elevation. WaveRun is planar and has no
 endpoint height field.
 
-Moving or rotating the `WaveRun` node with the viewport gizmo is also
-supported. The engine folds that node's planar transform into **From**, **To**,
-and **Openings**, then resets the node transform to identity so there is still
-one source of authored truth. A transform on an ancestor room prefab remains
-ordinary composition. Y translation or tilt cannot be represented by this
-planar vocabulary, so it is discarded with a warning.
+Moving or rotating the `WaveRun` node with the viewport gizmo is also supported
+while editing. The engine folds that node's planar transform into **From**,
+**To**, and **Openings**, then resets the node transform to identity so there
+is still one source of authored truth. A transform on an ancestor room prefab
+remains ordinary composition. Y translation or tilt cannot be represented by
+this planar vocabulary, so it is discarded with a warning. A running level is
+different: ready has already derived paint, occlusion, and retained wall
+handles, so post-ready endpoint, opening, and WaveRun-transform writes are
+ignored and the ready-time generation remains exact.
 
 Each element of **Openings** is a `Vector2` whose displayed fields mean:
 

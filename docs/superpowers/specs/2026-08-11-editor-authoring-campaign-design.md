@@ -322,3 +322,15 @@ re-derive either fact from scratch.
    consumers are `rust/src/flicker.rs` and `rust/src/demo_tap.rs`.
    `rust/src/nodes/game.rs` only applies the pure transition, warns once per
    node lifetime, and passes the effective elapsed value through.
+9. **WaveRun shares WaveWall's runtime snapshot law.** The historical live-
+   setter contract applies to construction and editor authoring, not to a
+   running level after ready. Runtime `WaveLevel` derives once and retains
+   painted meshes, occluders, and concrete wall handles; rebuilding a RunSeg
+   generation afterward would free those handles and create unpainted walls
+   without replacing the retained snapshot. The total pure lifecycle decision
+   is `level_plan::authored_geometry_edit_is_live`: out-of-tree construction is
+   live in both modes, in-tree editor edits remain live, and in-tree runtime
+   edits are refused. `rust/src/nodes/run.rs` applies it to all three exported
+   setters and local-transform notification, resetting a refused runtime pose
+   to identity without rebuilding. `WaveWall::set_length` consumes the same
+   law, so the two authored wall forms cannot diverge again.
