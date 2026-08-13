@@ -21,8 +21,9 @@
 //! desired here, so there is no `set_process` dance to add.
 //!
 //! The env trio (`capture_env`/`apply_env`/`restore_blob`) is
-//! `main.gd:204-286` verbatim: the nine fields no Rust node owns (the
-//! clock, the demo tap's schedule, the flicker envelope), and the
+//! `main.gd:204-286` verbatim: the nine environment fields this composition
+//! root owns (the clock, the demo tap's schedule, the flicker envelope and
+//! RNG state), and the
 //! transaction that applies a whole capture blob back — pause bracket,
 //! the observer's `env_of` refusal short-circuit, the previous env kept
 //! for rollback, and the one asymmetry that is NOT a bug: a POST-WRITE
@@ -42,8 +43,8 @@
 //! composition-root child already keeps.
 //!
 //! WIRING COMPLETE: ready() has no "what is and is not wired yet" stage —
-//! if it returns without panicking, every system is live and the game is
-//! ready to tick.
+//! if it reaches its end rather than taking one of the explicit resource-load
+//! refusals above, every system is live and the game is ready to tick.
 
 use godot::classes::{
     Camera3D, Engine, INode3D, Material, MeshInstance3D, Node3D, Os, PackedScene, QuadMesh,
