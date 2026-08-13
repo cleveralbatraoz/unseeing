@@ -60,7 +60,7 @@ pub fn fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 /// The world around the simulation: the clock every subsystem reads, and
-/// the two mood machines the composition root owns in GDScript — the
+/// the two mood machines the Rust composition root owns — the
 /// dev demo tap's schedule and the flicker envelope, RNG word included.
 ///
 /// The flicker is not decoration for this purpose: it draws from its own

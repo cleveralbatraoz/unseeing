@@ -37,8 +37,8 @@ if [ "${ALLOW_BIG:-}" != "1" ]; then
   fi
 fi
 
-# Vendored third-party code (game/addons/) is kept byte-pristine — never
-# reformat it; only our own GDScript is gated.
+# Third-party addon code under game/addons/ is excluded from formatting:
+# gdUnit4 is vendored and lock-pinned; godot_mcp is ignored and per-machine.
 gd_files="$(git diff --cached --name-only --diff-filter=ACMR -- '*.gd' ':!game/addons/')"
 if [ -n "$gd_files" ]; then
   command -v gdformat >/dev/null 2>&1 && command -v gdlint >/dev/null 2>&1 || {

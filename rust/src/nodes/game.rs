@@ -460,12 +460,13 @@ impl UnseeingGame {
     }
 
     /// The env group of a capture blob: everything about this instant that
-    /// lives on this struct's own fields and in no Rust node, so no
-    /// observer could ever read it — the clock, the demo tap's one-shot
-    /// check and schedule, and the flicker's whole envelope, RNG stream
-    /// position included. `main.gd::capture_env` verbatim: exactly nine
-    /// keys, real (native) values — the blob's own TEXT spelling of these
-    /// same nine fields is [`super::observer::WaveObserver::env_of`]'s job,
+    /// lives on this Rust node's own fields and in no other subsystem, so
+    /// the observer cannot derive it from its injected nodes — the clock,
+    /// demo tap's one-shot check and schedule, and the flicker's whole
+    /// envelope, RNG stream position included. `main.gd::capture_env`
+    /// verbatim: exactly nine keys, real (native) values — the blob's own
+    /// TEXT spelling of the same nine fields is
+    /// [`super::observer::WaveObserver::env_of`]'s job,
     /// never this one's.
     #[func]
     fn capture_env(&self) -> VarDictionary {
@@ -490,7 +491,7 @@ impl UnseeingGame {
 
     /// Put a captured env group back — the write side of
     /// [`Self::capture_env`], the exact nine fields it reads and the only
-    /// half of a blob no Rust node besides this one can write.
+    /// half of a blob no other Rust node can write.
     /// `main.gd::apply_env` verbatim: every value is ASSIGNED, never
     /// validated — `env_of` already did that on the way out of the blob's
     /// text spelling, and a native env handed straight from

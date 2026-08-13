@@ -67,8 +67,8 @@ ignore rule must still cover it. The reasons are load-bearing project hygiene;
 
 1. `deploy.sh` ships the tree by `git archive` into a bare repo whose
    post-receive hook untars it. Anything committed under `game/addons/`
-   reaches the **droplet** — a Node-backed debugging tool riding into the
-   shipped, running game server.
+   reaches the **droplet checkout** — an editor-only Node tool occupying the
+   server tree for no runtime purpose.
 2. Every export preset excludes `addons/*`, so the addon is deliberately not
    a game/export dependency. Tracking an editor-only Node tool would still
    pollute the repository and server checkout for no shipped benefit.
@@ -117,6 +117,52 @@ leave `take_explanation` answering `{"pending": true}` forever.
   array. `snap["flick"]` on such a field raises a GDScript invalid-key error.
   That is deliberate: a plausible zero is worse than a loud absence.
 - **`take_explanation` answers exactly once.** A second collect gets a refusal.
+
+## Validate the meshes as structured data too
+
+`WaveObserver` explains the simulation and paint graph; it does not inspect an
+`ArrayMesh`'s submitted index order. Use `godot_validate_meshes` for that
+separate boundary. The official
+[Godot 4.7 ArrayMesh reference](https://docs.godotengine.org/en/4.7/classes/class_arraymesh.html)
+defines **clockwise** triangles as front-facing, so an actual submitted
+triangle with an outward stored normal must satisfy:
+
+```text
+(vertex_1 - vertex_0).cross(vertex_2 - vertex_0).dot(outward_normal) < 0
+```
+
+The Rust geometry generators deliberately use the conventional mathematical
+contract before submission: their counter-clockwise triangles have a positive
+outward dot product. `rust/src/render/paint.rs` converts those complete triples
+at the Godot boundary. Hero/cat sphere and tube buffers are the exception by
+contract: `rust/src/nodes/limbs.rs` already emits Godot-clockwise triples and
+uses the direct, non-converting door. A blanket reversal would turn those
+limbs inside-out.
+
+The validator is not cosmetic. The world skin in
+`game/shaders/data_pass.gdshader` is `cull_disabled`, so backwards world
+triangles are not currently dropped and its unshaded shader does not consume
+their normals. Source limbs use `game/shaders/data_xray.gdshader`, which is
+`cull_back`: backwards source geometry can lose the intended exterior/near
+faces and expose farther or interior faces under the always-pass depth path.
+That can corrupt the source's packed distance and self-overlap even when the
+closed mesh does not disappear completely.
+
+For campaign closeout, run the validator after the final release rebuild and
+Godot import in all three states below, and require zero findings in each:
+
+1. raw `level_02.tscn`, covering boxes plus the fan's generated columns and
+   torus;
+2. raw `level_01.tscn`, covering wedges, columns, fan, radio, and the cat's
+   editor blueprint;
+3. the running configured main scene, covering the runtime hero body/cane and
+   runtime-rebuilt geometry.
+
+The final 2026-08-13 release-library pass completed all three states with zero
+findings: raw level 02 checked 14 meshes/surfaces, raw level 01 checked 127,
+and running main checked 144 mesh instances across 142 surfaces. Record these
+structured counts whenever the geometry changes; a screenshot cannot
+substitute for them.
 
 ## The rule about screenshots
 

@@ -1,8 +1,10 @@
 extends GdUnitTestSuite
-## The pulse-pool protocol lives in two languages at once: pulses.gd packs
-## the slots, pulse_pool.gdshaderinc decodes them. Neither side can see the
-## other break, so this suite reads the shader include as TEXT and holds its
-## constants and decode expressions against the GDScript they must mirror.
+## The shipped pulse-pool protocol crosses Rust and GLSL:
+## rust/src/pulse_pool.rs packs slots and pulse_pool.gdshaderinc decodes
+## them. The test-only Pulses shim mirrors that layout for gdUnit. Neither
+## side detects the other drifting on its own, so this suite reads the shader
+## include as TEXT and holds its constants and decode expressions against
+## their shared contract.
 
 const INC_PATH := "res://shaders/pulse_pool.gdshaderinc"
 const DATA_PASS_PATH := "res://shaders/data_pass.gdshader"
@@ -43,20 +45,22 @@ func _all_shader_files() -> Array[String]:
 	return files
 
 
-## The G channel carries a per-VERTEX superface label now, packed in the
+## The G channel carries a per-VERTEX face-or-role label, packed in the
 ## shared data CORE (every data-writing skin — the world and the
-## always-on-top acoustic image — reads the same machinery): the derive-time
-## paint pass (rust/src/render/paint.rs) bakes one label per face into each
-## mesh's CUSTOM0 channel, both skins' vertex() stages carry it through as
-## v_label, and pack_data writes v_label straight into G. The outline
-## post-pass diffs G, so two overlapping solids sharing a label bit-for-bit
-## melt into one silhouette. The OLD per-instance u_oid uniform and its
+## always-on-top acoustic image — reads the same machinery). WaveLevel's
+## derive-time paint pass (rust/src/render/paint.rs) assigns per-face
+## superface labels to world solids; source, creature and viewmodel builders
+## bake fixed role labels directly. Both skins' vertex() stages carry either
+## kind through as v_label, and pack_data writes it straight into G. The
+## outline post-pass diffs G, so two overlapping world solids sharing a
+## label bit-for-bit melt into one silhouette while fixed-role meshes retain
+## their intended creases. The OLD per-instance u_oid uniform and its
 ## normal-derived fallback are gone outright — no shader in the tree may
 ## declare or read u_oid anywhere, since a per-object override could once
-## again let one wrong instance push corrupt what the geometry itself
-## already says. Pinned as source text so a "harmless" rewrite cannot
-## silently revert the whole game's outline style, and the data pass must
-## include the core rather than carry its own copy.
+## again let one wrong instance corrupt what the geometry itself already
+## says. Pinned as source text so a "harmless" rewrite cannot silently
+## revert the whole game's outline style, and the data pass must include the
+## core rather than carry its own copy.
 ##
 ## The signature alone is not the packing: `pack_data(float reveal, vec3
 ## world, vec3 cam)` and `varying float v_label` both stay true even if the
@@ -107,10 +111,10 @@ func _shader_const(const_name: String) -> float:
 
 
 ## One number, THREE homes: the Rust core owns it (rust/src/pulse_pool.rs,
-## MAXP), the GDScript shim mirrors it as Pulses.MAXP, and the include pins
-## it for both shaders' uniform arrays. This assertion holds the include
-## against the shim; a drift in the core itself is caught by pulses_test's
-## eviction suite, which counts real slots.
+## MAXP), the test-only GDScript shim mirrors it as Pulses.MAXP, and the
+## include pins it for both shaders' uniform arrays. This assertion holds
+## the include against the shim; a drift in the core itself is caught by
+## pulses_test's eviction suite, which counts real slots.
 func test_maxp_matches_the_pool() -> void:
 	assert_float(_shader_const("MAXP")).is_equal(float(Pulses.MAXP))
 
@@ -180,15 +184,15 @@ func test_dist_pack_range_matches_the_level_budget() -> void:
 
 
 ## The hearing pass's screen texture is sampled `filter_nearest`, and that is
-## load-bearing, not decorative: the data pass writes flat per-face labels
-## with a hard step at every seam (two overlapping faces melt to the SAME bit
-## pattern; two separate touching faces sit at least MIN_SEP = 0.08 apart),
-## and a bilinear tap landing at an unlucky sub-pixel phase would blend two
-## neighbouring labels together, halving a genuine 0.08 diff onto the dead
-## crease floor the hearing pass's `nrm` threshold (hearing_post.gdshader:76)
-## never crosses — the seam the label law exists to draw would vanish at
-## exactly the pixels where a wave revealed it. Pinned as source text so a
-## "harmless" filter cleanup cannot silently reopen it.
+## load-bearing, not decorative: the data pass writes flat per-vertex
+## face-or-role labels with a hard step at every intended seam or crease (two
+## overlapping world faces melt to the SAME bit pattern; two separate
+## touching faces sit at least MIN_SEP = 0.08 apart), and a bilinear tap at an
+## unlucky sub-pixel phase would blend neighbouring labels, halving a genuine
+## 0.08 diff onto the dead crease floor the hearing pass's `nrm` threshold
+## (hearing_post.gdshader:76) never crosses — the seam the label law exists to
+## draw would vanish exactly where a wave revealed it. Pinned as source text
+## so a "harmless" filter cleanup cannot silently reopen it.
 func test_hearing_pass_reads_the_screen_texture_nearest() -> void:
 	var post := _read(HEARING_POST_PATH)
 	assert_str(post).contains("uniform sampler2D screen_tex : hint_screen_texture, filter_nearest;")

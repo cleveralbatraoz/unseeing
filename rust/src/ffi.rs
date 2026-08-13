@@ -1,9 +1,9 @@
-//! The engine boundary — the ONE module where Godot engine classes may
-//! appear. [`WaveCore`] is the wave system's engine-facing organ: it owns
-//! the pure core's pulse pool and echo book and translates between the
-//! GDScript surface and the pure modules, adding no law of its own. Every
-//! rule it enforces — packing, eviction, clustering, appointments — lives
-//! below in the pure crate; this file only carries values across.
+//! The wave core's engine boundary — one of the thin modules where Godot
+//! engine classes may appear. [`WaveCore`] owns the pure core's pulse pool
+//! and echo book and translates between the Godot-facing API and the pure
+//! modules, adding no law of its own. Every rule it enforces — packing,
+//! eviction, clustering, appointments — lives below in the pure crate;
+//! this file only carries values across.
 
 use godot::classes::{
     PhysicsDirectSpaceState3D, PhysicsRayQueryParameters3D, RandomNumberGenerator,
@@ -45,11 +45,11 @@ mod entry {
     unsafe impl ExtensionLibrary for UnseeingCore {}
 }
 
-/// The wave core behind the GDScript `Pulses` shim: the 64 pulse slots and
-/// the echo appointment book, one instance per game world. Method for
-/// method it mirrors the pulses.gd surface it replaces — same semantics,
-/// same refusal message, same slot and drain order — so every suite that
-/// pinned the GDScript pool holds against this class unchanged.
+/// The wave core the shipped Rust composition root owns directly: the 64
+/// pulse slots and echo appointment book, one instance per game world. The
+/// test-only GDScript `Pulses` shim mirrors this Godot-facing surface so the
+/// suites ported from pulses.gd retain the same semantics, refusal message,
+/// slot order and drain order.
 #[derive(GodotClass)]
 #[class(init, base=RefCounted)]
 pub struct WaveCore {
@@ -64,7 +64,7 @@ impl WaveCore {
     /// pack, eviction preferring expired slots then old footsteps/hums,
     /// and a non-positive speed or radius refused loudly with no slot
     /// taken. `beam_dir = ZERO` means omnidirectional however `cos_half`
-    /// reads — the GDScript default-argument path.
+    /// reads — retained from the GDScript default-argument contract.
     #[func]
     #[expect(
         clippy::too_many_arguments,
@@ -93,7 +93,8 @@ impl WaveCore {
     /// each answering point books an echo for the instant the wavefront
     /// reaches it. Without a `space` only the primary emits — the web/CI
     /// degradation path. PHYSICS CONTEXT: with a space this must run
-    /// inside the physics tick; the GDScript call sites guarantee it.
+    /// inside the physics tick; shipped Rust player call sites enforce that,
+    /// and external or test callers carry the same precondition.
     #[func]
     #[expect(
         clippy::too_many_arguments,
@@ -233,8 +234,8 @@ impl WaveCore {
 impl WaveCore {
     /// The pool itself, for READING only — the debug observer decodes it
     /// into an agent-facing snapshot. Deliberately not a `#[func]`: the
-    /// GDScript surface stays the shim's mirrored methods, and nothing
-    /// outside this crate can reach the slots at all.
+    /// Godot-callable surface stays limited to the mirrored compatibility
+    /// methods, and nothing outside this crate can reach the slots at all.
     pub(crate) fn pool(&self) -> &PulsePool {
         &self.pool
     }

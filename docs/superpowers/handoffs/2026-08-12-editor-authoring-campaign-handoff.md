@@ -32,9 +32,10 @@ intermediate architecture.
   without changing the final tree. Further closeout commits may still move
   HEAD, so recompute the range, inspect `git status`, and preserve concurrent
   or user-owned changes before acting.
-- The feature implementation is complete. The branch is not integrated, the
-  wiki is not published, nothing is deployed, and no issue is authorized for
-  closure.
+- The planned feature implementation and the closeout `ArrayMesh` winding
+  correction are complete; the final full CI/export gates remain. The branch
+  is not integrated, the wiki is not published, nothing is deployed, and no
+  issue is authorized for closure.
 - Keep this handoff and the temporary `AGENTS.md` in-flight section until an
   explicitly authorized merge. At merge, remove both together while retaining
   all canonical `AGENTS.md` policy.
@@ -64,6 +65,13 @@ state into a scene.
 - World labels are carried in mesh `CUSTOM0`, not assigned by cycling a list.
   `WaveObserver`'s superface membership/faults and mesh read-back tests are the
   relevant structural witnesses.
+- Pure box/wedge/column/torus generators use the conventional
+  counter-clockwise/outward law. Godot 4.7 defines clockwise `ArrayMesh`
+  triangles as front-facing, so `render::paint` converts complete conventional
+  triples at submission. Hero/cat sphere and tube buffers already emit
+  Godot-clockwise order and use the direct door. `render::faces` remains
+  counter-clockwise analytic superface geometry and is not a render index
+  buffer.
 
 ## What the campaign delivers
 
@@ -158,8 +166,14 @@ state into a scene.
 - Godot MCP setup installs pinned addon 4.1.0 into ignored
   `game/addons/godot_mcp/`. The user enabled it and a live read previously
   confirmed the correct Godot/project/addon versions. The addon and its local
-  project settings must never enter a commit or export. A final automated MCP
-  acceptance pass is still required after the branch settles.
+  enabled-plugin edit must never enter a campaign commit; every export preset
+  excludes addon scripts.
+- The required MCP mesh validator exposed the winding defect: the original raw
+  level-02 read found every checked surface backwards. After the final release
+  rebuild/editor restart, raw level 02 checked 14 meshes/surfaces, raw level 01
+  checked 127, and running main checked 144 mesh instances / 142 surfaces;
+  every state reported zero findings. MCP 4.1.0/addon 4.1.0 on Godot
+  4.7.1-stable also reported the exact campaign path and no editor errors.
 
 ## Decision and verification ledger
 
@@ -187,10 +201,10 @@ likely to be lost by reading only the pre-rebase plans:
   paint addresses while their authored WaveRun owns the repairable editor
   warning.
 
-Current measured baseline at this handoff:
+Settled source census after the winding correction:
 
-- 405 Cargo tests.
-- 320 gdUnit cases in 31 suites. `ci/run_gdunit.sh` computes these totals from
+- 406 Cargo tests.
+- 326 gdUnit cases in 31 suites. `ci/run_gdunit.sh` computes these totals from
   source and requires exact zero-error/zero-failure/zero-skip overall,
   executed-suite, and executed-case records.
 - 19 registered engine classes in both rosters.
@@ -222,23 +236,33 @@ RED/GREEN and mutation evidence retained for closeout:
   failures, skips, duplicate summaries, empty suites, ANSI tricks, and nonzero
   runners. Removing any of the overall/suite/case witnesses makes its named
   mutation case red.
+- The winding correction began red when `godot_validate_meshes` reported all
+  22 raw level-02 ArrayMesh surfaces backwards under Godot's documented
+  clockwise-front convention. Engine-bound box/outward-adapter cases and
+  production prop/source/cat/viewmodel cases pin the two submission doors; a
+  pure wedge case joins the existing box/column/torus outward proofs.
+  Reverting box indices caused 12 focused failures; bypassing the outward
+  conversion caused 2,441; misrouting the already-clockwise limb door caused
+  2,384; and adding label carry to that direct door failed its write-through
+  witness. The restored focused suites passed 64/64, and the final three-state
+  MCP pass reported zero findings at 14/14, 127/127, and 144/142.
 
 Earlier pre-rebase export/browser-smoke results are historical evidence only;
 they are not a substitute for the final post-rebase full pipeline.
 
 ## Remaining work before asking for integration
 
-1. Finish and review the active live-prose/diagnostic cleanup without absorbing
-   unrelated worktree changes.
-2. Run focused gates, then `SKIP_EXPORT=1 ci/pipeline.sh`; reconcile the exact
-   405/320/31/19/10 baseline rather than trusting a stale table.
+1. Independently review the settled winding/prose correction without absorbing
+   the user's MCP settings or chair move; fix every finding before the full
+   gates.
+2. Run `SKIP_EXPORT=1 ci/pipeline.sh` and require the exact 406 Cargo,
+   326 gdUnit / 31-suite, 19-class, and ten-icon results.
 3. Independently review `origin/main...HEAD` for spec compliance and code
    quality, fix findings, and rerun the complete gates.
 4. Run the full export/browser-smoke pipeline with an explicit non-deployable
    destination. Do not invoke deployment tooling.
-5. Use Godot MCP for every automatable editor acceptance check after the final
-   build/import. Only then ask the user for the remaining visual/interactive
-   checks in one consolidated editor session.
+5. Ask the user only for the remaining visual/interactive checks in one
+   consolidated editor session; the final automated MCP pass is complete.
 6. Present exactly one integration menu: merge locally, push/open a PR, or keep
    the local branch. Do nothing with that choice until the user explicitly
    selects it.
@@ -269,5 +293,8 @@ they are not a substitute for the final post-rebase full pipeline.
   as semantic identity.
 - Headless editor probes (`godot --headless -e -s`) reach editor-hint branches;
   use them before asking a human to inspect a triangle or blueprint.
+- Do not apply one blanket triangle reversal. Pure prop/source generators enter
+  through the outward-converting paint door; already-Godot-clockwise hero/cat
+  limb buffers enter through the direct door.
 - Never commit `game/addons/godot_mcp/`, MCP-created project settings, build
   output, exports, reports, or the user's unrelated scene edits.

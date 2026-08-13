@@ -9,10 +9,10 @@ render_mode unshaded, cull_back, shadows_disabled, ambient_light_disabled, fog_d
 // always-pass depth test a mesh's own back faces would stomp its front
 // faces in draw order.
 //
-// The superface label still packs into G through the shared core (v_label,
-// off CUSTOM0), so a source reads as one clean silhouette exactly like the
-// world skin — the only differences are the faked depth and the standing
-// floor.
+// Each limb's fixed role label packs into G through the shared core
+// (v_label, off CUSTOM0), so a source silhouette and its intended role
+// creases use the same outline machinery as the world skin — the only
+// differences are the faked depth and the standing floor.
 //
 // v_world stays a TRUE world value while the rasterized depth is faked —
 // B-channel distance never lies.

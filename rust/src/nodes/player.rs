@@ -544,9 +544,9 @@ impl UnseeingPlayer {
     }
 
     /// The one door to the pool: a dynamic `emit_reflecting` on the
-    /// injected object, so the GDScript shim and a future direct
-    /// WaveCore both answer. PHYSICS CONTEXT: callers are all inside the
-    /// physics tick, per the module law.
+    /// injected object, so the shipped `WaveCore` and the test-only
+    /// GDScript shim both answer. PHYSICS CONTEXT: callers are all inside
+    /// the physics tick, per the module law.
     #[expect(
         clippy::too_many_arguments,
         reason = "mirrors the pool's emit_reflecting signature one to one, \

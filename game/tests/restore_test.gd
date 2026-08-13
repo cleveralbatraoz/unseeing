@@ -101,9 +101,10 @@ func test_capture_without_the_body_refuses_whole() -> void:
 	assert_bool(blob.has("slots")).is_false()
 
 
-## The env group comes from GDScript, so it is the one group the boundary
-## cannot type-check at the language level. A missing key must name itself:
-## "the env group is malformed" would send a reader auditing nine fields.
+## The env group crosses the Godot Variant boundary as a Dictionary, so it
+## is the one group Rust cannot type-check at compile time. A missing key
+## must name itself: "the env group is malformed" would send a reader
+## auditing nine fields.
 func test_capture_with_malformed_env_names_the_key() -> void:
 	var main := await _boot_ticked()
 	var env: Dictionary = main.capture_env()

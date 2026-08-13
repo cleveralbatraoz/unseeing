@@ -576,19 +576,23 @@ func test_extents_knob_resizes_slabs() -> void:
 	assert_vector(slabs[1].position).is_equal(Vector3(4, 3.05, 3))
 
 
-## A slab is built through the SAME box path a wall and a prop take
-## (`nodes::solid::build_box`), so it inherits the CUSTOM0 ordinal channel
-## too — held here on the RESIZED slab specifically, since the resize
-## rewrites the mesh's surface in place (`render::paint::resize_box_surface`)
-## and a stale or doubled CUSTOM0 array from a botched `clear_surfaces` would
-## show up only after a knob drag, not on the freshly built mesh.
-func test_a_resized_slab_still_carries_a_bounded_custom0_ordinal() -> void:
+## A slab is built through the SAME box path a wall and a prop take, then
+## derive anchors all its faces to the slab's fixed role label. Held on the
+## RESIZED slab specifically: `render::paint::resize_box_surface` rewrites
+## the mesh in place and must preserve that already-painted CUSTOM0 channel,
+## rather than restoring placeholder ordinals or doubling the array after a
+## botched `clear_surfaces`.
+func test_a_resized_slab_preserves_its_fixed_role_label() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_spawn_marker(Vector3.ZERO, 0.0))
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
 	level.extents = Vector2(8, 6)
-	for slab: StaticBody3D in _slabs(level):
+	var slabs := _slabs(level)
+	assert_int(slabs.size()).is_equal(2)
+	var expected := PackedFloat32Array([0.15, 0.90])
+	for slab_i: int in slabs.size():
+		var slab := slabs[slab_i]
 		var mesh := _skin(slab).mesh as ArrayMesh
 		var arrays: Array = mesh.surface_get_arrays(0)
 		var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
@@ -596,7 +600,7 @@ func test_a_resized_slab_still_carries_a_bounded_custom0_ordinal() -> void:
 		assert_int(verts.size()).is_equal(24)
 		assert_int(custom.size()).is_equal(verts.size())
 		for label: float in custom:
-			assert_bool(label >= 0.0 and label < 6.0).is_true()
+			assert_float(label).is_equal_approx(expected[slab_i], 1e-6)
 
 
 ## The running half of the slab-drawing law (level_plan::slab_drawn). The

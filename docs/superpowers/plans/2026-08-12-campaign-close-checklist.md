@@ -4,9 +4,9 @@
 `dfbb69a`. This checklist is a gate, never authorization. Green boxes do not
 authorize integration, a push, wiki publication, deployment, or issue closure.
 
-Current expected baseline: 405 Cargo tests; 320 gdUnit cases in 31 suites; 19
-registered classes; ten icons. The gdUnit totals are computed from source by
-the CI runner and must exactly match its zero-error terminal summaries.
+The settled source census is 406 Cargo tests and 326 gdUnit cases in 31 suites,
+with 19 registered classes and ten icons. The final full runner must still
+print the exact 326/326 and 31/31 zero-error terminal summaries.
 
 ## Automated close
 
@@ -15,11 +15,12 @@ the CI runner and must exactly match its zero-error terminal summaries.
 - [ ] Review `origin/main...HEAD` for campaign-spec compliance, architecture,
   truthful prose, and code quality. Fix findings and review the resulting diff
   again.
-- [ ] Run Rust formatting, Clippy with warnings denied, all 405 Cargo tests, the
-  `editor-docs` build, and the release build.
-- [ ] Import with Godot 4.7, then run all 320 gdUnit cases in all 31 suites
-  through `ci/run_gdunit.sh`. Require the exact overall, executed-suite, and
-  executed-case records with zero errors, failures, skips, or orphans.
+- [ ] Run Rust formatting, Clippy with warnings denied, the final source-censused
+  Cargo total, the `editor-docs` build, and the release build.
+- [ ] Import with Godot 4.7, then run the final source-censused gdUnit cases and
+  suites through `ci/run_gdunit.sh`. Require the exact overall,
+  executed-suite, and executed-case records with zero errors, failures, skips,
+  or orphans.
 - [ ] Run repository hygiene, vendored-addon verification, GDScript
   formatting/lint, boot-error gate, determinism/restore probes, all editor
   probes, both 19-class rosters, and the ten-icon manifest.
@@ -27,9 +28,17 @@ the CI runner and must exactly match its zero-error terminal summaries.
 - [ ] Run the full export/browser-smoke pipeline with an explicit
   non-deployable destination and verify it copied/deployed nothing. Never call
   `deploy.sh` during campaign verification.
-- [ ] With the final release library imported, use Godot MCP to check every
-  automatable editor item below and record the exact project/addon/Godot
-  versions and any remaining editor errors.
+- [x] With the final release library imported, Godot MCP 4.1.0/addon 4.1.0
+  confirmed Godot 4.7.1-stable, project `Unseeing`, the exact campaign path,
+  and no editor errors after restart.
+- [x] `godot_validate_meshes` on raw level 02 checked 14 meshes/surfaces with
+  zero findings.
+- [x] `godot_validate_meshes` on raw level 01 checked 127 meshes/surfaces with
+  zero findings, covering wedges, columns, both source blueprints, and the cat
+  blueprint.
+- [x] `godot_validate_meshes` on running main checked 144 mesh instances / 142
+  surfaces with zero findings, covering the runtime hero body/cane and rebuilt
+  geometry.
 - [ ] Confirm this handoff and only the temporary `AGENTS.md` in-flight section
   remain ready for removal at an explicitly authorized merge.
 

@@ -126,8 +126,9 @@ Every task's requirements implicitly include this section.
 ## Post-rebase supersession (2026-08-13)
 
 This plan freezes an intermediate SP2 architecture. Its census-retirement,
-nested-solid-box, placement-warning freshness, and slab-inclusive pack-range
-outcomes survive, but the source-colouring mechanism does not.
+nested-solid-box, other placement-warning freshness, and slab-inclusive
+pack-range outcomes survive, but the source-colouring mechanism and the
+planned buried-in-wall runtime heir do not.
 
 - Rebasing onto `origin/main` at `dfbb69a` made per-face superfaces canonical.
   The six-slot palette, source role recolouring, K6/K7 capacity examples,
@@ -138,10 +139,19 @@ outcomes survive, but the source-colouring mechanism does not.
   premise was the retired source-recolouring implementation. Current seam
   evidence comes from the superface graph, real mesh-label read-back, and
   fixed-role clearance tests.
+- Task 6 is also not current behaviour. The rebased tree has no general
+  `level_plan::buried_in_wall` law and no WaveLevel configuration warning for
+  a prop embedded in a wall. It retains only
+  `game/tests/map_test.gd::test_no_prop_is_buried_in_a_wall`, which guards the
+  shipped level. Treat the proposed runtime/editor heir as superseded
+  authoring debt, not as an implemented result of this plan.
 - The rendering laws now are: merge same-facing coplanar overlapping faces
   bit-identically; keep labels on separate touching solids at least
   `MIN_SEP = 0.08` apart. The owners are
-  `rust/src/render/superface.rs`, `labels.rs`, and `paint.rs`.
+  `rust/src/render/superface.rs`, `labels.rs`, and `paint.rs`. Analytic and
+  pure generated faces use conventional counter-clockwise/outward order;
+  submitted Godot 4.7 `ArrayMesh` triangles use the engine's clockwise-front
+  convention.
 - Any wiki draft derived from this plan, including reverted commit `9778a00`,
   must be rewritten rather than revived verbatim. `AGENTS.md` is current policy
   authority; `CLAUDE.md` is only its adapter.

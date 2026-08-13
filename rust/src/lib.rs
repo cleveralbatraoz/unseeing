@@ -7,8 +7,9 @@
 //! wraps) and `nodes` (the registered node classes the Godot layer
 //! places).
 //!
-//! The pure core, one law per module — each a bit-for-bit mirror of the
-//! GDScript wave system it will replace, pinned by ported tests:
+//! The pure core, one law per module. Migrated systems retain bit-for-bit
+//! parity with their retired GDScript implementations through ported tests;
+//! new systems are Rust-native:
 //! - [`cat_body`] — the companion cat's silhouette skeleton: two-bone
 //!   legs, sit blend, ears and whiskers, the lagging follow-chain tail.
 //! - [`cat_brain`] — the companion cat's deterministic whimsy: a seeded
@@ -57,11 +58,12 @@
 //! - [`observe`] — the wave engine described to an agent as data: pool,
 //!   eviction, occlusion, the face-label/superface census, the reflection fan —
 //!   snapshot and explain, never a rendered frame.
-//! - [`render`] — how the world is SEEN: per-vertex superface labels
-//!   replacing the per-instance object id, so overlapping solids agree on
-//!   the outline's G channel by construction. Mostly pure face/label law,
-//!   cargo-tested; [`render::paint`] is the one impure edge, the
-//!   derive-time pass that bakes a label into an `ArrayMesh`'s `CUSTOM0`.
+//! - [`render`] — how the world is SEEN: per-vertex face-or-role labels
+//!   replacing the per-instance object id. Derive-painted superface labels
+//!   make overlapping world solids agree on G; sources, creatures and the
+//!   viewmodel carry fixed role labels. Mostly pure face/label law,
+//!   cargo-tested; [`render::paint`] is the one impure edge, the derive-time
+//!   pass that bakes world labels into an `ArrayMesh`'s `CUSTOM0`.
 //! - [`source_shape`] — the one generated shape a sound source's limbs
 //!   need beyond a box or [`prop_shape::column_triangles`]: a torus, for
 //!   the fan's guard ring and the radio's speaker grille.

@@ -1,7 +1,8 @@
 # The GDScript file set every lint gate must agree on (#28): every *.gd
-# under game/, except the vendored addon (game/addons/, pinned by
-# ci/vendor-gdunit4.sh and deliberately skipped by the pre-commit hook
-# too) and the import cache (game/.godot/, regenerated, never authored).
+# under game/, except third-party addons (game/addons/, deliberately
+# skipped by the pre-commit hook too) and the import cache (game/.godot/,
+# regenerated, never authored). gdUnit4 alone is vendored and lock-pinned;
+# the ignored godot_mcp addon is a per-machine developer tool.
 # -prune keeps a script written to a new directory covered by default,
 # rather than by remembering to add it to a list.
 #

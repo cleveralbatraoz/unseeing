@@ -8,9 +8,9 @@
 # ci/pipeline.sh calls to build GD_FILES, so the gate and this test can
 # never drift apart) directly against the real game/ tree: it must widen
 # to cover a brand-new directory by default, and it must still exclude the
-# two directories that are not ours to lint — game/addons/ (vendored
-# third-party, pinned by ci/vendor-gdunit4.sh, deliberately skipped by the
-# pre-commit hook too) and game/.godot/ (import cache, never authored).
+# two directories that are not ours to lint — game/addons/ (third-party
+# code, deliberately skipped by the pre-commit hook too; gdUnit4 alone is
+# vendored and lock-pinned) and game/.godot/ (import cache, never authored).
 #
 # Pure POSIX sh, no network, no Godot — runs anywhere ci/pipeline.sh does.
 set -eu
@@ -39,15 +39,16 @@ else
   bad "a script under a brand-new directory is NOT included — a new script location would escape lint silently"
 fi
 
-# --- prove exclusion: the vendored addon really is in the tree (gdUnit4),
-# so this is checked against real files, not a synthetic stand-in. Split
+# --- prove exclusion: the tracked gdUnit4 addon really is in the tree, so
+# the broader third-party-addon prune is checked against real files, not a
+# synthetic stand-in. Split
 # into an explicit if/else on directory presence, not `[ -d ... ] && grep`:
 # the combined form falls to the else branch and prints a vacuous OK when
 # the directory is simply absent, having asserted nothing — the exact
 # anti-pattern test/repo_hygiene.sh's own comments warn against. ---
 if [ -d "$DIR/game/addons" ]; then
   if printf '%s\n' "$FOUND" | grep -q '/game/addons/'; then
-    bad "game/addons/ is NOT excluded — the vendored addon would be linted"
+    bad "game/addons/ is NOT excluded — third-party addon code would be linted"
   else
     ok "game/addons/ is excluded"
   fi

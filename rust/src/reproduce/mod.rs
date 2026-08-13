@@ -10,8 +10,8 @@
 //! between a usable failure and a shrug.
 //!
 //! Everything here is pure: no engine classes, no Godot runtime, plain
-//! `cargo test`. The boundary that fills these structs from live nodes
-//! and hands the blob to GDScript lives in `crate::nodes`.
+//! `cargo test`. The Godot boundary that fills these structs from live
+//! nodes and carries the blob to Godot-side callers lives in `crate::nodes`.
 
 pub mod blob;
 

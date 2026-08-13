@@ -25,6 +25,14 @@ Current source of truth:
   overlapping faces merge into one superface with bit-identical per-vertex
   labels; separate touching solids retain `MIN_SEP = 0.08` label clearance.
   The owners are `rust/src/render/superface.rs`, `labels.rs`, and `paint.rs`.
+- Godot 4.7 treats clockwise `ArrayMesh` triangles as front-facing. Pure box,
+  wedge, column, and torus geometry stays conventional counter-clockwise and
+  outward (`cross.dot(outward_normal) > 0`); `rust/src/render/paint.rs`
+  reverses complete triples only at the engine boundary. Hero/cat sphere and
+  tube buffers in `rust/src/nodes/limbs.rs` already emit Godot-clockwise
+  triangles and use the direct door. The world `data_pass.gdshader` is
+  `cull_disabled`, but source geometry is load-bearing under
+  `data_xray.gdshader`'s `cull_back` path.
 - Sources and creatures keep fixed role labels and do not consume world-face
   labels. The SP2 six-slot source-recolouring, K7 source pile, and
   source-starvation narrative was an intermediate implementation and is not
@@ -43,9 +51,15 @@ Current source of truth:
 - A raw `WaveLevel` is level content, not a complete F6 game. **Run Current
   Scene** requires an active code-free `UnseeingGame` runner whose
   `level_scene` property selects the level.
-- The measured closeout baseline is 405 Cargo tests, 320 gdUnit cases in 31
-  suites, 19 registered classes, and ten icons. Counts are verification facts,
-  not wiki mechanics.
+- SP2's proposed general runtime `buried_in_wall` warning did not survive the
+  superface rebase. The current tree retains
+  `game/tests/map_test.gd::test_no_prop_is_buried_in_a_wall` for the shipped
+  map, but an arbitrary designer-authored WaveLevel does not receive that
+  planned editor/runtime warning. Do not publish the frozen SP2 claim as
+  shipped behaviour; re-evaluate it as explicit authoring debt.
+- The settled source census is 406 Cargo tests and 326 gdUnit cases in 31
+  suites, with 19 registered classes and ten icons. Counts are verification
+  facts, not wiki mechanics.
 
 The reverted wiki commit `9778a00` is historical input only. Never cherry-pick
 or revive it verbatim: its SP2 palette/source model predates the superface
@@ -60,7 +74,15 @@ The authorized wiki pass should be one coherent rewrite, including:
   workflow.
 - **Mechanics — Sound Sources**, **Mechanics — Rendering**, and **Mechanics —
   Waves** for blueprint mode, fixed source/creature role labels, superfaces,
-  `CUSTOM0`, and the Rust composition root.
+  `CUSTOM0`, the Rust composition root, and the clockwise Godot mesh boundary.
+  Rendering must distinguish conventional pure-generator winding from
+  submitted `ArrayMesh` winding and the different consequences of the world's
+  `cull_disabled` skin and sources' `cull_back` skin.
+- **Mechanics — Level and Objects** currently says winding is not load-bearing.
+  Replace that claim: the world skin masks back-face culling today, but correct
+  Godot-clockwise submission is still an engine contract, and the same column
+  geometry is reused by culled source limbs. Do not claim the superseded SP2
+  buried-in-wall runtime warning exists.
 - **Mechanics Overview**, **Engineering — Build, Test, Deploy**, and
   **Engineering — Debugging and Observability** for the Rust `UnseeingGame`
   root, tests/probes-only GDScript, cross-platform bootstrap, exact gdUnit

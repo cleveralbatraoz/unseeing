@@ -2,7 +2,7 @@
 // The world is never drawn: geometry renders as DATA for the hearing
 // pass to read from the screen texture:
 //   R — reveal: how recently/strongly a wave swept this point
-//   G — superface label: crease edge detection
+//   G — per-vertex face or fixed-role label: crease edge detection
 //   B — camera distance / DIST_PACK_RANGE (silhouette edges + wave occlusion)
 // Distance is packed here on purpose: the depth texture is unreliable on
 // WebGL2/Compatibility, and the web build is a first-class target.
@@ -16,15 +16,16 @@
 
 uniform float u_base = 0.0;  // standing reveal floor; 0 = waves only
 
-// The per-VERTEX superface label: the derive-time paint pass
-// (rust/src/render/paint.rs) bakes one label per face into each mesh's
-// CUSTOM0 channel, and both skins' vertex() functions carry it straight
-// through as this varying. Two overlapping solids sharing a label
-// bit-for-bit melt into one silhouette; where they must differ the paint
-// pass has already kept them >= MIN_SEP apart. Replaces the old
-// per-instance object-id uniform and its normal-derived fallback outright
-// — every object's G channel now comes from its own geometry, never a
-// per-object override.
+// Every drawn mesh supplies a per-VERTEX label in CUSTOM0. WaveLevel's
+// derive-time paint pass (rust/src/render/paint.rs) assigns per-face
+// superface labels to world solids (with slabs anchored to fixed roles),
+// while source, creature and viewmodel builders bake fixed role labels
+// directly. Both skins' vertex() functions carry either kind straight
+// through as this varying. Overlapping world solids sharing a label
+// bit-for-bit melt into one silhouette; labels that must differ stay at
+// least MIN_SEP apart. Replaces the old per-instance object-id uniform and
+// its normal-derived fallback outright — every G value comes from geometry,
+// never a per-object override.
 varying float v_label;
 
 varying vec3 v_world;
@@ -140,7 +141,7 @@ float reveal_at(vec3 world) {
 	return reveal;
 }
 
-// Pack (reveal, superface label, camera distance) into the data channels:
+// Pack (reveal, face-or-role label, camera distance) into the data channels:
 // nervous-light modulation and distance fade on R; the per-vertex label
 // straight off CUSTOM0 (v_label) on G; packed camera distance on B.
 vec3 pack_data(float reveal, vec3 world, vec3 cam) {

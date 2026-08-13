@@ -128,12 +128,11 @@ impl WaveRestorer {
 
     /// Apply `blob` to the running world, then prove it.
     ///
-    /// `env_after` is the composition root's own env group, taken AFTER it
-    /// applied the blob's env half — the clock, the demo tap's schedule
-    /// and the flicker envelope all live in GDScript, where no Rust node
-    /// can write them. It is passed in rather than read back because the
-    /// second capture needs the same env the first one had, and only the
-    /// caller can say what it now holds.
+    /// `env_after` is `UnseeingGame`'s Rust-owned env group, taken AFTER the
+    /// composition root applied the blob's env half. The clock, demo-tap
+    /// schedule and flicker envelope lie outside this restorer's injected
+    /// level/player/body/observer contract, so the owner passes them
+    /// explicitly rather than this adapter reaching sideways into it.
     ///
     /// `{"restored": true, "hash": "<16 hex>"}` on success, where the hash
     /// is the restored world's own — computed from the second capture, not

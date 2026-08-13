@@ -39,7 +39,7 @@ npx -y "@satelliteoflove/godot-mcp@$VERSION" --install-addon "$DIR/game" || {
 # Deliberately NOT touching game/project.godot's plugin-enabled list: that
 # file is tracked, so enabling the plugin here would commit a reference to
 # an addon that stays untracked by policy (game/addons/godot_mcp/ is
-# gitignored — see AGENTS.md's godot-mcp policy; CLAUDE.md is only its adapter.
+# gitignored — see AGENTS.md's godot-mcp policy; CLAUDE.md is only its adapter).
 # A committed addon would reach the droplet checkout through deploy.sh's
 # `git archive`, even though every game export preset correctly excludes
 # addons/*. More importantly, an enabled reference would NOT be

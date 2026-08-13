@@ -134,7 +134,7 @@ else
   if [ -z "$mcp" ]; then
     ok "game/addons/godot_mcp/ is not tracked"
   else
-    bad "godot-mcp addon is TRACKED — it would ship to the droplet and the wasm export:"
+    bad "godot-mcp addon is TRACKED — it would pollute the repository and droplet checkout:"
     echo "$mcp" | sed 's/^/hygiene:      /'
   fi
 fi

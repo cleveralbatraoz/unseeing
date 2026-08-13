@@ -2,8 +2,8 @@
 //!
 //! Adds no law. It holds references to the systems it was injected with,
 //! calls the pure functions in [`crate::observe`], and converts the results
-//! to `VarDictionary` so GDScript's `JSON.stringify` can encode them. That
-//! is the whole job.
+//! to `VarDictionary` so Godot-side transports can encode them with
+//! `JSON.stringify`. That is the whole job.
 //!
 //! Every entry point refuses loudly when it cannot reach something it must
 //! read: a snapshot of nothing and a snapshot of an empty world must never
@@ -1252,7 +1252,7 @@ fn rule_name(rule: EvictionRule) -> &'static str {
 // THE BLOB, WALKED TWICE
 //
 // `state_dict` below and `parse_blob` under it are twin walks over the
-// SAME keys: one writes the dictionary GDScript hands to
+// SAME keys: one writes the dictionary Godot-side transports can hand to
 // `JSON.stringify`, the other reads it back into a `CaptureState`. They
 // are kept adjacent, one helper pair per group, because they are one wire
 // format wearing two faces — and the RESTORER reads the second half of
@@ -1403,11 +1403,10 @@ fn state_dict(state: &CaptureState) -> VarDictionary {
     blob
 }
 
-/// The env group, in either spelling — the one group that has two,
-/// because it is the one group GDScript both writes and reads. Inside the
-/// blob it is text like everything else; handed back to the composition
-/// root by [`WaveObserver::env_of`] it is native values that root can
-/// simply assign.
+/// The env group has two spellings because capture receives it as live
+/// Godot values while the blob carries text like every other group. Handed
+/// back to the Rust composition root by [`WaveObserver::env_of`], it is
+/// native values that owner can simply assign.
 fn env_dict(env: &EnvCapture, floats: Floats) -> VarDictionary {
     let EnvCapture {
         now,
