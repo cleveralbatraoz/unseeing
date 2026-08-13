@@ -78,6 +78,199 @@ pub struct RunPlan {
     pub complaint: Option<String>,
 }
 
+/// Saved WaveRun data, expressed without a scene-tree handle. Coordinates
+/// are the parent's local X/Z plane and every opening is
+/// `(absolute selected-axis coordinate, width)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunAuthoring {
+    pub from: [f64; 2],
+    pub to: [f64; 2],
+    pub openings: Vec<[f64; 2]>,
+}
+
+/// A Node3D pose reduced to plain values. `columns` are the basis's X, Y
+/// and Z columns in that order; keeping the representation explicit makes
+/// pose absorption cargo-testable without a live node or scene tree.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RunPose {
+    pub origin: [f64; 3],
+    pub columns: [[f64; 3]; 3],
+}
+
+impl RunPose {
+    pub const IDENTITY: Self = Self {
+        origin: [0.0, 0.0, 0.0],
+        columns: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    };
+}
+
+/// Information a Node3D pose could not carry into the run's planar,
+/// f32-backed Inspector data. Rejections return no replacement authoring
+/// state, so the boundary can reset the bad pose without poisoning the data
+/// the designer had before the gesture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunPoseWarning {
+    VerticalLoss,
+    NonFiniteTransform,
+    NonFiniteAuthoring,
+    ProjectionOutOfRange,
+}
+
+impl RunPoseWarning {
+    #[must_use]
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::VerticalLoss => {
+                "WaveRun: Y translation, Y scale, or tilt cannot be represented by planar X/Z \
+                 endpoints — the planar projection was kept and vertical components were \
+                 discarded."
+            }
+            Self::NonFiniteTransform => {
+                "WaveRun: the node transform contains NaN or infinity and cannot be absorbed \
+                 into planar X/Z endpoints — the transform was discarded and the authored \
+                 endpoints/openings were left unchanged."
+            }
+            Self::NonFiniteAuthoring => {
+                "WaveRun: from/to or openings contain NaN or infinity, so a node transform \
+                 cannot be absorbed safely — the transform was discarded and the authored \
+                 endpoints/openings were left unchanged."
+            }
+            Self::ProjectionOutOfRange => {
+                "WaveRun: the node transform projects beyond the finite coordinate range the \
+                 Inspector can save — the transform was discarded and the authored \
+                 endpoints/openings were left unchanged."
+            }
+        }
+    }
+}
+
+/// Total result of absorbing a WaveRun's own pose into its saved endpoints.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RunPoseResult {
+    Applied {
+        authored: RunAuthoring,
+        warning: Option<RunPoseWarning>,
+    },
+    Rejected(RunPoseWarning),
+}
+
+fn finite_run_authoring(authored: &RunAuthoring) -> bool {
+    authored
+        .from
+        .into_iter()
+        .chain(authored.to)
+        .chain(authored.openings.iter().flatten().copied())
+        .all(f64::is_finite)
+}
+
+fn within_f32(value: f64) -> bool {
+    value.abs() <= f64::from(f32::MAX)
+}
+
+/// Absorb a WaveRun node's local transform into parent-local X/Z endpoint
+/// and opening data. This is the whole deterministic mapping law; the Godot
+/// node only measures values, applies an `Applied` result, resets its pose,
+/// and stores/voices the returned warning.
+///
+/// Invalid input is non-destructive. A non-finite transform, already-poisoned
+/// authoring data, or any projection that cannot round-trip through the
+/// Inspector's f32 fields is rejected before replacement data is returned.
+#[must_use]
+pub fn absorb_run_pose(authored: &RunAuthoring, pose: RunPose) -> RunPoseResult {
+    if !pose
+        .origin
+        .into_iter()
+        .chain(pose.columns.into_iter().flatten())
+        .all(f64::is_finite)
+    {
+        return RunPoseResult::Rejected(RunPoseWarning::NonFiniteTransform);
+    }
+    if !finite_run_authoring(authored) {
+        return RunPoseResult::Rejected(RunPoseWarning::NonFiniteAuthoring);
+    }
+    if !pose
+        .origin
+        .into_iter()
+        .chain(pose.columns.into_iter().flatten())
+        .chain(authored.from)
+        .chain(authored.to)
+        .chain(authored.openings.iter().flatten().copied())
+        .all(within_f32)
+    {
+        return RunPoseResult::Rejected(RunPoseWarning::ProjectionOutOfRange);
+    }
+
+    let map = |point: [f64; 2]| -> Option<[f64; 2]> {
+        let world = [
+            pose.origin[0] + pose.columns[0][0] * point[0] + pose.columns[2][0] * point[1],
+            pose.origin[1] + pose.columns[0][1] * point[0] + pose.columns[2][1] * point[1],
+            pose.origin[2] + pose.columns[0][2] * point[0] + pose.columns[2][2] * point[1],
+        ];
+        world
+            .into_iter()
+            .all(|value| value.is_finite() && within_f32(value))
+            .then_some([world[0], world[2]])
+    };
+
+    let Some(new_from) = map(authored.from) else {
+        return RunPoseResult::Rejected(RunPoseWarning::ProjectionOutOfRange);
+    };
+    let Some(new_to) = map(authored.to) else {
+        return RunPoseResult::Rejected(RunPoseWarning::ProjectionOutOfRange);
+    };
+    let old_vertical =
+        (authored.to[1] - authored.from[1]).abs() > (authored.to[0] - authored.from[0]).abs();
+    let new_vertical = (new_to[1] - new_from[1]).abs() > (new_to[0] - new_from[0]).abs();
+    let mut mapped_openings = Vec::with_capacity(authored.openings.len());
+    for opening in &authored.openings {
+        let width = opening[1].abs();
+        let start = if old_vertical {
+            [authored.from[0], opening[0]]
+        } else {
+            [opening[0], authored.from[1]]
+        };
+        let end = if old_vertical {
+            [authored.from[0], opening[0] + width]
+        } else {
+            [opening[0] + width, authored.from[1]]
+        };
+        let (Some(mapped_start), Some(mapped_end)) = (map(start), map(end)) else {
+            return RunPoseResult::Rejected(RunPoseWarning::ProjectionOutOfRange);
+        };
+        let (a, b) = if new_vertical {
+            (mapped_start[1], mapped_end[1])
+        } else {
+            (mapped_start[0], mapped_end[0])
+        };
+        let mapped = [a.min(b), (b - a).abs()];
+        if !mapped
+            .into_iter()
+            .all(|value| value.is_finite() && within_f32(value))
+        {
+            return RunPoseResult::Rejected(RunPoseWarning::ProjectionOutOfRange);
+        }
+        mapped_openings.push(mapped);
+    }
+
+    let up = pose.columns[1];
+    let up_len = (up[0] * up[0] + up[1] * up[1] + up[2] * up[2]).sqrt();
+    let up_aligned = up_len > 0.0 && up[1] / up_len >= 0.9999;
+    let vertical_loss = pose.origin[1].abs() > 1e-4
+        || (up_len - 1.0).abs() > 1e-4
+        || !up_aligned
+        || pose.columns[0][1].abs() > 1e-4
+        || pose.columns[2][1].abs() > 1e-4;
+
+    RunPoseResult::Applied {
+        authored: RunAuthoring {
+            from: new_from,
+            to: new_to,
+            openings: mapped_openings,
+        },
+        warning: vertical_loss.then_some(RunPoseWarning::VerticalLoss),
+    }
+}
+
 /// Cut openings whose first value is an absolute start coordinate on the
 /// selected axis out of an X/Z run. Reversed ends,
 /// negative widths, overlaps and out-of-range openings all normalize here so
@@ -95,17 +288,25 @@ pub fn run_segments(from: Vector2, to: Vector2, openings: &[(f64, f64)]) -> RunP
         };
     }
 
-    let dx = (to.x - from.x).abs();
-    let dz = (to.y - from.y).abs();
+    // Widen BEFORE arithmetic. Vector2 admits every finite f32, but the
+    // difference between -f32::MAX and +f32::MAX is not itself a finite
+    // f32. Doing this in the engine lane would manufacture infinities from
+    // valid authored inputs before the planner had a chance to refuse them.
+    let from_x = f64::from(from.x);
+    let from_z = f64::from(from.y);
+    let to_x = f64::from(to.x);
+    let to_z = f64::from(to.y);
+    let dx = (to_x - from_x).abs();
+    let dz = (to_z - from_z).abs();
     let vertical = dz > dx; // X wins exact ties.
     let (a, b, fixed) = if vertical {
-        (from.y, to.y, from.x)
+        (from_z, to_z, from_x)
     } else {
-        (from.x, to.x, from.y)
+        (from_x, to_x, from_z)
     };
     let lo = a.min(b);
     let hi = a.max(b);
-    if hi - lo <= AXIS_EPS {
+    if hi <= lo {
         return RunPlan {
             segments: vec![],
             complaint: Some(
@@ -115,7 +316,7 @@ pub fn run_segments(from: Vector2, to: Vector2, openings: &[(f64, f64)]) -> RunP
         };
     }
 
-    let diagonal = dx > AXIS_EPS && dz > AXIS_EPS;
+    let diagonal = dx > f64::from(AXIS_EPS) && dz > f64::from(AXIS_EPS);
     let axis_name = if vertical { "Z" } else { "X" };
     let complaint = diagonal.then(|| {
         format!(
@@ -123,22 +324,35 @@ pub fn run_segments(from: Vector2, to: Vector2, openings: &[(f64, f64)]) -> RunP
         )
     });
 
-    let mut cuts: Vec<(f32, f32)> = openings
+    let mut cuts: Vec<(f64, f64)> = openings
         .iter()
         .filter_map(|&(coordinate, width)| {
             if !coordinate.is_finite() || !width.is_finite() {
                 return None;
             }
-            let start = (coordinate as f32).clamp(lo, hi);
-            let end = ((coordinate + width.abs()) as f32).clamp(lo, hi);
-            (end - start > AXIS_EPS).then_some((start, end))
+            // PackedVector2Array stores both lanes as f32. Quantize each
+            // clamped cut boundary to that real authoring lane before the
+            // widened residual math, preserving the shipped scene's exact
+            // 7.0 m residual instead of mixing an f64 literal 12.4 with an
+            // f32 endpoint widened to f64.
+            let start = f64::from(coordinate.clamp(lo, hi) as f32);
+            let raw_end = coordinate + width.abs();
+            // finite + positive magnitude can overflow only toward +inf;
+            // semantically that is simply an opening extending past the
+            // run, so clamp it to the run's high end.
+            let end = if raw_end.is_finite() {
+                f64::from(raw_end.clamp(lo, hi) as f32)
+            } else {
+                hi
+            };
+            (end > start).then_some((start, end))
         })
         .collect();
     cuts.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    let mut merged: Vec<(f32, f32)> = Vec::with_capacity(cuts.len());
+    let mut merged: Vec<(f64, f64)> = Vec::with_capacity(cuts.len());
     for cut in cuts {
         if let Some(last) = merged.last_mut()
-            && cut.0 <= last.1 + AXIS_EPS
+            && cut.0 <= last.1
         {
             last.1 = last.1.max(cut.1);
         } else {
@@ -149,15 +363,30 @@ pub fn run_segments(from: Vector2, to: Vector2, openings: &[(f64, f64)]) -> RunP
     let mut segments = Vec::with_capacity(merged.len() + 1);
     let mut cursor = lo;
     for (start, end) in merged.into_iter().chain(std::iter::once((hi, hi))) {
-        if start - cursor > AXIS_EPS {
+        if start > cursor {
             let along = (cursor + start) * 0.5;
+            let length = start - cursor;
+            if ![fixed, along, length]
+                .into_iter()
+                .all(|value| value.is_finite() && within_f32(value))
+            {
+                return RunPlan {
+                    segments: vec![],
+                    complaint: Some(
+                        "WaveRun: from/to are finite but their derived wall exceeds the finite \
+                         coordinate range — no walls were emitted; move the endpoints closer to \
+                         the level."
+                            .to_string(),
+                    ),
+                };
+            }
             segments.push(RunSeg {
                 center: if vertical {
-                    Vector2::new(fixed, along)
+                    Vector2::new(fixed as f32, along as f32)
                 } else {
-                    Vector2::new(along, fixed)
+                    Vector2::new(along as f32, fixed as f32)
                 },
-                length: start - cursor,
+                length: length as f32,
                 vertical,
             });
         }
@@ -1167,6 +1396,177 @@ mod tests {
             run_segments(Vector2::ZERO, Vector2::new(f32::INFINITY, 0.0), &[])
                 .segments
                 .is_empty()
+        );
+    }
+
+    /// Finite endpoints can still overflow f32 subtraction/midpoint math.
+    /// They are admitted by Vector2 and the Inspector boundary, so the
+    /// planner must refuse them rather than emit an infinite center/length.
+    #[test]
+    fn extreme_finite_runs_are_refused_without_infinite_segments() {
+        let across_domain = run_segments(
+            Vector2::new(-f32::MAX, 0.0),
+            Vector2::new(f32::MAX, 0.0),
+            &[],
+        );
+        assert!(across_domain.segments.is_empty());
+        assert_eq!(
+            across_domain.complaint.as_deref(),
+            Some(
+                "WaveRun: from/to are finite but their derived wall exceeds the finite \
+                 coordinate range — no walls were emitted; move the endpoints closer to the \
+                 level."
+            )
+        );
+
+        let same_side = run_segments(
+            Vector2::new(f32::MAX * 0.75, 0.0),
+            Vector2::new(f32::MAX, 0.0),
+            &[],
+        );
+        assert_eq!(same_side.segments.len(), 1);
+        for segment in same_side.segments {
+            assert!(segment.center.x.is_finite());
+            assert!(segment.center.y.is_finite());
+            assert!(segment.length.is_finite());
+        }
+    }
+
+    /// Positive is the authored lower bound, not AXIS_EPS: a short run may
+    /// be impractical, but silently deleting it would make the scene and
+    /// derived wall table disagree. The literal is half the axis-alignment
+    /// tolerance to catch using that tolerance as a length cutoff.
+    #[test]
+    fn a_sub_millimetre_positive_run_is_still_emitted() {
+        let plan = run_segments(Vector2::ZERO, Vector2::new(0.0005, 0.0), &[]);
+        assert_eq!(plan.complaint, None);
+        assert_eq!(plan.segments.len(), 1);
+        assert_eq!(plan.segments[0].length, 0.0005);
+    }
+
+    /// Two doorway cuts separated by a real 0.5 mm wall remnant must not be
+    /// merged merely because they are within the diagonal/alignment epsilon.
+    #[test]
+    fn every_positive_residual_between_openings_is_emitted() {
+        let plan = run_segments(
+            Vector2::ZERO,
+            Vector2::new(2.0, 0.0),
+            &[(0.0, 0.5), (0.5005, 0.5)],
+        );
+        assert_eq!(plan.segments.len(), 2);
+        assert!((plan.segments[0].length - 0.0005).abs() < 1e-7);
+        assert!((plan.segments[1].length - 0.9995).abs() < 1e-7);
+    }
+
+    /// The pure transform law carries endpoints and absolute-axis opening
+    /// coordinates together. Translation followed by a quarter turn is
+    /// hand-derived from Godot's column basis: the X run becomes a reversed
+    /// Z run, and the old [1,3] doorway becomes the new [1,3] interval.
+    #[test]
+    fn run_pose_absorption_maps_endpoints_and_openings_together() {
+        let authored = RunAuthoring {
+            from: [0.0, 0.0],
+            to: [4.0, 0.0],
+            openings: vec![[1.0, 2.0]],
+        };
+        let pose = RunPose {
+            origin: [3.0, 0.0, 4.0],
+            columns: [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+        };
+        assert_eq!(
+            absorb_run_pose(&authored, pose),
+            RunPoseResult::Applied {
+                authored: RunAuthoring {
+                    from: [3.0, 4.0],
+                    to: [3.0, 0.0],
+                    openings: vec![[1.0, 2.0]],
+                },
+                warning: None,
+            }
+        );
+    }
+
+    /// Y scale cannot be represented by planar authoring data, but its X/Z
+    /// projection is still exact and finite. The result explicitly carries
+    /// that information loss so the boundary can store and voice it.
+    #[test]
+    fn y_scale_projects_planarly_and_reports_the_loss() {
+        let authored = RunAuthoring {
+            from: [0.0, 0.0],
+            to: [4.0, 0.0],
+            openings: vec![],
+        };
+        let pose = RunPose {
+            origin: [1.0, 0.0, 2.0],
+            columns: [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        assert_eq!(
+            absorb_run_pose(&authored, pose),
+            RunPoseResult::Applied {
+                authored: RunAuthoring {
+                    from: [1.0, 2.0],
+                    to: [5.0, 2.0],
+                    openings: vec![],
+                },
+                warning: Some(RunPoseWarning::VerticalLoss),
+            }
+        );
+
+        let inverted_y = RunPose {
+            origin: [0.0, 0.0, 0.0],
+            columns: [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        assert_eq!(
+            absorb_run_pose(&authored, inverted_y),
+            RunPoseResult::Applied {
+                authored,
+                warning: Some(RunPoseWarning::VerticalLoss),
+            }
+        );
+    }
+
+    /// Untrusted Inspector/scene data must never poison the saved endpoint
+    /// state. Non-finite transform lanes and finite arithmetic that exceeds
+    /// f32's exported domain are rejected without returning replacement data.
+    #[test]
+    fn invalid_or_overflowing_poses_are_rejected_before_mapping() {
+        let authored = RunAuthoring {
+            from: [1.0, 2.0],
+            to: [3.0, 4.0],
+            openings: vec![[2.0, 0.5]],
+        };
+        let mut nonfinite = RunPose::IDENTITY;
+        nonfinite.origin[0] = f64::NAN;
+        assert_eq!(
+            absorb_run_pose(&authored, nonfinite),
+            RunPoseResult::Rejected(RunPoseWarning::NonFiniteTransform)
+        );
+
+        let mut huge = RunPose::IDENTITY;
+        huge.columns[0][0] = f64::from(f32::MAX);
+        let large_authored = RunAuthoring {
+            from: [f64::from(f32::MAX), 0.0],
+            to: [f64::from(f32::MAX), 1.0],
+            openings: vec![],
+        };
+        assert_eq!(
+            absorb_run_pose(&large_authored, huge),
+            RunPoseResult::Rejected(RunPoseWarning::ProjectionOutOfRange)
+        );
+    }
+
+    /// A pose cannot repair already-poisoned endpoint/opening data. Refuse
+    /// the absorption and leave the existing run warning to name that data.
+    #[test]
+    fn nonfinite_authored_run_data_is_not_transformed() {
+        let authored = RunAuthoring {
+            from: [f64::NAN, 0.0],
+            to: [4.0, 0.0],
+            openings: vec![],
+        };
+        assert_eq!(
+            absorb_run_pose(&authored, RunPose::IDENTITY),
+            RunPoseResult::Rejected(RunPoseWarning::NonFiniteAuthoring)
         );
     }
 

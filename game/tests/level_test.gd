@@ -886,22 +886,27 @@ func test_the_shipped_map_keeps_every_solid_above_its_floor() -> void:
 ## −0.15..0.17, its own south face landing exactly at z = −0.15.
 func test_a_solid_merged_into_a_wall_warns_naming_it() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
-	level.add_child(_wall(4.0, Vector3.ZERO, false))
+	level.add_child(_wall(4.0, Vector3(5, 0, 5), false))
 	var crate := WaveProp.new()
 	crate.name = "WallCrate"
 	crate.size = Vector3(0.4, 0.4, 0.32)
-	crate.position = Vector3(0.0, 0.5, 0.01)
+	crate.position = Vector3(5.0, 0.5, 5.01)
 	level.add_child(crate)
 	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var warning := (
+		"WaveLevel: 'WallCrate' overlaps the wall structure and is drawn as part of it — "
+		+ "its faces take the walls' labels and its pierce lines draw. Pull it clear of the "
+		+ "wall if that was a nudge, or leave it if the bump is authored."
+	)
 	var enter := func() -> void: add_child(level)
-	await (assert_error(enter).is_push_warning(
-		(
-			"WaveLevel: 'WallCrate' overlaps the wall structure and is drawn as part of it — "
-			+ "its faces take the walls' labels and its pierce lines draw. Pull it clear of the "
-			+ "wall if that was a nudge, or leave it if the bump is authored."
-		)
-	))
+	await assert_error(enter).is_push_warning(warning)
+	assert_array(crate.get_configuration_warnings()).contains_exactly([warning])
+	assert_array(level.get_configuration_warnings()).not_contains([warning])
+
+	crate.position.z = 7.0
+	level.rederive()
+	assert_array(crate.get_configuration_warnings()).not_contains([warning])
 
 
 ## Editor watching makes derive repeat after every authored change. A
@@ -964,24 +969,26 @@ func test_a_degenerate_solid_is_refused_not_mislabelled() -> void:
 	var flat := WaveProp.new()
 	flat.name = "FlatCrate"
 	flat.size = Vector3(0, 1, 1)
-	flat.position = Vector3(0, 0.5, 0)
+	flat.position = Vector3(3, 0.5, 3)
 	level.add_child(flat)
 	var healthy := WaveProp.new()
 	healthy.name = "HealthyCrate"
 	healthy.size = Vector3(1, 1, 1)
-	healthy.position = Vector3(3, 0.5, 0)
+	healthy.position = Vector3(6, 0.5, 3)
 	level.add_child(healthy)
 	level.add_child(_spawn_marker(Vector3(1, 0, 3), 0.0))
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var warning := (
+		"WaveLevel: 'FlatCrate' built 2 planar face(s) from its shape, not the 6 it should "
+		+ "— a degenerate size folded one or more away. Its own seams cannot be painted "
+		+ "correctly this derive; skipping it rather than mislabeling by position. Give "
+		+ "every extent a real size."
+	)
 	var enter := func() -> void: add_child(level)
-	await (assert_error(enter).is_push_error(
-		(
-			"WaveLevel: 'FlatCrate' built 2 planar face(s) from its shape, not the 6 it should "
-			+ "— a degenerate size folded one or more away. Its own seams cannot be painted "
-			+ "correctly this derive; skipping it rather than mislabeling by position. Give "
-			+ "every extent a real size."
-		)
-	))
+	await assert_error(enter).is_push_error(warning)
+	assert_array(flat.get_configuration_warnings()).contains_exactly([warning])
+	assert_array(healthy.get_configuration_warnings()).is_empty()
+	assert_array(level.get_configuration_warnings()).not_contains([warning])
 	# the healthy neighbour, painted in the SAME derive, still carries
 	# real, in-range labels — the refusal above did not poison it
 	var custom: PackedFloat32Array = _skin(healthy).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
@@ -997,6 +1004,10 @@ func test_a_degenerate_solid_is_refused_not_mislabelled() -> void:
 	assert_int(refused.size()).is_equal(24)
 	for vertex: int in range(24):
 		assert_float(refused[vertex]).is_equal(float(vertex / 4))
+
+	flat.size = Vector3.ONE
+	level.rederive()
+	assert_array(flat.get_configuration_warnings()).is_empty()
 
 
 ## The label lives in the MESH now, not in a per-instance uniform, so

@@ -94,11 +94,21 @@ func test_wave_run_rebuild_preserves_a_designer_owned_runseg_child() -> void:
 	var note := Marker3D.new()
 	note.name = "RunSegReference"
 	run.add_child(note)
-	add_child(run)
+	# A typed wall without the private true marker is authored too. Merely
+	# asking whether it is generated must not call get_meta on an absent key,
+	# which would dirty every editor import with an engine ERROR.
+	var wall := WaveWall.new()
+	wall.name = "RunSegAuthored"
+	run.add_child(wall)
+	var enter := func() -> void: add_child(run)
+	await assert_error(enter).is_success()
 	assert_bool(is_instance_valid(note)).is_true()
+	assert_bool(is_instance_valid(wall)).is_true()
 	run.openings = [Vector2(4, 2)]
 	assert_bool(is_instance_valid(note)).is_true()
 	assert_object(note.get_parent()).is_same(run)
+	assert_bool(is_instance_valid(wall)).is_true()
+	assert_object(wall.get_parent()).is_same(run)
 
 
 ## Dragging an already-readied tool node is the ordinary editor gesture. Its
@@ -156,7 +166,32 @@ func test_wave_run_warns_when_y_scale_is_discarded() -> void:
 	assert_int(warnings.size()).is_equal(1)
 	if warnings.is_empty():
 		return
-	assert_str(warnings[0]).contains("Y translation or tilt")
+	assert_str(warnings[0]).contains("Y translation, Y scale, or tilt")
+
+	run.position = Vector3(1, 0, 0)
+	await get_tree().process_frame
+	assert_bool(run.transform.is_equal_approx(Transform3D.IDENTITY)).is_true()
+	assert_array(run.get_configuration_warnings()).is_empty()
+
+
+## Scene text and plugins can hand an extension non-finite transforms even
+## though the gizmo cannot. Absorption must reset that bad pose without
+## overwriting finite saved endpoints/openings with NaN.
+func test_wave_run_rejects_a_nonfinite_pose_without_poisoning_authored_data() -> void:
+	var run: WaveRun = auto_free(_run(Vector2(1, 2), Vector2(5, 2), [Vector2(2, 1)]))
+	run.position = Vector3(NAN, 0, 0)
+	var warning := (
+		"WaveRun: the node transform contains NaN or infinity and cannot be absorbed into "
+		+ "planar X/Z endpoints — the transform was discarded and the authored endpoints/openings "
+		+ "were left unchanged."
+	)
+	var enter := func() -> void: add_child(run)
+	await assert_error(enter).is_push_warning(warning)
+	assert_bool(run.transform.is_equal_approx(Transform3D.IDENTITY)).is_true()
+	assert_vector(run.from).is_equal(Vector2(1, 2))
+	assert_vector(run.to).is_equal(Vector2(5, 2))
+	assert_array(run.openings).is_equal([Vector2(2, 1)])
+	assert_array(run.get_configuration_warnings()).contains_exactly([warning])
 
 
 ## The opening is a true absence in the level's occluder table: neither
@@ -194,6 +229,30 @@ func test_wave_run_walls_are_exposed_by_level_relative_path() -> void:
 	for wall: Dictionary in observer.explain_ray(Vector3.ZERO, Vector3.ONE)["walls"]:
 		names.append(wall["name"])
 	assert_array(names).contains(["Divider/RunSeg1", "PartyEast/RunSeg1"])
+
+
+## A generated RunSeg has no saved scene identity a designer can repair.
+## Placement faults caused by that derived child therefore belong on the
+## authored WaveRun that owns its endpoints, not on the ephemeral child.
+func test_wave_run_owns_faults_from_its_generated_walls() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.extents = Vector2(4, 4)
+	var run := _run(Vector2(-3, 2), Vector2(1, 2))
+	run.name = "Run"
+	level.add_child(run)
+	level.add_child(_spawn(Vector3(1, 0, 1)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	var enter := func() -> void: add_child(level)
+	await assert_error(enter).is_push_error(any_string())
+	var warnings := run.get_configuration_warnings()
+	assert_bool(warnings.size() > 0).is_true()
+	var names_generated_child := false
+	for warning: String in warnings:
+		if warning.contains("Run/RunSeg1"):
+			names_generated_child = true
+	assert_bool(names_generated_child).is_true()
+	var generated := run.get_node("RunSeg1") as WaveWall
+	assert_array(generated.get_configuration_warnings()).is_empty()
 
 
 ## A reusable prop is composition, not framework: its plain root lets the

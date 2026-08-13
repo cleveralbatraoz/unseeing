@@ -438,7 +438,8 @@ pub fn relabel(mesh: &mut Gd<ArrayMesh>, kind: ShapeKind, labels_by_ordinal: &[f
         .done();
 }
 
-/// One warning line per non-wall solid sharing a MERGE CLUSTER with any
+/// One warning line and its original census address per non-wall solid
+/// sharing a MERGE CLUSTER with any
 /// wall — the visible half of the merge law: a solid whose faces genuinely
 /// coplanar-overlap a wall's own is no longer outlined as its own object at
 /// all; it takes the wall's labels and its pierce lines draw as though it
@@ -454,11 +455,20 @@ pub fn relabel(mesh: &mut Gd<ArrayMesh>, kind: ShapeKind, labels_by_ordinal: &[f
 ///
 /// Deterministic in CENSUS order — never a set's own iteration order, the
 /// same discipline every other derived diagnostic in this crate holds to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WallMergeWarning {
+    /// Index into the original combined paint census, never the warning
+    /// result's own shorter ordinal.
+    pub entry_index: usize,
+    /// Exact editor/runtime wording naming the merged authored solid.
+    pub text: String,
+}
+
 pub fn wall_merge_warnings(
     cluster_of_solid: &[usize],
     is_wall: &[bool],
     names: &[String],
-) -> Vec<String> {
+) -> Vec<WallMergeWarning> {
     let n = cluster_of_solid.len().min(is_wall.len()).min(names.len());
     let mut wall_clusters: Vec<usize> = Vec::new();
     for i in 0..n {
@@ -469,12 +479,15 @@ pub fn wall_merge_warnings(
     let mut warnings = Vec::new();
     for i in 0..n {
         if !is_wall[i] && wall_clusters.contains(&cluster_of_solid[i]) {
-            warnings.push(format!(
-                "WaveLevel: '{}' overlaps the wall structure and is drawn as part of it — its \
+            warnings.push(WallMergeWarning {
+                entry_index: i,
+                text: format!(
+                    "WaveLevel: '{}' overlaps the wall structure and is drawn as part of it — its \
                  faces take the walls' labels and its pierce lines draw. Pull it clear of the \
                  wall if that was a nudge, or leave it if the bump is authored.",
-                names[i]
-            ));
+                    names[i]
+                ),
+            });
         }
     }
     warnings
@@ -863,8 +876,9 @@ mod tests {
         ];
         let warnings = wall_merge_warnings(&clusters, &is_wall, &names);
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("'WallCrate'"));
-        assert!(!warnings[0].contains("FarProp"));
+        assert_eq!(warnings[0].entry_index, 1);
+        assert!(warnings[0].text.contains("'WallCrate'"));
+        assert!(!warnings[0].text.contains("FarProp"));
     }
 
     /// A WALL sharing a cluster with another wall — an ordinary junction,
@@ -891,13 +905,33 @@ mod tests {
         let warnings = wall_merge_warnings(&clusters, &is_wall, &names);
         assert_eq!(
             warnings,
-            vec![
-                "WaveLevel: 'Shelf' overlaps the wall structure and is drawn as part of it — its \
+            vec![WallMergeWarning {
+                entry_index: 1,
+                text: "WaveLevel: 'Shelf' overlaps the wall structure and is drawn as part of it — its \
                  faces take the walls' labels and its pierce lines draw. Pull it clear of the \
                  wall if that was a nudge, or leave it if the bump is authored."
-                    .to_string()
-            ]
+                    .to_string(),
+            }]
         );
+    }
+
+    /// The warning carries the original census address, not its ordinal in
+    /// the (usually much shorter) warning result. The boundary needs this
+    /// exact index to put the triangle on the solid that caused it.
+    #[test]
+    fn the_warning_keeps_the_original_census_index() {
+        let clusters = vec![4, 9, 4, 7];
+        let is_wall = vec![true, false, false, false];
+        let names = vec![
+            "Wall".to_string(),
+            "NearButSeparate".to_string(),
+            "MergedCrate".to_string(),
+            "Far".to_string(),
+        ];
+        let warnings = wall_merge_warnings(&clusters, &is_wall, &names);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].entry_index, 2);
+        assert!(warnings[0].text.contains("'MergedCrate'"));
     }
 
     /// Mismatched array lengths are a caller error handled totally: the

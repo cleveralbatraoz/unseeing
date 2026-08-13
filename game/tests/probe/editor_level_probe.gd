@@ -1,8 +1,8 @@
 extends SceneTree
-## Editor-mode law for the level root: today `ready()` returns before
-## `derive()` under `Engine.is_editor_hint()`, so a designer dragging walls
-## around sees no configuration warnings and no derived wall table until
-## they press play. This probe proves the fix two ways: the level DERIVES
+## Editor-mode regression law for the level root: the retired implementation
+## returned from `ready()` before `derive()` under `Engine.is_editor_hint()`,
+## so a designer dragging walls saw no warnings or wall table until play.
+## This probe holds the replacement two ways: the level DERIVES
 ## at edit time too — its `get_configuration_warnings()` read-back reports
 ## the missing spawn, and `wall_segments()` is already populated — and,
 ## once in the tree, it WATCHES the scene and keeps deriving on its own:
@@ -63,17 +63,17 @@ func _process(_delta: float) -> bool:
 	if _level == null:
 		return true
 	_frames += 1
+	var done := true
 	match _phase:
 		Phase.WAIT_FOR_READY:
-			return _wait_for_ready()
+			done = _wait_for_ready()
 		Phase.WAIT_FOR_WALL_MOVE:
-			return _wait_for_wall_move()
+			done = _wait_for_wall_move()
 		Phase.WAIT_FOR_CRATE_WARNING:
-			return _wait_for_crate_warning()
+			done = _wait_for_crate_warning()
 		Phase.WAIT_FOR_EXTENTS_WARNING:
-			return _wait_for_extents_warning()
-		_:
-			return true
+			done = _wait_for_extents_warning()
+	return done
 
 
 ## Phase 0: poll for the condition, not for a duration — the wall table is
@@ -176,6 +176,13 @@ func _has(warnings: PackedStringArray, needle: String) -> bool:
 	return false
 
 
+func _has_exact(warnings: PackedStringArray, expected: String) -> bool:
+	for warning: String in warnings:
+		if warning == expected:
+			return true
+	return false
+
+
 func _warnings() -> PackedStringArray:
 	# Godot's `_get_configuration_warnings` is a pure GDVIRTUAL: the editor
 	# calls it directly through the C++ virtual table and never binds it to
@@ -201,6 +208,7 @@ func _judge(editor: bool) -> void:
 		_level.add_child(fixed)
 		_level.call("rederive")
 		_check("editor: giving it a spawn clears the warning", not _has(_warnings(), "WaveSpawn"))
+		_judge_paint_warnings()
 		_judge_solid_warning()
 	else:
 		_check(
@@ -231,6 +239,71 @@ func _judge_solid_warning() -> void:
 	_level.call("rederive")
 	var lifted := _crate.call("get_configuration_warnings") as PackedStringArray
 	_check("editor: lifting the crate clears it", lifted.is_empty())
+
+
+## Paint-time faults follow the same editor contract as placement faults:
+## store the exact runtime words on the authored node, never on the level,
+## print nothing in editor mode, and clear the node on the next healthy
+## derive. Dynamic ClassDB construction keeps this editor-only probe
+## parseable before a fresh checkout has built its extension.
+func _judge_paint_warnings() -> void:
+	var flat := ClassDB.instantiate("WaveProp") as Node3D
+	flat.name = "FlatCrate"
+	flat.set("size", Vector3(0, 1, 1))
+	flat.position = Vector3(3, 0.5, 3)
+	_level.add_child(flat)
+	_level.call("rederive")
+	var degenerate := (
+		"WaveLevel: 'FlatCrate' built 2 planar face(s) from its shape, not the 6 it should "
+		+ "— a degenerate size folded one or more away. Its own seams cannot be painted "
+		+ "correctly this derive; skipping it rather than mislabeling by position. Give "
+		+ "every extent a real size."
+	)
+	_check(
+		"editor: a degenerate paint fault belongs only to its solid",
+		(
+			_has_exact(flat.call("get_configuration_warnings") as PackedStringArray, degenerate)
+			and not _has_exact(_warnings(), degenerate)
+		)
+	)
+	flat.set("size", Vector3.ONE)
+	_level.call("rederive")
+	_check(
+		"editor: repairing degenerate geometry clears its paint fault",
+		not _has_exact(flat.call("get_configuration_warnings") as PackedStringArray, degenerate)
+	)
+	_level.remove_child(flat)
+	flat.free()
+
+	_wall.position = Vector3(4, 0, 4)
+	var merged := ClassDB.instantiate("WaveProp") as Node3D
+	merged.name = "WallCrate"
+	merged.set("size", Vector3(0.4, 0.4, 0.32))
+	merged.position = Vector3(4, 0.5, 4.01)
+	_level.add_child(merged)
+	_level.call("rederive")
+	var overlap := (
+		"WaveLevel: 'WallCrate' overlaps the wall structure and is drawn as part of it — "
+		+ "its faces take the walls' labels and its pierce lines draw. Pull it clear of the "
+		+ "wall if that was a nudge, or leave it if the bump is authored."
+	)
+	_check(
+		"editor: a wall-merge paint fault belongs only to its solid",
+		(
+			_has_exact(merged.call("get_configuration_warnings") as PackedStringArray, overlap)
+			and not _has_exact(_warnings(), overlap)
+		)
+	)
+	merged.position.z = 6.0
+	_level.call("rederive")
+	_check(
+		"editor: pulling a solid clear removes its wall-merge paint fault",
+		not _has_exact(merged.call("get_configuration_warnings") as PackedStringArray, overlap)
+	)
+	_level.remove_child(merged)
+	merged.free()
+	_wall.position = Vector3.ZERO
+	_level.call("rederive")
 
 
 func _check(what: String, ok: bool) -> void:

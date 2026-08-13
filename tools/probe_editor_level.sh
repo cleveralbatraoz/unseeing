@@ -71,9 +71,17 @@ run_mode() {
     echo "probe: FAILED (mode=$want — expected probe: PASS ($count checks))"
     exit 1
   fi
+  if [ "$want" = editor ] && printf '%s' "$out" | grep -Fq "WaveLevel: 'FlatCrate' built 2 planar face(s)"; then
+    echo "probe: FAILED (mode=editor — degenerate diagnostic leaked into editor output)"
+    exit 1
+  fi
+  if [ "$want" = editor ] && printf '%s' "$out" | grep -Fq "WaveLevel: 'WallCrate' overlaps the wall structure"; then
+    echo "probe: FAILED (mode=editor — wall-merge diagnostic leaked into editor output)"
+    exit 1
+  fi
 }
 
-run_mode editor 8 -e
+run_mode editor 12 -e
 run_mode run 1
 
 echo "probe: level OK — the level derives at edit time and keeps deriving honestly at run time"

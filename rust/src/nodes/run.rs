@@ -13,6 +13,35 @@ use crate::level_plan;
 const SEG_PREFIX: &str = "RunSeg";
 const GENERATED_META: &str = "_unseeing_wave_run_segment";
 
+/// Whether `node` is one of the ephemeral walls a WaveRun generated. The
+/// metadata alone is not authority: require a typed WaveRun parent so a
+/// designer's unrelated node carrying the same private-looking key is not
+/// hidden from diagnostics by accident.
+pub(super) fn is_generated_segment(node: &Gd<Node>) -> bool {
+    node.clone().try_cast::<WaveWall>().is_ok()
+        && node.has_meta(GENERATED_META)
+        && node
+            .get_meta(GENERATED_META)
+            .try_to::<bool>()
+            .unwrap_or(false)
+        && node
+            .get_parent()
+            .is_some_and(|parent| parent.try_cast::<WaveRun>().is_ok())
+}
+
+/// The generated children whose faults an authored WaveRun must surface on
+/// its own warning icon. Census order is child order; malformed or designer-
+/// owned children are simply not part of this derived set.
+pub(super) fn generated_segments(node: &Gd<Node>) -> Vec<Gd<Node>> {
+    if node.clone().try_cast::<WaveRun>().is_err() {
+        return Vec::new();
+    }
+    node.get_children()
+        .iter_shared()
+        .filter(is_generated_segment)
+        .collect()
+}
+
 #[derive(GodotClass)]
 #[class(tool, init, base=Node3D)]
 pub struct WaveRun {
@@ -161,7 +190,7 @@ impl WaveRun {
             .base()
             .get_children()
             .iter_shared()
-            .filter(|child| child.has_meta(GENERATED_META))
+            .filter(is_generated_segment)
             .collect();
         for child in doomed {
             self.base_mut().remove_child(&child);
@@ -174,56 +203,43 @@ impl WaveRun {
         if transform == Transform3D::IDENTITY {
             return;
         }
-        let map = |point: Vector2| {
-            let mapped = transform * Vector3::new(point.x, 0.0, point.y);
-            Vector2::new(mapped.x, mapped.z)
+        let vector = |value: Vector3| [f64::from(value.x), f64::from(value.y), f64::from(value.z)];
+        let authored = level_plan::RunAuthoring {
+            from: [f64::from(self.from.x), f64::from(self.from.y)],
+            to: [f64::from(self.to.x), f64::from(self.to.y)],
+            openings: self
+                .openings
+                .as_slice()
+                .iter()
+                .map(|opening| [f64::from(opening.x), f64::from(opening.y)])
+                .collect(),
         };
-        let old_from = self.from;
-        let old_to = self.to;
-        let old_vertical = (old_to.y - old_from.y).abs() > (old_to.x - old_from.x).abs();
-        let new_from = map(old_from);
-        let new_to = map(old_to);
-        let new_vertical = (new_to.y - new_from.y).abs() > (new_to.x - new_from.x).abs();
-        let mut mapped_openings = PackedVector2Array::new();
-        for opening in self.openings.as_slice() {
-            let width = opening.y.abs();
-            let start = if old_vertical {
-                Vector2::new(old_from.x, opening.x)
-            } else {
-                Vector2::new(opening.x, old_from.y)
-            };
-            let end = if old_vertical {
-                Vector2::new(old_from.x, opening.x + width)
-            } else {
-                Vector2::new(opening.x + width, old_from.y)
-            };
-            let mapped_start = map(start);
-            let mapped_end = map(end);
-            let a = if new_vertical {
-                mapped_start.y
-            } else {
-                mapped_start.x
-            };
-            let b = if new_vertical {
-                mapped_end.y
-            } else {
-                mapped_end.x
-            };
-            mapped_openings.push(Vector2::new(a.min(b), (b - a).abs()));
-        }
-        self.from = new_from;
-        self.to = new_to;
-        self.openings = mapped_openings;
-
-        let up = transform.basis.col_b();
-        let cannot_represent = transform.origin.y.abs() > 1e-4
-            || (up.length() - 1.0).abs() > 1e-4
-            || up.normalized().dot(Vector3::UP).abs() < 0.9999
-            || transform.basis.col_a().y.abs() > 1e-4
-            || transform.basis.col_c().y.abs() > 1e-4;
+        let pose = level_plan::RunPose {
+            origin: vector(transform.origin),
+            columns: [
+                vector(transform.basis.col_a()),
+                vector(transform.basis.col_b()),
+                vector(transform.basis.col_c()),
+            ],
+        };
+        let verdict = level_plan::absorb_run_pose(&authored, pose);
         self.base_mut().set_transform(Transform3D::IDENTITY);
-        if cannot_represent {
-            let warning = "WaveRun: Y translation or tilt cannot be represented by planar X/Z endpoints — the planar projection was kept and height/tilt were discarded.";
+        self.transform_warning = None;
+        let issue = match verdict {
+            level_plan::RunPoseResult::Applied { authored, warning } => {
+                self.from = Vector2::new(authored.from[0] as f32, authored.from[1] as f32);
+                self.to = Vector2::new(authored.to[0] as f32, authored.to[1] as f32);
+                self.openings = authored
+                    .openings
+                    .into_iter()
+                    .map(|opening| Vector2::new(opening[0] as f32, opening[1] as f32))
+                    .collect();
+                warning
+            }
+            level_plan::RunPoseResult::Rejected(warning) => Some(warning),
+        };
+        if let Some(issue) = issue {
+            let warning = issue.message();
             self.transform_warning = Some(warning.to_string());
             if !Engine::singleton().is_editor_hint() {
                 godot_warn!("{}", warning);

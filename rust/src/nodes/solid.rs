@@ -3,25 +3,30 @@
 //!
 //! A solid is anything a designer places that the waves can strike: a wall
 //! segment, a box, a column, a wedge. They differ in geometry and in
-//! nothing else. Each one needs exactly two things from the level, and the
-//! level needs exactly one thing back:
+//! nothing else. Each one needs the WORLD skin from the level, while the
+//! level reads its typed shape back for census and per-face painting:
 //!
 //! - the WORLD skin, so the data pass draws it at all (a solid never
 //!   reaches for a material; it is handed one — the level is the single
 //!   injection point);
-//! - a flat object id, handed down by the graph colouring in
-//!   [`crate::oid_palette`] so every seam between two touching solids draws;
-//! - and, read back, the id it actually carries.
+//! - a per-face `CUSTOM0` label assignment from [`crate::render::paint`],
+//!   where coplanar overlaps share one superface label and real seams keep
+//!   at least [`crate::render::labels::MIN_SEP`] clearance;
+//! - and, for diagnostics, the labels actually baked into its mesh.
 //!
 //! That is [`WaveSolid`], published to the engine with `#[godot_dyn]`. The
 //! level walks its children once and collects every solid there is without
-//! naming a concrete class, so a fourth shape is a new file and no edit to
-//! the level at all. It is the same mechanism [`super::source`] uses for
-//! sound sources, applied to the other half of the world.
+//! naming a concrete class; material injection and warning forwarding are
+//! therefore shared rather than copied into a class-name switch. A genuinely
+//! new geometry still has to declare its planar-face representation at the
+//! paint boundary in `level.rs`/`render::paint`—the dynamic trait removes
+//! census coupling, not that explicit exhaustive shape law. It is the same
+//! census mechanism [`super::source`] uses for sound sources, applied to the
+//! other half of the world.
 //!
-//! The id is deliberately NOT mirrored into a field: it is read straight
-//! back off the mesh instance, so there is one source of truth — exactly
-//! what the data pass will write into the G channel.
+//! Labels are deliberately NOT mirrored into a node field: diagnostics read
+//! them straight back off the mesh instance, so there is one source of
+//! truth — exactly what the data pass writes into the G channel.
 
 use godot::classes::mesh::ArrayType;
 use godot::classes::{
@@ -110,9 +115,10 @@ pub trait WaveSolid {
 
 /// The warnings a solid wears in the Scene dock: whatever its owning
 /// [`WaveLevel`] pinned to it by path in [`WaveLevel::faults_for`] — the
-/// same unfloored, sunken and face-label-starvation complaints a designer reads off
-/// the level's own icon, here narrowed to the one node that earned each
-/// one. Every solid class's `get_configuration_warnings` override calls
+/// unfloored, sunken, face-label-starvation, degenerate-paint and wall-merge
+/// complaints narrowed to the one node that earned each one. They do not
+/// also clutter the level root's icon. Every solid class's
+/// `get_configuration_warnings` override calls
 /// this with its own upcast node so the fault lands where it was caused,
 /// not lumped into a level-wide list a designer has to guess their way
 /// through.

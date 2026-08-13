@@ -22,7 +22,7 @@
 //!
 //! WHAT LIVES HERE. Only the machinery every source shares: the cadence gate
 //! that decides when a wave is born, the limb builder that tags each mesh
-//! with its flat object id and remembers it, the push of the per-object
+//! with its fixed semantic role label, the push of the per-object
 //! standing image, and the one call into the wave pool. The LAWS are pure
 //! and live in [`crate::sound_source`]; the BODIES — what a fan looks like,
 //! what a radio looks like — live in the node files. Nothing in between.
@@ -55,9 +55,10 @@ pub trait SoundSource {
     /// Inspector answers differently.
     fn voice(&self) -> Voice;
 
-    /// The flat object ids this source paints its limbs with. The level
-    /// hands them to the id colouring as fixed anchors, so no wall or prop
-    /// the source stands against takes an id too close to melt into it.
+    /// The fixed semantic role labels this source paints its limbs with.
+    /// Sources never enter the world superface census; the level uses these
+    /// labels only as proximity anchors, so a touching wall or prop cannot
+    /// take a world label close enough to melt into the source.
     fn oids(&self) -> &'static [f64];
 
     /// The single injection point: the wave pool every sound enters and the
@@ -74,11 +75,11 @@ pub trait SoundSource {
     /// How far this source's MOVING parts swing beyond the pose the level
     /// samples when it colours the world, in metres on the horizontal axes.
     ///
-    /// The level takes a source's object-id anchor from the box its meshes
-    /// fill at derivation time. For a source that swings, that box is one
-    /// frame of a sweep: a prop just outside it would take an id the source
-    /// is allowed to melt into for part of every cycle, and the map's seam
-    /// test — which reads the same single pose — would report green.
+    /// The level applies a source's fixed-role proximity anchors to the box
+    /// its meshes fill at derivation time. For a source that swings, that
+    /// box is one frame of a sweep: a prop just outside it could take a
+    /// world label too close to the source for part of every cycle, while a
+    /// single-pose seam check would report green.
     /// Zero for a source that does not move.
     fn sweep_margin(&self) -> f64 {
         0.0

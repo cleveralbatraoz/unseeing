@@ -10,10 +10,12 @@
 //! has moved the contracts with it.
 //!
 //! THE LEVEL NAMES NO SHAPES AND NO SOURCES. It walks its subtree once and
-//! sorts every child into two abstractions: [`WaveSolid`] — anything the
-//! waves can strike, box or column or wedge or wall — and [`SoundSource`] —
-//! anything that makes the world's own sound, fan or radio. Both are Rust
-//! traits published to the engine with `#[godot_dyn]`, so
+//! sorts drawn gameplay children into two abstractions: [`WaveSolid`] —
+//! anything the waves can strike, box or column or wedge or wall — and
+//! [`SoundSource`] — anything that makes the world's own sound, fan or
+//! radio. Typed cats, runs and spawn data join that same recursive census
+//! through their registered classes. The two heterogeneous families are
+//! Rust traits published to the engine with `#[godot_dyn]`, so
 //! [`godot::obj::Gd::try_dynify`] recognises a child by what it CAN DO
 //! rather than by what class it is. A new prop shape or a new kind of
 //! source is a new file; nothing in this one changes.
@@ -240,7 +242,7 @@ pub struct WaveLevel {
     level_faults: Vec<String>,
     /// Every fault the last derivation pinned to a SPECIFIC node — an
     /// unfloored or sunken solid, one entry per authored owner of a
-    /// starved face class — so a
+    /// starved face class, or an authored-node paint fault — so a
     /// consumer can ask "what is wrong with THIS node" rather than read a
     /// level-wide list and guess. Rewritten alongside `level_faults`, same
     /// rule, same reason. See [`Self::faults_for`].
@@ -291,7 +293,7 @@ impl INode3D for WaveLevel {
     /// Editor-only: watch the scene for the condition [`Self::derive`]
     /// actually depends on, and re-derive the moment it changes — a
     /// designer drags a wall or a knob and sees the wall table, the
-    /// warnings and the object-id colouring update without ever pressing
+    /// warnings and the per-face superface labels update without ever pressing
     /// play or calling [`Self::rederive`] by hand.
     ///
     /// DESIGN: condition-watching, not dirty-flag plumbing. Six classes'
@@ -314,9 +316,12 @@ impl INode3D for WaveLevel {
         }
     }
 
-    /// The Scene dock's warning icon, editor-only — the same faults a
-    /// running level shouts through `godot_error!`/`godot_warn!`, read back
-    /// off `level_faults` instead of the log. [`Self::derive`] calls
+    /// The level root's Scene-dock warning icon, editor-only — the
+    /// level-wide faults a running level shouts through
+    /// `godot_error!`/`godot_warn!`, read back off `level_faults` instead
+    /// of the log. Node-specific placement, starvation and paint faults
+    /// deliberately live only on the authored node that caused them.
+    /// [`Self::derive`] calls
     /// [`Node::update_configuration_warnings`] itself after every pass, so
     /// this is asked for exactly when the engine already knows it might
     /// have changed.
@@ -496,17 +501,28 @@ impl WaveLevel {
     }
 
     /// Every fault the last derivation pinned to `node` specifically — an
-    /// unfloored/sunken placement, or a starved face-class seam — matched by the
-    /// same `root.get_path_to` address every entry in `node_faults`
-    /// carries. Not `#[func]`: this is [`super::solid::warnings_from_level`]'s
-    /// door into the level, called from every solid's own
-    /// `get_configuration_warnings`, not a designer-facing knob.
+    /// unfloored/sunken placement, a starved face-class seam, or a paint
+    /// fault — matched by the same `root.get_path_to` address every entry
+    /// in `node_faults` carries. An authored WaveRun also surfaces faults
+    /// addressed to its generated RunSeg children, because endpoints and
+    /// openings are the only saved data a designer can repair; the
+    /// ephemeral child itself stays silent so one fault does not create two
+    /// competing triangles. Not `#[func]`: this is
+    /// [`super::solid::warnings_from_level`]'s door into the level, called
+    /// from every warning-bearing node's `get_configuration_warnings`, not
+    /// a designer-facing knob.
     pub(super) fn faults_for(&self, node: &Gd<Node>) -> PackedStringArray {
+        if super::run::is_generated_segment(node) {
+            return PackedStringArray::new();
+        }
         let root = self.base().clone().upcast::<Node>();
-        let path = root.get_path_to(node).to_string();
+        let mut paths = vec![root.get_path_to(node).to_string()];
+        for segment in super::run::generated_segments(node) {
+            paths.push(root.get_path_to(&segment).to_string());
+        }
         self.node_faults
             .iter()
-            .filter(|fault| fault.path == path)
+            .filter(|fault| paths.contains(&fault.path))
             .map(|fault| GString::from(&fault.text))
             .collect()
     }
@@ -742,6 +758,23 @@ impl WaveLevel {
         }
     }
 
+    /// Store a paint-time diagnostic where a designer can act on it. Every
+    /// authored paint entry owns a Scene-dock icon; the level's generated
+    /// floor/ceiling slabs do not, so their only total destination is the
+    /// level root. The text is already complete and is shared byte-for-byte
+    /// with the runtime log at the call site.
+    fn file_paint_fault(&mut self, entry: &PaintEntry, text: String) {
+        if let Some(node) = entry.item.node() {
+            let root = self.base().clone().upcast::<Node>();
+            self.node_faults.push(level_plan::PlacementFault {
+                path: root.get_path_to(&node).to_string(),
+                text,
+            });
+        } else {
+            self.level_faults.push(text);
+        }
+    }
+
     /// Derive every technical contract from the children as they stand:
     /// centerlines from the walls, the spawn from its marker, the demo tap
     /// from the wall between the spawn and the nearest source. Loud about
@@ -754,22 +787,14 @@ impl WaveLevel {
     /// sees the level's complaints while dragging, not only after pressing
     /// play; [`Self::rederive`] is the manual replay of this same pass.
     ///
-    /// The level's own icon is not the only one that can go stale: a fault
-    /// this pass pinned to one solid's or one source's path a moment ago
-    /// may no longer apply to it, so every censused solid AND source is
-    /// told to refresh its icon too, right after the level tells the
-    /// engine about its own. Sources belong in that repaint for a specific
-    /// reason: `assign_oids` competes them for the same `WORLD_OIDS` slots
-    /// as every solid, so a fan dragged into an already-starved cluster
-    /// acquires a fresh starvation fault exactly as a crate would — and a
-    /// fan whose drag relieves one loses it the same way. Omit sources here
-    /// and the fault data is still correct (`node_faults` holds it either
-    /// way, read synchronously by `faults_for`), but the Scene dock's
-    /// triangle drifts from it until an unrelated repaint jars it loose —
-    /// a bug no headless probe can catch, since every probe reads the
-    /// fault store directly rather than the dock's cached icon. This
-    /// comment is the guard against the loop quietly going solids-only
-    /// again.
+    /// The level's own icon is not the only one that can go stale: this pass
+    /// may add or clear a fault on a solid, source, spawn or run, so every
+    /// warning-bearing census family is refreshed after the level. Sources
+    /// retain fixed role labels and do not consume world-palette slots; the
+    /// refresh is the shared registered-node warning contract, not a claim
+    /// that they participate in world-face colouring. Omit one family and
+    /// the synchronous fault store can be right while the Scene dock keeps
+    /// a stale triangle until an unrelated repaint jars it loose.
     ///
     /// Both refreshes are DEFERRED (`call_deferred`), never called
     /// straight — and now that [`INode3D::process`] can reach `derive`
@@ -834,6 +859,16 @@ impl WaveLevel {
         for spawn in &census.spawns {
             spawn
                 .clone()
+                .upcast::<Node>()
+                .call_deferred("update_configuration_warnings", &[]);
+        }
+        // A run surfaces its own endpoint/transform complaints plus any
+        // level fault addressed to an ephemeral RunSeg child. Refresh the
+        // authored node too, because the generated child intentionally
+        // keeps its own icon silent and cannot be the designer's repair
+        // target.
+        for run in &census.runs {
+            run.clone()
                 .upcast::<Node>()
                 .call_deferred("update_configuration_warnings", &[]);
         }
@@ -907,7 +942,7 @@ impl WaveLevel {
     ///
     /// A solid that draws nothing is left out: it occupies no space, so
     /// there is nowhere for it to be misplaced. The box is
-    /// [`mesh_world_box`]'s, the same measure the object-id colouring and
+    /// [`mesh_world_box`]'s, the same measure the superface paint pass and
     /// the seam census take, so a complaint and a seam always describe the
     /// same shape — including that measure's stop at a nested censused
     /// child: a prop grouped under a crate keeps its OWN box here, so a
@@ -1029,7 +1064,7 @@ impl WaveLevel {
                 _ => render::paint::face_count(kind),
             };
             if entry_faces.len() != expected {
-                godot_error!(
+                let message = format!(
                     "WaveLevel: '{}' built {} planar face(s) from its shape, not the {} it \
                      should — a degenerate size folded one or more away. Its own seams cannot be \
                      painted correctly this derive; skipping it rather than mislabeling by \
@@ -1038,6 +1073,10 @@ impl WaveLevel {
                     entry_faces.len(),
                     expected
                 );
+                if !editor {
+                    godot_error!("{}", message);
+                }
+                self.file_paint_fault(entry, message);
                 refused[i] = true;
                 continue;
             }
@@ -1250,8 +1289,18 @@ impl WaveLevel {
             .map(|e| matches!(e.item, PaintItem::Wall(_)))
             .collect();
         let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
-        for message in render::paint::wall_merge_warnings(&sf.cluster_of_solid, &is_wall, &names) {
-            godot_warn!("{}", message);
+        for warning in render::paint::wall_merge_warnings(&sf.cluster_of_solid, &is_wall, &names) {
+            if !editor {
+                godot_warn!("{}", warning.text);
+            }
+            if let Some(entry) = entries.get(warning.entry_index) {
+                self.file_paint_fault(entry, warning.text);
+            } else {
+                // The pure helper only emits indices inside the common
+                // input prefix; retain a total boundary if that contract
+                // ever changes rather than dropping a diagnostic.
+                self.level_faults.push(warning.text);
+            }
         }
     }
 
@@ -1435,7 +1484,7 @@ impl WaveLevel {
     /// build owns the pair — whatever it finds under those names goes.
     ///
     /// BOTH slabs are always built, in this order, in the editor too — the
-    /// pair is what `set_extents`, the object-id anchors and the seam
+    /// pair is what `set_extents`, the fixed slab-label anchors and the seam
     /// census all read, and a level that carried one slab at edit time and
     /// two at run time would describe two different worlds through the
     /// same accessors. What bends is the DRAWING, per
@@ -1488,7 +1537,7 @@ impl WaveLevel {
     /// it is not a censused node's property, it is read straight off
     /// `self` — `report_placement` measures the floor slab's world box,
     /// which `set_extents` resizes the instant the knob is dragged, and
-    /// `assign_oids` anchors the slab ids against that same box — so a
+    /// the face labeller anchors the slab roles against that same box — so a
     /// resize with every node held still is a real change `derive` would
     /// answer differently, and the fold has to see it as one.
     ///
@@ -1792,9 +1841,9 @@ impl WaveLevel {
     }
 }
 
-/// The flat object id a creature is painted with, read off the first limb
+/// The fixed role label a creature is painted with, read off the first limb
 /// whose mesh carries a `CUSTOM0` channel. A creature paints every limb
-/// with one id (the whole animal is one silhouette), so the first limb
+/// with one label (the whole animal is one silhouette), so the first limb
 /// speaks for it; `None` for a node with no `MeshInstance3D` descendant
 /// carrying one at all, which the census then leaves out rather than
 /// reporting under [`oid_palette::NO_OID`] as though the shader had been
@@ -1810,10 +1859,10 @@ fn painted_oid(node: &Gd<Node>) -> Option<f64> {
         .find_map(|child| painted_oid(&child))
 }
 
-/// The flat object id a mesh instance carries right now — the one source
-/// of truth, read straight back off the skin's own `CUSTOM0`, exactly what
-/// the shader itself reads for G. [`oid_palette::NO_OID`] when nothing has
-/// painted it.
+/// The first per-vertex label a mesh instance carries right now — the
+/// backward-compatible solid-granularity observer bridge, read straight
+/// back off the skin's own `CUSTOM0`, exactly what the shader reads for G.
+/// [`oid_palette::NO_OID`] when nothing has painted it.
 fn read_oid(skin: &Gd<MeshInstance3D>) -> f64 {
     mesh_first_label(skin).unwrap_or(oid_palette::NO_OID)
 }
@@ -1823,8 +1872,9 @@ fn read_oid(skin: &Gd<MeshInstance3D>) -> f64 {
 ///
 /// A child is recognised by what it CAN DO, not by what it is: `try_dynify`
 /// asks the `#[godot_dyn]` registry whether this node's dynamic class
-/// implements the trait. The two typed arms that remain are the two that
-/// need more than the trait offers — a wall's centerline, a cat's clock.
+/// implements the trait. Typed arms retain the extra contracts the two
+/// traits intentionally do not offer: wall centerlines, cat clocks,
+/// drawless spawn data, and run generation/material injection.
 fn collect(node: &Gd<Node>, census: &mut Census) {
     for child in node.get_children().iter_shared() {
         if let Ok(solid) = child.clone().try_dynify::<dyn WaveSolid>() {
