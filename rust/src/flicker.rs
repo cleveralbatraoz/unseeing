@@ -15,6 +15,8 @@
 //! (`crate::ffi`, driven by `UnseeingGame`) owns the adapter that widens `randf()`'s f32
 //! into the f64 this module computes with.
 
+use crate::temporal::RENDERER_VISIBLE_TIME_HORIZON;
+
 /// A source of randomness the flicker law draws from — the boundary that
 /// keeps this module free of Godot types. Godot's own
 /// `RandomNumberGenerator::randf()` returns f32; the engine layer adapts it
@@ -47,13 +49,6 @@ const DROP_LEN_JITTER: f64 = 0.1;
 const DROP_SPACING_MIN: f64 = 8.0;
 /// Random extra gap on top of [`DROP_SPACING_MIN`].
 const DROP_SPACING_JITTER: f64 = 10.0;
-/// Largest elapsed instant the envelope represents. `u_time` crosses the
-/// Godot boundary into a 32-bit shader float: 2^18 is the last power of two
-/// where adding a 1/60-second frame still changes that representation. At
-/// 2^19 it rounds away completely. Larger external deltas saturate here so
-/// CPU appointments cannot run beyond the time the renderer can observe.
-const MAX_TIME: f64 = 262_144.0;
-
 /// A snapshot of [`Flicker`]'s four fields — the shape a reproduction blob
 /// carries across a capture/restore boundary, field for field matching
 /// `flicker.gd`'s `_t`/`_level`/`_drop_until`/`_next_drop`.
@@ -110,13 +105,13 @@ impl Flicker {
     /// individual formula stays correct.
     pub fn next(&mut self, dt: f64, rng: &mut impl Randf) -> f64 {
         let dt = valid_delta(dt);
-        self.t = (self.t + dt).min(MAX_TIME);
+        self.t = (self.t + dt).min(RENDERER_VISIBLE_TIME_HORIZON);
         self.level += (1.0 - self.level) * RELAX + (valid_draw(rng.randf()) - 0.5) * JITTER;
         self.level = self.level.clamp(LEVEL_MIN, LEVEL_MAX);
         self.next_drop -= dt;
         if self.next_drop <= 0.0 {
-            self.drop_until =
-                (self.t + DROP_LEN_MIN + valid_draw(rng.randf()) * DROP_LEN_JITTER).min(MAX_TIME);
+            self.drop_until = (self.t + DROP_LEN_MIN + valid_draw(rng.randf()) * DROP_LEN_JITTER)
+                .min(RENDERER_VISIBLE_TIME_HORIZON);
             self.next_drop = DROP_SPACING_MIN + valid_draw(rng.randf()) * DROP_SPACING_JITTER;
         }
         if self.t < self.drop_until {
@@ -145,17 +140,17 @@ impl Flicker {
     /// Replace this flicker's four fields wholesale — the write side of
     /// [`Self::state`], for a reproduction blob's restore.
     pub fn restore(&mut self, s: FlickerState) -> bool {
-        self.t = bounded_or(s.t, 0.0, 0.0, MAX_TIME);
+        self.t = bounded_or(s.t, 0.0, 0.0, RENDERER_VISIBLE_TIME_HORIZON);
         self.level = bounded_or(s.level, 1.0, LEVEL_MIN * DROP_DEPTH, LEVEL_MAX);
-        self.drop_until = bounded_or(s.drop_until, -1.0, -1.0, MAX_TIME);
-        self.next_drop = bounded_or(s.next_drop, 9.0, 0.0, MAX_TIME);
+        self.drop_until = bounded_or(s.drop_until, -1.0, -1.0, RENDERER_VISIBLE_TIME_HORIZON);
+        self.next_drop = bounded_or(s.next_drop, 9.0, 0.0, RENDERER_VISIBLE_TIME_HORIZON);
         self.state() != s
     }
 }
 
 fn valid_delta(dt: f64) -> f64 {
     if dt.is_finite() && dt >= 0.0 {
-        dt.min(MAX_TIME)
+        dt.min(RENDERER_VISIBLE_TIME_HORIZON)
     } else {
         0.0
     }

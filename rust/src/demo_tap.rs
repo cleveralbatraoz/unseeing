@@ -10,19 +10,18 @@
 
 use godot::builtin::Vector3;
 
+use crate::temporal::RENDERER_VISIBLE_TIME_HORIZON;
+
 /// First tap due at this many seconds.
 const FIRST_AT: f64 = 0.6;
 
 /// Interval between taps, measured from fire time.
 const REPEAT_EVERY: f64 = 4.0;
 
-/// Last appointment representable by the shared simulation clock.
-const MAX_APPOINTMENT: f64 = 262_144.0;
-
 /// Latest clock reading that can fire and leave its next appointment inside
 /// the renderer-visible time domain. `u_time` is a 32-bit shader float, and
 /// 2^18 is the last power of two where a 1/60-second frame remains observable.
-const LAST_FIRE_AT: f64 = MAX_APPOINTMENT - REPEAT_EVERY;
+const LAST_FIRE_AT: f64 = RENDERER_VISIBLE_TIME_HORIZON - REPEAT_EVERY;
 
 /// Dev-only tap schedule: fires at regular intervals when armed.
 #[derive(Clone, Debug)]
@@ -70,7 +69,8 @@ impl DemoTap {
 
     /// Restore the next fire time. Used by `restore_blob`.
     pub fn restore_next(&mut self, next: f64) -> bool {
-        let restored = if next.is_finite() && (0.0..=MAX_APPOINTMENT).contains(&next) {
+        let restored = if next.is_finite() && (0.0..=RENDERER_VISIBLE_TIME_HORIZON).contains(&next)
+        {
             next
         } else {
             FIRST_AT
@@ -271,5 +271,20 @@ mod tests {
         let mut restored = DemoTap::new(Vector3::ZERO, Vector3::UP);
         assert!(!restored.restore_next(captured));
         assert_eq!(restored.next_at(), captured);
+    }
+
+    /// Moving the last-fire boundary to the appointment horizon would let
+    /// an armed tap book its next beat beyond renderer-visible time. The
+    /// first representable instant after the legal boundary and the horizon
+    /// itself must both refuse without disturbing the prior appointment.
+    #[test]
+    fn fire_after_the_last_legal_instant_refuses_without_moving_the_appointment() {
+        for now in [262_140.000_000_000_03, 262_144.0] {
+            let mut tap = DemoTap::new(Vector3::ZERO, Vector3::UP);
+            tap.armed = true;
+
+            assert!(!tap.fire_due(now), "now {now}");
+            assert_eq!(tap.next_at(), FIRST_AT, "now {now}");
+        }
     }
 }

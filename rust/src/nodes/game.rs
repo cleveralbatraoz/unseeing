@@ -63,6 +63,7 @@ use crate::demo_tap::DemoTap;
 use crate::ffi::WaveCore;
 use crate::flicker::{Flicker, FlickerState};
 use crate::level_plan;
+use crate::temporal::{advance_clock, valid_time_or_zero};
 
 /// The perceptual ladder's world layer — real depth, everything but the
 /// sources. `main.gd`'s `PRIORITY_WORLD`.
@@ -74,12 +75,6 @@ const PRIORITY_SOURCES: i32 = 20;
 
 /// The deterministic-run seed every armed switch shares.
 const SEED: u64 = 0x5EED;
-
-/// Largest simulation instant retained by the composition root. `u_time`
-/// crosses into a 32-bit shader float: 2^18 is the last power of two where a
-/// 1/60-second frame changes that value; at 2^19 it rounds away. CPU clocks
-/// stop at the same observable horizon instead of silently diverging.
-const MAX_TIME: f64 = 262_144.0;
 
 /// `restore_blob` was called before `ready()` wired an observer — there is
 /// no reader to ask `env_of` at all.
@@ -722,31 +717,6 @@ fn post_quad_visible(web: bool, search: Option<&str>) -> bool {
     !web || !search.is_some_and(|query| query.contains("gprobe"))
 }
 
-/// Advance the simulated clock over the complete f64 input domain. Invalid
-/// deltas pause one frame; invalid prior state restarts from zero; huge finite
-/// deltas saturate at a horizon where the game's sub-second cadences remain
-/// representable. The returned elapsed value is what delta-driven children
-/// receive, keeping all clocks on the same repaired transition.
-fn advance_clock(now: f64, delta: f64) -> (f64, f64, bool) {
-    let (now, repaired_now) = valid_time_or_zero(now);
-    let repaired_delta = !delta.is_finite() || delta < 0.0 || delta > MAX_TIME - now;
-    let delta = if delta.is_finite() && delta >= 0.0 {
-        delta.min(MAX_TIME)
-    } else {
-        0.0
-    };
-    let advanced = (now + delta).min(MAX_TIME);
-    (advanced, advanced - now, repaired_now || repaired_delta)
-}
-
-fn valid_time_or_zero(value: f64) -> (f64, bool) {
-    if value.is_finite() && (0.0..=MAX_TIME).contains(&value) {
-        (value, false)
-    } else {
-        (0.0, true)
-    }
-}
-
 /// `window.location.search`, read through the JavaScriptBridge singleton —
 /// reached DYNAMICALLY (`Engine::get_singleton`, not the `JavaScriptBridge`
 /// type) because that class does not exist in desktop bindings at all;
@@ -791,7 +761,7 @@ fn dict_i64(env: &VarDictionary, key: &str) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{advance_clock, post_quad_visible};
+    use super::post_quad_visible;
 
     #[test]
     fn gprobe_hides_only_the_web_post_quad() {
@@ -799,35 +769,5 @@ mod tests {
         assert!(post_quad_visible(true, Some("?demo")));
         assert!(post_quad_visible(true, None));
         assert!(post_quad_visible(false, Some("?gprobe")));
-    }
-
-    #[test]
-    fn game_clock_rejects_reversed_and_non_finite_frame_time() {
-        for delta in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.01] {
-            assert_eq!(
-                advance_clock(12.5, delta),
-                (12.5, 0.0, true),
-                "delta {delta}"
-            );
-        }
-        assert_eq!(advance_clock(f64::NAN, 0.25), (0.25, 0.25, true));
-    }
-
-    #[test]
-    fn game_clock_saturates_huge_time_without_emitting_infinity() {
-        let (now, elapsed, repaired) = advance_clock(12.5, f64::MAX);
-        assert!(now.is_finite());
-        assert_eq!(now, 262_144.0);
-        assert!(elapsed.is_finite());
-        assert!(now < f64::MAX);
-        assert!(elapsed > 0.0);
-        assert!(repaired);
-    }
-
-    #[test]
-    fn simulation_horizon_is_last_power_of_two_where_shader_time_advances_at_sixty_hz() {
-        let frame = 1.0_f32 / 60.0;
-        assert!(262_144.0_f32 + frame > 262_144.0_f32);
-        assert_eq!(524_288.0_f32 + frame, 524_288.0_f32);
     }
 }

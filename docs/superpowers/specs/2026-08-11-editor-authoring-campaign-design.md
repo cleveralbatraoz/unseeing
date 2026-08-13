@@ -316,6 +316,8 @@ re-derive either fact from scratch.
    malformed restored flicker fields repair to their constructor values;
    malformed demo appointments repair to the first due instant (`0.6`
    seconds). Valid traces and the seeded RNG draw order stay unchanged. The
-   pure owners are `rust/src/flicker.rs` and `rust/src/demo_tap.rs`;
-   `rust/src/nodes/game.rs` only normalizes engine time, warns once per node
-   lifetime, and passes the effective elapsed value through.
+   shared renderer-visible horizon and clock transition are owned once by
+   `rust/src/temporal.rs` (`RENDERER_VISIBLE_TIME_HORIZON`); the pure
+   consumers are `rust/src/flicker.rs` and `rust/src/demo_tap.rs`.
+   `rust/src/nodes/game.rs` only applies the pure transition, warns once per
+   node lifetime, and passes the effective elapsed value through.

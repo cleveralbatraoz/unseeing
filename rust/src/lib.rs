@@ -32,6 +32,8 @@
 //!   answer as a few points, ranked in a deterministic total order.
 //! - [`demo_tap`] — dev-only schedule for input-less demo taps: first fire
 //!   at 0.6 s, then every 4 s, always at the same pinned wall point.
+//! - `temporal` — the renderer-visible simulation horizon and total clock
+//!   transition shared by the composition root, flicker, and demo schedule.
 //! - [`echo_queue`] — scheduled reflections that fire at the exact
 //!   instant the primary wavefront reaches their surface point.
 //! - [`sound_source`] — what a world sound source IS: the volume ladder
@@ -108,4 +110,5 @@ pub mod settings_menu;
 pub mod sight;
 pub mod sound_source;
 pub mod source_shape;
+mod temporal;
 pub mod viewmodel;
