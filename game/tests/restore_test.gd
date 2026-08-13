@@ -148,11 +148,11 @@ func test_a_json_round_tripped_blob_still_parses() -> void:
 	assert_str(main.observer.blob_round_trip_ok(blob, parsed)).is_equal("")
 
 
-## The env is the composition root's own state, so putting it back is
-## GDScript's job — but GDScript cannot read the blob's spelling of a
-## float (measured: `String.to_float` is not correctly rounded, drops the
-## sign of "-0", and reads "NaN" as zero). So it comes home through Rust,
-## in exactly the shape `capture_env()` produced, and the proof is the
+## The env is the Rust composition root's own state. Godot's dynamic values
+## cannot safely parse the blob's spelling of every float (measured:
+## `String.to_float` is not correctly rounded, drops the sign of "-0", and
+## reads "NaN" as zero), so the observer parses it before UnseeingGame applies
+## it in exactly the shape `capture_env()` produced. The proof is the
 ## hash: capture the same unmoved world through the returned env and every
 ## env bit must land where it started.
 func test_the_env_group_comes_home_in_the_shape_capture_env_made_it() -> void:

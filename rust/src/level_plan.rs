@@ -427,7 +427,7 @@ pub fn wall_box(length: f64) -> Vector3 {
 
 /// Whether the level DRAWS one of the two slabs it built. The pair is
 /// always BUILT — the level keeps floor and ceiling as one ordered pair,
-/// and everything that reads it (the extents knob, the object-id anchors,
+/// and everything that reads it (the extents knob, the fixed-role label anchors,
 /// the seam census) must find the same two slabs at edit time as at run
 /// time. Only the drawing bends, and only one way: a lid spanning the
 /// whole extents is one opaque quad over the entire map, and the view it
@@ -1117,7 +1117,7 @@ pub fn slab_diagonal(floor: Box3, ceiling: Box3, walls: &[Vector4]) -> f64 {
 /// 1. The silhouette outline is a LAPLACIAN of B, and the Laplacian of a
 ///    plateau is zero. Far geometry simply stops drawing its outline — the
 ///    perception law's one line per object, gone. Creases survive, because
-///    they are diffed out of the object-id channel instead.
+///    they are diffed out of the per-face label channel instead.
 /// 2. The hearing pass recovers scene depth as `c_c.b * DIST_PACK_RANGE`,
 ///    which pins at the range. A player-made ring is cut where it meets the
 ///    world, so past the range it is cut against a world that is not there

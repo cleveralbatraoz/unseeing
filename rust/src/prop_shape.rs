@@ -474,8 +474,8 @@ mod tests {
     }
 
     /// Every vertex the wedge emits lies inside the box a designer sized
-    /// it with — which is what lets the level derive its world box, and so
-    /// its object id, exactly as it does for a plain box prop.
+    /// it with — which is what lets the level derive its world box for the
+    /// touch/separation graph exactly as it does for a plain box prop.
     #[test]
     fn the_wedge_stays_inside_its_own_box() {
         let h = SIZE * 0.5;
