@@ -5,7 +5,7 @@ implicitly authorize a wiki edit or push. The branch is still unmerged, so the
 live wiki must continue describing `main` until the user approves a post-merge
 publication pass.
 
-## 2026-08-13 post-rebase supersession
+## 2026-08-14 post-rebase supersession
 
 The campaign was rebased onto `origin/main` at `dfbb69a`; `e5f874c` is the
 strict gdUnit-runner milestone, followed by live-contract cleanup through at
@@ -56,9 +56,14 @@ Current source of truth:
   planner, and applies returned commands only after a complete `Ok`. The pure
   shape vocabulary derives every entry's conservative world bound so an
   independent AABB cannot disagree with the geometry it describes; source
-  bounds are validated after sweep growth. Public request ceilings reject
-  oversized work before quadratic graph building; checked class/pair capacities
-  and deterministic logarithmic separation dedup bound the admitted work.
+  bounds are validated after sweep growth. Public request ceilings in
+  `rust/src/render/paint_plan.rs` admit at most 256 entries, 256 sources, 11
+  palette values, and 512 semantic source roles, then reject oversized work
+  before quadratic graph building. Hand-derived literal boundary fixtures pin
+  those exact limits, the 1,536 faces emitted by 256 box entries, and the
+  130,816 pairs in the maximum admitted K512 graph. Checked class/pair
+  capacities and deterministic logarithmic separation dedup bound the admitted
+  work.
   Repairable malformed entries/sources keep their original census ownership
   and existing labels; invalid palette/anchor/allocation state refuses the
   whole request before any mesh or source role changes. **Mechanics —
@@ -111,10 +116,11 @@ Current source of truth:
   in 31 suites. The later `c8744de` live-wall checkpoint ran 417 default Cargo
   tests plus two focused editor-doc tests (419 all-features), 327 gdUnit cases
   in 31 suites, 19 registered classes, ten icons, and editor probes 7+7, 11+3,
-  29+1, and 16. The approved `f832826` paint review then ran 454/454
-  all-target/all-feature Cargo tests; the current gdUnit source census is 328
-  cases in 31 suites, pending the final executed post-rebase gate. Recompute at
-  closeout; counts are verification facts, not wiki mechanics.
+  29+1, and 16. The final post-fix pipeline at `32d6278` then ran 459/459
+  all-target/all-feature Cargo tests and 328/328 gdUnit cases in 31/31 suites,
+  plus the same editor-probe totals, release/wasm builds, web export, browser
+  smoke, and G-channel checks. Recompute after any later code change; counts are
+  verification facts, not wiki mechanics.
 
 The reverted wiki commit `9778a00` is historical input only. Never cherry-pick
 or revive it verbatim: its SP2 palette/source model predates the superface

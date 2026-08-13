@@ -1,6 +1,6 @@
 # Editor-Authoring Campaign — Active Handoff
 
-**Current record:** 2026-08-13. This file replaces the original 2026-08-12
+**Current record:** 2026-08-14. This file replaces the original 2026-08-12
 SP3-start snapshot. Do not append new facts around old contradictions; revise
 this record when the active state changes.
 
@@ -41,13 +41,14 @@ intermediate architecture.
   live WaveWall transforms, residual shipped-content goldens, a non-atomic
   paint boundary, malformed temporal input, impossible fixed-label separation,
   and developer MCP files leaking into deployment archives. The last pushed
-  checkpoint is `fd048b8`; the current local review series begins at `861cc45`
-  and includes `b64e337`, `fcf6075`, `3164ba3`, `5beab1d`, `6e4cfc9`, and
-  `f832826`. The temporal and final paint series have independent approval;
-  complete whole-session/whole-branch review, export/MCP evidence, the last
-  rebase, and all post-rebase gates remain. The branch is not integrated, the
-  wiki is not published, nothing is deployed, and no issue is authorized for
-  closure.
+  checkpoint is `fd048b8`; the current local review series runs from `861cc45`
+  through `32d6278`, including the commit-by-commit ledger below. The temporal
+  and paint series have independent approval. A fetched `origin/main` remained
+  `dfbb69a`, so the final rebase was a no-op; the complete post-fix pipeline is
+  green at `32d6278`, followed by the exact final three-state MCP mesh gate.
+  Final whole-session/whole-branch review remains. The branch is not integrated,
+  the wiki is not published, nothing is deployed, and no issue is authorized
+  for closure.
 - Keep this handoff and the temporary `AGENTS.md` in-flight section until an
   explicitly authorized merge. At merge, remove both together while retaining
   all canonical `AGENTS.md` policy.
@@ -209,9 +210,10 @@ state into a scene.
   A readiness audit corrected the acceptance contract: raw level 02 is 14/14
   because uninjected sources deliberately stay absent; the configured level-02
   runner reaches 24/24 after its hero meshes populate; configured main reaches
-  144/144. These exact zero-finding states must be repeated after the final
-  pipeline/rebase. Editor-only blueprint presence remains covered by the
-  editor-source probe because the MCP validator walks only a running scene.
+  144/144. The final post-fix rerun at `32d6278` produced those exact three
+  zero-finding states after the complete pipeline. Editor-only blueprint
+  presence remains covered by the editor-source probe because the MCP validator
+  walks only a running scene.
 
 ## Decision and verification ledger
 
@@ -285,6 +287,24 @@ likely to be lost by reading only the pre-rebase plans:
   graph produced exactly 130,816 unique pairs in 0.09 seconds of test-body
   time (0.44 seconds for the Cargo process). Direct bounds, deduplication, and
   request-ceiling tests provide the final mutation sensitivity.
+- `61d42e4` reconciled the active handoff, close checklist, wiki debt, and
+  frozen-plan errata with the rewritten history and the first complete
+  post-rebase automated/MCP evidence without claiming the human editor pass.
+- `8229016` replaced self-referential paint-ceiling assertions with hand-derived
+  public boundary fixtures. They admit exactly 256 entries, 256 sources, 11
+  palette values, and 512 semantic roles, refuse the next literal in each
+  domain atomically, and pin the resulting 1,536 faces and 130,816-pair K512
+  graph rather than reading expectations back from production constants. Its
+  independent review approved 36/36 focused tests and the 459/459 full Rust
+  suite; every public maximum shifted by either one and `actual > limit`
+  changed to `>=` each failed a named boundary test.
+- `32d6278` made WaveRun obey the same ready-time runtime snapshot law as
+  WaveWall. A pure four-state lifecycle decision keeps construction and editor
+  authoring live while the Godot boundary refuses runtime endpoint, opening,
+  and local-transform writes without replacing retained RunSeg handles, paint,
+  or occlusion. After the first review's formatting/suite-size fix, independent
+  rereview approved it; deleting the runtime setter guard caused seven focused
+  failures and deleting the transform-notification guard caused nine.
 
 History references rewritten by the rebase must not be read as missing work.
 The live equivalents are `93f4140` → `4897683`, `2ff5bdf` → `1e88abf`,
@@ -308,16 +328,29 @@ Strict full-runner census at `c8744de` on 2026-08-13:
   and 16/16 prefab checks. `SKIP_EXPORT=1 ci/pipeline.sh` completed green at
   this checkpoint.
 
-Current local focused evidence after `f832826` (not a substitute for the final
-post-rebase pipeline):
+Final post-fix automated evidence at `32d6278` on 2026-08-14:
 
-- 454/454 Cargo tests with all targets and features, with formatting and Clippy
-  warnings denied.
-- 328 authored gdUnit cases in 31 suites by the same source-census predicate as
-  `ci/run_gdunit.sh`; final execution and exact terminal summaries remain a
-  close gate.
-- Repository hygiene passed with both developer MCP files present in the
-  checkout and absent from `git archive HEAD`.
+- `ci/pipeline.sh` exited zero with `ci: OK`: 457/457 default Cargo tests plus
+  two focused `editor-docs` tests (459/459 all targets/features), formatting,
+  Clippy with warnings denied, and the release build all passed.
+- `ci/run_gdunit.sh` executed exactly 328/328 cases in 31/31 suites with zero
+  errors, failures, skips, or source/runner orphans. Both rosters contained all
+  19 classes; the ten-icon manifest passed its three tests.
+- Repository/archive/vendor hygiene, GDScript formatting/lint, the boot gate,
+  POSIX bootstrap's 22 tests, Windows bootstrap's 36 tests, and editor probes
+  7+7, 11+3, 29+1, and 16 all passed.
+- The determinism digest was `967b99e841ff9c18fe880b2d42c3383f`; the restore
+  digest was `e4c7670d6a5ff37440348abed6efbc40`.
+- The wasm build and web export passed with one 1,508,095-byte Rust wasm core;
+  browser smoke and G-channel surfaces `[4, 8, 10, 28, 30]` passed. The explicit
+  non-deployable destination was absent afterward, so verification copied or
+  deployed nothing.
+- The final MCP session matched Godot 4.7.1-stable, project `Unseeing`, the
+  exact campaign worktree, and addon/server 4.1.0. Mesh validation reported raw
+  level 02 at 14/14 with zero findings, the code-free configured level-02
+  runner after a deterministic frozen frame at 24/24 with zero findings, and
+  configured main at 144/144 with zero findings. It ended with zero new errors
+  or warnings; temporary project/scene/runner state was removed afterward.
 
 RED/GREEN and mutation evidence retained for closeout:
 
@@ -350,12 +383,26 @@ RED/GREEN and mutation evidence retained for closeout:
   into the scene signature makes the next editor pass repaint the new
   generation; the real editor probe pins safe labels, live paths, and an idle
   stable follow-up frame.
+- Paint-ceiling review found that the original exact-limit tests derived their
+  inputs and expected errors from the same constants they were meant to pin.
+  Literal 256/257, 11/12, and 512/513 boundary cases now keep those public
+  limits and their externally visible face/edge consequences independent of
+  the implementation constants. Shifting each of the four maxima up and down
+  by one, and changing the refusal comparison from `>` to `>=`, each failed a
+  named test. The restored focused planner suite passed 36/36; production code
+  did not change in this test-hardening commit.
 - The later runtime WaveRun regression began red with changed exported data,
   replaced RunSeg identities, `<freed wall …>` retained names, ordinal
   `CUSTOM0`, and changed centerlines after manual rederive. The shared pure
   four-state lifecycle rule and runtime boundary guards keep that whole
   ready-time generation exact while the existing editor probe keeps live
-  rebuild coverage.
+  rebuild coverage. The real WaveLevel case pins both RunSeg identities and
+  `CUSTOM0` arrays, exported values, identity-reset transform, retained names,
+  centerlines, and post-rederive geometry. Removing the `set_from` runtime
+  guard caused seven focused failures; removing the transform-notification
+  guard caused nine. After its formatting/suite-size correction and rereview,
+  observer passed 37/37, props 46/46, the pure lifecycle case 1/1, and the
+  independent verdict was approved.
 - Live WaveWall correction began red on oblique ancestors, singular/non-finite
   input, runtime/editor divergence, and repeated physics writes. Pure transform,
   length, and priority plans now feed one private top-level physics body and the
@@ -374,8 +421,8 @@ RED/GREEN and mutation evidence retained for closeout:
   caught and rejected zero-finding passes taken before runtime-only meshes had
   populated; the close checklist now requires 14/14, 24/24, and 144/144.
 
-Earlier pre-rebase export/browser-smoke results are historical evidence only;
-they are not a substitute for the final post-rebase full pipeline.
+Earlier pre-rebase export/browser-smoke results remain historical evidence; the
+2026-08-14 post-fix run above is the current full-pipeline boundary.
 
 ## Remaining work before asking for integration
 
@@ -383,33 +430,27 @@ they are not a substitute for the final post-rebase full pipeline.
    `origin/main...HEAD` branch diff. Preserve the user's MCP/editor state and
    any concurrent changes; review reports are evidence only after the findings
    have been checked against the actual diff and focused tests.
-2. Treat the green `SKIP_EXPORT=1 ci/pipeline.sh` run at `c8744de` (419 Cargo
-   tests across default/editor-doc configurations, exact 327/327 gdUnit cases
-   in 31/31 suites, 19 classes, ten icons, and every editor probe) as a
-   checkpoint; rerun it after the final documentation/rebase state.
-3. Run the full export/browser-smoke pipeline with an explicit non-deployable
-   destination. Do not invoke deployment tooling.
-4. Repeat the corrected three-state MCP mesh gate after the final build, then
-   ask the user only for the remaining visual/interactive checks in one
-   consolidated editor session.
-5. Fetch and rebase the current branch onto the latest `main` only after the
-   pre-rebase diff is reviewed and green. Re-review the rewritten commits and
-   rerun every focused, pipeline, export/browser, and MCP gate afterward.
-6. Present exactly one integration menu: merge locally, push/open a PR, or keep
-   the local branch. Do nothing with that choice until the user explicitly
-   selects it.
+2. The user explicitly accepted the Godot human-editor gate without a manual
+   session on 2026-08-14. Record that as a user waiver, not as observed tool
+   evidence; none of the individual visual/interactive gestures was performed
+   or witnessed during closeout.
+3. The user has explicitly authorized merge into the current `main`, push,
+   deployment from the resulting clean `main`, and branch/worktree cleanup once
+   the remaining gates are done. Preserve user-owned changes while carrying out
+   that separate integration sequence. Wiki publication and issue closure are
+   still not authorized.
 
 ## Authorization boundaries
 
-- Integration, wiki publication, deployment, and issue closure are four
-  separate user decisions.
-- A merge choice authorizes only the merge. It does not authorize a push, wiki
-  publication, deployment, or issue closure.
+- Integration, wiki publication, deployment, and issue closure are separate
+  decisions. The user has authorized this campaign's merge, push, deployment,
+  and branch/worktree cleanup after the close gates; that authorization does
+  not include wiki publication or issue closure.
 - The reverted wiki commit `9778a00` is historical input only. Its six-slot
   source-colouring model is obsolete; never revive or cherry-pick it verbatim.
   Any authorized wiki pass must re-derive and rewrite it for superfaces.
-- Deployment requires a separate instruction after an approved merge, from a
-  clean shared `main`, through the repository's gated deployment workflow.
+- Deployment must still occur only after the approved merge, from a clean
+  shared `main`, through the repository's gated deployment workflow.
 - Issue closure requires a separate instruction and per-issue evidence links.
 
 ## Traps worth keeping visible
