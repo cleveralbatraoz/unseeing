@@ -13,26 +13,34 @@ suites, with 19 registered classes and ten icons. Recompute after the final
 rebase and require exact zero-error terminal summaries rather than trusting
 these literals alone. The same checkpoint passed slab probes 7+7,
 source probes 11+3, live-level probes 29+1, and the 16-check prefab probe.
-The final post-fix pipeline at `32d6278` passed 457/457 default Cargo tests plus
-two focused `editor-docs` tests (459/459 all targets/features), 328/328 gdUnit
-cases in 31/31 suites, every editor probe, release/wasm builds, web export,
-browser smoke, and G-channel checks. It used an explicit non-deployable
-destination and verified that destination remained absent.
-The later superface-totality and renderer-label regressions raise the fresh
-all-target/all-feature Cargo count to 464/464; the full cross-layer pipeline
-must be rerun at the final integrated tree before merge.
+The final implementation pipeline at `f2fbbfc` passed 462/462 default Cargo
+tests plus two focused `editor-docs` tests (464/464 all targets/features),
+328/328 gdUnit cases in 31/31 suites, every editor probe, release/wasm builds,
+web export, browser smoke, and G-channel checks. It used an explicit
+non-deployable destination and verified that destination remained absent.
+Fresh exact records include probes 7+7, 11+3, 29+1, and 16; both 19-class
+rosters; ten icons; POSIX bootstrap 22/22; Windows bootstrap 36/36; and
+G-channel surfaces `[4, 8, 10, 28, 30]`. The same tree passed the exact
+three-state MCP mesh gate. Independent requirements/critic and
+architecture/design reviews approved it; complete-history review approved
+conditionally on this documentation closeout. The merged `main` tree must
+still rerun the full pipeline before deployment.
 
 ## Automated close
 
 - [x] Confirm the merge base is `dfbb69a`, inspect the shared worktree status,
   and account for every change without overwriting concurrent/user work.
-- [ ] Review `origin/main...HEAD` for campaign-spec compliance, architecture,
+- [x] Review `origin/main...HEAD` for campaign-spec compliance, architecture,
   truthful prose, and code quality. Fix findings and review the resulting diff
-  again.
-- [ ] Re-review every commit created in the current closeout session, including
+  again. The ultimate requirements/critic verdict approved the final tree; the
+  architecture review's one blocker was fixed in `f2fbbfc` and independently
+  rereviewed.
+- [x] Re-review every commit created in the current closeout session, including
   its test-first evidence and mutations. Obtain independent code-quality,
   adversarial/critic, and architecture/design verdicts; verify every finding
-  against the commit diff before accepting or rejecting it.
+  against the commit diff before accepting or rejecting it. The history review
+  covered all 12 closeout-session commits and all 91 campaign commits, with
+  only this documentation closeout remaining as its stated condition.
 - [x] Run Rust formatting, Clippy with warnings denied, the final source-censused
   Cargo total, the `editor-docs` build, and the release build.
 - [x] Import with Godot 4.7, then run the final source-censused gdUnit cases and
@@ -75,8 +83,9 @@ must be rerun at the final integrated tree before merge.
   complete pre-rebase branch review and gates are recorded. Then re-review the
   rewritten commit range and repeat every focused, pipeline, export/browser,
   and three-state MCP gate; pre-rebase evidence is not a substitute.
-- [ ] Confirm this handoff and only the temporary `AGENTS.md` in-flight section
-  remain ready for removal at an explicitly authorized merge.
+- [x] Remove the active handoff and only the temporary `AGENTS.md` in-flight
+  section in the reviewed closeout change. Retain the canonical project policy
+  and the durable checklist/wiki-debt records.
 
 ## One consolidated human editor session
 
@@ -113,8 +122,9 @@ witnessed during closeout.
   integrated branch and other branches/worktrees.
 - [ ] A local merge is performed only in the clean shared checkout on the
   expected `main` branch.
-- [ ] At merge, remove the active campaign handoff and only its temporary
-  `AGENTS.md` in-flight section. Retain the canonical project policy.
+- [x] The active campaign handoff and only its temporary `AGENTS.md` in-flight
+  section are removed in the closeout change before the local merge. The
+  canonical project policy remains.
 - [x] Push authorization is explicit; it was not inferred from the merge.
 
 ## Authorization 2 — wiki publication

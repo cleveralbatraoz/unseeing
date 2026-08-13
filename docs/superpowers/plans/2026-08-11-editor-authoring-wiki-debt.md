@@ -124,13 +124,26 @@ Current source of truth:
   in 31 suites. The later `c8744de` live-wall checkpoint ran 417 default Cargo
   tests plus two focused editor-doc tests (419 all-features), 327 gdUnit cases
   in 31 suites, 19 registered classes, ten icons, and editor probes 7+7, 11+3,
-  29+1, and 16. The final post-fix pipeline at `32d6278` then ran 459/459
-  all-target/all-feature Cargo tests and 328/328 gdUnit cases in 31/31 suites,
-  plus the same editor-probe totals, release/wasm builds, web export, browser
-  smoke, and G-channel checks. The later superface-totality and renderer-label
-  regressions raise the fresh all-target/all-feature Cargo gate to 464/464;
-  the full cross-layer pipeline remains to be rerun on the integrated tree.
-  Counts are verification facts, not wiki mechanics.
+  29+1, and 16. The final implementation pipeline at `f2fbbfc` ran 462/462
+  default Cargo tests plus two focused `editor-docs` tests (464/464 all
+  targets/features) and 328/328 gdUnit cases in 31/31 suites. It also passed
+  editor probes 7+7, 11+3, 29+1, and 16; both 19-class rosters; the ten-icon
+  manifest; POSIX bootstrap's 22 tests; Windows bootstrap's 36 tests; the
+  release and wasm builds; web export; browser smoke; and G-channel surfaces
+  `[4, 8, 10, 28, 30]`. Its explicit non-deployable destination remained
+  absent. The integrated `main` tree still requires its own full pipeline
+  before deployment. Counts are verification facts, not wiki mechanics.
+
+Final live verification at `f2fbbfc` also matched Godot 4.7.1-stable, project
+`Unseeing`, the exact campaign worktree, and Godot MCP addon/server 4.1.0. Mesh
+validation reported raw level 02 at 14/14, a configured level-02 runner at
+24/24, and configured main at 144/144, all with zero findings; temporary MCP
+state was removed afterward. Independent requirements/critic review approved
+the complete branch. Architecture/design review's one blocker was fixed in
+`f2fbbfc` and rereviewed, and history review covered every one of the 12 final
+closeout-session commits and all 91 campaign commits, conditional only on this
+documentation closeout. These are closeout records, not authorization to
+publish the wiki or close issues.
 
 The reverted wiki commit `9778a00` is historical input only. Never cherry-pick
 or revive it verbatim: its SP2 palette/source model predates the superface
