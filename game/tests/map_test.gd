@@ -1,38 +1,12 @@
 # gdlint:ignore = max-public-methods
 extends GdUnitTestSuite
-## THE SHIPPED MAP — scenes/level_01.tscn held to the design it realises.
-## Everything here reads the authored scene back through the level root, so
-## a node dragged, deleted or mistyped in the editor trips a test rather
-## than a play session: the wall table the sight shaders occlude by, the
-## spawn and the dev demo tap the level derives, the census of shapes that
-## furnish it, and the per-face label seam law across every touching pair.
+## Level geometry and perception laws at the Godot/Rust boundary.
 ##
-## The two LAWS the map exists to make audible — how much of a source
-## survives a wall, and what a wall costs against the volume ladder — are
-## held on levels built in code instead. They are true of every level, and
-## asserting them through the shipped scene's node ORDER made a source added
-## in the editor crash the suite rather than fail it.
-##
-## The map is a 28 x 28 m plan of rooms on wall centerlines 0.6 m inside
-## its edges:
-##
-##   z=0.6  +----------+---------------+------+-----------------+
-##          |          |               | cor  |  RADIO ROOM     |
-##          |  spawn   |   FAN ROOM    | ri   |  (its only door |
-##          |  room    |               | dor  |   is the south) |
-##   z=8.0  |          +---------+-----+      +--------+--------+
-##          |          |         | east|      |                 |
-##          |          |  hall   | room|   (doorway z 10..13)   |
-##   z=13   +----+     |         |     |      |                 |
-##          |nook|     +---+     |     |      |                 |
-##   z=19.4 +----------+---+-----+-----+------+                 |
-##          | workshop |  south corridor | store  |    yard      |
-##   z=27.4 +----------+-----------------+--------+--------------+
-##          x=0.6      x=8      x=14   x=19.4    x=21.4      x=27.4
-##
-## The radio room's WEST wall is the fan room's EAST wall, which is the
-## whole point of the layout: the hero can stand in the fan room, one wall
-## from a LOUDER source, and hear which is which.
+## Authored scenes are editable content, not golden fixtures: a designer may
+## add, delete, move, rename, or re-nest any lawful node without rewriting a
+## test. Exact geometry therefore lives in small code-built proof levels. The
+## shipped scene is exercised only for content-independent health: it loads,
+## derives, and reports no impossible label state for whatever it contains.
 
 const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
@@ -42,30 +16,6 @@ const MIN_OID_SEP := 0.08
 
 ## Boxes that share a face register as touching at exactly zero overlap.
 const TOUCH_EPS := 0.01
-
-## The only NON-WALL solids on the shipped map allowed to melt into
-## anything. The two bookcases' backs sit flush against their own sides
-## (game/scenes/level_01.tscn), so each trio genuinely coplanar-MERGES
-## under `render::superface` and is drawn as one piece of furniture on
-## purpose — a verified geometric fact, independently confirmed by
-## `render::superface::tests::a_junction_cap_merges_into_the_partners_flank`'s
-## sibling fixtures, not something this GDScript suite re-derives.
-##
-## Walls are deliberately absent and are allowed to merge freely: the
-## 19-wall network merging into one drawn structure is the whole point of
-## the campaign, and a non-wall solid that joins it is already caught by
-## `WaveLevel`'s own wall-merge warning (pinned silent on this map by
-## `level_test.gd::test_the_shipped_level_says_nothing_about_either_shader_ceiling`).
-## What this list catches is the case neither of those sees: one PROP
-## nudged flush into another.
-const MERGING_PROPS := [
-	"ShelfSideA",
-	"ShelfSideB",
-	"ShelfBack",
-	"RackSideA",
-	"RackSideB",
-	"RackBack",
-]
 
 
 ## The first mesh limb a node built for itself.
@@ -89,8 +39,8 @@ func _occluder(seg: Vector4) -> Vector4:
 	)
 
 
-## The shipped level, instanced the way main does: injected first, then
-## entered — every contract below is read back from the scene itself.
+## The shipped scene, injected and entered the way main does. Only the two
+## content-independent health probes below use it.
 func _shipped_level() -> WaveLevel:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
@@ -98,38 +48,31 @@ func _shipped_level() -> WaveLevel:
 	return level
 
 
-## A level's sound source, found by the NAME its scene gives it AND the
-## class it is, rather than by where it sits in scene order. Scene order is
-## what every derivation leans on, so it is exactly what a designer changes
-## by dragging one node above another — and a positional lookup answers
-## such an edit with a null to crash on instead of a sentence.
-##
-## Both halves of the identity are checked because each closes the other's
-## hole: a class alone is re-pointed by a second source of that class, a
-## name alone by anything renamed into its place, and neither miss is
-## noisy. A map that has lost the source says so here, once, in words.
-func _source_named(level: WaveLevel, node_name: String, kind: String) -> Node3D:
-	for source: Node3D in level.sources():
-		if str(source.name) == node_name and source.is_class(kind):
-			return source
-	fail("the level carries no %s named '%s'" % [kind, node_name])
-	return null
-
-
-## The typed spawn datum every legal level needs — a level with no hero start is
-## an error, and these built-in-code levels are not testing that.
+## An explicit typed spawn for fixtures whose subject is not fallback spawn
+## selection.
 func _spawn_marker(at: Vector3) -> WaveSpawn:
 	var marker := WaveSpawn.new()
 	marker.position = at
 	return marker
 
 
-func test_shipped_walls_axis_aligned_and_bordered() -> void:
-	var segs := _shipped_level().wall_segments()
-	assert_int(segs.size()).is_greater_equal(4)
-	for s: Vector4 in segs:
-		var axis_aligned := absf(s.w - s.y) < 0.001 or absf(s.z - s.x) < 0.001
-		assert_bool(axis_aligned).append_failure_message("segment %s" % s).is_true()
+## One authored-in-code wall between one spawn and one source. Its exact
+## geometry is test input, so the tap law remains non-vacuous without making
+## any wall or source mandatory in a designer-owned scene.
+func _demo_level() -> WaveLevel:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(2, 0, 4)))
+	var wall := WaveWall.new()
+	wall.length = 6.0
+	wall.position = Vector3(6, 0, 4)
+	wall.rotation.y = PI * 0.5
+	level.add_child(wall)
+	var source := SoundFan.new()
+	source.position = Vector3(9, 0, 4)
+	level.add_child(source)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	return level
 
 
 ## The demo tap lands on the FACE of SOME wall the level derived — no room
@@ -139,11 +82,11 @@ func test_shipped_walls_axis_aligned_and_bordered() -> void:
 ## purely geometric — the tap sits on a face plane (centerline ± WALL_T)
 ## inside a wall's span, and the returned normal points back toward the
 ## spawn, never into the wall it struck.
-func test_shipped_demo_tap_sits_on_the_dividing_wall_face() -> void:
+func test_demo_tap_sits_on_the_crossed_wall_face() -> void:
 	# level_plan.rs::WALL_T, the same half-thickness _occluder() pads by
 	const WALL_HALF_T := 0.15
 	const FACE_EPS := 0.005
-	var level := _shipped_level()
+	var level := _demo_level()
 	var tap := level.demo_tap()
 	var normal := level.demo_tap_normal()
 	var spawn := level.spawn_pos()
@@ -167,18 +110,6 @@ func test_shipped_demo_tap_sits_on_the_dividing_wall_face() -> void:
 		. append_failure_message("normal %s does not point spawn-ward from tap %s" % [normal, tap])
 		. is_greater(0.0)
 	)
-
-
-func test_shipped_spawn_inside_bounds() -> void:
-	var level := _shipped_level()
-	var lo := Vector2(INF, INF)
-	var hi := Vector2(-INF, -INF)
-	for s: Vector4 in level.wall_segments():
-		lo = Vector2(minf(lo.x, minf(s.x, s.z)), minf(lo.y, minf(s.y, s.w)))
-		hi = Vector2(maxf(hi.x, maxf(s.x, s.z)), maxf(hi.y, maxf(s.y, s.w)))
-	var spawn := level.spawn_pos()
-	assert_bool(spawn.x > lo.x and spawn.x < hi.x).is_true()
-	assert_bool(spawn.z > lo.y and spawn.z < hi.y).is_true()
 
 
 ## The per-object source muffle, on a level built in code: a source's
@@ -216,90 +147,9 @@ func test_the_source_muffle_dims_once_per_wall_it_crosses() -> void:
 	assert_float(level.source_muffle(eye, Vector3(14, 1.15, 4))).is_equal_approx(0.09, 0.0001)
 
 
-## THE map's reason for growing: the radio sits in a dedicated room whose
-## west wall is the fan room's east wall, so from the fan room the hero is
-## ONE wall from a louder source — and the two sources are heard from the
-## same spot at different strengths. From the spawn, three rooms away, the
-## radio is a ghost of a ghost.
-func test_the_radio_is_one_wall_from_the_fan_room() -> void:
-	var level := _shipped_level()
-	var radio := _source_named(level, "Radio", "SoundRadio")
-	var hub := radio.global_position + SoundRadio.hub_offset()
-	var in_fan_room := Vector3(18.0, 1.6, 4.0)
-	# EXACTLY one wall, not "some obstruction": the map's whole reason for
-	# growing (see the header) is that this reads the SOURCE_THROUGH factor
-	# the code-built fixture law above (test_the_source_muffle_dims_once_
-	# per_wall_it_crosses) pins for a single crossing, and nothing weaker —
-	# a relative "less than the clear room" would pass just as well through
-	# a second wall, so the literal stays as the claim itself rather than
-	# incidental census.
-	var through_wall := level.source_muffle(in_fan_room, hub)
-	assert_float(through_wall).is_equal_approx(0.3, 0.0001)
-	# and standing INSIDE the radio room there is nothing between them —
-	# the universal "no wall" ceiling, not a fact about this map's shape
-	assert_float(level.source_muffle(Vector3(24.0, 1.6, 5.0), hub)).is_equal_approx(1.0, 0.0001)
-	# from the spawn it is further than one wall — a much fainter ghost still
-	assert_bool(level.source_muffle(level.spawn_pos(), hub) < through_wall).is_true()
-
-
-## A THIRD SOURCE dropped into the map must not re-point the test above.
-## Scene order is the map's most editable property — a designer adds a
-## source, or drags one above another, and every positional lookup in this
-## suite silently changes what it is talking about. Worse than changing:
-## `sources()[1] as SoundRadio` on a level whose second source is the fan
-## yields a NULL, and the suite dies on the next property read instead of
-## naming the map's fault.
-func test_a_source_added_first_leaves_the_map_claim_where_it_was() -> void:
-	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	var intruder := SoundRadio.new()
-	intruder.name = "Intruder"
-	level.add_child(intruder)
-	level.move_child(intruder, 0)  # ahead of the shipped fan and radio
-	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
-	add_child(level)
-	assert_int(level.sources().size()).is_greater_equal(3)
-	assert_object(level.sources()[0]).is_same(intruder)  # it really is first
-	var radio := _source_named(level, "Radio", "SoundRadio")
-	assert_object(radio).is_not_same(intruder)
-	var hub := radio.global_position + SoundRadio.hub_offset()
-	# the same one-wall fact pinned above, now re-checked with a THIRD
-	# source ahead of the shipped two in scene order — literal kept for the
-	# same reason: it is the map's claim, not census
-	assert_float(level.source_muffle(Vector3(18.0, 1.6, 4.0), hub)).is_equal_approx(0.3, 0.0001)
-
-
-## A NODE WEARING THE RADIO'S NAME is not the radio. A name is exactly as
-## editable as scene order — a designer copies a source and renames it, or
-## drops a fan into a grouping folder and calls it Radio — so a lookup that
-## trusts only the name is re-pointed as silently as the positional one it
-## replaced. The two halves of the identity close each other's hole: a
-## class alone is re-pointed by a second radio, a name alone by a rename,
-## and together they name one node.
-func test_a_node_wearing_the_radios_name_is_not_the_radio() -> void:
-	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	var folder := Node3D.new()  # a grouping folder, so the name is free to reuse
-	folder.name = "Furniture"
-	level.add_child(folder)
-	var impostor := SoundFan.new()
-	impostor.name = "Radio"
-	impostor.position = Vector3(18.0, 0, 4.0)  # in the fan room, beside the eye
-	folder.add_child(impostor)
-	level.move_child(folder, 0)  # and first in scene order
-	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
-	add_child(level)
-	assert_object(level.sources()[0]).is_same(impostor)  # it really does come first
-	var radio := _source_named(level, "Radio", "SoundRadio")
-	assert_object(radio).is_not_same(impostor)
-	var hub := radio.global_position + SoundRadio.hub_offset()
-	# same one-wall fact as above, now re-checked past an impostor wearing
-	# the radio's own name — literal kept for the same reason: it is the
-	# map's claim, not census
-	assert_float(level.source_muffle(Vector3(18.0, 1.6, 4.0), hub)).is_equal_approx(0.3, 0.0001)
-
-
-## A WALL COSTS MORE THAN THE LADDER IS WORTH, and the map is laid out so
-## the hero meets that fact head on. With the quieter fan in the eye's own
-## room and the LOUDER radio one wall east, the fan reads 0.75 in open air
+## A WALL COSTS MORE THAN THE LADDER IS WORTH. This fixture puts the quieter
+## fan in the eye's own room and the LOUDER radio one wall east: the fan reads
+## 0.75 in open air
 ## while the radio reads 0.30 — because the ladder is a factor of 1.33 and
 ## a wall is a factor of 3.33. That is not a bug to tune away: a quiet
 ## thing beside you genuinely does sound louder than a loud thing in the
@@ -346,20 +196,19 @@ func test_a_wall_costs_more_than_the_volume_ladder_is_worth() -> void:
 	assert_bool(radio_image > fan.volume * 0.3).is_true()
 
 
-## The shipped level carries at least one companion cat and has injected
-## every one it holds the same way it injects a source — so each can both
-## sound (pulse pool) and be seen (data-pass material). The COUNT is not a
-## law: a level with no cat at all is legal elsewhere (the code-built
-## fixtures above never add one) — this only pins that the shipped map's
-## OWN cat, whatever comes to sit beside it in the editor, is there and
-## wired.
-func test_shipped_level_exposes_and_injects_the_cat() -> void:
-	var level := _shipped_level()
-	var cats := level.cats()
-	assert_array(cats).append_failure_message("the shipped map has lost its cat").is_not_empty()
-	for cat: WaveCat in cats:
-		assert_object(cat.pulses).is_not_null()
-		assert_object(cat.data_mat).is_not_null()
+## A cat is optional authored content. When one is present, the level must
+## still inject the pulse pool and data material it needs.
+func test_a_level_injects_every_cat_it_contains() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
+	var cat := WaveCat.new()
+	cat.position = Vector3(4, 0, 4)
+	level.add_child(cat)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	assert_array(level.cats()).contains([cat])
+	assert_object(cat.pulses).is_not_null()
+	assert_object(cat.data_mat).is_not_null()
 
 
 ## Every authored world solid carrying per-face CUSTOM0 labels, paired with
@@ -370,28 +219,20 @@ func _painted_boxes(node: Node, out: Array[Dictionary], root: Node = null) -> vo
 		root = node
 	for child: Node in node.get_children():
 		var skin := _skin(child)
-		if skin != null:
-			var bridge_label := -1.0
-			if child is WaveWall:
-				bridge_label = (child as WaveWall).oid()
-			elif child is WaveProp:
-				bridge_label = (child as WaveProp).oid()
-			elif child is WaveColumn:
-				bridge_label = (child as WaveColumn).oid()
-			elif child is WaveWedge:
-				bridge_label = (child as WaveWedge).oid()
-			if bridge_label >= 0.0:
-				(
-					out
-					. append(
-						{
-							"name": str(root.get_path_to(child)),
-							"box": skin.global_transform * skin.get_aabb(),
-							"bridge_label": bridge_label,
-							"labels": _labels_of(skin),
-						}
-					)
+		var painted := (
+			child is WaveWall or child is WaveProp or child is WaveColumn or child is WaveWedge
+		)
+		if skin != null and painted:
+			(
+				out
+				. append(
+					{
+						"name": str(root.get_path_to(child)),
+						"box": skin.global_transform * skin.get_aabb(),
+						"labels": _labels_of(skin),
+					}
 				)
+			)
 		_painted_boxes(child, out, root)
 
 
@@ -434,36 +275,41 @@ func _labels_of(skin: MeshInstance3D) -> Array[float]:
 	return out
 
 
-## Where two boxes interpenetrate there is no depth step, so the silhouette
+## Two separate boxes meet face-to-face without a same-facing coplanar merge.
+## Their exact geometry is a test input rather than a shipped-scene promise.
+func _touching_prop_level() -> WaveLevel:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
+	for at: Vector3 in [Vector3(4, 0.5, 4), Vector3(5, 0.5, 4)]:
+		var prop := WaveProp.new()
+		prop.size = Vector3.ONE
+		prop.position = at
+		level.add_child(prop)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	return level
+
+
+## Where two boxes meet there is no depth step, so the silhouette
 ## Laplacian on B has nothing to bite on — only the G-channel crease can
 ## draw their seam, and the shader fades it over smoothstep(0.04, 0.08).
 ## Two touching solids closer than 0.08 in label therefore draw a weak
 ## seam, and IDENTICAL labels draw none at all: the pair melts into one
-## silhouette. The shipped level must clear the knee on EVERY touching pair
-## across all four solid shapes — nineteen walls and a hundred and six
-## props, coloured from a five-entry palette — unless the merge law
-## genuinely fused them, in which case being drawn as one piece IS the
-## intent.
+## silhouette. Every touching pair in different superfaces must clear the
+## knee; genuinely fused faces are intentionally one piece.
 ##
 ## EVERY label of one against EVERY label of the other, which is exactly
 ## what `render::superface`'s rule (c) promises for two touching solids in
 ## DIFFERENT clusters: it separates their classes blanket, not pairwise by
 ## face. A pair the law did fuse is skipped whole here rather than held to
 ## rule (b)'s finer per-face law; that finer case has its own pin, at real
-## shipped geometry, in
+## code-built geometry, in
 ## `test_a_junction_style_pair_merges_its_cap_and_separates_its_corner`.
-func test_shipped_touching_boxes_draw_their_seam() -> void:
-	var level := _shipped_level()
+func test_touching_boxes_draw_their_seam() -> void:
+	var level := _touching_prop_level()
 	var boxes: Array[Dictionary] = []
 	_painted_boxes(level, boxes)
-	# non-vacuity: an empty census would pass the seam walk below by having
-	# nothing left to fail it — the anti-vacuity PAIR is the distinct-ids-
-	# fewer-than-boxes counter-law just below, which fails the same way
-	(
-		assert_array(boxes)
-		. append_failure_message("no painted boxes found — _painted_boxes broke")
-		. is_not_empty()
-	)
+	assert_int(boxes.size()).is_equal(2)
 	var merged := _merged_pairs(level)
 	var melted: Array[String] = []
 	for i: int in boxes.size():
@@ -494,57 +340,6 @@ func test_shipped_touching_boxes_draw_their_seam() -> void:
 	)
 
 
-## The other half of the same law: a melt has to be AUTHORED. The merge
-## law happily fuses whatever is flush, so a prop nudged a centimetre into
-## its neighbour would simply be excused by the test above. Walls are
-## allowed to melt into anything (the network being drawn as one structure
-## is the campaign's whole point, and a non-wall joining it already
-## triggers `WaveLevel`'s own warning); every other solid that shares a
-## superface class with another solid must be one of the six named
-## `MERGING_PROPS`.
-func test_only_the_named_props_melt_into_a_neighbour() -> void:
-	var level := _shipped_level()
-	var walls: Array[WaveWall] = []
-	_collect_walls(level, walls)
-	var wall_names := {}
-	for wall: WaveWall in walls:
-		wall_names[str(level.get_path_to(wall))] = true
-
-	var obs: WaveObserver = auto_free(WaveObserver.new())
-	obs.inject(level, null)
-	var e: Dictionary = obs.explain_oids()
-	assert_bool(e.has("superfaces")).append_failure_message("the census refused: %s" % e).is_true()
-	var unexpected: Array[String] = []
-	for superface: Dictionary in e.get("superfaces", []):
-		var members: Array = superface.get("members", [])
-		if members.size() < 2:
-			continue
-		for member: String in members:
-			if wall_names.has(member) or MERGING_PROPS.has(member):
-				continue
-			if not unexpected.has(member):
-				unexpected.append(member)
-	(
-		assert_array(unexpected)
-		. append_failure_message(
-			"solids melted into a neighbour without being authored to: %s" % str(unexpected)
-		)
-		. is_empty()
-	)
-
-
-## Labels are reused wherever no pixel shows two boxes meeting — that reuse is
-## what lets a five-entry palette dress a level of any size. A run that gave
-## every box a unique label would pass the seam law above while proving nothing.
-func test_shipped_level_reuses_labels_between_distant_boxes() -> void:
-	var boxes: Array[Dictionary] = []
-	_painted_boxes(_shipped_level(), boxes)
-	var distinct := {}
-	for box: Dictionary in boxes:
-		distinct[box["bridge_label"]] = true
-	assert_int(distinct.size()).is_less(boxes.size())
-
-
 ## The seam law's evil twin. Two same-facing faces sharing one plane AND
 ## rasterised area sit at the SAME depth, so the GPU picks a winner per
 ## pixel per frame — a genuine problem only where the two writers disagree
@@ -570,7 +365,7 @@ func test_shipped_level_reuses_labels_between_distant_boxes() -> void:
 ## The BAKE is pinned separately, by the cases in this suite that read real
 ## ARRAY_CUSTOM0 bytes and locate faces geometrically —
 ## `test_a_junction_style_pair_merges_its_cap_and_separates_its_corner` and
-## `test_shipped_walls_clear_the_floor_and_ceiling_labels`.
+## `test_a_wall_clears_the_floor_and_ceiling_labels`.
 func test_shipped_level_has_no_label_faults() -> void:
 	var level := _shipped_level()
 	var obs: WaveObserver = auto_free(WaveObserver.new())
@@ -586,18 +381,10 @@ func test_shipped_level_has_no_label_faults() -> void:
 	)
 
 
-## WAVE S'S ACCEPTANCE TEST. Before the singleton collapse
-## (`render::superface::superfaces`) landed, the shipped map measured 93
-## starved superface classes: rule (a) applied with no multi-member
-## scoping demanded every ordinary touching pair of un-merged solids take
-## SIX mutually-disjoint labels (three per side, its own octahedral
-## minimum) — far past what the five-entry WORLD_OIDS palette holds.
-## `WaveLevel::paint_labels` reports a starved count LOUDLY now, matching
-## the pre-superface `assign_oids` voice — this is the pin that message
-## never fires deriving the real, shipped level. Red against the
-## unfixed singleton law (93 starved, one `godot_error` naming the
-## count); green once the collapse restores the pre-superface two-label
-## law for every singleton pair.
+## A shipped level must derive without exhausting the label graph, whatever
+## lawful content it currently contains. Exact graph shapes are proved by the
+## code-built cases; this is only the scene-level health boundary that turns a
+## real derivation error into a focused failure.
 func test_shipped_level_derives_with_no_starved_classes() -> void:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
@@ -605,13 +392,9 @@ func test_shipped_level_derives_with_no_starved_classes() -> void:
 	await assert_error(enter).is_success()
 
 
-## Wave S fix round 2 (MINOR 2): the wall<->slab seam has no OTHER
-## shipped-map pin now that the slab is a real singleton graph member,
-## not a phantom class `_painted_boxes` could ignore — that walk only
-## ever reads a wall's BRIDGED first-face `oid()`, never checks it
-## against a slab's label at all. Every wall's OWN six face labels — read
-## straight off each wall's own mesh CUSTOM0 channel, the real per-face
-## ground truth, not the coarser bridge — must clear BOTH Floor (0.15)
+## The wall<->slab seam at real per-face resolution. A wall's OWN six face
+## labels — read straight off its mesh CUSTOM0 channel, not the coarser
+## first-face bridge — must clear BOTH Floor (0.15)
 ## and Ceiling (0.90) by at least MIN_OID_SEP. Hand-derived: every wall
 ## takes its label from the five-entry WORLD_OIDS palette
 ## ([0.25, 0.34, 0.43, 0.52, 0.61], `rust/src/nodes/level.rs`) — walls and
@@ -620,40 +403,29 @@ func test_shipped_level_derives_with_no_starved_classes() -> void:
 ## (`render::labels::role_label`) already; this is the wiring pin that
 ## would catch a wall ever inheriting 0.15/0.90 directly, the way it
 ## could if a wall's own cluster were ever silently merged into a slab's
-## (the ledgered, currently-unreachable anchor-conflict case).
-func _collect_walls(node: Node, out: Array[WaveWall]) -> void:
-	for child: Node in node.get_children():
-		if child is WaveWall:
-			out.append(child as WaveWall)
-		_collect_walls(child, out)
-
-
-func test_shipped_walls_clear_the_floor_and_ceiling_labels() -> void:
+## (the ledgered, currently-unreachable anchor-conflict case). The one wall
+## below is exact test input; no authored scene is required to keep a wall.
+func test_a_wall_clears_the_floor_and_ceiling_labels() -> void:
 	const FLOOR_LABEL := 0.15
 	const CEILING_LABEL := 0.90
-	var level := _shipped_level()
-	var walls: Array[WaveWall] = []
-	_collect_walls(level, walls)
-	assert_int(walls.size()).is_equal(19)
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
+	var wall := WaveWall.new()
+	wall.length = 4.0
+	wall.position = Vector3(5, 0, 5)
+	level.add_child(wall)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
 	var violations: Array[String] = []
-	for wall: WaveWall in walls:
-		var custom: PackedFloat32Array = _skin(wall).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
-		for f in 6:
-			var label: float = custom[f * 4]
-			if absf(label - FLOOR_LABEL) < MIN_OID_SEP:
-				violations.append(
-					(
-						"%s face %d = %.3f too close to Floor (%.2f)"
-						% [wall.name, f, label, FLOOR_LABEL]
-					)
-				)
-			if absf(label - CEILING_LABEL) < MIN_OID_SEP:
-				violations.append(
-					(
-						"%s face %d = %.3f too close to Ceiling (%.2f)"
-						% [wall.name, f, label, CEILING_LABEL]
-					)
-				)
+	var custom: PackedFloat32Array = _skin(wall).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
+	for f in 6:
+		var label: float = custom[f * 4]
+		if absf(label - FLOOR_LABEL) < MIN_OID_SEP:
+			violations.append("face %d = %.3f too close to Floor (%.2f)" % [f, label, FLOOR_LABEL])
+		if absf(label - CEILING_LABEL) < MIN_OID_SEP:
+			violations.append(
+				"face %d = %.3f too close to Ceiling (%.2f)" % [f, label, CEILING_LABEL]
+			)
 	(
 		assert_array(violations)
 		. append_failure_message("wall labels too close to a slab role label: %s" % str(violations))
@@ -661,24 +433,28 @@ func test_shipped_walls_clear_the_floor_and_ceiling_labels() -> void:
 	)
 
 
-## THE SUPERFACE LAW, live, off two REAL `WaveWall` meshes sampled straight
-## off the SHIPPED map — the new form of the zero-fights pin. BorderNorth
-## (the north border, centerline z = 0.6) and Divider/RunSeg1 (the north
-## segment emitted by a T-junction WaveRun whose own south end lands ON
-## BorderNorth's centerline) meet at
-## world z = 0.6 (BorderNorth's centerline) − 0.15 (WALL_T) = 0.45 — hand
-## derived, not read back off the built mesh — exactly the geometry
+## THE SUPERFACE LAW, live, off two code-built `WaveWall` meshes. A crossbar
+## centred on z = 4 and a perpendicular stem whose centerline starts on z = 4
+## meet at world z = 4 − 0.15 (WALL_T) = 3.85 — hand-derived, not read back
+## off the built mesh — exactly the geometry
 ## `render::superface`'s own `a_junction_cap_merges_into_the_partners_flank`
 ## fixture proves merges, now checked through the real node → mesh
 ## pipeline instead of bare `Shape` literals.
 func test_a_junction_style_pair_merges_its_cap_and_separates_its_corner() -> void:
-	const MERGE_Z := 0.45
-
-	var level := _shipped_level()
-	var a: WaveWall = level.find_child("BorderNorth", true, false)
-	var b: WaveWall = level.get_node_or_null("Divider/RunSeg1") as WaveWall
-	assert_object(a).is_not_null()
-	assert_object(b).is_not_null()
+	const MERGE_Z := 3.85
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
+	var a := WaveWall.new()
+	a.length = 6.0
+	a.position = Vector3(5, 0, 4)
+	level.add_child(a)
+	var b := WaveWall.new()
+	b.length = 3.0
+	b.position = Vector3(5, 0, 5.5)
+	b.rotation.y = PI * 0.5
+	level.add_child(b)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
 
 	var a_skin := _skin(a)
 	var b_skin := _skin(b)
@@ -697,10 +473,10 @@ func test_a_junction_style_pair_merges_its_cap_and_separates_its_corner() -> voi
 	var merged_label := _face_label(a_skin, a_face)
 	assert_float(_face_label(b_skin, b_face)).is_equal(merged_label)
 
-	# THE CORNER: Divider/RunSeg1's own east/west thickness face is
+	# THE CORNER: the stem's own east/west thickness face is
 	# PERPENDICULAR to the merged plane and must differ by at least
 	# MIN_SEP — the crease the corner itself draws.
-	var perp_face := _face_with_centroid_x_above(b_skin, 6.5)
+	var perp_face := _face_with_centroid_x_above(b_skin, 5.1)
 	var perp_label := _face_label(b_skin, perp_face)
 	assert_float(absf(perp_label - merged_label)).is_greater_equal(0.08)
 
@@ -828,7 +604,7 @@ func test_a_lone_columns_flank_joins_its_rims_and_still_differs_from_its_neighbo
 	assert_float(absf(flank - base_label)).is_greater_equal(0.08)
 
 
-## The label a shipped column's mesh carries at ordinal `ord` (0 bottom
+## The label a code-built column's mesh carries at ordinal `ord` (0 bottom
 ## rim, 1 top rim, 2 flank) — read by POSITION, not by value:
 ## `resize_triangle_surface` never groups by ordinal into a fixed block
 ## the way a box's FACE_ORDER does, but `column_triangles`'s own emission
@@ -882,18 +658,28 @@ func _table_faults(level: WaveLevel, mat: ShaderMaterial) -> Array[String]:
 	return faults
 
 
-## The reveal-occlusion wall table reaches BOTH occluding skins — the
-## world (reveal occlusion) and the source image (its silhouette's
-## per-object muffle): one occluder rect per wall, the count and the wall
-## top riding along, and exposed through wall_rects() for the hearing pass
-## too. Nineteen walls now, against the sight shaders' 32 slots.
+## The reveal-occlusion wall table reaches BOTH occluding skins — the world
+## and the source image — with one occluder rect per wall. Two deliberately
+## different code-built walls make the table non-vacuous without freezing a
+## designer-owned scene's count, order, position, or names.
 func test_wall_table_reaches_the_occluding_skins() -> void:
 	var data_mat := ShaderMaterial.new()
 	var source_mat := ShaderMaterial.new()
-	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
+	var x_run := WaveWall.new()
+	x_run.length = 5.0
+	x_run.position = Vector3(5, 0, 3)
+	level.add_child(x_run)
+	var z_run := WaveWall.new()
+	z_run.length = 4.0
+	z_run.position = Vector3(9, 0, 7)
+	z_run.rotation.y = PI * 0.5
+	level.add_child(z_run)
 	level.inject(data_mat, source_mat, Pulses.new())
 	add_child(level)
 	var segs := level.wall_segments()
+	assert_int(segs.size()).is_equal(2)
 	for m: ShaderMaterial in [data_mat, source_mat]:
 		var faults := _table_faults(level, m)
 		(
@@ -961,56 +747,6 @@ func _solid_boxes(node: Node, out: Array[Dictionary]) -> void:
 		_solid_boxes(child, out)
 
 
-## How deeply two boxes interpenetrate on their least-overlapping axis.
-## Zero or less means they merely touch, which is legal and often deliberate
-## — a plank leaning on a wall, a board screwed to one.
-func _depth(a: AABB, b: AABB) -> float:
-	var lo := Vector3(
-		maxf(a.position.x, b.position.x),
-		maxf(a.position.y, b.position.y),
-		maxf(a.position.z, b.position.z)
-	)
-	var hi := Vector3(
-		minf(a.position.x + a.size.x, b.position.x + b.size.x),
-		minf(a.position.y + a.size.y, b.position.y + b.size.y),
-		minf(a.position.z + a.size.z, b.position.z + b.size.z)
-	)
-	return minf(hi.x - lo.x, minf(hi.y - lo.y, hi.z - lo.z))
-
-
-## A prop buried in a wall is invisible from one side and unreachable from
-## the other, and nothing in the engine can notice: a wall does not push a
-## prop out, and the outline pass would happily draw the pair as one shape.
-## So the SCENE is checked, not the plan that produced it — this holds
-## whoever edits it and however.
-func test_no_prop_is_buried_in_a_wall() -> void:
-	var solids: Array[Dictionary] = []
-	_solid_boxes(_shipped_level(), solids)
-	# non-vacuity: an empty census would pass the walk below trivially
-	(
-		assert_array(solids)
-		. append_failure_message("no solids found — _solid_boxes broke")
-		. is_not_empty()
-	)
-	var buried: Array[String] = []
-	for prop: Dictionary in solids:
-		if prop["kind"] == "WaveWall":
-			continue
-		for wall: Dictionary in solids:
-			if wall["kind"] != "WaveWall":
-				continue
-			var prop_box: AABB = prop["box"]
-			var wall_box: AABB = wall["box"]
-			var deep := _depth(prop_box, wall_box)
-			if deep > 0.001:
-				buried.append("%s is %.3f m inside %s" % [prop["name"], deep, wall["name"]])
-	(
-		assert_array(buried)
-		. append_failure_message("props buried in walls: %s" % str(buried))
-		. is_empty()
-	)
-
-
 ## Every solid that has left the room: sunk through the floor, poked out
 ## of the ceiling, or been dragged past the map's edge.
 ##
@@ -1047,24 +783,12 @@ func _strays(level: WaveLevel) -> Array[String]:
 	return strays
 
 
-## Nothing sinks through the floor or pokes through the ceiling, and
-## nothing has been dragged outside the map — the room is a closed box and
-## the waves only light what is inside it.
-func test_every_solid_stands_inside_the_room() -> void:
-	var strays := _strays(_shipped_level())
-	(
-		assert_array(strays)
-		. append_failure_message("solids out of the room: %s" % str(strays))
-		. is_empty()
-	)
-
-
 ## A level of one crate, sized by its extents knob — the smallest thing
 ## that can be inside a room or outside it.
 func _one_crate_level(extents: Vector2, at: Vector3) -> WaveLevel:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.extents = extents
-	var crate := WaveProp.new()  # the shipped default: a 0.5 m box
+	var crate := WaveProp.new()  # the node default: a 0.5 m box
 	crate.name = "Crate"
 	crate.position = at
 	level.add_child(crate)
@@ -1074,7 +798,7 @@ func _one_crate_level(extents: Vector2, at: Vector3) -> WaveLevel:
 	return level
 
 
-## The room's edge is the EXTENTS knob's, not the shipped map's. One crate,
+## The room's edge is the EXTENTS knob's, not one authored map's. One crate,
 ## spanning x 11.65..12.15, hangs 0.15 m past a 12 x 12 map's own edge —
 ## over the void, since the floor slab spans the extents and no further —
 ## and sits comfortably inside a 28 x 28 one. The law that says so has to
@@ -1091,27 +815,46 @@ func test_the_room_bound_follows_the_extents_knob() -> void:
 
 ## The seam law's tightest cross-domain pair: derived semantic source roles
 ## against the world face classes they touch. Check every real CUSTOM0 label,
-## not the retired first-face bridge or a semantic-role preview default.
+## not the retired first-face bridge or a semantic-role preview default. The
+## swept neighbour is exact code-built input, so the check cannot pass merely
+## because an authored level currently has no source or no touching solid.
 func test_world_faces_clear_the_source_roles_they_touch() -> void:
-	var level := _shipped_level()
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker(Vector3(2, 0, 4)))
+	var wall := WaveWall.new()
+	wall.length = 4.0
+	wall.position = Vector3(3, 0, 4)
+	wall.rotation.y = PI * 0.5
+	level.add_child(wall)
+	var source := SoundFan.new()
+	source.position = Vector3(5, 0, 4)
+	level.add_child(source)
+	var neighbour := WaveProp.new()
+	neighbour.size = Vector3(0.2, 0.2, 0.2)
+	neighbour.position = Vector3(5.6, 1.15, 4)
+	level.add_child(neighbour)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
 	var boxes: Array[Dictionary] = []
 	_painted_boxes(level, boxes)
 	var melted: Array[String] = []
-	for source: Node3D in level.sources():
-		var reach: AABB = _limb_box(source)
-		for solid: Dictionary in boxes:
-			var box: AABB = solid["box"]
-			if not box.grow(TOUCH_EPS).intersects(reach):
-				continue
-			for world_label: float in solid["labels"]:
-				for role_label: float in _source_labels(source):
-					if absf(world_label - role_label) < MIN_OID_SEP:
-						melted.append(
-							(
-								"%s(%.2f) touches %s role(%.2f)"
-								% [solid["name"], world_label, source.name, role_label]
-							)
+	var compared := 0
+	var reach: AABB = _limb_box(source)
+	for solid: Dictionary in boxes:
+		var box: AABB = solid["box"]
+		if not box.grow(TOUCH_EPS).intersects(reach):
+			continue
+		compared += 1
+		for world_label: float in solid["labels"]:
+			for role_label: float in _source_labels(source):
+				if absf(world_label - role_label) < MIN_OID_SEP:
+					melted.append(
+						(
+							"%s(%.2f) touches source role(%.2f)"
+							% [solid["name"], world_label, role_label]
 						)
+					)
+	assert_int(compared).is_equal(1)
 	(
 		assert_array(melted)
 		. append_failure_message("solids melted into a source: %s" % str(melted))

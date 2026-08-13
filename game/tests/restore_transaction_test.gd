@@ -1,12 +1,13 @@
 extends GdUnitTestSuite
-## The restore TRANSACTION against the live scene: a captured blob applied
+## The restore TRANSACTION against a code-built live world: a captured blob applied
 ## back to a running game, and the proof that the fit is exact.
 ##
 ## The read side's own suite is `restore_test.gd`; this one is its write-side
 ## twin, split off because a suite has a public-method ceiling and the read
 ## side had reached it.
 
-const MAIN_SCENE := preload("res://scenes/main.tscn")
+const WORLD_FIXTURE := preload("res://tests/world_fixture.gd")
+const FIXTURE_SCENE_PATH := "res://tests/fixtures/restore_transaction_level.tscn"
 
 
 ## A world that has actually run: sources hold appointments, the hero body
@@ -16,8 +17,15 @@ const MAIN_SCENE := preload("res://scenes/main.tscn")
 ## Duplicated from `restore_test.gd::_boot_ticked`, which is where this
 ## idiom lives — the two suites are one story told from two sides.
 func _boot_ticked() -> UnseeingGame:
-	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
+	# Every collaborator exercised below is explicit: one wall for reflections,
+	# one source for appointment restore, and one cat for living-state restore.
+	var main: UnseeingGame = auto_free(
+		WORLD_FIXTURE.game(WORLD_FIXTURE.DEFAULT_EXTENTS, true, true, true)
+	)
 	add_child(main)
+	# PackedScenes built in memory have no resource path. Give this fixture a
+	# stable identity so the wrong-map refusal proves both non-empty names.
+	main.level.scene_file_path = FIXTURE_SCENE_PATH
 	# one real process frame so sources book appointments and the viewmodel
 	# exists — capture refuses an unticked world by design
 	await _one_frame()
@@ -29,9 +37,9 @@ func _boot_ticked() -> UnseeingGame:
 ##
 ## A fresh gate books its first beat one interval out, so at boot every
 ## source's appointment EQUALS its cadence knob and a restore that mixed the
-## two up would be invisible. Jumping the clock past both first beats (fan
-## 0.4 s, radio 0.7 s) and letting one frame run spends them: the jumped-clock
-## law buys exactly one wave per source and rebooks from NOW, so every
+## two up would be invisible. Jumping the clock past the fixture source's first
+## beat and letting one frame run spends it: the jumped-clock law buys exactly
+## one wave per source and rebooks from NOW, so every
 ## appointment in the blob is a date nothing else in the scene can be mistaken
 ## for. The tap adds real reflections — echo appointments the book must carry.
 ##
@@ -166,6 +174,7 @@ func test_a_blob_from_another_map_names_both_scenes() -> void:
 	await _lively(main)
 	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
 	var here: String = blob["level_scene"]
+	assert_str(here).is_equal(FIXTURE_SCENE_PATH)
 	blob["level_scene"] = "res://scenes/somewhere_else.tscn"
 	var verdict: Dictionary = main.restore_blob(blob)
 	assert_bool(verdict.has("unavailable")).is_true()

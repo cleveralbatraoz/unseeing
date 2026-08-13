@@ -14,10 +14,15 @@ extends GdUnitTestSuite
 const DATA_SHADER := preload("res://shaders/data_pass.gdshader")
 const XRAY_SHADER := preload("res://shaders/data_xray.gdshader")
 const POST_SHADER := preload("res://shaders/hearing_post.gdshader")
+const WORLD_FIXTURE := preload("res://tests/world_fixture.gd")
 
 
-func _game() -> UnseeingGame:
-	var game: UnseeingGame = auto_free(UnseeingGame.new())
+func _game(
+	with_wall: bool = false, with_source: bool = false, with_cat: bool = false
+) -> UnseeingGame:
+	var game: UnseeingGame = auto_free(
+		WORLD_FIXTURE.game(WORLD_FIXTURE.DEFAULT_EXTENTS, with_wall, with_source, with_cat)
+	)
 	add_child(game)
 	return game
 
@@ -34,24 +39,26 @@ func test_level_scene_property_is_a_packed_scene_resource_picker() -> void:
 
 
 func test_empty_level_scene_keeps_the_exact_level_01_fallback() -> void:
-	var game := _game()
+	var game: UnseeingGame = auto_free(UnseeingGame.new())
+	add_child(game)
 	assert_object(game.level_scene).is_null()
 	assert_str(game.level.scene_file_path).is_equal("res://scenes/level_01.tscn")
 
 
-func test_level_scene_selects_level_02_before_tree_entry() -> void:
+## Selection is a composition-root contract, independent of whichever objects
+## a designer currently keeps in either shipped level. A valid selected level
+## may deliberately contain no walls, sources, or creatures.
+func test_level_scene_uses_only_the_selected_code_built_level() -> void:
 	var game: UnseeingGame = auto_free(UnseeingGame.new())
-	game.level_scene = load("res://scenes/level_02.tscn")
+	var selected: PackedScene = WORLD_FIXTURE.level_scene(Vector2(9, 7))
+	game.level_scene = selected
 	add_child(game)
+	assert_object(game.level_scene).is_same(selected)
 	assert_object(game.level).is_not_null()
-	assert_vector(game.level.extents).is_equal(Vector2(16, 16))
-	assert_int(game.level.wall_segments().size()).is_equal(6)
-	assert_vector(game.level.spawn_pos()).is_equal(Vector3(4, 0.9, 8))
-	assert_bool(game.level.demo_tap() != Vector3.ZERO).is_true()
-	assert_object(game.level.get_node_or_null("Room/East/RunSeg2")).is_not_null()
-	assert_object(game.level.get_node_or_null("Interior/RunSeg1")).is_not_null()
-	assert_vector((game.level.get_node("Fan") as Node3D).position).is_equal(Vector3(12, 0, 8))
-	assert_vector((game.level.get_node("Chair") as Node3D).position).is_equal(Vector3(4, 0, 11))
+	assert_vector(game.level.extents).is_equal(Vector2(9, 7))
+	assert_array(game.level.wall_segments()).is_empty()
+	assert_array(game.level.sources()).is_empty()
+	assert_array(game.cats()).is_empty()
 	assert_bool(game.observer.snapshot(0.0).has("unavailable")).is_false()
 
 
@@ -136,13 +143,16 @@ func test_wave_mats_is_the_named_materials_in_order() -> void:
 	assert_object(mats[4]).is_same(game.post_mat)
 
 
-## The level is present, injected BEFORE it entered the tree, and derived:
-## real wall segments, not an empty table nobody ever handed geometry to
-## walk.
-func test_level_is_wired_and_derived() -> void:
+## Zero authored walls, sources, and cats is a complete valid level, not an
+## uninitialized one. The selected fixture still reaches the observer through
+## the same inject-before-add path while every optional census is empty.
+func test_zero_content_level_is_wired_and_observable() -> void:
 	var game := _game()
 	assert_object(game.level).is_not_null()
-	assert_int(game.level.wall_segments().size()).is_greater(0)
+	assert_array(game.level.wall_segments()).is_empty()
+	assert_array(game.level.sources()).is_empty()
+	assert_array(game.cats()).is_empty()
+	assert_bool(game.observer.snapshot(0.0).has("unavailable")).is_false()
 
 
 ## The player built its eye in its own `_ready` — the camera the hero's
@@ -328,32 +338,25 @@ func test_restore_blob_restores_a_fresh_capture_and_refuses_a_doctored_hash() ->
 
 ## MUTATION GUARD: `process()` must feed `level.tick_sources()` the
 ## CAMERA's position, never the player's own BODY — the two differ by the
-## head-bob offset, and here, deliberately, by much more. The shipped
-## map's `DividerNorth` wall (x = 6.4, spanning z = 0.6..8.0) stands
-## directly between the spawn — where the player's body stays, since
-## nothing drives it in a headless test — and the Fan (8.6, 0, 4.4): one
-## wall crossing, a muffled ghost. Relocating the camera INTO the fan's
-## own room removes that wall for the eye alone. Both multipliers are
+## head-bob offset, and here, deliberately, by much more. The code-built
+## fixture puts one divider between its spawn and fan. Relocating the camera
+## into the fan's side removes that wall for the eye alone. Both multipliers are
 ## computed through the level's own `source_muffle` oracle rather than
 ## assumed, so the fixture proves it discriminates before the real
 ## assertion leans on it. If `process()` ever fed the body's position
 ## instead, the fan would render exactly as muffled as it does from the
 ## spawn, and the final assertion would fail.
 func test_process_feeds_tick_sources_the_camera_not_the_body() -> void:
-	var game := _game()
-	# A fan, by class rather than by scene position or name — the law needs
-	# ONE fan standing behind a wall from the spawn, not this map's own
-	# node called "Fan": if a level ever furnished more than one, or moved
-	# it into the spawn's own room, the discrimination assert two lines
-	# down (body_muffle < eye_muffle) is what would catch that and name it
-	# as a fixture-shaped failure rather than a silently wrong pass.
+	var game := _game(true, true)
+	# The fixture asks for exactly one fan; class lookup keeps this assertion
+	# about the source contract rather than its authored node name.
 	var fan: Node3D = null
 	for source: Node3D in game.level.sources():
 		if source.is_class("SoundFan"):
 			fan = source
 			break
 	if fan == null:
-		fail("the level carries no SoundFan")
+		fail("the code-built signal fixture carries no SoundFan")
 		return
 	var hub: Vector3 = fan.global_position
 	var body_at: Vector3 = game.player.global_position
@@ -381,9 +384,8 @@ func test_process_feeds_tick_sources_the_camera_not_the_body() -> void:
 ## provably empty going into this one frame — boot alone never ticks
 ## anything — so `u_count` must equal exactly the sources whose first
 ## appointment (its own cadence — `_due_at` above) has already arrived by
-## the time this frame's `now` lands. Derived rather than pinned as a
-## literal: the shipped map's own count and mix of sources is census, not
-## this law.
+## the time this frame's `now` lands. The explicit fixture source makes the
+## guard non-vacuous without borrowing the shipped map's current census.
 ##
 ## Deliberately NOT `_one_frame()`: that helper awaits `process_frame` THEN
 ## `physics_frame`, and measured here (`game.now` moves between the two
@@ -394,16 +396,15 @@ func test_process_feeds_tick_sources_the_camera_not_the_body() -> void:
 ## `test_two_process_frames_advance_now_and_set_u_time_on_all_five_mats`
 ## already showing `now`/`u_time` moving once per await.
 func test_process_pushes_this_frames_new_source_waves_into_the_materials() -> void:
-	var game := _game()
+	var game := _game(true, true)
 	game.now = 1.0
 	await get_tree().process_frame
 	var due := 0
 	for source: Node3D in game.level.sources():
 		if _due_at(source, game.now):
 			due += 1
-	# non-vacuity: a level whose sources never come due would pass a u_count
-	# of 0 just as cleanly as a healthy one — the shipped map's own sources
-	# fire well inside 1 s, so this is a fixture-shaped guard, not census
+	# non-vacuity: a missing fixture source would pass a u_count of 0 just as
+	# cleanly as a healthy one
 	assert_int(due).is_greater(0)
 	for mat: ShaderMaterial in game.wave_mats():
 		var count: int = mat.get_shader_parameter("u_count")

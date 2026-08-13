@@ -1,17 +1,16 @@
 extends GdUnitTestSuite
-## The restore doors against the live scene. Each test freezes nothing —
-## it awaits real process/physics frames and lets `UnseeingGame::process`
-## drive the clock, never a hand-stepped one.
+## The restore doors against a code-built live world. Each test freezes
+## nothing — it awaits real process/physics frames and lets
+## `UnseeingGame::process` drive the clock, never a hand-stepped one.
 
-const MAIN_SCENE := preload("res://scenes/main.tscn")
+const WORLD_FIXTURE := preload("res://tests/world_fixture.gd")
 
 
 func test_a_restored_cat_resumes_the_same_life() -> void:
-	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
-	add_child(main)
+	var main := await _boot_ticked()
 	var cats := main.cats()
 	if cats.is_empty():
-		fail("the shipped map has lost its cat")
+		fail("the explicit restore fixture carries no cat")
 		return
 	var cat: WaveCat = cats[0]
 	# let the cat live a little, on real physics — main's own process()
@@ -35,7 +34,12 @@ func test_a_restored_cat_resumes_the_same_life() -> void:
 ## has built its viewmodel, and every clock has a reading. Capture refuses
 ## an unticked world by design, so every capture test starts here.
 func _boot_ticked() -> UnseeingGame:
-	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
+	# The parser cases deliberately index one source and one cat. Supplying
+	# those collaborators here keeps that non-vacuity while leaving shipped
+	# level content entirely under the designer's control.
+	var main: UnseeingGame = auto_free(
+		WORLD_FIXTURE.game(WORLD_FIXTURE.DEFAULT_EXTENTS, true, true, true)
+	)
 	add_child(main)
 	# one real process frame so sources book appointments and the
 	# viewmodel exists — capture refuses an unticked world by design
@@ -321,7 +325,7 @@ func test_capture_refuses_a_body_that_never_built_its_viewmodel() -> void:
 ##
 ## The level is hand-built and swapped in under the observer, whose hero and
 ## body injections still stand — a level derives its source list once, in
-## _ready, so a shipped one cannot be given a silenced source after the fact.
+## _ready, so a live one cannot be given a silenced source after the fact.
 func test_capture_refuses_a_source_holding_no_appointment() -> void:
 	var main := await _boot_ticked()
 	var level: WaveLevel = auto_free(WaveLevel.new())

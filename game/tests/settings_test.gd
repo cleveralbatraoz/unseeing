@@ -1,5 +1,5 @@
 extends GdUnitTestSuite
-## The settings overlay, driven end to end against the LIVE main scene:
+## The settings overlay, driven end to end against a code-built live world:
 ## Escape raises it, the world freezes behind it, the rows read the window
 ## that actually exists, and nothing the player presses while it is up can
 ## reach the hero. Pins BEHAVIOUR, not pixels — the geometry math is
@@ -9,13 +9,13 @@ extends GdUnitTestSuite
 ## here asserts on the display server or the cursor: what CI can prove is
 ## the overlay's own state, the pause it owns, and the input it swallows.
 
-const MAIN_SCENE := preload("res://scenes/main.tscn")
+const WORLD_FIXTURE := preload("res://tests/world_fixture.gd")
 
 var _main: UnseeingGame
 
 
 func before_test() -> void:
-	_main = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
+	_main = auto_free(WORLD_FIXTURE.game())
 	add_child(_main)
 
 

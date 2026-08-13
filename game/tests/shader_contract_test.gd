@@ -139,32 +139,6 @@ func test_maxw_matches_the_rust_sight_reference() -> void:
 	assert_int(int(_shader_const("MAXW"))).is_equal(WaveLevel.wall_slots())
 
 
-## The wall budget as a law about HEADROOM, not a census. A level that
-## outgrows the sight shaders' slots is a level-breaking fault — every wall
-## past the last slot silently stops occluding — and until now the only
-## thing that noticed was map_test's frozen wall count, which fails at the
-## twentieth wall and reads like a bug in the census rather than a map that
-## outgrew a shader constant.
-##
-## So this asserts what is LEFT: a room costs about four segments (three
-## sides plus the doorway, which is the gap between two segments), and the
-## shipped 19-wall map keeps 13 of 32 slots free — about three more rooms.
-## It goes red one room short of the ceiling, at the same count where
-## WaveLevel itself starts warning, and its message names the constant.
-func test_the_shipped_map_leaves_room_for_more_walls() -> void:
-	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
-	add_child(level)
-	var slots := WaveLevel.wall_slots()
-	var walls := level.wall_segments().size()
-	var room := WaveLevel.room_segments()
-	var left := slots - walls
-	var told := "%d walls of %d slots: %d segments left, under the %d " % [walls, slots, left, room]
-	told += "another room costs. Past the last slot a wall silently stops occluding."
-	told += " Shrink the map, or raise MAXW (rust/src/sight.rs) — a measured decision."
-	assert_int(left).append_failure_message(told).is_greater_equal(room)
-
-
 ## emit() packs dat.w as type * 10 + gain * 9; the shaders must decode with
 ## exactly floor(w / 10) and mod(w, 10) / 9 — pinned as literal source text,
 ## so a "harmless" rewrite of either expression trips the contract.
@@ -215,19 +189,16 @@ func test_hearing_pass_reads_the_screen_texture_nearest() -> void:
 ## it (issue #45: a large, sparsely walled room's short wall centerlines
 ## measured a tiny footprint while the slab underfoot, which is what every
 ## silhouette and every footstep actually draws against, reached far past
-## shader range in silence) — derived from the shipped level scene, the one
-## map that ever renders.
+## shader range in silence) — derived from the default authored level.
 ##
 ## Derived HERE from `level.extents` and the slab placement law
 ## (`rust/src/nodes/level.rs`'s `slab_center`: the floor's top sits at
 ## y = 0, the ceiling's underside at y = WALL_H, each slab SLAB_T thick on
 ## the far side of that face) rather than from a new WaveLevel accessor,
 ## which would just mirror `rust/src/level_plan.rs`'s own arithmetic and
-## pass whatever that arithmetic did, including a wrong one. The shipped
-## map's walls border fully inside its slab, so the wall table WaveLevel
-## unions in belt-and-braces never widens the footprint past it — extents
-## alone are already the whole story here.
-func test_dist_pack_range_covers_the_map_diagonal() -> void:
+## pass whatever that arithmetic did, including a wrong one. This assertion
+## is independent of the scene's object census and wall layout.
+func test_dist_pack_range_covers_the_default_level_diagonal() -> void:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)

@@ -1,19 +1,23 @@
 extends GdUnitTestSuite
-## The composition root's perceptual ladder, read back from the LIVE main
-## scene: five wave materials sharing one pool and the same per-frame
+## The composition root's perceptual ladder, read back from a code-built live
+## world: five wave materials sharing one pool and the same per-frame
 ## globals, render priorities stacking the world under the acoustic image
 ## of sources, the level's wall table delivered to every skin that occludes
 ## by it, and each skin wearing the shader it should. Pins WIRING, not
 ## pixels — the rendered probes own the pixels.
 
-const MAIN_SCENE := preload("res://scenes/main.tscn")
+const WORLD_FIXTURE := preload("res://tests/world_fixture.gd")
 const DATA_SHADER := preload("res://shaders/data_pass.gdshader")
 const XRAY_SHADER := preload("res://shaders/data_xray.gdshader")
 const POST_SHADER := preload("res://shaders/hearing_post.gdshader")
 
 
 func _main() -> UnseeingGame:
-	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
+	# The two census-dependent cases ask for exactly their collaborators;
+	# shipped level walls and sources remain freely authorable.
+	var main: UnseeingGame = auto_free(
+		WORLD_FIXTURE.game(WORLD_FIXTURE.DEFAULT_EXTENTS, true, true)
+	)
 	add_child(main)
 	return main
 
@@ -70,9 +74,9 @@ func test_skin_identities() -> void:
 	var main := _main()
 	var sources := main.level.sources()
 	assert_array(sources).is_not_empty()
-	# read by name, not by cast: the point is that the level dressed BOTH
-	# sources without knowing either class. The abstraction is a Rust trait,
-	# so GDScript has no common base type to declare here.
+	# Read through the shared exported material surface: the point is that the
+	# level dressed its source without knowing its concrete class. The
+	# abstraction is a Rust trait, so GDScript has no common base type here.
 	for source: Node3D in sources:
 		assert_object(source.get("data_mat")).is_same(main.source_mat)
 	assert_object(main.data_mat.shader).is_same(DATA_SHADER)

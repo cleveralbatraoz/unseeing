@@ -6,7 +6,7 @@ extends GdUnitTestSuite
 ## web ?seed/?demo paths ride the same helper but need a browser — the
 ## smoke gate covers them; these tests pin the env contract headless.
 
-const MAIN_SCENE := preload("res://scenes/main.tscn")
+const WORLD_FIXTURE := preload("res://tests/world_fixture.gd")
 const SEED_VALUE := 0x5EED
 
 
@@ -16,7 +16,7 @@ func after_test() -> void:
 
 
 func _boot() -> UnseeingGame:
-	var main: UnseeingGame = auto_free(MAIN_SCENE.instantiate() as UnseeingGame)
+	var main: UnseeingGame = auto_free(WORLD_FIXTURE.game())
 	add_child(main)
 	return main
 

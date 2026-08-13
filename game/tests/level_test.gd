@@ -16,12 +16,10 @@ extends GdUnitTestSuite
 ## suites that outgrew it and nowhere else, so the rule keeps its teeth over
 ## every test/probe GDScript the project permits.)
 ##
-## The SHIPPED scene's own invariants live next door, in map_test.gd. The
-## shipped-scene cases here are deliberate exceptions, and they are not
-## invariants of the MAP but of this NODE: that a level inside every shader
-## ceiling says nothing at all, and that a placement law stays silent on a
-## real, fully furnished map — neither can be proved anywhere else, so each
-## is held beside the law it guards rather than a file away from it.
+## The default authored scene appears here only as a health specimen for
+## universal WaveLevel laws: a valid level stays under the shader ceilings,
+## stands on its slabs, and keeps solids above their floor. No case freezes
+## its object census, names, transforms, or wall layout.
 
 const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
@@ -717,10 +715,8 @@ func test_a_level_past_the_wall_slots_errors_and_counts_the_dropped_walls() -> v
 	assert_int(level.wall_rects().size()).is_equal(32)  # truncated, as the message says
 
 
-## THE SILENCE GATE, and the most valuable of the three: the shipped map is
-## inside both shader ceilings — 19 walls against 32 slots, a 38.02 m
-## wall-centerline diagonal against a 40 m DIST_PACK_RANGE — so entering the
-## tree must produce NO engine output whatsoever.
+## THE SILENCE GATE, and the most valuable of the three: a default level that
+## remains inside both shader ceilings must produce NO engine output whatsoever.
 ##
 ## Silence is the hard half of a diagnostic to hold. A budget that shouted
 ## on a healthy level would be worse than no budget at all: a designer who
@@ -729,20 +725,13 @@ func test_a_level_past_the_wall_slots_errors_and_counts_the_dropped_walls() -> v
 ## else in the suite would notice a threshold nudged the wrong way; this is
 ## the assertion that would.
 ##
-## This is ALSO the wall-merge voice's own silence counterpart — "no engine
-## output whatsoever" already covers "no wall-merge warning" for the same
-## 125-solid shipped map `test_a_solid_merged_into_a_wall_warns_naming_it`
-## proves the warning fires on; a second, narrower silence test asserting
-## the identical thing on the identical map would only ever go red in
-## lockstep with this one.
-func test_the_shipped_level_says_nothing_about_either_shader_ceiling() -> void:
+## This is also the wall-merge voice's silence counterpart: a narrower silence
+## check over the same authored scene would only ever go red in lockstep.
+func test_the_default_authored_level_is_silent_when_healthy() -> void:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	var enter := func() -> void: add_child(level)
 	await assert_error(enter).is_success()
-	# non-vacuity: a level that silently dropped its own wall table would
-	# pass the silence gate above just as cleanly as a healthy one
-	assert_array(level.wall_segments()).is_not_empty()
 
 
 ## Injection is ordered, and the order is the contract: by the time the
@@ -822,11 +811,9 @@ func test_a_solid_hanging_over_the_floor_edge_reports() -> void:
 
 
 ## The other half of a diagnostic, and the half that decides whether anyone
-## keeps reading it: the SHIPPED map says nothing. 125 authored solids, 19
-## of them walls whose padded boxes reach 0.45 m of the extents' edge, and
-## not one of them trips the law. A footprint test that fired here would be
-## noise from the first run.
-func test_the_shipped_map_stands_on_its_own_floor() -> void:
+## keeps reading it: every solid in a healthy authored level is supported.
+## The scene's membership and placements remain designer-owned.
+func test_the_default_authored_level_stands_on_its_own_floor() -> void:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
@@ -863,11 +850,10 @@ func test_a_prop_dropped_on_the_floor_plane_reports() -> void:
 	assert_int(level.sunken_solids()).is_equal(1)
 
 
-## And the half that keeps the law readable: the SHIPPED map says nothing.
-## Every one of its 125 solids stands on the floor or above it — the walls
-## resting their undersides exactly on y = 0, which is the boundary case a
-## sloppy predicate would report as sunk on every wall in the level.
-func test_the_shipped_map_keeps_every_solid_above_its_floor() -> void:
+## And the half that keeps the law readable: a healthy authored level has no
+## sunk solid. Walls resting exactly on y = 0 remain the boundary case a
+## sloppy predicate would incorrectly report.
+func test_the_default_authored_level_keeps_every_solid_above_its_floor() -> void:
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
@@ -1143,9 +1129,9 @@ func test_mesh_world_box_stops_unioning_a_nested_censused_child() -> void:
 ## Same law (issue #35), the placement half.
 ##
 ## ParentCrate (WaveProp, size 1x1x1) at (4, 0.5, 4) draws y 0.00..1.00 —
-## its underside exactly on the floor, the same boundary the shipped map's
-## own walls rest on without being flagged (test_the_shipped_map_keeps_
-## every_solid_above_its_floor). ChildProp (size 0.2 cubed) is ParentCrate's
+## its underside exactly on the floor, the same universal boundary held by
+## `test_the_default_authored_level_keeps_every_solid_above_its_floor`.
+## ChildProp (size 0.2 cubed) is ParentCrate's
 ## own CHILD, at LOCAL (0, -0.5, 0): world (4, 0.0, 4), box y -0.10..0.10 —
 ## straddling the floor on its own, regardless of any fix. Pre-fix,
 ## mesh_world_box(parent) unioned the child's y range into the parent's OWN

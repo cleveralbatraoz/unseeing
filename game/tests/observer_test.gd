@@ -52,35 +52,14 @@ const FULL_REACH := 12.0
 ## this frame. Nothing derives from it — it only has to be recognisable.
 const FLICK := 0.6
 
-## Where the hero wakes, which is where the explained cane tap lands: a
-## point with walls, a table and a ceiling inside the fan's reach, and open
-## floor to the south beyond it — so the same fan both strikes and misses.
+## A point inside the code-built reflection fixture below. Keeping the
+## geometry in this suite makes ray-accounting laws independent of whichever
+## level a designer currently ships.
 const TAP_AT := Vector3(3.0, 0.9, 4.0)
-## The cane tap's shipped wave: 6 m of range at 5.5 m/s, so the reflection
+## The fixture's cane tap: 6 m of range at 5.5 m/s, so the reflection
 ## fan reaches 0.8 x 6 = 4.8 m.
 const TAP_MAX_R := 6.0
 const TAP_SPEED := 5.5
-
-## The two flush bookcases' own member pairs — the same verified geometric
-## merge `map_test.gd`'s `MERGING_PROPS` names, listed here as PAIRS rather
-## than shared, because this suite asks a different question of them:
-## `ShelfSideA`/`ShelfSideB` genuinely coplanar-merge with `ShelfBack`
-## under `render::superface` (the `Rack*` trio the same way), so their
-## bridged first-face ids legitimately agree — the ONE pair this suite's
-## violation check accepts on purpose.
-const KNOWN_MERGES := [
-	["ShelfSideA", "ShelfBack"],
-	["ShelfSideB", "ShelfBack"],
-	["RackSideA", "RackBack"],
-	["RackSideB", "RackBack"],
-]
-
-
-func _is_a_known_merge(name_a: String, name_b: String) -> bool:
-	for pair: Array in KNOWN_MERGES:
-		if (name_a == pair[0] and name_b == pair[1]) or (name_a == pair[1] and name_b == pair[0]):
-			return true
-	return false
 
 
 func test_uninjected_observer_refuses_rather_than_reporting_zeros() -> void:
@@ -112,7 +91,7 @@ func test_uninjected_explainers_refuse_too() -> void:
 ## all. A debugging layer that misnames its own limits teaches the wrong
 ## lesson faster than no layer at all.
 func test_a_snapshot_without_an_eye_refuses_rather_than_guessing_one() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level := _empty_level(Pulses.new())
 	var obs := _observer()
 	obs.inject(level, null)
 	var snap: Dictionary = obs.snapshot(0.0)
@@ -148,7 +127,7 @@ func test_a_freed_level_refuses_rather_than_crashing() -> void:
 ## The eye can go the same way on its own — the hero is freed, the level
 ## stands. The snapshot refuses; the explainers, which need no eye, do not.
 func test_a_freed_camera_refuses_rather_than_crashing() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level := _empty_level(Pulses.new())
 	var eye := Camera3D.new()
 	add_child(eye)
 	var obs := _observer()
@@ -173,7 +152,7 @@ func test_a_freed_camera_refuses_rather_than_crashing() -> void:
 ## of the snapshot entirely.
 func test_snapshot_reports_a_tap_that_was_emitted() -> void:
 	var pulses := Pulses.new()
-	var level := _shipped_level(pulses, _eye())
+	var level := _empty_level(pulses)
 	var obs := _observer()
 	var player: UnseeingPlayer = auto_free(UnseeingPlayer.new())
 	player.pulses = pulses
@@ -199,7 +178,7 @@ func test_snapshot_reports_a_tap_that_was_emitted() -> void:
 ## in the pool is where they part company. `slot_scan_limit` is the bound
 ## the shaders break their per-pixel loop at — highest live slot + 1, holes
 ## spanned — while `live_slots` counts the slots that actually report
-## "Live". The shipped pool wraps continuously, so the bound sits at 64 for
+## "Live". The fixed pool wraps continuously, so the bound sits at 64 for
 ## a whole slot lifetime once slot 63 has been claimed: an agent reading it
 ## as a census would chase eviction pressure that does not exist.
 ##
@@ -208,7 +187,7 @@ func test_snapshot_reports_a_tap_that_was_emitted() -> void:
 ## 6/5.5 + 6 = 7.09 s. Observed at 5 s, one is dead under one that is live.
 func test_snapshot_separates_the_scan_bound_from_the_live_count() -> void:
 	var pulses := Pulses.new()
-	var level := _shipped_level(pulses, _eye())
+	var level := _empty_level(pulses)
 	var obs := _observer()
 	obs.inject(level, _eye())
 	pulses.emit(2, Vector3.ZERO, 1.6, 4.0, 0.8, 0.0)
@@ -232,7 +211,7 @@ func test_snapshot_separates_the_scan_bound_from_the_live_count() -> void:
 ## the same way.
 func test_the_snapshot_carries_the_echo_book() -> void:
 	var pulses := Pulses.new()
-	var level := _shipped_level(pulses, _eye())
+	var level := _reflection_level(pulses)
 	var obs := _observer()
 	obs.inject(level, _eye())
 	assert_array(obs.snapshot(0.0)["echoes"]).is_empty()
@@ -258,7 +237,7 @@ func test_the_snapshot_carries_the_echo_book() -> void:
 ## would hide how late it is.
 func test_the_echo_wait_counts_down_and_goes_negative_when_overdue() -> void:
 	var pulses := Pulses.new()
-	var level := _shipped_level(pulses, _eye())
+	var level := _reflection_level(pulses)
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var points: Array[Vector3] = await _load_the_echo_book(pulses)
@@ -281,7 +260,12 @@ func test_the_echo_wait_counts_down_and_goes_negative_when_overdue() -> void:
 ## of zero, or a silhouette that reads as fully muffled, are both states the
 ## game can genuinely be in.
 func test_a_snapshot_names_what_it_could_not_observe() -> void:
-	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var fan := SoundFan.new()
+	level.add_child(fan)
+	var radio := SoundRadio.new()
+	level.add_child(radio)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
 	var obs := _observer()
@@ -297,7 +281,7 @@ func test_a_snapshot_names_what_it_could_not_observe() -> void:
 ## The eviction prediction reaches the same pool the snapshot does: a virgin
 ## pool gives up slot 0 by the expired rule.
 func test_explain_eviction_reads_the_injected_pool() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level := _empty_level(Pulses.new())
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var plan: Dictionary = obs.explain_eviction(0.0)
@@ -305,21 +289,32 @@ func test_explain_eviction_reads_the_injected_pool() -> void:
 	assert_str(plan["rule"]).is_equal("Expired")
 
 
-## Every sound source the level holds, described as an agent reads it. The
-## fan stands one wall from the spawn, so its standing image is its volume
-## dimmed once — and that number is READ BACK off the limb the level pushed
-## it to, not recomputed here or in the observer. Whatever the shader is
-## actually holding is what the agent is told.
+## A code-built fan stands one wall from the eye, so its standing image is its
+## volume dimmed once. That number is READ BACK off the limb the level pushed
+## it to, not recomputed here or in the observer.
 func test_snapshot_describes_the_levels_sound_sources() -> void:
-	var level := _shipped_level(Pulses.new(), _eye())
-	var fan := _source_named(level, "Fan", "SoundFan") as SoundFan
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var wall := WaveWall.new()
+	wall.length = 6.0
+	wall.position = Vector3(6, 0, 4)
+	wall.rotation.y = PI * 0.5
+	level.add_child(wall)
+	var fan := SoundFan.new()
+	fan.name = "FixtureFan"
+	fan.position = Vector3(9, 0, 4)
+	level.add_child(fan)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var eye := _eye()
+	level.tick_sources(0.0, eye.global_position)
 	var obs := _observer()
-	obs.inject(level, _eye())
+	obs.inject(level, eye)
 	var sources: Array = obs.snapshot(0.0)["sources"]
-	assert_array(sources).is_not_empty()
+	assert_int(sources.size()).is_equal(1)
 	var entry := _source_entry(sources, str(fan.name))
 	# knobs read straight off the live node, not duplicated as census: the
-	# shipped fan's own volume and cadence, whatever a designer sets them to
+	# fixture fan's own volume and cadence
 	assert_float(entry["volume"]).is_equal_approx(fan.volume, 0.0001)
 	assert_float(entry["cadence"]).is_equal_approx(fan.cadence, 0.0001)
 	# reach and slot pressure are FULL_REACH/the wave contract scaled by the
@@ -330,9 +325,8 @@ func test_snapshot_describes_the_levels_sound_sources() -> void:
 	assert_float(entry["slot_pressure"]).is_equal_approx(
 		(FULL_REACH * fan.volume / fan.wave_speed + 2.0) / fan.cadence, 0.0001
 	)
-	# the fan stands exactly one wall from the spawn — the map's own claim,
-	# the same doctrine map_test.gd's one-wall literals follow, and kept
-	# here rather than derived through level.source_muffle(eye, hub): that
+	# The fixture hand-places exactly one wall. Do not derive the expectation
+	# through level.source_muffle(eye, hub): that
 	# would call the identical function tick_sources used to WRITE
 	# source_floor in the first place, with the identical eye and hub, and
 	# so would mirror the code under test rather than check it
@@ -342,62 +336,6 @@ func test_snapshot_describes_the_levels_sound_sources() -> void:
 	# question class, and a snapshot that carried neither the interval nor the
 	# standing appointment could only answer it by waiting to see
 	assert_float(entry["next_emit"]).is_equal_approx(fan.cadence, 0.0001)
-
-
-## The id budget over the SHIPPED map as `explain_oids`' SOLID-granularity
-## census reports it — `pairs`/`violations`, built from `oid_census`'s
-## first-face bridged read. This case exists to hold THAT census, not the
-## seam law itself: the seam law's own pin moved to per-face labels in
-## `map_test.gd::test_shipped_touching_boxes_draw_their_seam`, because a
-## bridged value names only a solid's own ordinal-0 class and never the
-## partner's it merged with. Pairs must not be empty: a check that found no
-## touching boxes at all would pass vacuously on a map where everything
-## melts. The sole exception is `KNOWN_MERGES` above — the two bookcases'
-## own flush panels, a verified geometric MERGE (`render::superface`)
-## rather than a colouring shortfall.
-##
-## KNOWN LIMITATION, stated rather than left to be rediscovered: this case
-## inherits the bridged read's ordinal sensitivity. The shipped wall
-## network genuinely merges, and it passes here only because ordinal 0 is
-## not the merged face for those walls — point `mesh_first_label` at
-## another ordinal and this reports eighteen false violations (measured).
-## Making the bridged census itself ordering-robust means retiring it, which
-## is recorded as follow-up work, not done here.
-func test_the_shipped_level_has_no_object_id_violations() -> void:
-	var level := _shipped_level(Pulses.new())
-	var obs := _observer()
-	obs.inject(level, _eye())
-	var e: Dictionary = obs.explain_oids()
-	assert_bool(e.has("unavailable")).is_false()
-	assert_array(e["pairs"]).is_not_empty()
-	var pairs: Array = e["pairs"]
-	var real_violations: Array[String] = []
-	for idx: int in e["violations"]:
-		var p: Dictionary = pairs[idx]
-		if _is_a_known_merge(str(p["name_a"]), str(p["name_b"])):
-			continue
-		real_violations.append(
-			"%s(%.3f) vs %s(%.3f)" % [p["name_a"], p["oid_a"], p["name_b"], p["oid_b"]]
-		)
-	assert_array(real_violations).is_empty()
-	assert_float(e["min_sep"]).is_equal_approx(0.08, 0.0001)
-	# the whole picture, named: the engine's own slabs ("Floor"/"Ceiling",
-	# built by every level regardless of what a designer authored), and one
-	# entry per semantic source role, carrying the actual per-instance label
-	# baked into its limbs. Each label shares the separation graph with nearby
-	# world faces so a wall, prop, or second source cannot melt into it.
-	var names: Array = e["names"]
-	assert_array(names).contains(["Floor", "Ceiling"])
-	var has_fan_limb := false
-	for n: String in names:
-		if n.begins_with("Fan @"):
-			has_fan_limb = true
-	# The numeric suffix is diagnostic read-back, not a designer identity.
-	(
-		assert_bool(has_fan_limb)
-		. append_failure_message("no 'Fan @<oid>' entry in %s" % [names])
-		. is_true()
-	)
 
 
 ## Where the hero woke. Every position in a snapshot is a world coordinate,
@@ -414,7 +352,13 @@ func test_the_shipped_level_has_no_object_id_violations() -> void:
 ## checked is what catches the boundary inventing one of the two rather
 ## than carrying it.
 func test_the_snapshot_says_where_the_hero_woke() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var marker := _spawn_marker()
+	marker.position = Vector3(7, 0, 5)
+	marker.rotation.y = 0.4
+	level.add_child(marker)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var spawn: Dictionary = obs.snapshot(0.0)["spawn"]
@@ -446,33 +390,40 @@ func test_a_silenced_source_reports_no_next_emit() -> void:
 	assert_array(snap["unknown"]).contains(["sources[0].next_emit"])
 
 
+## A code-built creature level keeps the census tests non-vacuous without
+## requiring any designer-owned level to contain a cat.
+func _cat_level() -> Dictionary:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var cat := WaveCat.new()
+	cat.name = "FixtureCreature"
+	cat.position = Vector3(4, 0, 4)
+	level.add_child(cat)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	return {"level": level, "cat": cat}
+
+
 ## Every censused box reports the id it carries, touching something or not.
 ## The pairs only carry the ids of boxes that MEET, so a solid standing alone
 ## in a room had a name in the report and no id anywhere — and "which id did
 ## this thing actually get?" is the first question after "which seams are
 ## broken". Hand-derived against the one role table
 ## (render::labels::role_label, rust/src/render/labels.rs): the floor's
-## Role::Floor is 0.15, the cat's Role::Cat is 0.7. The cat is found by
-## whatever name its scene actually carries, never the literal "Cat" — the
-## same doctrine _source_named applies to a renamed source.
+## Role::Floor is 0.15 and Role::Cat is 0.7.
 func test_the_oid_census_reports_the_id_of_every_box() -> void:
-	var level := _shipped_level(Pulses.new())
-	var cats := level.cats()
-	if cats.is_empty():
-		fail("the shipped map has lost its cat")
-		return
-	var cat_name := str(cats[0].name)
+	var fixture := _cat_level()
+	var level: WaveLevel = fixture["level"]
+	var cat: WaveCat = fixture["cat"]
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var e: Dictionary = obs.explain_oids()
 	var names: Array = e["names"]
 	var oids: PackedFloat64Array = e["oids"]
 	assert_int(oids.size()).is_equal(names.size())
+	assert_array(names).contains(["Floor", str(cat.name)])
 	assert_float(oids[names.find("Floor")]).is_equal_approx(0.15, 0.0001)
-	var cat_idx := names.find(cat_name)
-	if cat_idx < 0:
-		fail("no census entry named '%s'" % cat_name)
-		return
+	var cat_idx := names.find(str(cat.name))
 	assert_float(oids[cat_idx]).is_equal_approx(0.7, 0.0001)
 
 
@@ -487,22 +438,15 @@ func test_the_oid_census_reports_the_id_of_every_box() -> void:
 ## sees it. That is named in the census doc comment rather than left to be
 ## discovered.
 func test_the_oid_census_includes_the_levels_creatures() -> void:
-	var level := _shipped_level(Pulses.new())
-	var cats := level.cats()
-	if cats.is_empty():
-		fail("the shipped map has lost its cat")
-		return
+	var fixture := _cat_level()
+	var level: WaveLevel = fixture["level"]
+	var cat: WaveCat = fixture["cat"]
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var e: Dictionary = obs.explain_oids()
-	assert_array(e["names"]).contains([str(cats[0].name)])
-	var pairs: Array = e["pairs"]
-	var real_violations: Array[String] = []
-	for idx: int in e["violations"]:
-		var p: Dictionary = pairs[idx]
-		if not _is_a_known_merge(str(p["name_a"]), str(p["name_b"])):
-			real_violations.append("%s vs %s" % [p["name_a"], p["name_b"]])
-	assert_array(real_violations).is_empty()
+	assert_array(e["names"]).contains([str(cat.name)])
+	assert_array(e["pairs"]).is_not_empty()
+	assert_array(e["violations"]).is_empty()
 
 
 ## The compatibility census measures the swept source box, not one pose.
@@ -602,10 +546,10 @@ func test_a_swept_neighbours_own_faces_all_clear_the_sources_oids() -> void:
 
 
 ## THE issue-14 z-fight's own proof object, now read through the real
-## per-face law. The shelf spans x -1..1, y 0..1, z -0.5..0.5; the crate
-## embedded in its front half spans x -0.1..0.9, y 0..1, z -0.3..0.5 — so
+## per-face law. The shelf spans x 2..4, y 0..1, z 2.5..3.5; the crate
+## embedded in its front half spans x 2.9..3.9, y 0..1, z 2.7..3.5 — so
 ## TWO patches rasterise twice at one depth: their front faces share the
-## plane z = 0.5 (each solid's own +Z face, `render::paint::FACE_ORDER`
+## plane z = 3.5 (each solid's own +Z face, `render::paint::FACE_ORDER`
 ## ordinal 5), and their flush TOPS share y = 1 (ordinal 3). This is
 ## exactly the geometry `render::superface`'s merge law exists to catch —
 ## same-direction, coplanar, genuinely overlapping — so the two faces
@@ -624,12 +568,12 @@ func test_two_flush_props_report_no_fault() -> void:
 	var shelf := WaveProp.new()
 	shelf.name = "Shelf"
 	shelf.size = Vector3(2, 1, 1)
-	shelf.position = Vector3(0, 0.5, 0)
+	shelf.position = Vector3(3, 0.5, 3)
 	level.add_child(shelf)
 	var crate := WaveProp.new()
 	crate.name = "Crate"
 	crate.size = Vector3(1, 1, 0.8)
-	crate.position = Vector3(0.4, 0.5, 0.1)
+	crate.position = Vector3(3.4, 0.5, 3.1)
 	level.add_child(crate)
 	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
 	add_child(level)
@@ -643,13 +587,13 @@ func test_two_flush_props_report_no_fault() -> void:
 		. append_failure_message(
 			(
 				"the real per-face census still finds a fault — the merge did not resolve it: %s"
-				% faults
+				% [faults]
 			)
 		)
 		. is_empty()
 	)
 
-	# THE GROUND TRUTH, ordinal 5 (+Z, the z = 0.5 merge) and ordinal 3
+	# THE GROUND TRUTH, ordinal 5 (+Z, the z = 3.5 merge) and ordinal 3
 	# (+Y, the y = 1 merge), `render::paint::FACE_ORDER` order. Comparing
 	# shelf[ordinal] to crate[ordinal] ALONE is a mirror assertion in
 	# disguise: `labelled_box` writes the PLACEHOLDER ordinal itself
@@ -705,23 +649,33 @@ func test_the_shipped_level_reports_its_faults_key() -> void:
 
 
 ## `superfaces` reports the class graph the last derive coloured, by name.
-## BorderNorth (the north border) and Divider/RunSeg1 (the north segment
-## emitted by a T-junction WaveRun whose own south end lands on
-## BorderNorth's centerline) genuinely coplanar-MERGE
-## at that junction (`render::superface`, and
-## `map_test.gd::test_a_junction_style_pair_merges_its_cap_and_separates_its_corner`
-## proves it off the real mesh) — so some class in `superfaces` must list
-## BOTH names among its members. Every class also carries at least one
-## member, and no member name is ever repeated within its own class (a face
-## of Divider/RunSeg1's own corner sharing the SAME class as the merged cap
-## would be exactly the bug a missing dedupe misses).
+## The same code-built T-junction used by map_test's mesh-level proof must put
+## both wall references in one class. No authored path or node name is part of
+## the contract. Every class also carries at least one member, with no duplicate
+## member inside a class.
 func test_superfaces_groups_a_genuine_wall_junction_under_one_class() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var crossbar := WaveWall.new()
+	crossbar.name = "FixtureCrossbar"
+	crossbar.length = 6.0
+	crossbar.position = Vector3(5, 0, 4)
+	level.add_child(crossbar)
+	var stem := WaveWall.new()
+	stem.name = "FixtureStem"
+	stem.length = 3.0
+	stem.position = Vector3(5, 0, 5.5)
+	stem.rotation.y = PI * 0.5
+	level.add_child(stem)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var e: Dictionary = obs.explain_oids()
 	var superfaces: Array = e.get("superfaces", [])
 	assert_array(superfaces).is_not_empty()
+	var crossbar_name := str(level.get_path_to(crossbar))
+	var stem_name := str(level.get_path_to(stem))
 	var junction_class: Variant = null
 	for entry: Dictionary in superfaces:
 		var members: Array = entry["members"]
@@ -734,13 +688,11 @@ func test_superfaces_groups_a_genuine_wall_junction_under_one_class() -> void:
 				. is_false()
 			)
 			seen[member] = true
-		if members.has("BorderNorth") and members.has("Divider/RunSeg1"):
+		if members.has(crossbar_name) and members.has(stem_name):
 			junction_class = entry["class"]
 	(
 		assert_bool(junction_class != null)
-		. append_failure_message(
-			"no superface class lists both BorderNorth and Divider/RunSeg1 as members"
-		)
+		. append_failure_message("no superface class lists both code-built walls")
 		. is_true()
 	)
 
@@ -798,16 +750,44 @@ func test_explain_ray_names_the_wall_it_crosses() -> void:
 ## line, with a dynamic-cast probe per node, which a fan of rays pays per
 ## ray.)
 func test_wall_names_stay_pinned_to_the_table_they_name() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level := _one_wall_level()
 	var obs := _observer()
 	obs.inject(level, _eye())
 	var before: Array[String] = _wall_names(obs)
-	assert_int(before.size()).is_greater(0)
+	assert_array(before).is_equal(["TheWall"])
 	var newcomer := WaveWall.new()
 	newcomer.name = "AddedAfterTheTableWasDerived"
 	level.add_child(newcomer)
 	level.move_child(newcomer, 0)
 	assert_array(_wall_names(obs)).is_equal(before)
+
+
+## A WaveRun setter replaces its ownerless children even when the normalized
+## authored geometry is unchanged. Once the level derives that generation,
+## its debug table must name the new live walls by LEVEL-relative paths —
+## never preserve the freed handles from the preceding generation, and never
+## collapse two runs' repeated RunSeg leaf names into an ambiguous leaf.
+func test_rederived_wave_run_names_the_live_replacement_generation() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var run := WaveRun.new()
+	run.name = "Doorway"
+	run.from = Vector2(4, 4)
+	run.to = Vector2(10, 4)
+	run.openings = PackedVector2Array([Vector2(6, 2)])
+	level.add_child(run)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var first_generation := (run.get_node("RunSeg1") as WaveWall).get_instance_id()
+	var obs := _observer()
+	obs.inject(level, null)
+
+	run.openings = run.openings.duplicate()
+	assert_int((run.get_node("RunSeg1") as WaveWall).get_instance_id()).is_not_equal(
+		first_generation
+	)
+	level.rederive()
+	assert_array(_wall_names(obs)).is_equal(["Doorway/RunSeg1", "Doorway/RunSeg2"])
 
 
 ## The composition root opens the window: main hands the observer the level
@@ -824,7 +804,8 @@ func test_the_composition_root_injects_the_observer() -> void:
 	# the eye's own projection, read off the live camera: without it a
 	# reader cannot turn a world position into a screen position at all
 	assert_float(snap["camera"]["fov"]).is_equal_approx(main.player.camera.fov, 0.0001)
-	assert_array(snap["sources"] as Array).is_not_empty()
+	assert_bool(snap.has("sources")).is_true()
+	assert_bool(snap["sources"] is Array).is_true()
 
 
 ## Asking why a wall stayed silent must not make it speak. The explanation
@@ -838,7 +819,7 @@ func test_the_composition_root_injects_the_observer() -> void:
 ## one that drained or reordered the appointments already standing.
 func test_explaining_a_reflection_schedules_no_echoes() -> void:
 	var pulses := Pulses.new()
-	var level := _shipped_level(pulses)
+	var level := _reflection_level(pulses)
 	var obs := _tree_observer(level)
 	var before: Array[Vector3] = await _load_the_echo_book(pulses)
 	assert_int(before.size()).is_greater(0)
@@ -856,7 +837,7 @@ func test_explaining_a_reflection_schedules_no_echoes() -> void:
 ## answer cannot be synchronous: the request books an id and the frame does
 ## the casting. Pending is a state, never a zero-hit fan.
 func test_an_explanation_is_pending_before_the_physics_frame_runs() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level := _reflection_level(Pulses.new())
 	var obs := _tree_observer(level)
 	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 6, 0.0)
 	var pending: Dictionary = obs.take_explanation(id)
@@ -867,7 +848,7 @@ func test_an_explanation_is_pending_before_the_physics_frame_runs() -> void:
 ## An id that was never issued, and one whose answer has already been
 ## collected, are the same refusal — and it carries exactly one key.
 func test_an_unknown_or_already_collected_request_is_refused() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level := _reflection_level(Pulses.new())
 	var obs := _tree_observer(level)
 	var refusal: Dictionary = obs.take_explanation(9999)
 	assert_int(refusal.size()).is_equal(1)
@@ -885,7 +866,7 @@ func test_an_unknown_or_already_collected_request_is_refused() -> void:
 ## full length and found nothing are the headline: in this world absence of
 ## echo is information, and a report of only the hits would hide it.
 func test_the_explanation_reports_every_ray_not_only_the_hits() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level := _reflection_level(Pulses.new())
 	var obs := _tree_observer(level)
 	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 6, 0.0)
 	await _physics_answer()
@@ -908,9 +889,9 @@ func test_the_explanation_reports_every_ray_not_only_the_hits() -> void:
 ## then dropped past the budget", "the wall was the surface the sound was
 ## born on", and "the wall was never struck at all" are three different
 ## answers to why a wall stayed silent, and the report must not collapse
-## them. The identity holds over the shipped room's real geometry.
+## them. The identity holds over the code-built room's known geometry.
 func test_the_explanation_names_why_each_hit_did_not_answer() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level := _reflection_level(Pulses.new())
 	var obs := _tree_observer(level)
 	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 2, 0.0)
 	await _physics_answer()
@@ -938,7 +919,7 @@ func test_the_explanation_names_why_each_hit_did_not_answer() -> void:
 ## out of the pause exactly as the settings overlay does, and for the same
 ## reason. Nothing it does can advance the frozen world.
 func test_a_frozen_world_still_answers() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level := _reflection_level(Pulses.new())
 	var obs := _tree_observer(level)
 	get_tree().paused = true
 	var id: int = obs.request_explain_reflection(TAP_AT, Vector3.UP, TAP_MAX_R, TAP_SPEED, 6, 0.0)
@@ -955,7 +936,7 @@ func test_a_frozen_world_still_answers() -> void:
 ## renders that as null — an agent would read a missing field where there
 ## was an error. No polling, no pending, one key.
 func test_a_sound_that_cannot_travel_is_refused_at_once() -> void:
-	var level := _shipped_level(Pulses.new())
+	var level := _empty_level(Pulses.new())
 	var obs := _tree_observer(level)
 	for bad: PackedFloat64Array in [
 		PackedFloat64Array([0.0, TAP_MAX_R]),
@@ -993,22 +974,8 @@ func _observer() -> WaveObserver:
 	return auto_free(WaveObserver.new()) as WaveObserver
 
 
-## A level's sound source, found by the NAME its scene gives it AND the
-## class it is, rather than by where it sits in scene order — map_test.gd's
-## own `_source_named` doctrine, needed here too: a snapshot dictionary
-## carries no class of its own, so identity has to be settled on the real
-## node before the snapshot's own entry can be found by name alone.
-func _source_named(level: WaveLevel, node_name: String, kind: String) -> Node3D:
-	for source: Node3D in level.sources():
-		if str(source.name) == node_name and source.is_class(kind):
-			return source
-	fail("the level carries no %s named '%s'" % [kind, node_name])
-	return null
-
-
-## The snapshot's own entry for a source already confirmed by class through
-## `_source_named` — matched here by name alone, which is all a source
-## dictionary carries.
+## The snapshot's own entry for a code-built source reference, matched by the
+## name the boundary carries.
 func _source_entry(sources: Array, node_name: String) -> Dictionary:
 	for entry: Dictionary in sources:
 		if entry["name"] == node_name:
@@ -1055,20 +1022,56 @@ func _echo_points(pulses: Pulses) -> Array[Vector3]:
 	return points
 
 
-## The shipped level, instanced the way main does: injected first, then
-## entered. The pool goes in from here so a test can put a sound into the
-## very pool the observer reads back. The world skin carries a flicker the
-## way the composition root leaves one there every frame; passing an eye
-## drives one frame of sound sources, which is what puts each source's
-## standing image on its limbs.
-func _shipped_level(pulses: Pulses, eye: Camera3D = null) -> WaveLevel:
+## The shipped scene's only observer-specific health probe: it can derive and
+## expose the documented census grammar regardless of its current content.
+func _shipped_level(pulses: Pulses) -> WaveLevel:
 	var data_mat := ShaderMaterial.new()
 	data_mat.set_shader_parameter("u_flick", FLICK)
 	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
 	level.inject(data_mat, ShaderMaterial.new(), pulses)
 	add_child(level)
-	if eye != null:
-		level.tick_sources(0.0, eye.global_position)
+	return level
+
+
+## A content-free level for observer boundary tests that do not concern
+## geometry. The marker makes its spawn payload explicit without requiring
+## authored content.
+func _empty_level(pulses: Pulses) -> WaveLevel:
+	var data_mat := ShaderMaterial.new()
+	data_mat.set_shader_parameter("u_flick", FLICK)
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	level.inject(data_mat, ShaderMaterial.new(), pulses)
+	add_child(level)
+	return level
+
+
+## A three-sided code-built room gives the reflection fan real hits, real
+## misses through the open south edge, and more clusters than a small answer
+## budget. Nothing here is a promise about the designer-owned scenes.
+func _reflection_level(pulses: Pulses) -> WaveLevel:
+	var data_mat := ShaderMaterial.new()
+	data_mat.set_shader_parameter("u_flick", FLICK)
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	for spec: Dictionary in [
+		{"name": "North", "at": Vector3(4, 0, 1), "yaw": 0.0},
+		{"name": "West", "at": Vector3(1, 0, 4), "yaw": PI * 0.5},
+		{"name": "East", "at": Vector3(7, 0, 4), "yaw": PI * 0.5},
+	]:
+		var wall := WaveWall.new()
+		wall.name = spec["name"]
+		wall.length = 6.0
+		wall.position = spec["at"]
+		wall.rotation.y = spec["yaw"]
+		level.add_child(wall)
+	var table := WaveProp.new()
+	table.name = "Reflector"
+	table.size = Vector3(1.5, 0.2, 1.0)
+	table.position = Vector3(4.5, 1.2, 4.0)
+	level.add_child(table)
+	level.inject(data_mat, ShaderMaterial.new(), pulses)
+	add_child(level)
 	return level
 
 
@@ -1080,7 +1083,8 @@ func _eye() -> Camera3D:
 	return cam
 
 
-## The marker a hand-built level needs to have somewhere to wake the hero.
+## An explicit typed spawn for fixtures whose subject is not fallback spawn
+## selection.
 func _spawn_marker() -> WaveSpawn:
 	var marker := WaveSpawn.new()
 	return marker
@@ -1092,9 +1096,7 @@ func _spawn_marker() -> WaveSpawn:
 ## separate reads across frames.
 func test_the_snapshot_binds_the_hero_at_one_instant() -> void:
 	var pulses := Pulses.new()
-	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), pulses)
-	add_child(level)
+	var level := _empty_level(pulses)
 	var player: UnseeingPlayer = auto_free(UnseeingPlayer.new())
 	player.pulses = pulses
 	player.position = Vector3(5.0, 0.9, 3.0)
@@ -1127,9 +1129,7 @@ func test_the_snapshot_binds_the_hero_at_one_instant() -> void:
 ## a bare level has no player, and the snapshot says so in `unknown`.
 func test_a_heroless_snapshot_names_the_absence() -> void:
 	var pulses := Pulses.new()
-	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), pulses)
-	add_child(level)
+	var level := _empty_level(pulses)
 	var camera: Camera3D = auto_free(Camera3D.new())
 	add_child(camera)
 	var obs: WaveObserver = auto_free(WaveObserver.new())
@@ -1148,9 +1148,7 @@ func test_a_heroless_snapshot_names_the_absence() -> void:
 ## same way the fixture clears `pulses` above.
 func test_a_cameraless_player_names_the_absence_rather_than_guessing_a_pitch() -> void:
 	var pulses := Pulses.new()
-	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), pulses)
-	add_child(level)
+	var level := _empty_level(pulses)
 	var camera: Camera3D = auto_free(Camera3D.new())
 	add_child(camera)
 	var player: UnseeingPlayer = auto_free(UnseeingPlayer.new())
@@ -1170,9 +1168,7 @@ func test_a_cameraless_player_names_the_absence_rather_than_guessing_a_pitch() -
 ## and never data read through a dangling handle.
 func test_a_freed_hero_reports_unknown_rather_than_crashing() -> void:
 	var pulses := Pulses.new()
-	var level: WaveLevel = auto_free(LEVEL_SCENE.instantiate() as WaveLevel)
-	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), pulses)
-	add_child(level)
+	var level := _empty_level(pulses)
 	var camera: Camera3D = auto_free(Camera3D.new())
 	add_child(camera)
 	var player := UnseeingPlayer.new()
