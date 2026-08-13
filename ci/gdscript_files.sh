@@ -32,10 +32,14 @@ gdscript_policy_violations() {
 }
 
 # Godot can store a GDScript inside a text scene/resource instead of a .gd
-# file. Scan every first-party .tscn/.tres outside the test tree for that
-# representation, and refuse opaque .scn/.res resources outright: their
+# file, or attach a test resource back onto production as an external resource.
+# Anything below res://tests/ may contain test-only behavior transitively, so
+# production resources and project.godot [autoload] entries may not reference
+# that subtree. Scan every first-party .tscn/.tres outside the test tree for
+# both representations, and refuse opaque .scn/.res resources outright: their
 # contents cannot be audited by this source-only gate. Designer-authored
-# production resources therefore stay text, diffable, and code-free.
+# production resources therefore stay text, diffable, and code-free; test
+# resources remain outside this rule.
 gdscript_resource_policy_violations() {
   find "$1" \
     \( -path "$1/.git" -o -path "$1/.claude" -o -path "$1/.worktrees" \
@@ -46,5 +50,20 @@ gdscript_resource_policy_violations() {
        -o -path "$1/rust/target" -o -path "$1/tools/superpowers" \) \
     -prune -o \( -name '*.scn' -o -name '*.res' \) -print -o \
     \( -name '*.tscn' -o -name '*.tres' \) -exec grep -Il \
-      '^\[sub_resource type="GDScript"\([[:space:]]\|\]\)' {} \;
+      -e '^\[sub_resource[^]]*[[:space:]]type[[:space:]]*=[[:space:]]*"GDScript"\([[:space:]]\|\]\)' \
+      -e '^\[ext_resource[^]]*[[:space:]]path[[:space:]]*=[[:space:]]*"res://tests/[^"]*"' {} \;
+
+  PROJECT_FILE="$1/game/project.godot"
+  if [ -f "$PROJECT_FILE" ] && LC_ALL=C awk '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      in_autoload = ($0 ~ /^[[:space:]]*\[autoload\][[:space:]]*$/)
+      next
+    }
+    in_autoload && /^[[:space:]]*[^;#][^=]*=[[:space:]]*"\*?res:\/\/tests\/[^\"]*"[[:space:]]*$/ {
+      found = 1
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$PROJECT_FILE"; then
+    printf '%s\n' "$PROJECT_FILE"
+  fi
 }

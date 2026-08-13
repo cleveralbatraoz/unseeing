@@ -7,9 +7,10 @@
 # tests both functions in ci/gdscript_files.sh directly against the real game/
 # tree. Lint must widen to every authored script, while the permanent
 # engine/content law must reject any first-party GDScript outside game/tests/.
-# Both still exclude the known gdUnit4 and godot_mcp addon trees (third-party
-# code; gdUnit4 alone is vendored and lock-pinned) and game/.godot/ (import
-# cache, never authored). An unknown addon remains first-party and illegal.
+# All lint and policy scans exclude the known gdUnit4 and godot_mcp addon
+# trees (third-party code; gdUnit4 alone is vendored and lock-pinned) and
+# game/.godot/ (import cache, never authored). An unknown addon remains
+# first-party and illegal.
 #
 # Pure POSIX sh, no network, no Godot — runs anywhere ci/pipeline.sh does.
 set -eu
@@ -29,18 +30,36 @@ TEST_PROBE="$DIR/game/tests/ci_policy_probe_$$.gd"
 OUTSIDE_PROBE="$DIR/tools/ci_policy_probe_$$.gd"
 WORKTREE_PROBE="$DIR/.claude/worktrees/ci_policy_probe_$$/game/scripts/foreign.gd"
 FALLBACK_WORKTREE_PROBE="$DIR/.worktrees/ci_policy_probe_$$/game/scripts/foreign.gd"
+WORKTREE_RESOURCE_PROBE="$DIR/.claude/worktrees/ci_policy_probe_$$/game/scenes/foreign.tscn"
+FALLBACK_WORKTREE_RESOURCE_PROBE="$DIR/.worktrees/ci_policy_probe_$$/game/scenes/foreign.tscn"
 UNKNOWN_ADDON="$DIR/game/addons/ci_policy_probe_$$/runtime.gd"
 SPACE_PROBE="$DIR/game/tests/ci policy probe $$.gd"
 BUILTIN_PROBE="$DIR/game/scenes/ci_policy_builtin_$$.tscn"
 OPAQUE_PROBE="$DIR/game/scenes/ci_policy_opaque_$$.res"
 LEGAL_BUILTIN="$DIR/game/tests/ci policy built in $$.tscn"
+REFERENCE_FIXTURE="$(mktemp -d)"
+REFERENCE_SCRIPT="$REFERENCE_FIXTURE/game/tests/helper script.gd"
+EXTERNAL_SCENE="$REFERENCE_FIXTURE/game/scenes/external test script.tscn"
+EXTERNAL_RESOURCE="$REFERENCE_FIXTURE/game/scenes/external test script.tres"
+LEGAL_EXTERNAL="$REFERENCE_FIXTURE/game/tests/legal external script.tscn"
+REFERENCE_PROJECT="$REFERENCE_FIXTURE/game/project.godot"
+NON_AUTOLOAD_FIXTURE="$(mktemp -d)"
+NON_AUTOLOAD_PROJECT="$NON_AUTOLOAD_FIXTURE/game/project.godot"
+TRANSITIVE_FIXTURE="$(mktemp -d)"
+SCRIPTED_TEST_SCENE="$TRANSITIVE_FIXTURE/game/tests/scripted fixture.tscn"
+SCRIPTED_TEST_RESOURCE="$TRANSITIVE_FIXTURE/game/tests/scripted fixture.tres"
+TRANSITIVE_SCENE="$TRANSITIVE_FIXTURE/game/scenes/transitive test scene.tscn"
+TRANSITIVE_RESOURCE="$TRANSITIVE_FIXTURE/game/scenes/transitive test resource.tres"
+WHITESPACE_BUILTIN="$TRANSITIVE_FIXTURE/game/scenes/whitespace built in.tscn"
+TRANSITIVE_PROJECT="$TRANSITIVE_FIXTURE/game/project.godot"
 POLICY_OUT="$(mktemp)"
 cleanup() {
   rm -rf "$PROBE_DIR" "$DIR/game/.godot/ci_probe_$$.gd" "$TEST_PROBE" \
     "$OUTSIDE_PROBE" "$SPACE_PROBE" "$(dirname "$UNKNOWN_ADDON")" \
     "$DIR/.claude/worktrees/ci_policy_probe_$$" \
     "$DIR/.worktrees/ci_policy_probe_$$" "$BUILTIN_PROBE" "$OPAQUE_PROBE" \
-    "$LEGAL_BUILTIN" "$POLICY_OUT"
+    "$LEGAL_BUILTIN" "$REFERENCE_FIXTURE" "$NON_AUTOLOAD_FIXTURE" \
+    "$TRANSITIVE_FIXTURE" "$POLICY_OUT"
 }
 trap cleanup EXIT INT TERM HUP
 mkdir -p "$PROBE_DIR"
@@ -51,6 +70,14 @@ mkdir -p "$(dirname "$WORKTREE_PROBE")"
 printf 'extends Node\n' >"$WORKTREE_PROBE"
 mkdir -p "$(dirname "$FALLBACK_WORKTREE_PROBE")"
 printf 'extends Node\n' >"$FALLBACK_WORKTREE_PROBE"
+mkdir -p "$(dirname "$WORKTREE_RESOURCE_PROBE")" \
+  "$(dirname "$FALLBACK_WORKTREE_RESOURCE_PROBE")"
+printf '%s\n' '[gd_scene format=3]' \
+  '[ext_resource path="res://tests/foreign.gd" type="Script" id="1"]' \
+  '[node name="Foreign" type="Node"]' >"$WORKTREE_RESOURCE_PROBE"
+printf '%s\n' '[gd_scene format=3]' \
+  '[ext_resource path="res://tests/foreign.gd" type="Script" id="1"]' \
+  '[node name="Foreign" type="Node"]' >"$FALLBACK_WORKTREE_RESOURCE_PROBE"
 mkdir -p "$(dirname "$UNKNOWN_ADDON")"
 printf 'extends Node\n' >"$UNKNOWN_ADDON"
 printf 'extends Node\n' >"$SPACE_PROBE"
@@ -64,6 +91,65 @@ printf '%s\n' '[gd_scene load_steps=2 format=3]' \
 # .tscn/.tres outside tests; the extension itself is the refusal witness here.
 printf 'opaque resource probe\n' >"$OPAQUE_PROBE"
 cp "$BUILTIN_PROBE" "$LEGAL_BUILTIN"
+
+# An allowlisted test script is legal only as test code. Production scenes and
+# resources must not smuggle it back into the shipped scene tree through an
+# external Script resource, and project.godot must not turn it into an autoload.
+# Keep these fixtures outside the real project so the autoload case never edits
+# the user's tracked project settings even for an instant.
+mkdir -p "$(dirname "$REFERENCE_SCRIPT")" "$(dirname "$EXTERNAL_SCENE")"
+printf 'extends Node\n' >"$REFERENCE_SCRIPT"
+printf '%s\n' '[gd_scene load_steps=2 format=3]' \
+  '[ext_resource type="Script" path="res://tests/helper script.gd" id="1_script"]' \
+  '[node name="Production" type="Node"]' \
+  'script = ExtResource("1_script")' >"$EXTERNAL_SCENE"
+printf '%s\n' '[gd_resource load_steps=2 format=3]' \
+  '[ext_resource path="res://tests/helper script.gd" type="Script" id="1_script"]' \
+  '[resource]' \
+  'script = ExtResource("1_script")' >"$EXTERNAL_RESOURCE"
+cp "$EXTERNAL_SCENE" "$LEGAL_EXTERNAL"
+printf '%s\n' '[application]' \
+  'config/name="Reference fixture"' \
+  '' \
+  '[autoload]' \
+  'TestStarred="*res://tests/helper script.gd"' \
+  'TestPlain="res://tests/helper script.gd"' >"$REFERENCE_PROJECT"
+
+# A path-shaped string outside [autoload] is data, not executable wiring. The
+# policy must not reject project.godot merely because ordinary metadata happens
+# to mention a test resource.
+mkdir -p "$(dirname "$NON_AUTOLOAD_PROJECT")"
+printf '%s\n' '[application]' \
+  'config/name="res://tests/helper script.gd"' >"$NON_AUTOLOAD_PROJECT"
+
+# A test scene or resource can itself own test GDScript. Production content
+# must not regain that behavior transitively by instancing or loading anything
+# below res://tests/. Deliberately vary attribute order and whitespace so the
+# source-only gate follows the path rather than one serializer layout.
+mkdir -p "$(dirname "$SCRIPTED_TEST_SCENE")" "$(dirname "$TRANSITIVE_SCENE")"
+printf '%s\n' '[gd_scene load_steps=2 format=3]' \
+  '[ext_resource type="Script" path="res://tests/helper script.gd" id="1_script"]' \
+  '[node name="ScriptedFixture" type="Node"]' \
+  'script = ExtResource("1_script")' >"$SCRIPTED_TEST_SCENE"
+printf '%s\n' '[gd_resource load_steps=2 format=3]' \
+  '[ext_resource path="res://tests/helper script.gd" type="Script" id="1_script"]' \
+  '[resource]' \
+  'script = ExtResource("1_script")' >"$SCRIPTED_TEST_RESOURCE"
+printf '%s\n' '[gd_scene load_steps=2 format=3]' \
+  '[ext_resource   type = "PackedScene"   path = "res://tests/scripted fixture.tscn" id="1_fixture"]' \
+  '[node name="Production" type="Node"]' \
+  '[node name="Fixture" parent="." instance=ExtResource("1_fixture")]' >"$TRANSITIVE_SCENE"
+printf '%s\n' '[gd_resource load_steps=2 format=3]' \
+  '[ext_resource path = "res://tests/scripted fixture.tres"   id="1_fixture" type = "Resource"]' \
+  '[resource]' \
+  'metadata/fixture = ExtResource("1_fixture")' >"$TRANSITIVE_RESOURCE"
+printf '%s\n' '[gd_scene load_steps=2 format=3]' \
+  '[sub_resource id="GDScript_fixture" type = "GDScript"]' \
+  'script/source = "extends Node"' \
+  '[node name="Production" type="Node"]' \
+  'script = SubResource("GDScript_fixture")' >"$WHITESPACE_BUILTIN"
+printf '%s\n' '[autoload]' \
+  'ScriptedFixture = "*res://tests/scripted fixture.tscn"' >"$TRANSITIVE_PROJECT"
 
 FOUND="$(gdscript_files "$DIR")"
 
@@ -141,6 +227,78 @@ if printf '%s\n' "$RESOURCE_VIOLATIONS" | grep -qxF "$LEGAL_BUILTIN"; then
 else
   ok "test fixtures may still carry built-in GDScript"
 fi
+if printf '%s\n' "$RESOURCE_VIOLATIONS" | grep -qxF "$WORKTREE_RESOURCE_PROBE"; then
+  bad "an isolated worktree's resource was mistaken for this checkout"
+else
+  ok "resource policy prunes nested agent worktrees too"
+fi
+if printf '%s\n' "$RESOURCE_VIOLATIONS" | grep -qxF "$FALLBACK_WORKTREE_RESOURCE_PROBE"; then
+  bad "a fallback worktree's resource was mistaken for this checkout"
+else
+  ok "resource policy prunes fallback .worktrees too"
+fi
+
+REFERENCE_VIOLATIONS="$(gdscript_resource_policy_violations "$REFERENCE_FIXTURE")"
+if printf '%s\n' "$REFERENCE_VIOLATIONS" | grep -qxF "$EXTERNAL_SCENE"; then
+  ok "a production .tscn cannot attach an allowlisted test script"
+else
+  bad "a production .tscn smuggled game/tests GDScript into shipped content"
+fi
+if printf '%s\n' "$REFERENCE_VIOLATIONS" | grep -qxF "$EXTERNAL_RESOURCE"; then
+  ok "a production .tres cannot attach an allowlisted test script"
+else
+  bad "a production .tres smuggled game/tests GDScript into shipped content"
+fi
+if printf '%s\n' "$REFERENCE_VIOLATIONS" | grep -qxF "$REFERENCE_PROJECT"; then
+  ok "project.godot cannot autoload an allowlisted test script"
+else
+  bad "project.godot autoloaded game/tests GDScript into shipped behavior"
+fi
+if printf '%s\n' "$REFERENCE_VIOLATIONS" | grep -qxF "$LEGAL_EXTERNAL"; then
+  bad "a test scene's external test script was incorrectly rejected"
+else
+  ok "test resources may still attach test GDScript"
+fi
+NON_AUTOLOAD_VIOLATIONS="$(gdscript_resource_policy_violations "$NON_AUTOLOAD_FIXTURE")"
+if printf '%s\n' "$NON_AUTOLOAD_VIOLATIONS" | grep -qxF "$NON_AUTOLOAD_PROJECT"; then
+  bad "non-executable project metadata mentioning a test path was rejected"
+else
+  ok "only executable project.godot wiring is policy-relevant"
+fi
+
+TRANSITIVE_VIOLATIONS="$(gdscript_resource_policy_violations "$TRANSITIVE_FIXTURE")"
+if printf '%s\n' "$TRANSITIVE_VIOLATIONS" | grep -qxF "$TRANSITIVE_SCENE"; then
+  ok "production scenes cannot instance scripted test scenes transitively"
+else
+  bad "a scripted test scene escaped through a whitespace-varied ext_resource"
+fi
+if printf '%s\n' "$TRANSITIVE_VIOLATIONS" | grep -qxF "$TRANSITIVE_RESOURCE"; then
+  ok "production resources cannot load scripted test resources transitively"
+else
+  bad "a scripted test resource escaped through a whitespace-varied ext_resource"
+fi
+if printf '%s\n' "$TRANSITIVE_VIOLATIONS" | grep -qxF "$TRANSITIVE_PROJECT"; then
+  ok "project.godot cannot autoload a scripted test scene transitively"
+else
+  bad "project.godot autoloaded a scripted scene from res://tests/"
+fi
+if printf '%s\n' "$TRANSITIVE_VIOLATIONS" | grep -qxF "$WHITESPACE_BUILTIN"; then
+  ok "built-in GDScript type attributes are whitespace-tolerant"
+else
+  bad "a spaced GDScript type attribute escaped the resource policy"
+fi
+if printf '%s\n' "$TRANSITIVE_VIOLATIONS" \
+  | grep -qxF "$SCRIPTED_TEST_SCENE"; then
+  bad "the scripted test scene itself was incorrectly rejected"
+else
+  ok "scripted scenes remain legal inside game/tests/"
+fi
+if printf '%s\n' "$TRANSITIVE_VIOLATIONS" \
+  | grep -qxF "$SCRIPTED_TEST_RESOURCE"; then
+  bad "the scripted test resource itself was incorrectly rejected"
+else
+  ok "scripted resources remain legal inside game/tests/"
+fi
 
 # Exercise the real executable boundary too: it must refuse the illegal file,
 # name it, then accept the same tree once only the legal test probe remains.
@@ -167,9 +325,9 @@ else
   bad "the production placement gate rejects the legal tests-only tree"
 fi
 
-# --- prove the known third-party allowlist: tracked gdUnit4 is in the tree,
-# while the ignored godot_mcp addon may be installed locally. Unknown addons
-# were deliberately proved illegal above. Split
+# --- prove the lint census's known third-party exclusions: tracked gdUnit4 is
+# in the tree, while the ignored godot_mcp addon may be installed locally.
+# Unknown addons were deliberately proved illegal above. Split
 # into an explicit if/else on directory presence, not `[ -d ... ] && grep`:
 # the combined form falls to the else branch and prints a vacuous OK when
 # the directory is simply absent, having asserted nothing — the exact
