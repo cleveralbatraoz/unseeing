@@ -230,6 +230,17 @@ fn wedge_faces(solid: usize, hull: [[f64; 3]; 6]) -> Vec<Face> {
 /// this count needs to guard against.
 const RIM_SEGMENTS: usize = 32;
 
+/// Can this ring's own polygon carry a plane at all? The degeneracy
+/// refusal [`box_faces`] gets for free from [`face_from_poly`] — the same
+/// [`unit`] test on the first two edges' cross product — spelled out
+/// separately here because a rim's normal is a CONSTANT rather than
+/// derived from its winding, and that independence is exactly what the
+/// module's winding test rides on: routing rims through `face_from_poly`
+/// would turn a genuine check into a tautology.
+fn rim_carries_a_plane(rim: &[[f64; 3]]) -> bool {
+    rim.len() >= 3 && unit(cross(sub(rim[1], rim[0]), sub(rim[2], rim[0]))).is_some()
+}
+
 /// A column's two flat rims — the only planar faces it has, since its
 /// curved flank carries no plane and so can never coplanar-merge with
 /// anything. The bottom rim (outward normal −Y) walks increasing angle;
@@ -237,6 +248,17 @@ const RIM_SEGMENTS: usize = 32;
 /// curvature turns the same way relative to increasing angle no matter
 /// which end caps it, so the two rims need OPPOSITE walking directions to
 /// both wind outward — proved by the module's winding test, not assumed.
+///
+/// Total the same way [`box_faces`] is: a rim with no area — a radius of
+/// zero, or a NaN anywhere in the radius or the centre — yields NO face
+/// rather than a 32-point polygon collapsed onto a single spot. That
+/// polygon is finite and perfectly well-formed by point count, and the
+/// merge law's own clip would have read it as overlapping every coplanar
+/// same-facing face on the map (see
+/// `super::superface::polygon_overlap_exceeds_patch`), so the refusal
+/// belongs here as well as there. Downstream the empty list is what
+/// `nodes::level`'s ordinal guard already handles: 0 faces where it
+/// demands 2, named out loud, mesh left holding its placeholder.
 fn column_faces(solid: usize, center: [f64; 3], radius: f64, half_height: f64) -> Vec<Face> {
     let r = radius.abs();
     let hh = half_height.abs();
@@ -251,6 +273,9 @@ fn column_faces(solid: usize, center: [f64; 3], radius: f64, half_height: f64) -
     };
     let bottom = ring(center[1] - hh, false);
     let top = ring(center[1] + hh, true);
+    if !rim_carries_a_plane(&bottom) || !rim_carries_a_plane(&top) {
+        return Vec::new();
+    }
     let bottom_normal = [0.0, -1.0, 0.0];
     let top_normal = [0.0, 1.0, 0.0];
     vec![
@@ -327,6 +352,45 @@ mod tests {
         assert_eq!(f[0].normal, [0.0, -1.0, 0.0]);
         assert!((f[0].offset - 0.0).abs() < 1e-12); // dot((0,-1,0),(x,0,z))
         assert_eq!(f[1].normal, [0.0, 1.0, 0.0]);
+    }
+
+    /// A column whose rim carries no area at all yields NO face — the same
+    /// refusal `box_faces` gets from `unit()` when an extent collapses,
+    /// which `column_faces` did not have because it builds its `Face`s
+    /// directly rather than through `face_from_poly`.
+    ///
+    /// The break this catches is not a NaN: a radius-0 rim is 32 copies of
+    /// one point, perfectly finite, and a polygon with no area clips
+    /// nothing, so the merge law would have read it as overlapping every
+    /// coplanar same-facing face on the map (see
+    /// `superface::tests::a_collapsed_polygon_is_no_patch_at_any_distance`).
+    /// Refusing here means the level's own ordinal guard sees 0 faces
+    /// where it demands 2 and names the solid out loud, exactly as it does
+    /// for a flattened box.
+    #[test]
+    fn a_degenerate_column_yields_no_face_at_all() {
+        for radius in [0.0, -0.0, f64::NAN] {
+            let f = faces(
+                4,
+                &Shape::Column {
+                    center: [1.0, 0.5, 2.0],
+                    radius,
+                    half_height: 0.5,
+                },
+            );
+            assert!(f.is_empty(), "radius {radius} produced {} face(s)", f.len());
+        }
+        // a NaN CENTRE is refused for the same reason — the rim it builds
+        // has no direction either
+        let f = faces(
+            4,
+            &Shape::Column {
+                center: [f64::NAN, 0.5, 2.0],
+                radius: 0.3,
+                half_height: 0.5,
+            },
+        );
+        assert!(f.is_empty());
     }
 
     /// A wedge yields five faces (two triangles, three quads) built from

@@ -709,11 +709,35 @@ fn min_width(poly: &[Pt2]) -> f64 {
 /// the direction perpendicular to the shared edge and is correctly
 /// refused; a genuine 2-D patch has a real minimum width in every
 /// direction and passes.
+///
+/// EITHER INPUT'S OWN WIDTH IS CHECKED FIRST, and that guard is load-
+/// bearing rather than defensive. [`clip_convex`] keeps a subject vertex
+/// that lies on the LEFT of, or ON, each directed clip edge, and a clip
+/// edge whose endpoints coincide puts every point in the plane exactly ON
+/// it — so a clip polygon collapsed to a point (or to a line) clips
+/// NOTHING, hands back the whole subject, and the width measured below is
+/// the subject's own. A radius-0 column rim would have merged with any
+/// coplanar same-facing face anywhere on the map that way. Counting
+/// POINTS cannot catch it: the rim has 32 of them.
+///
+/// The guard also costs no correct answer, which is why it is a `false`
+/// and not a special case. The intersection is a subset of each input, so
+/// for the direction `d` that minimizes an input's width,
+/// `width_d(inter) <= width_d(input) = min_width(input)`; hence
+/// `min_width(inter) <= min_width(input)` always, and an input at or
+/// below `PATCH_EPS` could never have produced an intersection above it.
+/// The guard restores exactly the answer the clip would give if it
+/// handled degenerate clip polygons — nothing more.
 fn polygon_overlap_exceeds_patch(a: &Face, b: &Face) -> bool {
     let axis = dominant_axis(a.normal);
     let pa = ensure_ccw(project_to_plane(&a.poly, axis));
     let pb = ensure_ccw(project_to_plane(&b.poly, axis));
-    if pa.len() < 3 || pb.len() < 3 {
+    // subsumes the old point-count refusal — `min_width` is 0.0 for fewer
+    // than three points — and the comparison is well-defined for any
+    // input, because `min_width` can never hand back a NaN: a NaN width
+    // fails `width < narrowest` and is never adopted, so `narrowest` is
+    // either a real number or an infinity, and the infinities become 0.0
+    if min_width(&pa) <= PATCH_EPS || min_width(&pb) <= PATCH_EPS {
         return false;
     }
     let inter = clip_convex(&pa, &pb);
@@ -1284,6 +1308,52 @@ mod tests {
             ..at_the_boundary
         };
         assert!(!is_merge_candidate(&a, &just_past));
+    }
+
+    /// A polygon with NO AREA clips nothing, so it must never be read as
+    /// an overlapping patch — the totality gap a review found in
+    /// `clip_convex`. Sutherland–Hodgman keeps a subject vertex when it is
+    /// on the LEFT of, or on, each directed clip edge; a clip edge whose
+    /// two endpoints coincide has a cross product of exactly zero for
+    /// EVERY point in the plane, so a clip polygon collapsed to a point
+    /// keeps the whole subject and `min_width` then reports the SUBJECT's
+    /// own width. Without a guard, a radius-0 column rim standing on the
+    /// floor twelve metres away would "merge" with any coplanar,
+    /// same-facing face on the map and drag both into one superface class.
+    ///
+    /// Built from polygon literals rather than `faces()`, deliberately:
+    /// this is the polygon-level law, and it has to hold for any future
+    /// shape that can hand the merge test a collapsed polygon, not only
+    /// for the column that found it. Both argument orders are checked,
+    /// because the degenerate side is `b` here and the guard has to cover
+    /// the subject and the clip alike.
+    #[test]
+    fn a_collapsed_polygon_is_no_patch_at_any_distance() {
+        // a wall's underside at the origin: y = 0, spanning x [-2, 2] and
+        // z [-0.15, 0.15] — WALL_T's own thickness, wound so the -Y
+        // normal it carries is the outward one
+        let wall_bottom = Face {
+            normal: [0.0, -1.0, 0.0],
+            offset: 0.0,
+            poly: vec![
+                [-2.0, 0.0, -0.15],
+                [-2.0, 0.0, 0.15],
+                [2.0, 0.0, 0.15],
+                [2.0, 0.0, -0.15],
+            ],
+            solid: 0,
+        };
+        // a radius-0 rim standing on the same floor plane, far away: all
+        // 32 points identical, exactly what `column_faces` emitted for
+        // `radius: 0.0` before its own refusal landed
+        let collapsed_rim = Face {
+            normal: [0.0, -1.0, 0.0],
+            offset: 0.0,
+            poly: vec![[12.0, 0.0, 12.0]; 32],
+            solid: 1,
+        };
+        assert!(!is_merge_candidate(&wall_bottom, &collapsed_rim));
+        assert!(!is_merge_candidate(&collapsed_rim, &wall_bottom));
     }
 
     /// Review finding (IMPORTANT 1): the merge test must be robust to
