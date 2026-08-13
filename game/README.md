@@ -52,16 +52,16 @@ First time opening the repository? Follow the complete
 [Godot editor tutorial](../docs/opening-in-godot.md), including the
 correct-worktree check and the full-game runner scene.
 
-1. Build the engine once so the editor knows the engine nodes: run
-   `../tools/bootstrap.sh` (needed after a fresh clone or an engine
-   change). It installs `rustup` if you don't already have one — the
-   toolchain pinned in `../rust/rust-toolchain.toml` is picked up
+1. Build the engine once so the editor knows the engine nodes: from the
+   repository root, run `tools/bootstrap.sh` on macOS/Linux or
+   `tools\bootstrap.cmd` on Windows (needed after a fresh clone or an engine
+   change). It installs `rustup` if you don't already have one — the toolchain
+   pinned in `rust/rust-toolchain.toml` is picked up
    automatically — builds the Rust library, lets Godot import it, and
    checks that every engine class actually registered, ending in
-   `bootstrap: OK`. macOS and Linux only: on Windows the script exits
-   with the per-triple `cargo build --release --features editor-docs
-   --target x86_64-pc-windows-msvc` command to run by hand instead. Skip
-   this and the scene still opens, but every `WaveWall`, `WaveProp`,
+   `bootstrap: OK`. The Windows entry point reads the Godot executable's
+   architecture and builds the matching x86_64 or ARM64 DLL automatically.
+   Skip this and the scene still opens, but every `WaveWall`, `WaveProp`,
    `SoundFan` and so on loads as a `MissingNode` placeholder: no viewport
    geometry, and any method call on one fails (`Invalid call. Nonexistent
    function 'set_length (via call)' in base 'MissingNode'`). You cannot

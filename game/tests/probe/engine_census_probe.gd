@@ -1,6 +1,6 @@
 extends SceneTree
-## The engine census -- a headless probe `tools/bootstrap.sh` runs as its
-## final step, so a fresh clone's install command can trust a real exit
+## The engine census -- a headless probe both native bootstrap entry points run
+## as their final step, so a fresh clone's install command can trust a real exit
 ## code rather than eyeballing Godot's output.
 ##
 ## `_initialize()` only: this is a pure ClassDB census, over before the
@@ -39,7 +39,10 @@ const REGISTERED_CLASSES: Array[String] = [
 	"UnseeingGame",
 ]
 
-const _REMEDY := "tools/bootstrap.sh builds the engine -- run it, then relaunch Godot"
+const _REMEDY := (
+	"run tools/bootstrap.sh (macOS/Linux) or tools\\bootstrap.cmd (Windows), "
+	+ "then relaunch Godot"
+)
 
 var _checks := 0
 var _failed := 0

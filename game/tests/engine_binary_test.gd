@@ -48,8 +48,8 @@ const REGISTERED_CLASSES: Array[String] = [
 ## deliberately platform-neutral: naming any one platform's artifact path
 ## would misdirect developers on the other two.
 const _REMEDY := (
-	"Fix: rebuild the native GDExtension library under `rust/target/` with "
-	+ "`cd rust && cargo build --release`, then re-run."
+	"Fix: rebuild and verify the native GDExtension with `tools/bootstrap.sh` "
+	+ "on macOS/Linux or `tools\\bootstrap.cmd` on Windows, then re-run."
 )
 
 
@@ -130,3 +130,30 @@ func test_message_reads_missing_and_platform_neutral_when_every_class_is_absent(
 	assert_str(message).not_contains(".dylib")
 	assert_str(message).not_contains(".so")
 	assert_str(message).not_contains(".dll")
+
+
+func test_remedy_names_the_native_bootstrap_on_all_three_desktop_platforms() -> void:
+	assert_str(_REMEDY).contains("tools/bootstrap.sh")
+	assert_str(_REMEDY).contains("tools\\bootstrap.cmd")
+	assert_str(_REMEDY).not_contains("cargo build")
+
+
+func test_extension_routes_both_linux_and_windows_editor_architectures() -> void:
+	var config := ConfigFile.new()
+	assert_int(config.load("res://unseeing.gdextension")).is_equal(OK)
+	var routes := {
+		"linux.debug.x86_64": "res://../rust/target/release/libunseeing_core.so",
+		"linux.release.x86_64": "res://../rust/target/release/libunseeing_core.so",
+		"linux.debug.arm64": "res://../rust/target/release/libunseeing_core.so",
+		"linux.release.arm64": "res://../rust/target/release/libunseeing_core.so",
+		"windows.debug.x86_64":
+		"res://../rust/target/x86_64-pc-windows-msvc/release/unseeing_core.dll",
+		"windows.release.x86_64":
+		"res://../rust/target/x86_64-pc-windows-msvc/release/unseeing_core.dll",
+		"windows.debug.arm64":
+		"res://../rust/target/aarch64-pc-windows-msvc/release/unseeing_core.dll",
+		"windows.release.arm64":
+		"res://../rust/target/aarch64-pc-windows-msvc/release/unseeing_core.dll",
+	}
+	for route: String in routes:
+		assert_str(config.get_value("libraries", route, "")).is_equal(routes[route])

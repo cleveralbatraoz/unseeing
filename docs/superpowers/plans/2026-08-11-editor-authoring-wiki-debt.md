@@ -10,7 +10,9 @@ tasks). It also folds in a second, older debt: nine claims in
 *Research — Editor Authoring* went stale on 2026-08-11 when the 15-issue
 campaign landed on `main` at `3f376cf` — before this branch's first commit
 — and were never written back either. Whoever merges this campaign should
-do one pass over the wiki, not two.
+do one pass over the wiki, not two. Sections explicitly labelled as dated
+addenda were recorded after `93f4140` and name their newer evidence boundary;
+they do not retroactively change the historical SP1 snapshot.
 
 Scope check against the campaign spec
 (`docs/superpowers/specs/2026-08-11-editor-authoring-campaign-design.md`):
@@ -288,6 +290,38 @@ Wiki edit: add the four new gates to *Engineering — Build, Test, Deploy*
 still-outstanding 275/221/26 update while doing it, so this doesn't become
 a third unpushed revision of the same two numbers).
 
+### 2026-08-13 addendum — native bootstrap on every desktop
+
+This addendum records the cross-platform bootstrap follow-up on the completed
+campaign branch; it is intentionally newer than the `93f4140` SP1 snapshot
+above. The native bootstrap pair is the one-command contract:
+`tools/bootstrap.sh` on macOS/Linux and `tools\bootstrap.cmd` (delegating to
+`tools/bootstrap.ps1`) on Windows. The POSIX path `game/README.md`'s authoring
+step 1 now names (`game/README.md:55-78`) checks for rustup, installing it
+non-interactively when absent (`bootstrap.sh:23-50`) with every failure path
+naming a concrete remedy, not just restating the symptom; installs and selects
+the exact `rust-toolchain.toml` channel (`bootstrap.sh:51-80`); checks for a C
+linker (`bootstrap.sh:82-92`); deletes the expected artifact before building
+and requires that exact path to be recreated by `cargo build --release
+--features editor-docs` (`bootstrap.sh:94-119`), so a stale library or
+redirected Cargo target cannot masquerade as success; discovers and
+version-checks Godot against `.godot-version` (`bootstrap.sh:121-145`, the same
+prefix-match pattern `ci/pipeline.sh` already uses); imports the project
+(`bootstrap.sh:150-151`), deliberately **after** the build — a pre-build import
+records a failed extension load in `.godot/extension_list.cfg` that a running
+editor never retries, only a fresh import after the library exists will; and
+verifies with the engine census probe (`bootstrap.sh:153-170`) before printing
+`bootstrap: OK`.
+
+The Windows path holds the same ordering and verdict, reads the Godot
+executable's PE architecture, and selects `x86_64-pc-windows-msvc` or
+`aarch64-pc-windows-msvc` so the DLL lands at the target-specific path the
+GDExtension declares. It installs official rustup when needed, refreshes the
+current process's search path, and gives an actionable MSVC Build Tools remedy.
+Both paths have behavioral fake-boundary suites; Windows CI also runs the real
+x86_64 build/import/19-class census. Linux ARM64 now has an explicit manifest
+route and pinned Rust target alongside x86_64.
+
 ---
 
 ## 3. Research — Editor Authoring
@@ -323,10 +357,11 @@ a third unpushed revision of the same two numbers).
   `hint=0`" is now **false**: all 15 carry a range hint (§1 above).
 - **#38-as-scoped bootstrap** — §3(i)'s "Unblocking it needs rustup, the
   pinned `1.97.1` toolchain, five targets and `cargo build --release` —
-  the three things the premise excludes" is now answered by one command,
-  `tools/bootstrap.sh` (§2 above), for macOS/Linux; Windows staying
-  unscripted is by design (per-triple gdextension keys), not an oversight
-  this closes.
+  the three things the premise excludes" is now answered by one native command
+  on every desktop: `tools/bootstrap.sh` on macOS/Linux and
+  `tools\bootstrap.cmd` on Windows. Per-triple Windows GDExtension keys are
+  selected automatically from the editor architecture rather than handed to a
+  designer as a manual build recipe.
 - **#44 CLAUDE.md** — corrected in place, not deferred
   (`CLAUDE.md:404-406`); no further wiki action beyond noting it resolved,
   since CLAUDE.md is not a wiki page.

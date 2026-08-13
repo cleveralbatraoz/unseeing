@@ -75,3 +75,59 @@ jobs:
         run: |
           (cd ~/emsdk && ./emsdk activate 4.0.20)
           ./rust/build-wasm.sh
+
+  windows-bootstrap:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Read pinned Godot version
+        id: godot
+        shell: powershell
+        run: |
+          $pin = (Get-Content .godot-version -Raw).Trim()
+          $version = (($pin -split '\.')[0..2] -join '.')
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$version`n", $utf8)
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: godot-bin
+          key: godot-${{ steps.godot.outputs.version }}-windows-x86_64
+      - name: Cache Cargo registry and bootstrap targets
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: rust-windows-bootstrap-${{ hashFiles('rust/Cargo.lock', 'rust/rust-toolchain.toml') }}
+      - name: Fetch pinned Godot editor
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          $version = "${{ steps.godot.outputs.version }}"
+          $url = "https://github.com/godotengine/godot-builds/releases/download/$version-stable/Godot_v$version-stable_win64.exe.zip"
+          Invoke-WebRequest -Uri $url -OutFile godot.zip
+          Expand-Archive -LiteralPath godot.zip -DestinationPath godot-bin
+      - name: Run Windows bootstrap boundary tests
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File test/bootstrap_windows_test.ps1
+      - name: Build, import, and census through the real Windows bootstrap
+        shell: powershell
+        run: |
+          $godot = (Get-ChildItem godot-bin -Filter '*_console.exe' -Recurse | Select-Object -First 1).FullName
+          if (-not $godot) { throw 'Pinned Godot console executable was not found' }
+          & .\tools\bootstrap.cmd -Godot $godot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Cross-check the Windows ARM64 engine
+        shell: powershell
+        run: |
+          rustup target add aarch64-pc-windows-msvc --toolchain 1.97.1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Push-Location rust
+          rustup run 1.97.1 cargo check --features editor-docs --target aarch64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -3,7 +3,8 @@
 **Audience:** any agent or human picking up this branch cold (written for a
 cross-tool handoff; assumes no access to session history, machine-local
 scratch, or any prior assistant's memory). Reading order: this file →
-`CLAUDE.md` → the SP3 plan. That is everything needed to continue.
+authoritative `AGENTS.md` → its three-line `CLAUDE.md` adapter → the SP3 plan.
+That is everything needed to continue.
 
 ## Where you are
 
@@ -248,12 +249,47 @@ simulated clock + seeded randomness only).
   (`51730/184320` lit pixels) with `DEPLOY_DIR` set to the deliberately absent
   `/tmp/unseeing-campaign-nondeployable`; the pipeline confirmed build-only and
   copied nothing.
+- **Cross-platform bootstrap follow-up:** the one-command authoring boundary is
+  now native on all desktop hosts: `tools/bootstrap.sh` for macOS/Linux and
+  `tools\bootstrap.cmd` → `bootstrap.ps1` for Windows. Python was rejected as
+  a bootstrap dependency because it is not guaranteed on a fresh Windows
+  designer machine. Windows chooses x86_64/ARM64 from the Godot PE, builds the
+  exact target-specific release DLL with `editor-docs`, imports only afterward,
+  and requires the shared 19-class verdict. Recording-fake suites pin both
+  native entry points; actual Windows x86_64 bootstrap/census is a dedicated CI
+  job. ARM64 selection and build routing are boundary-tested and cross-checked
+  by Cargo in Windows CI; a real ARM64 Windows editor load remains unverified
+  pending an ARM64 runner. Linux ARM64 GDExtension routing and its Rust target
+  were added so the project's architecture promise is not narrower than this
+  documentation.
+  This follow-up adds two gdUnit cases, so the automated baseline is now 291
+  cases in the same 31 suites; Cargo remains 339.
+- **Bootstrap verification evidence:** RED began with the missing Windows
+  PowerShell/CMD entry points; a separate POSIX RED showed that the original
+  script accepted an 18-class success line. The settled recording-boundary
+  suites pass 36/36 Windows checks and 22/22 POSIX checks, including genuinely
+  absent-rustup installer/PATH-refresh cases; the real macOS bootstrap completed
+  with
+  `probe: PASS (19 checks)`. Deliberate Windows mutations swapping the x64 and
+  ARM64 targets, removing `editor-docs`, weakening the Godot pin or exact
+  census verdict, and running census before import each failed the suite.
+  Deliberate POSIX mutations removing `editor-docs`, weakening the complete
+  Rust pin or exact census verdict, ignoring Cargo failure, and reversing
+  import/census order each failed its suite.
 - **Godot MCP setup:** the pinned addon installer initially found no Node.js.
   Installed Homebrew `node@22` 22.23.2, reran `tools/setup-mcp.sh`, and installed
-  ignored addon 4.1.0. Enabling the editor plugin and reconnecting the MCP
-  transport remain the documented one-time interactive step; no shipped plugin
-  setting was changed. Headless editor probes cover every automatable editor
-  law meanwhile.
+  ignored addon 4.1.0. The user then enabled the editor plugin; a live MCP read
+  confirmed addon/server 4.1.0, Godot 4.7.1, the campaign worktree project, the
+  open `level_01.tscn`, and no editor errors. The resulting plugin/autoload
+  project settings are the user's dirty local setup and must not be committed.
+- **Live human editor state (do not absorb into unrelated commits):** the user
+  enabled the ignored Godot MCP addon and moved level 01's `Chair` from
+  `(3.9,0,5.55)` to `(3.9,0,2.0290604)`. Those actions currently leave
+  `game/project.godot` and `game/scenes/level_01.tscn` dirty. The scene save
+  also exposed a real persistence defect: both authored `WaveRun.openings`
+  arrays disappeared on save, closing the two doorways. Preserve the dirty
+  files for the interactive session, never stage the MCP project settings, and
+  repair/test the property-storage defect before accepting the chair scene.
 
 - **Rebase erratum:** `WaveRestorer` was registered in Rust but omitted from
   both independently maintained engine rosters. The post-rebase baseline adds

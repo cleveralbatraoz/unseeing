@@ -22,12 +22,25 @@ Level design never requires editing Rust or writing GDScript.
 
 ## The short version
 
-From a terminal in the checkout you intend to edit:
+From a terminal in the checkout you intend to edit, use the native command for
+your operating system.
+
+macOS or Linux:
 
 ```sh
 tools/bootstrap.sh
 godot --editor --path "$PWD/game"
 ```
+
+Windows PowerShell:
+
+```powershell
+.\tools\bootstrap.cmd
+godot --editor --path "$PWD\game"
+```
+
+From Command Prompt, the equivalent paths are `tools\bootstrap.cmd` and
+`godot --editor --path "%CD%\game"`.
 
 Wait for the first command to end with `bootstrap: OK`. If `godot` is not on
 your `PATH` on macOS, use the application executable directly:
@@ -35,6 +48,13 @@ your `PATH` on macOS, use the application executable directly:
 ```sh
 GODOT=/Applications/Godot.app/Contents/MacOS/Godot tools/bootstrap.sh
 /Applications/Godot.app/Contents/MacOS/Godot --editor --path "$PWD/game"
+```
+
+For a portable Godot executable on Windows that is not on `PATH`:
+
+```powershell
+.\tools\bootstrap.cmd -Godot 'C:\path\to\Godot_v4.7.1-stable_win64_console.exe'
+& 'C:\path\to\Godot_v4.7.1-stable_win64.exe' --editor --path "$PWD\game"
 ```
 
 The remaining sections explain every step, including how to select the correct
@@ -66,6 +86,14 @@ Verify the selected directory before continuing:
 git branch --show-current
 test -f game/project.godot && echo "Godot project found"
 test -f game/scenes/level_02.tscn && echo "level 02 found"
+```
+
+Windows PowerShell:
+
+```powershell
+git branch --show-current
+if (Test-Path game\project.godot) { 'Godot project found' }
+if (Test-Path game\scenes\level_02.tscn) { 'level 02 found' }
 ```
 
 Both `found` lines should print when using the completed editor-authoring
@@ -104,6 +132,15 @@ Godot application installed outside `PATH`, check it with:
 On Linux, put the matching Godot executable on `PATH`, or pass its path through
 the `GODOT` environment variable when running the bootstrap command.
 
+On Windows, put the matching standard editor on `PATH`, install it with Scoop,
+or pass the portable console executable to `tools\bootstrap.cmd`:
+
+```powershell
+scoop bucket add extras
+scoop install godot
+godot --version
+```
+
 ### Native build tools
 
 Unseeing's framework is a Rust GDExtension. The bootstrap script installs the
@@ -118,41 +155,41 @@ xcode-select --install
 On Debian or Ubuntu Linux, the equivalent prerequisite is:
 
 ```sh
-sudo apt install build-essential
+sudo apt install build-essential curl
 ```
 
 The first bootstrap may use the network to install Rust and download Rust
 dependencies. Node.js is not needed to open or run the game; it is needed only
 for the optional MCP setup near the end of this guide.
 
-### Windows note
+### Windows native tools
 
-`tools/bootstrap.sh` supports macOS and Linux. On Windows, install Rust through
-rustup and the MSVC build tools, then run the release build matching the
-machine:
-
-```powershell
-cd rust
-cargo build --release --features editor-docs --target x86_64-pc-windows-msvc
-```
-
-Use `aarch64-pc-windows-msvc` instead on Windows ARM64. Return to the repository
-root, let Godot import `game/project.godot`, and verify the extension from a
-terminal:
+Install Visual Studio 2022 Build Tools with **Desktop development with C++**,
+the Windows SDK, and the C++ tools matching the Godot editor's x64 or ARM64
+architecture (install both when you use editors of both architectures). The
+bootstrap installs rustup itself when rustup is absent, detects whether the
+Godot editor is x86_64 or ARM64, and builds the matching target automatically:
 
 ```powershell
-godot --headless --path game -s res://tests/probe/engine_census_probe.gd
+.\tools\bootstrap.cmd
 ```
 
-The probe must report `PASS (19 checks)`.
+You do not need to choose a target; automatic selection is the supported
+designer workflow. The same command validates the Godot pin, imports the
+project, and must report `PASS (19 checks)` before `bootstrap: OK`. If the MSVC
+linker is missing, its failure names the Build Tools components to install.
 
 ## 3. Build the editor engine before opening Godot
 
 Fully quit Godot if this project is already open. Then, from the selected
-checkout, run:
+checkout, run the platform entry point:
 
 ```sh
 tools/bootstrap.sh
+```
+
+```powershell
+.\tools\bootstrap.cmd
 ```
 
 The script performs four useful checks in one operation:
@@ -193,6 +230,14 @@ For the macOS application bundle, use:
 
 ```sh
 /Applications/Godot.app/Contents/MacOS/Godot --editor --path "$PWD/game"
+```
+
+On Linux, if Godot is outside `PATH`, launch the same explicit binary supplied
+to bootstrap:
+
+```sh
+GODOT=/path/to/godot tools/bootstrap.sh
+/path/to/godot --editor --path "$PWD/game"
 ```
 
 ### Alternative: use Godot's Project Manager
@@ -433,7 +478,7 @@ commit. The complete debugging loop is documented in
 ### The custom nodes say MissingNode
 
 The release GDExtension was absent or failed to load. Quit every Godot process,
-run `tools/bootstrap.sh` again, confirm `PASS (19 checks)`, and reopen the
+run the platform bootstrap again, confirm `PASS (19 checks)`, and reopen the
 editor. Merely closing and reopening the scene tab is not enough.
 
 ### Bootstrap says the Godot version is wrong
@@ -443,6 +488,12 @@ at a matching executable:
 
 ```sh
 GODOT=/path/to/matching/godot tools/bootstrap.sh
+```
+
+On Windows:
+
+```powershell
+.\tools\bootstrap.cmd -Godot 'C:\path\to\matching\Godot_console.exe'
 ```
 
 Do not bypass the version check with a nearby Godot release.
@@ -489,6 +540,8 @@ For ordinary scene-authoring sessions, return to the same checkout and run:
 ```sh
 godot --editor --path "$PWD/game"
 ```
+
+On Windows, use `godot --editor --path "$PWD\game"` instead.
 
 Bootstrap again only after a fresh checkout, a Rust framework change, a Godot
 version change, or a missing-class failure. Everything else in the daily level

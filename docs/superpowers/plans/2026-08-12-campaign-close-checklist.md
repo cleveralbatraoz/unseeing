@@ -7,7 +7,7 @@ green.
 ## Automated close
 
 - [ ] Review `origin/main...HEAD` for specification coverage and code quality.
-- [ ] Run formatting, linting, all 339 Cargo tests, all 289 gdUnit cases in all
+- [ ] Run formatting, linting, all 339 Cargo tests, all 291 gdUnit cases in all
   31 suites, editor probes, 19-class census, and ten-icon manifest.
 - [ ] Run the full export/browser smoke pipeline with an explicitly
   non-deployable destination. Never invoke deployment tooling.

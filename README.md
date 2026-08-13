@@ -58,7 +58,8 @@ One Godot project, exported everywhere — no per-platform code:
 For the complete first-time setup, correct-worktree check, editor tour, and
 code-free level-running workflow, follow
 [Opening and running Unseeing in Godot](docs/opening-in-godot.md). The short
-version is to run `tools/bootstrap.sh`, open `game/project.godot` in the Godot
+version is to run `tools/bootstrap.sh` on macOS/Linux or
+`tools\bootstrap.cmd` on Windows, open `game/project.godot` in the Godot
 version pinned by `.godot-version`, and press play. Renderer is
 `gl_compatibility` — required for the Web export. One-time contributor setup:
 `git config core.hooksPath .githooks` and `pipx install "gdtoolkit==4.*"` —

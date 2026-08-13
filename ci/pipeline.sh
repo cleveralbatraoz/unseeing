@@ -44,6 +44,14 @@ echo "ci: boot-error gate self-test"
 "$DIR/test/ci_boot_error_gate.sh" || exit 1
 echo "ci: gdscript lint scope self-test"
 "$DIR/test/ci_gdscript_lint_scope.sh" || exit 1
+echo "ci: POSIX designer-bootstrap self-test"
+"$DIR/test/bootstrap_posix_test.sh" || exit 1
+if command -v pwsh >/dev/null 2>&1; then
+  echo "ci: Windows designer-bootstrap self-test (PowerShell boundary fakes)"
+  pwsh -NoProfile -File "$DIR/test/bootstrap_windows_test.ps1" || exit 1
+else
+  echo "ci: Windows designer-bootstrap self-test SKIP (pwsh unavailable; Windows CI runs it)"
+fi
 
 # The test bench is vendored third-party code, so nothing else in this
 # pipeline would notice if it drifted — the pre-commit hook deliberately

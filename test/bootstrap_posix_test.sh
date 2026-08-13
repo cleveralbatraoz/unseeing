@@ -1,0 +1,221 @@
+#!/bin/sh
+# Behavioral contract for the macOS/Linux designer bootstrap. It executes a
+# copied production script inside a checkout fixture whose path contains spaces;
+# Rustup and Godot are recording boundary fakes, never mirrors of bootstrap
+# decisions.
+set -eu
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SUBJECT="${BOOTSTRAP_SUBJECT:-$ROOT/tools/bootstrap.sh}"
+FAIL=0
+
+ok() { echo "bootstrap-posix: OK   $1"; }
+bad() { echo "bootstrap-posix: FAIL $1"; FAIL=1; }
+require() {
+  label="$1"
+  shift
+  if "$@"; then ok "$label"; else bad "$label"; fi
+}
+require_absent() {
+  label="$1"
+  needle="$2"
+  file="$3"
+  if grep -q -- "$needle" "$file"; then bad "$label"; else ok "$label"; fi
+}
+
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT INT TERM
+REPO="$T/repo with spaces"
+FAKE="$T/fake bin"
+INSTALL="$T/install bin"
+LOG="$T/calls.log"
+OUT="$T/output.log"
+mkdir -p "$REPO/tools" "$REPO/rust" "$REPO/game" "$FAKE" "$INSTALL" "$T/home"
+cp "$SUBJECT" "$REPO/tools/bootstrap.sh"
+cp "$ROOT/rust/rust-toolchain.toml" "$REPO/rust/rust-toolchain.toml"
+chmod +x "$REPO/tools/bootstrap.sh"
+printf '%s\n' '4.7.1.stable.official' >"$REPO/.godot-version"
+
+cat >"$FAKE/rustup" <<'EOF'
+#!/bin/sh
+printf 'rustup %s\n' "$*" >>"$BOOTSTRAP_TEST_LOG"
+if [ "$*" = "--version" ]; then
+  echo 'rustup 1.28.2 (fixture)'
+  exit 0
+fi
+if [ "$*" = "run 1.97.1 rustc --version" ]; then
+  if [ ! -f "$BOOTSTRAP_TEST_TOOLCHAIN_SENTINEL" ]; then
+    echo 'error: pinned fixture toolchain is not installed' >&2
+    exit 1
+  fi
+  echo "${BOOTSTRAP_TEST_RUSTC_VERSION:-rustc 1.97.1 (fixture)}"
+  exit 0
+fi
+if [ "$*" = "toolchain install 1.97.1 --profile minimal" ]; then
+  : >"$BOOTSTRAP_TEST_TOOLCHAIN_SENTINEL"
+  exit 0
+fi
+if [ "$*" = "run 1.97.1 cargo --version" ]; then
+  echo 'cargo 1.97.1 (fixture)'
+  exit 0
+fi
+case "$*" in
+  'run 1.97.1 cargo build --release --features editor-docs --target-dir '*)
+    [ "${BOOTSTRAP_TEST_CARGO_FAIL:-0}" != 1 ] || exit 19
+    if [ "${BOOTSTRAP_TEST_SKIP_ARTIFACT:-0}" != 1 ]; then
+      mkdir -p "$(dirname "$BOOTSTRAP_TEST_ARTIFACT")"
+      printf '%s\n' 'fixture library' >"$BOOTSTRAP_TEST_ARTIFACT"
+    fi
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+
+cat >"$FAKE/godot" <<'EOF'
+#!/bin/sh
+printf 'godot %s\n' "$*" >>"$BOOTSTRAP_TEST_LOG"
+if [ "$*" = "--version" ]; then
+  echo "${BOOTSTRAP_TEST_GODOT_VERSION:-4.7.1.stable.official.fixture}"
+  exit 0
+fi
+case " $* " in
+  *' --import '*) [ "${BOOTSTRAP_TEST_IMPORT_FAIL:-0}" != 1 ] || exit 17 ;;
+  *engine_census_probe.gd*)
+    [ "${BOOTSTRAP_TEST_CENSUS_FAIL:-0}" != 1 ] || exit 23
+    if [ "${BOOTSTRAP_TEST_WRONG_CENSUS:-0}" = 1 ]; then
+      echo 'probe: PASS (18 checks)'
+    else
+      echo 'probe: PASS (19 checks)'
+    fi
+    ;;
+esac
+exit 0
+EOF
+
+cat >"$FAKE/cc" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$FAKE/rustup" "$FAKE/godot" "$FAKE/cc"
+
+cat >"$INSTALL/install-rustup" <<'EOF'
+#!/bin/sh
+printf '%s\n' 'rustup installer invoked' >>"$BOOTSTRAP_TEST_LOG"
+mkdir -p "$HOME/.cargo/bin"
+cp "$BOOTSTRAP_TEST_INSTALL_RUSTUP_SOURCE" "$HOME/.cargo/bin/rustup"
+chmod +x "$HOME/.cargo/bin/rustup"
+EOF
+chmod +x "$INSTALL/install-rustup"
+cp "$FAKE/cc" "$INSTALL/cc"
+chmod +x "$INSTALL/cc"
+
+clear_flags() {
+  unset BOOTSTRAP_TEST_CARGO_FAIL BOOTSTRAP_TEST_GODOT_VERSION
+  unset BOOTSTRAP_TEST_IMPORT_FAIL BOOTSTRAP_TEST_CENSUS_FAIL
+  unset BOOTSTRAP_TEST_WRONG_CENSUS BOOTSTRAP_TEST_SKIP_ARTIFACT
+  unset BOOTSTRAP_TEST_RUSTC_VERSION
+}
+
+run_fixture() {
+  : >"$LOG"
+  mkdir -p "$REPO/rust/target/release"
+  printf '%s\n' 'stale library' >"$REPO/rust/target/release/libunseeing_core.so"
+  printf '%s\n' 'stale library' >"$REPO/rust/target/release/libunseeing_core.dylib"
+  BOOTSTRAP_TEST_ARTIFACT="$REPO/rust/target/release/libunseeing_core.so"
+  if [ "$(uname)" = Darwin ]; then
+    BOOTSTRAP_TEST_ARTIFACT="$REPO/rust/target/release/libunseeing_core.dylib"
+  fi
+  export BOOTSTRAP_TEST_ARTIFACT
+  BOOTSTRAP_TEST_TOOLCHAIN_SENTINEL="$T/toolchain-installed"
+  export BOOTSTRAP_TEST_TOOLCHAIN_SENTINEL
+  status=0
+  HOME="$T/home" PATH="$FAKE:/usr/bin:/bin" GODOT="$FAKE/godot" \
+    UNSEEING_BOOTSTRAP_RUSTUP="$FAKE/rustup" \
+    BOOTSTRAP_TEST_LOG="$LOG" "$REPO/tools/bootstrap.sh" >"$OUT" 2>&1 || status=$?
+}
+
+run_install_fixture() {
+  : >"$LOG"
+  mkdir -p "$REPO/rust/target/release"
+  BOOTSTRAP_TEST_ARTIFACT="$REPO/rust/target/release/libunseeing_core.so"
+  if [ "$(uname)" = Darwin ]; then
+    BOOTSTRAP_TEST_ARTIFACT="$REPO/rust/target/release/libunseeing_core.dylib"
+  fi
+  export BOOTSTRAP_TEST_ARTIFACT
+  BOOTSTRAP_TEST_TOOLCHAIN_SENTINEL="$T/install-toolchain-installed"
+  export BOOTSTRAP_TEST_TOOLCHAIN_SENTINEL
+  BOOTSTRAP_TEST_INSTALL_RUSTUP_SOURCE="$FAKE/rustup"
+  export BOOTSTRAP_TEST_INSTALL_RUSTUP_SOURCE
+  status=0
+  HOME="$T/home" PATH="$INSTALL:/usr/bin:/bin" GODOT="$FAKE/godot" \
+    UNSEEING_BOOTSTRAP_INSTALL_RUSTUP="$INSTALL/install-rustup" \
+    BOOTSTRAP_TEST_LOG="$LOG" "$REPO/tools/bootstrap.sh" >"$OUT" 2>&1 || status=$?
+}
+
+clear_flags
+run_fixture
+require "the checkout path with spaces completes" test "$status" -eq 0
+require "the release editor-docs artifact is built" \
+  grep -q "rustup run 1.97.1 cargo build --release --features editor-docs --target-dir $REPO/rust/target" "$LOG"
+require "the exact compiler pin is selected through rustup" \
+  grep -q "rustup run 1.97.1 rustc --version" "$LOG"
+require "a fresh rustup receives the pinned toolchain without a second command" \
+  grep -q "rustup toolchain install 1.97.1 --profile minimal" "$LOG"
+require "the exact census permits success" grep -q "bootstrap: OK" "$OUT"
+import_line="$(grep -n -- '--import' "$LOG" | cut -d: -f1)"
+census_line="$(grep -n -- 'engine_census_probe.gd' "$LOG" | cut -d: -f1)"
+require "import happens before census" test "$import_line" -lt "$census_line"
+
+find "$T/home/.cargo" -type f -delete 2>/dev/null || true
+find "$T/home/.cargo" -type d -delete 2>/dev/null || true
+run_install_fixture
+require "rustup absence invokes the installer and completes in one command" test "$status" -eq 0
+require "the rustup installer boundary was actually crossed" \
+  grep -q "rustup installer invoked" "$LOG"
+require "the newly installed rustup is discovered in the current process" \
+  grep -q "rustup run 1.97.1 cargo build" "$LOG"
+
+clear_flags
+export BOOTSTRAP_TEST_IMPORT_FAIL=1
+run_fixture
+require "a noisy cache import yields to the authoritative census" test "$status" -eq 0
+
+clear_flags
+export BOOTSTRAP_TEST_GODOT_VERSION='4.7.0.stable.official.fixture'
+run_fixture
+require "a nearby Godot version is refused" test "$status" -eq 2
+require_absent "a version refusal never imports" "--import" "$LOG"
+
+clear_flags
+export BOOTSTRAP_TEST_CARGO_FAIL=1
+run_fixture
+require "a failed Rust build propagates" test "$status" -eq 1
+require_absent "a failed build never imports a stale extension" "--import" "$LOG"
+
+clear_flags
+export BOOTSTRAP_TEST_SKIP_ARTIFACT=1
+run_fixture
+require "a no-op build cannot reuse the library left by an earlier checkout" test "$status" -eq 1
+require_absent "a missing fresh artifact never reaches import" "--import" "$LOG"
+
+clear_flags
+export BOOTSTRAP_TEST_RUSTC_VERSION='rustc 1.97.0 (fixture)'
+run_fixture
+require "a rustup toolchain with the wrong compiler is refused" test "$status" -eq 2
+require_absent "a compiler-pin refusal never builds" "cargo build" "$LOG"
+
+clear_flags
+export BOOTSTRAP_TEST_CENSUS_FAIL=1
+run_fixture
+require "a failed class census propagates" test "$status" -eq 1
+require_absent "a failed census never announces success" "bootstrap: OK" "$OUT"
+
+clear_flags
+export BOOTSTRAP_TEST_WRONG_CENSUS=1
+run_fixture
+require "a successful process with the wrong class count is refused" test "$status" -eq 1
+require_absent "the wrong census never announces success" "bootstrap: OK" "$OUT"
+
+clear_flags
+unset BOOTSTRAP_TEST_ARTIFACT
+exit "$FAIL"

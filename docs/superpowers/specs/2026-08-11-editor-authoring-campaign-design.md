@@ -257,3 +257,13 @@ re-derive either fact from scratch.
    bare `UnseeingPlayer` dropped into a test scene with no `UnseeingGame`
    ancestor has only its own `ready()` to register its actions, so the
    second call is load-bearing for every such scene.
+3. **The original bootstrap stopped one platform short.** The detailed design
+   named only `tools/bootstrap.sh`; its implementation deliberately stopped on
+   Windows and printed a manual per-target Cargo command. The user's
+   2026-08-13 portability requirement supersedes that limit without changing
+   the one-command success criterion: macOS/Linux keep the POSIX entry point,
+   while Windows gains `tools\bootstrap.cmd` backed by PowerShell. The Windows
+   path selects the DLL target from the Godot editor architecture, builds the
+   same release `editor-docs` feature, imports, and requires the same 19-class
+   census. The complete current design is frozen separately in
+   `docs/superpowers/specs/2026-08-13-cross-platform-bootstrap-design.md`.

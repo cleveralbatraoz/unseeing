@@ -631,6 +631,12 @@ editor-docs = ["godot/register-docs"]
 
 - [ ] **Step 4: Wire the census probe into CI** (after the level probe, same pattern — it keeps the probe honest against class-roster drift) and **rewrite README step 1** (`game/README.md:50-65`): one command, `tools/bootstrap.sh`; keep the MissingNode paragraph (still the symptom of skipping it) and the relaunch-after-build rule; add one line: sound sources and the cat now show their blueprint shapes in the editor, and a yellow triangle on a node means the level found a fault there — hover it.
 
+> **Superseded 2026-08-13:** this executed task's Windows-manual boundary is
+> historical. The current native Windows entry point is
+> `tools\bootstrap.cmd`, backed by `tools/bootstrap.ps1`; it selects the Godot
+> executable's x86_64/ARM64 target and runs the same import and census contract.
+> See `docs/superpowers/specs/2026-08-13-cross-platform-bootstrap-design.md`.
+
 - [ ] **Step 5: Verify + commit.** `gdformat`/`gdlint` the probe; full pipeline green (now includes the census probe). Commit (subject: one command stands between a fresh clone and a working editor).
 
 ---

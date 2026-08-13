@@ -3,12 +3,9 @@
 # missing, build the Rust engine, let Godot import it, and prove every
 # engine class actually registered before calling it done.
 #
-# macOS and Linux only. The gdextension's Windows keys are per-triple
-# (game/unseeing.gdextension: windows.*.x86_64 / windows.*.arm64), so a
-# single host-arch `cargo build --release` can never satisfy them the way
-# it satisfies the macOS/Linux keys, which both point at the one
-# host-native rust/target/release/ artifact. Windows authoring is
-# documented below, not scripted.
+# This is the native macOS/Linux entry point. Windows uses
+# tools\bootstrap.cmd, which selects the target-specific DLL path declared by
+# game/unseeing.gdextension and provides this same build/import/census contract.
 #
 # Env knobs: GODOT (binary), same override every other tool/ script honours.
 set -eu
@@ -17,31 +14,70 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 case "$(uname)" in
   Darwin | Linux) : ;;
   *)
-    echo "bootstrap: this script covers macOS and Linux only (uname says $(uname))"
-    echo "bootstrap: on Windows, build the engine yourself: cd rust && cargo build --release --features editor-docs --target x86_64-pc-windows-msvc"
+    echo "bootstrap: this entry point covers macOS and Linux (uname says $(uname))"
+    printf '%s\n' 'bootstrap: on Windows run tools\bootstrap.cmd'
     exit 2
     ;;
 esac
 
 echo "bootstrap: checking for rustup/cargo"
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-if ! command -v cargo >/dev/null 2>&1; then
-  echo "bootstrap: cargo not found — installing rustup (non-interactive)"
+RUSTUP="${UNSEEING_BOOTSTRAP_RUSTUP:-}"
+if [ -z "$RUSTUP" ] && command -v rustup >/dev/null 2>&1; then
+  RUSTUP="$(command -v rustup)"
+fi
+if [ -z "$RUSTUP" ]; then
+  echo "bootstrap: rustup not found — installing it non-interactively"
   # `|| true`: under set -eu a nonzero exit here (curl network failure,
   # rustup's own installer refusing an unsupported platform, a conflicting
   # partial install) would kill the script on this line with rustup's raw
   # exit code, skipping the diagnostic two lines below entirely. Let it
   # fall through so that check is what actually reports the failure.
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || true
+  if [ -n "${UNSEEING_BOOTSTRAP_INSTALL_RUSTUP:-}" ]; then
+    "$UNSEEING_BOOTSTRAP_INSTALL_RUSTUP" || true
+  else
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || true
+  fi
   [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-  command -v cargo >/dev/null 2>&1 || {
-    echo "bootstrap: FAILED rustup install did not leave a usable cargo on PATH"
+  [ -x "$HOME/.cargo/bin/rustup" ] && PATH="$HOME/.cargo/bin:$PATH"
+  command -v rustup >/dev/null 2>&1 && RUSTUP="$(command -v rustup)"
+  [ -n "$RUSTUP" ] || {
+    echo "bootstrap: FAILED the install did not leave a usable rustup on PATH"
     echo "bootstrap: check the rustup/curl output above for why, then either:"
     echo "bootstrap: fix: install rustup yourself from https://rustup.rs, run . \"\$HOME/.cargo/env\" (or reopen your terminal), and re-run tools/bootstrap.sh"
     exit 2
   }
 fi
-echo "bootstrap: cargo OK ($(cargo --version)) — rust/rust-toolchain.toml pins 1.97.1 and its targets automatically"
+PIN="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$DIR/rust/rust-toolchain.toml" | head -1)"
+[ -n "$PIN" ] || {
+  echo "bootstrap: FAILED rust/rust-toolchain.toml carries no channel pin"
+  exit 2
+}
+if RUSTC_HAVE="$(cd "$DIR/rust" && "$RUSTUP" run "$PIN" rustc --version 2>/dev/null)"; then
+  :
+else
+  echo "bootstrap: installing pinned Rust $PIN toolchain"
+  "$RUSTUP" toolchain install "$PIN" --profile minimal || {
+    echo "bootstrap: FAILED pinned Rust $PIN toolchain install failed"
+    exit 2
+  }
+  RUSTC_HAVE="$(cd "$DIR/rust" && "$RUSTUP" run "$PIN" rustc --version 2>/dev/null)" || {
+    echo "bootstrap: FAILED rustup could not select the pinned Rust $PIN toolchain"
+    exit 2
+  }
+fi
+case "$RUSTC_HAVE" in
+  "rustc $PIN "*) : ;;
+  *)
+    echo "bootstrap: FAILED rustc version '$RUSTC_HAVE' != pinned '$PIN'"
+    exit 2
+    ;;
+esac
+CARGO_HAVE="$(cd "$DIR/rust" && "$RUSTUP" run "$PIN" cargo --version 2>/dev/null)" || {
+  echo "bootstrap: FAILED cargo is unavailable in the pinned Rust $PIN toolchain"
+  exit 2
+}
+echo "bootstrap: rustup/cargo OK ($RUSTC_HAVE; $CARGO_HAVE)"
 
 echo "bootstrap: checking for a C linker"
 command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || {
@@ -62,11 +98,25 @@ echo "bootstrap: building the engine (cargo build --release --features editor-do
 # later tools/export_macos.sh rebuilds this same path as a universal dylib,
 # and any plain `cargo build --release` after that clobbers universal back
 # to thin — irrelevant here, this build is for authoring, not for shipping.
-(cd "$DIR/rust" && cargo build --release --features editor-docs) || {
+case "$(uname)" in
+  Darwin) ARTIFACT="$DIR/rust/target/release/libunseeing_core.dylib" ;;
+  Linux) ARTIFACT="$DIR/rust/target/release/libunseeing_core.so" ;;
+esac
+rm -f "$ARTIFACT" || {
+  echo "bootstrap: FAILED cannot remove stale $ARTIFACT; close Godot and retry"
+  exit 1
+}
+(cd "$DIR/rust" && "$RUSTUP" run "$PIN" cargo build --release \
+  --features editor-docs --target-dir "$DIR/rust/target") || {
   echo "bootstrap: FAILED rust build (see errors above)"
   exit 1
 }
-echo "bootstrap: engine built"
+[ -f "$ARTIFACT" ] || {
+  echo "bootstrap: FAILED cargo exited 0 but did not recreate $ARTIFACT"
+  echo "bootstrap: fix: inspect the Cargo output above, then retry"
+  exit 1
+}
+echo "bootstrap: engine built ($ARTIFACT)"
 
 GODOT="${GODOT:-}"
 echo "bootstrap: locating Godot${GODOT:+ (GODOT=$GODOT)}"
@@ -101,9 +151,22 @@ echo "bootstrap: importing the project"
 "$GODOT" --headless --path "$DIR/game" --import >/dev/null 2>&1 || true
 
 echo "bootstrap: verifying every engine class registered"
-"$GODOT" --headless --path "$DIR/game" -s res://tests/probe/engine_census_probe.gd || {
-  echo "bootstrap: FAILED the engine census probe did not pass — see its output above"
+if CENSUS="$("$GODOT" --headless --path "$DIR/game" \
+  -s res://tests/probe/engine_census_probe.gd 2>&1)"; then
+  :
+else
+  status=$?
+  printf '%s\n' "$CENSUS"
+  echo "bootstrap: FAILED the engine census probe did not pass (exit $status) — see its output above"
   exit 1
-}
+fi
+printf '%s\n' "$CENSUS"
+case "$CENSUS" in
+  *"probe: PASS (19 checks)"*) : ;;
+  *)
+    echo "bootstrap: FAILED the engine census returned success without the exact 19-class verdict"
+    exit 1
+    ;;
+esac
 
 echo "bootstrap: OK — open game/project.godot in Godot 4.7.1 and double-click scenes/level_01.tscn"
