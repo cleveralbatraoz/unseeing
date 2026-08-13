@@ -17,5 +17,5 @@ if ! out="$("$GODOT" --headless --path "$DIR/game" -e -s res://tests/probe/edito
 fi
 printf '%s\n' "$out" | grep -aE '^(#|ok|not ok|1\.\.|probe:)' || true
 printf '%s' "$out" | grep -q '^# prefabs: mode=editor$' || { echo "probe: FAILED — not editor mode"; exit 1; }
-printf '%s' "$out" | grep -q '^probe: PASS (14 checks)$' || { echo "probe: FAILED — expected 14 checks"; exit 1; }
-echo "probe: prefabs OK — instances, repacking, census, ids and nested transforms agree"
+printf '%s' "$out" | grep -q '^probe: PASS (16 checks)$' || { echo "probe: FAILED — expected 16 checks"; exit 1; }
+echo "probe: prefabs OK — instances, repacking, census, face labels and nested transforms agree"

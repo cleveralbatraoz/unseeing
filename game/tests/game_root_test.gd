@@ -68,6 +68,46 @@ func test_wrong_level_root_refuses_before_adding_a_world() -> void:
 	assert_object(game.level).is_null()
 
 
+## Both reusable prop resources must survive the real runtime loader, keep a
+## plain composition root, and instantiate every typed piece that gives the
+## silhouette its shape. Covering both paths catches a missing/renamed table
+## resource that the chair-only level census cannot see.
+func test_reusable_prop_scenes_load_and_instantiate_at_runtime() -> void:
+	var fixtures: Array[Dictionary] = [
+		{"path": "res://scenes/props/chair.tscn", "root": "Chair", "pieces": 6},
+		{"path": "res://scenes/props/table.tscn", "root": "Table", "pieces": 5},
+	]
+	for fixture: Dictionary in fixtures:
+		var path: String = fixture["path"]
+		var exists := ResourceLoader.exists(path)
+		assert_bool(exists).append_failure_message(path).is_true()
+		if not exists:
+			continue
+		var packed := load(path) as PackedScene
+		assert_object(packed).append_failure_message(path).is_not_null()
+		if packed == null:
+			continue
+		var loaded: Node = auto_free(packed.instantiate())
+		assert_object(loaded).append_failure_message(path).is_not_null()
+		if loaded == null:
+			continue
+		var instance := loaded as Node3D
+		assert_object(instance).append_failure_message(path).is_not_null()
+		if instance == null:
+			continue
+		add_child(instance)
+		assert_str(instance.get_class()).append_failure_message(path).is_equal("Node3D")
+		assert_str(instance.name).append_failure_message(path).is_equal(fixture["root"])
+		var pieces := instance.find_children("*", "WaveProp", true, false)
+		assert_int(pieces.size()).append_failure_message(path).is_equal(fixture["pieces"])
+		for piece: WaveProp in pieces:
+			(
+				assert_int(piece.get_child_count())
+				. append_failure_message(str(piece.get_path()))
+				. is_equal(2)
+			)
+
+
 ## Five materials wearing the shaders `main.gd` assigned them, stacked at
 ## the same perceptual-ladder priorities, the cane's standing floor intact.
 func test_five_materials_wear_the_right_shaders_and_priorities() -> void:

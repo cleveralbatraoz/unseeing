@@ -9,6 +9,9 @@ const TABLE := preload("res://scenes/props/table.tscn")
 const DOORWAY := preload("res://scenes/rooms/doorway_8m.tscn")
 const ROOM := preload("res://scenes/rooms/room_16x16.tscn")
 const READY_FRAMES := 30
+const MIN_LABEL_SEP := 0.08
+const BOX_FACE_NEG_Y := 2
+const BOX_FACE_POS_Y := 3
 
 var _level: WaveLevel
 var _chair_a: Node3D
@@ -72,7 +75,42 @@ func _judge() -> void:
 	_check("repacking leaks no generated limbs", _pieces(copy).all(_piece_has_no_limbs))
 	var seat := _chair_a.get_node("Seat") as WaveProp
 	var back := _chair_a.get_node("Back") as WaveProp
-	_check("touching seat and back receive distinct ids", seat.oid() != back.oid())
+	var seat_skin := _skin(seat)
+	var back_skin := _skin(back)
+	var seat_box := AABB()
+	var back_box := AABB()
+	var seat_touch_label := NAN
+	var back_touch_label := NAN
+	var skins_exist := seat_skin != null and back_skin != null
+	if skins_exist:
+		seat_box = seat_skin.global_transform * seat_skin.get_aabb()
+		back_box = back_skin.global_transform * back_skin.get_aabb()
+		seat_touch_label = _uniform_face_label(seat_skin, BOX_FACE_POS_Y)
+		back_touch_label = _uniform_face_label(back_skin, BOX_FACE_NEG_Y)
+	_check(
+		"the chair seat top meets the back bottom",
+		skins_exist and is_equal_approx(seat_box.position.y + seat_box.size.y, back_box.position.y)
+	)
+	_check(
+		"the touching chair faces overlap across both planar axes",
+		(
+			skins_exist
+			and _positive_overlap(
+				seat_box.position.x, seat_box.end.x, back_box.position.x, back_box.end.x
+			)
+			and _positive_overlap(
+				seat_box.position.z, seat_box.end.z, back_box.position.z, back_box.end.z
+			)
+		)
+	)
+	_check(
+		"the actual touching face labels keep full crease separation",
+		(
+			not is_nan(seat_touch_label)
+			and not is_nan(back_touch_label)
+			and absf(seat_touch_label - back_touch_label) >= MIN_LABEL_SEP
+		)
+	)
 	_check(
 		"a nested spawn inherits the prefab quarter turn",
 		is_equal_approx(_level.spawn_yaw(), PI * 0.5)
@@ -116,6 +154,41 @@ func _limbs_are_ownerless(node: Node) -> bool:
 
 func _piece_has_no_limbs(piece: Node) -> bool:
 	return piece.get_child_count() == 0
+
+
+func _skin(piece: Node) -> MeshInstance3D:
+	for child: Node in piece.get_children():
+		if child is MeshInstance3D:
+			return child as MeshInstance3D
+	return null
+
+
+func _positive_overlap(a_min: float, a_max: float, b_min: float, b_max: float) -> bool:
+	return minf(a_max, b_max) - maxf(a_min, b_min) > 0.0
+
+
+## A labelled box emits four unshared vertices per face in Rust's documented
+## order: -X, +X, -Y, +Y, -Z, +Z. Returning NAN on a malformed/nonuniform
+## block makes the seam assertion fail instead of accidentally reading a
+## neighbouring face or accepting one good vertex.
+func _uniform_face_label(skin: MeshInstance3D, face: int) -> float:
+	if skin == null or skin.mesh == null or skin.mesh.get_surface_count() == 0:
+		return NAN
+	var arrays := skin.mesh.surface_get_arrays(0)
+	if arrays.size() <= Mesh.ARRAY_CUSTOM0:
+		return NAN
+	var encoded: Variant = arrays[Mesh.ARRAY_CUSTOM0]
+	if not encoded is PackedFloat32Array:
+		return NAN
+	var custom: PackedFloat32Array = encoded
+	var first := face * 4
+	if first < 0 or first + 4 > custom.size():
+		return NAN
+	var label := custom[first]
+	for vertex: int in range(first + 1, first + 4):
+		if custom[vertex] != label:
+			return NAN
+	return label
 
 
 func _check(what: String, ok: bool) -> void:
