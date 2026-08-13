@@ -306,3 +306,16 @@ re-derive either fact from scratch.
    327/327 across 31/31 suites; both class rosters contain 19 classes and the
    icon manifest contains ten. Editor probes pass 7+7, 11+3, 29+1, and 16.
    These remain checkpoint facts until the required final rebase and gates.
+8. **The Rust composition root's temporal inputs are total, not trusted.**
+   The original port preserved GDScript's arithmetic for ordinary frames but
+   also preserved its ability to admit NaN, infinity, reversed deltas, and
+   unrepresentably late appointments through `process` and restore. The
+   reviewed law is now explicit: invalid or reversed frame deltas advance by
+   zero; huge finite time saturates at `2^18` seconds, the last power-of-two
+   instant where the renderer's 32-bit `u_time` still changes at 60 Hz;
+   malformed restored flicker fields repair to their constructor values;
+   malformed demo appointments repair to the first due instant (`0.6`
+   seconds). Valid traces and the seeded RNG draw order stay unchanged. The
+   pure owners are `rust/src/flicker.rs` and `rust/src/demo_tap.rs`;
+   `rust/src/nodes/game.rs` only normalizes engine time, warns once per node
+   lifetime, and passes the effective elapsed value through.

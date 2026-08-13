@@ -47,6 +47,12 @@ const DROP_LEN_JITTER: f64 = 0.1;
 const DROP_SPACING_MIN: f64 = 8.0;
 /// Random extra gap on top of [`DROP_SPACING_MIN`].
 const DROP_SPACING_JITTER: f64 = 10.0;
+/// Largest elapsed instant the envelope represents. `u_time` crosses the
+/// Godot boundary into a 32-bit shader float: 2^18 is the last power of two
+/// where adding a 1/60-second frame still changes that representation. At
+/// 2^19 it rounds away completely. Larger external deltas saturate here so
+/// CPU appointments cannot run beyond the time the renderer can observe.
+const MAX_TIME: f64 = 262_144.0;
 
 /// A snapshot of [`Flicker`]'s four fields — the shape a reproduction blob
 /// carries across a capture/restore boundary, field for field matching
@@ -103,13 +109,15 @@ impl Flicker {
     /// the instant the draw count or order differs, even if every
     /// individual formula stays correct.
     pub fn next(&mut self, dt: f64, rng: &mut impl Randf) -> f64 {
-        self.t += dt;
-        self.level += (1.0 - self.level) * RELAX + (rng.randf() - 0.5) * JITTER;
+        let dt = valid_delta(dt);
+        self.t = (self.t + dt).min(MAX_TIME);
+        self.level += (1.0 - self.level) * RELAX + (valid_draw(rng.randf()) - 0.5) * JITTER;
         self.level = self.level.clamp(LEVEL_MIN, LEVEL_MAX);
         self.next_drop -= dt;
         if self.next_drop <= 0.0 {
-            self.drop_until = self.t + DROP_LEN_MIN + rng.randf() * DROP_LEN_JITTER;
-            self.next_drop = DROP_SPACING_MIN + rng.randf() * DROP_SPACING_JITTER;
+            self.drop_until =
+                (self.t + DROP_LEN_MIN + valid_draw(rng.randf()) * DROP_LEN_JITTER).min(MAX_TIME);
+            self.next_drop = DROP_SPACING_MIN + valid_draw(rng.randf()) * DROP_SPACING_JITTER;
         }
         if self.t < self.drop_until {
             // The STORED level is dimmed, not just the returned value —
@@ -136,11 +144,36 @@ impl Flicker {
 
     /// Replace this flicker's four fields wholesale — the write side of
     /// [`Self::state`], for a reproduction blob's restore.
-    pub fn restore(&mut self, s: FlickerState) {
-        self.t = s.t;
-        self.level = s.level;
-        self.drop_until = s.drop_until;
-        self.next_drop = s.next_drop;
+    pub fn restore(&mut self, s: FlickerState) -> bool {
+        self.t = bounded_or(s.t, 0.0, 0.0, MAX_TIME);
+        self.level = bounded_or(s.level, 1.0, LEVEL_MIN * DROP_DEPTH, LEVEL_MAX);
+        self.drop_until = bounded_or(s.drop_until, -1.0, -1.0, MAX_TIME);
+        self.next_drop = bounded_or(s.next_drop, 9.0, 0.0, MAX_TIME);
+        self.state() != s
+    }
+}
+
+fn valid_delta(dt: f64) -> f64 {
+    if dt.is_finite() && dt >= 0.0 {
+        dt.min(MAX_TIME)
+    } else {
+        0.0
+    }
+}
+
+fn valid_draw(draw: f64) -> f64 {
+    if draw.is_finite() {
+        draw.clamp(0.0, 1.0)
+    } else {
+        0.5
+    }
+}
+
+fn bounded_or(value: f64, fallback: f64, min: f64, max: f64) -> f64 {
+    if value.is_finite() && value >= min && value <= max {
+        value
+    } else {
+        fallback
     }
 }
 
@@ -313,5 +346,112 @@ mod tests {
         let floor = LEVEL_MIN * DROP_DEPTH;
         assert_eq!(f.next(0.02, &mut stub), floor);
         assert!(stub.exhausted());
+    }
+
+    /// Frame deltas are an engine boundary, so every f64 is admissible.
+    /// Reversed and non-finite time must act like a paused frame while still
+    /// consuming the ordinary jitter draw, preserving the seeded stream's
+    /// one-draw-per-process contract without poisoning stored state.
+    #[test]
+    fn invalid_frame_deltas_cannot_poison_the_envelope_or_rng_cadence() {
+        for delta in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let mut flicker = Flicker::new();
+            let mut stub = Stub::new([0.5]);
+
+            assert_eq!(flicker.next(delta, &mut stub), 1.0, "delta {delta}");
+            assert_eq!(flicker.state(), Flicker::new().state(), "delta {delta}");
+            assert!(stub.exhausted(), "delta {delta}");
+        }
+    }
+
+    /// A finite delta can still overflow addition. The state must remain
+    /// finite and bounded, and a scheduling frame must never manufacture an
+    /// infinite dropout deadline from it.
+    #[test]
+    fn a_huge_delta_saturates_at_a_representable_simulation_horizon() {
+        let mut flicker = Flicker::new();
+        let mut stub = Stub::new([0.5, 0.5, 0.5]);
+
+        let level = flicker.next(f64::MAX, &mut stub);
+        let state = flicker.state();
+
+        assert!(level.is_finite());
+        assert!(state.t.is_finite());
+        assert!(state.drop_until.is_finite());
+        assert!(state.next_drop.is_finite());
+        assert_eq!(state.t, 262_144.0);
+        assert_eq!(state.drop_until, 262_144.0);
+        assert_eq!(state.next_drop, 13.0);
+        assert_eq!(state.level, 1.0);
+        assert!(stub.exhausted());
+    }
+
+    /// Restore is fed by a Variant dictionary and therefore cannot assume a
+    /// well-formed capture. Every malformed float is repaired to a valid
+    /// deterministic state before it can reach the next transition.
+    #[test]
+    fn malformed_restored_state_is_repaired_before_it_can_emit_poison() {
+        let mut flicker = Flicker::new();
+        assert!(flicker.restore(FlickerState {
+            t: f64::NAN,
+            level: f64::INFINITY,
+            drop_until: f64::NEG_INFINITY,
+            next_drop: -f64::MAX,
+        }));
+
+        assert_eq!(flicker.state(), Flicker::new().state());
+        let mut stub = Stub::new([0.5]);
+        assert_eq!(flicker.next(1.0 / 60.0, &mut stub), 1.0);
+        assert!(flicker.state().t.is_finite());
+        assert!(stub.exhausted());
+    }
+
+    /// The injected trait declares f64, not a refined random-sample type.
+    /// Bad adapter output therefore has a defined neutral-jitter meaning.
+    #[test]
+    fn malformed_random_draw_is_neutral_and_never_poisonous() {
+        for (draw, expected) in [
+            (f64::NAN, 1.0),
+            (f64::INFINITY, 1.0),
+            (f64::NEG_INFINITY, 1.0),
+            (-2.0, 0.955),
+            (3.0, 1.045),
+        ] {
+            let mut flicker = Flicker::new();
+            let mut stub = Stub::new([draw]);
+
+            assert_eq!(flicker.next(0.25, &mut stub), expected, "draw {draw}");
+            assert!(flicker.state().level.is_finite(), "draw {draw}");
+            assert!(stub.exhausted(), "draw {draw}");
+        }
+    }
+
+    /// Drop length and spacing consume the same untrusted trait values as
+    /// jitter. Non-finite values are neutral; finite values clamp at the
+    /// declared [0, 1] random-sample domain, with exact appointments proving
+    /// neither branch can leak poison or silently skip a draw.
+    #[test]
+    fn malformed_trigger_draws_have_exact_neutral_and_clamped_appointments() {
+        for (length, spacing, expected_until, expected_next) in [
+            (f64::NAN, f64::INFINITY, 0.13, 13.0),
+            (f64::NEG_INFINITY, f64::NAN, 0.13, 13.0),
+            (-2.0, 3.0, 0.08, 18.0),
+            (3.0, -2.0, 0.18, 8.0),
+        ] {
+            let mut flicker = Flicker::new();
+            assert!(!flicker.restore(FlickerState {
+                t: 0.0,
+                level: 1.0,
+                drop_until: -1.0,
+                next_drop: 0.0,
+            }));
+            let mut stub = Stub::new([0.5, length, spacing]);
+
+            assert_eq!(flicker.next(0.0, &mut stub), 0.55);
+            let state = flicker.state();
+            assert_eq!(state.drop_until, expected_until, "length {length}");
+            assert_eq!(state.next_drop, expected_next, "spacing {spacing}");
+            assert!(stub.exhausted());
+        }
     }
 }

@@ -16,6 +16,14 @@ const FIRST_AT: f64 = 0.6;
 /// Interval between taps, measured from fire time.
 const REPEAT_EVERY: f64 = 4.0;
 
+/// Last appointment representable by the shared simulation clock.
+const MAX_APPOINTMENT: f64 = 262_144.0;
+
+/// Latest clock reading that can fire and leave its next appointment inside
+/// the renderer-visible time domain. `u_time` is a 32-bit shader float, and
+/// 2^18 is the last power of two where a 1/60-second frame remains observable.
+const LAST_FIRE_AT: f64 = MAX_APPOINTMENT - REPEAT_EVERY;
+
 /// Dev-only tap schedule: fires at regular intervals when armed.
 #[derive(Clone, Debug)]
 pub struct DemoTap {
@@ -44,7 +52,11 @@ impl DemoTap {
     /// to now + REPEAT_EVERY. The next due moment rides on the actual fire
     /// time, so any frame cadence lands within one frame of the ideal beat.
     pub fn fire_due(&mut self, now: f64) -> bool {
-        if !self.armed || now < self.next {
+        if !self.armed
+            || !now.is_finite()
+            || !(0.0..=LAST_FIRE_AT).contains(&now)
+            || now < self.next
+        {
             return false;
         }
         self.next = now + REPEAT_EVERY;
@@ -57,8 +69,14 @@ impl DemoTap {
     }
 
     /// Restore the next fire time. Used by `restore_blob`.
-    pub fn restore_next(&mut self, next: f64) {
-        self.next = next;
+    pub fn restore_next(&mut self, next: f64) -> bool {
+        let restored = if next.is_finite() && (0.0..=MAX_APPOINTMENT).contains(&next) {
+            next
+        } else {
+            FIRST_AT
+        };
+        self.next = restored;
+        restored != next
     }
 }
 
@@ -200,5 +218,58 @@ mod tests {
 
         tap.restore_next(7.5);
         assert_eq!(tap.next_at(), 7.5);
+    }
+
+    /// The public schedule accepts f64, so unordered and unbounded clock
+    /// readings must refuse a fire without changing a valid appointment.
+    #[test]
+    fn malformed_or_unrepresentable_now_never_fires_or_poison_schedule() {
+        for now in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, f64::MAX] {
+            let mut tap = DemoTap::new(Vector3::ZERO, Vector3::UP);
+            tap.armed = true;
+
+            assert!(!tap.fire_due(now), "now {now}");
+            assert_eq!(tap.next_at(), FIRST_AT, "now {now}");
+        }
+    }
+
+    /// A malformed restored appointment has one deterministic recovery:
+    /// return to the first due instant. Negative finite appointments are
+    /// malformed too; accepting one would silently back-date a tap.
+    #[test]
+    fn malformed_restored_appointment_returns_to_the_first_due_instant() {
+        for next in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, f64::MAX] {
+            let mut tap = DemoTap::new(Vector3::ZERO, Vector3::UP);
+            assert!(tap.restore_next(next), "next {next}");
+            assert_eq!(tap.next_at(), FIRST_AT, "next {next}");
+        }
+    }
+
+    /// Even a late but representable fire must leave enough numeric room for
+    /// the next interval rather than rounding it back onto the same instant.
+    #[test]
+    fn latest_representable_fire_always_advances_its_appointment() {
+        let mut tap = DemoTap::new(Vector3::ZERO, Vector3::UP);
+        tap.armed = true;
+        let now = 262_140.0;
+
+        assert!(tap.fire_due(now));
+        assert_eq!(tap.next_at(), 262_144.0);
+        assert!(tap.next_at() > now);
+    }
+
+    /// The last legal fire creates an appointment at the simulation horizon.
+    /// Capture and restore must accept that exact output even though it is too
+    /// late to serve as another fire input.
+    #[test]
+    fn final_appointment_round_trips_at_the_simulation_horizon() {
+        let mut original = DemoTap::new(Vector3::ZERO, Vector3::UP);
+        original.armed = true;
+        assert!(original.fire_due(262_140.0));
+
+        let captured = original.next_at();
+        let mut restored = DemoTap::new(Vector3::ZERO, Vector3::UP);
+        assert!(!restored.restore_next(captured));
+        assert_eq!(restored.next_at(), captured);
     }
 }

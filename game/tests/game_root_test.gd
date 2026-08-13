@@ -291,6 +291,35 @@ func test_apply_env_of_capture_env_round_trips() -> void:
 	assert_dict(second).is_equal(first)
 
 
+## A native caller can bypass the blob parser and hand `apply_env` every f64
+## directly. The boundary repairs the whole temporal group before capture can
+## expose poison, warns once, and suppresses repeats from a persistently bad
+## caller rather than flooding every frame.
+func test_apply_env_repairs_poison_and_warns_only_once() -> void:
+	var game := _game()
+	var poisoned: Dictionary = game.capture_env()
+	poisoned["now"] = NAN
+	poisoned["demo_next"] = INF
+	poisoned["flicker_t"] = -INF
+	poisoned["flicker_level"] = NAN
+	poisoned["flicker_drop_until"] = INF
+	poisoned["flicker_next_drop"] = -1.0
+	var warning := "UnseeingGame: repaired invalid temporal input; further temporal repairs are silent"
+	var first := func() -> void: game.apply_env(poisoned)
+	await assert_error(first).is_push_warning(warning)
+
+	var repaired: Dictionary = game.capture_env()
+	assert_float(repaired["now"]).is_equal(0.0)
+	assert_float(repaired["demo_next"]).is_equal(0.6)
+	assert_float(repaired["flicker_t"]).is_equal(0.0)
+	assert_float(repaired["flicker_level"]).is_equal(1.0)
+	assert_float(repaired["flicker_drop_until"]).is_equal(-1.0)
+	assert_float(repaired["flicker_next_drop"]).is_equal(9.0)
+
+	var repeated := func() -> void: game.apply_env(poisoned)
+	await assert_error(repeated).is_success()
+
+
 ## A world with a life behind it: ticked, looked, tapped, and a wave still
 ## queued — `restore_transaction_test.gd`'s `_boot_ticked`/`_lively`
 ## fixture recipe, adapted for the bare `UnseeingGame` this suite

@@ -75,6 +75,12 @@ const PRIORITY_SOURCES: i32 = 20;
 /// The deterministic-run seed every armed switch shares.
 const SEED: u64 = 0x5EED;
 
+/// Largest simulation instant retained by the composition root. `u_time`
+/// crosses into a 32-bit shader float: 2^18 is the last power of two where a
+/// 1/60-second frame changes that value; at 2^19 it rounds away. CPU clocks
+/// stop at the same observable horizon instead of silently diverging.
+const MAX_TIME: f64 = 262_144.0;
+
 /// `restore_blob` was called before `ready()` wired an observer — there is
 /// no reader to ask `env_of` at all.
 const NO_OBSERVER: &str = "the root holds no observer — restore_blob has nothing to ask env_of";
@@ -168,6 +174,9 @@ pub struct UnseeingGame {
     /// Whether the one-shot demo-arming check has already run —
     /// `main.gd`'s `_demo_checked`.
     demo_checked: bool,
+    /// Invalid temporal input can repeat every frame. Report it once per root
+    /// lifetime, then repair silently so a bad caller cannot flood the log.
+    temporal_fault_reported: bool,
     base: Base<Node3D>,
 }
 
@@ -335,7 +344,11 @@ impl INode3D for UnseeingGame {
     /// time): the runtime root is meant to process every frame it lives,
     /// so nothing here opts back out of it.
     fn process(&mut self, delta: f64) {
-        self.now += delta;
+        let (now, elapsed, repaired) = advance_clock(self.now, delta);
+        self.now = now;
+        if repaired {
+            self.report_temporal_repair();
+        }
         if let Some(mut player) = self.player.clone() {
             player.bind_mut().tick(self.now);
         }
@@ -346,7 +359,7 @@ impl INode3D for UnseeingGame {
         let Some(rng) = self.rng.as_mut() else {
             return; // ready() refused before the RNG was ever wired
         };
-        let flick = self.flicker.next(delta, rng);
+        let flick = self.flicker.next(elapsed, rng);
         for mut mat in self.wave_mats().iter_shared() {
             mat.set_shader_parameter("u_time", &self.now.to_variant());
             mat.set_shader_parameter("u_flick", &flick.to_variant());
@@ -399,7 +412,7 @@ impl INode3D for UnseeingGame {
         }
 
         if let Some(mut hero) = self.hero.clone() {
-            hero.bind_mut().update(self.now, delta);
+            hero.bind_mut().update(self.now, elapsed);
         }
 
         self.fire_demo_tap();
@@ -499,16 +512,20 @@ impl UnseeingGame {
     /// needs no validation at all.
     #[func]
     fn apply_env(&mut self, env: VarDictionary) {
-        self.now = dict_f64(&env, "now");
+        let (now, repaired_now) = valid_time_or_zero(dict_f64(&env, "now"));
+        self.now = now;
         self.demo_checked = dict_bool(&env, "demo_checked");
         self.demo.armed = dict_bool(&env, "demo_armed");
-        self.demo.restore_next(dict_f64(&env, "demo_next"));
-        self.flicker.restore(FlickerState {
+        let repaired_demo = self.demo.restore_next(dict_f64(&env, "demo_next"));
+        let repaired_flicker = self.flicker.restore(FlickerState {
             t: dict_f64(&env, "flicker_t"),
             level: dict_f64(&env, "flicker_level"),
             drop_until: dict_f64(&env, "flicker_drop_until"),
             next_drop: dict_f64(&env, "flicker_next_drop"),
         });
+        if repaired_now || repaired_demo || repaired_flicker {
+            self.report_temporal_repair();
+        }
         if let Some(rng) = self.rng.as_mut() {
             rng.set_state(dict_i64(&env, "flicker_rng_state") as u64);
         }
@@ -587,6 +604,17 @@ impl UnseeingGame {
 }
 
 impl UnseeingGame {
+    /// One warning per node lifetime is enough to expose a repaired engine or
+    /// restore boundary without turning a repeated bad delta into log spam.
+    fn report_temporal_repair(&mut self) {
+        if !self.temporal_fault_reported {
+            godot_warn!(
+                "UnseeingGame: repaired invalid temporal input; further temporal repairs are silent"
+            );
+            self.temporal_fault_reported = true;
+        }
+    }
+
     /// `try_load` a shader, refusing loudly and returning `None` on
     /// failure — the one place `ready()`'s three shader loads share their
     /// refusal wording.
@@ -694,6 +722,31 @@ fn post_quad_visible(web: bool, search: Option<&str>) -> bool {
     !web || !search.is_some_and(|query| query.contains("gprobe"))
 }
 
+/// Advance the simulated clock over the complete f64 input domain. Invalid
+/// deltas pause one frame; invalid prior state restarts from zero; huge finite
+/// deltas saturate at a horizon where the game's sub-second cadences remain
+/// representable. The returned elapsed value is what delta-driven children
+/// receive, keeping all clocks on the same repaired transition.
+fn advance_clock(now: f64, delta: f64) -> (f64, f64, bool) {
+    let (now, repaired_now) = valid_time_or_zero(now);
+    let repaired_delta = !delta.is_finite() || delta < 0.0 || delta > MAX_TIME - now;
+    let delta = if delta.is_finite() && delta >= 0.0 {
+        delta.min(MAX_TIME)
+    } else {
+        0.0
+    };
+    let advanced = (now + delta).min(MAX_TIME);
+    (advanced, advanced - now, repaired_now || repaired_delta)
+}
+
+fn valid_time_or_zero(value: f64) -> (f64, bool) {
+    if value.is_finite() && (0.0..=MAX_TIME).contains(&value) {
+        (value, false)
+    } else {
+        (0.0, true)
+    }
+}
+
 /// `window.location.search`, read through the JavaScriptBridge singleton —
 /// reached DYNAMICALLY (`Engine::get_singleton`, not the `JavaScriptBridge`
 /// type) because that class does not exist in desktop bindings at all;
@@ -738,7 +791,7 @@ fn dict_i64(env: &VarDictionary, key: &str) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::post_quad_visible;
+    use super::{advance_clock, post_quad_visible};
 
     #[test]
     fn gprobe_hides_only_the_web_post_quad() {
@@ -746,5 +799,35 @@ mod tests {
         assert!(post_quad_visible(true, Some("?demo")));
         assert!(post_quad_visible(true, None));
         assert!(post_quad_visible(false, Some("?gprobe")));
+    }
+
+    #[test]
+    fn game_clock_rejects_reversed_and_non_finite_frame_time() {
+        for delta in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.01] {
+            assert_eq!(
+                advance_clock(12.5, delta),
+                (12.5, 0.0, true),
+                "delta {delta}"
+            );
+        }
+        assert_eq!(advance_clock(f64::NAN, 0.25), (0.25, 0.25, true));
+    }
+
+    #[test]
+    fn game_clock_saturates_huge_time_without_emitting_infinity() {
+        let (now, elapsed, repaired) = advance_clock(12.5, f64::MAX);
+        assert!(now.is_finite());
+        assert_eq!(now, 262_144.0);
+        assert!(elapsed.is_finite());
+        assert!(now < f64::MAX);
+        assert!(elapsed > 0.0);
+        assert!(repaired);
+    }
+
+    #[test]
+    fn simulation_horizon_is_last_power_of_two_where_shader_time_advances_at_sixty_hz() {
+        let frame = 1.0_f32 / 60.0;
+        assert!(262_144.0_f32 + frame > 262_144.0_f32);
+        assert_eq!(524_288.0_f32 + frame, 524_288.0_f32);
     }
 }
