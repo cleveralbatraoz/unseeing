@@ -7,9 +7,9 @@ publication pass.
 
 ## 2026-08-13 post-rebase supersession
 
-The campaign was rebased onto `origin/main` at `dfbb69a`; `cdf4f3b` is the
+The campaign was rebased onto `origin/main` at `dfbb69a`; `e5f874c` is the
 strict gdUnit-runner milestone, followed by live-contract cleanup through at
-least `696517e` and this active documentation closeout. Because the shared
+least `517b483` and the committed documentation closeout. Because the shared
 branch can advance during closeout, recompute HEAD before publication. The
 older material below is retained as a dated research/evidence ledger, not as
 prose to paste into the wiki. Its file:line citations describe the commit

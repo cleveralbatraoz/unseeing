@@ -122,5 +122,5 @@ following corrections control any later review:
   fixed role labels; world solids receive per-face labels. `AGENTS.md` owns the
   current new-object checklist.
 - Historical task deltas are not closeout expectations. The current measured
-  baseline at `cdf4f3b` is 405 Cargo tests, 320 gdUnit cases in 31 suites, 19
+  baseline at `e5f874c` is 405 Cargo tests, 320 gdUnit cases in 31 suites, 19
   classes, and ten icons.

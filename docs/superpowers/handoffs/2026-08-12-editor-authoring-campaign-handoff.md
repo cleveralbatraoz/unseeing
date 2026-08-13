@@ -26,11 +26,12 @@ intermediate architecture.
   `.claude/worktrees/editor-authoring-campaign`.
 - The campaign was rebased onto fetched `origin/main` at `dfbb69a`. That commit
   is the current merge base.
-- `cdf4f3b` is the strict gdUnit-runner milestone. Post-milestone contract
-  cleanup currently includes `4cf55b4`, `32cedf7`, `e009f6e`, and `696517e`;
-  the handoff/wiki closeout is committed, and further closeout/history commits
-  may still move HEAD. Recompute the range, inspect `git status`, and preserve
-  concurrent or user-owned changes before acting.
+- `e5f874c` is the strict gdUnit-runner milestone. Post-milestone contract
+  cleanup includes `1ab7f82`, `e01469d`, `5e647da`, and `517b483`; the
+  handoff/wiki closeout is committed at `5eb7263`. History was then cleaned
+  without changing the final tree. Further closeout commits may still move
+  HEAD, so recompute the range, inspect `git status`, and preserve concurrent
+  or user-owned changes before acting.
 - The feature implementation is complete. The branch is not integrated, the
   wiki is not published, nothing is deployed, and no issue is authorized for
   closure.
@@ -165,22 +166,24 @@ state into a scene.
 The narrative commits carry the detailed why. These are the decisions most
 likely to be lost by reading only the pre-rebase plans:
 
-- `73702bd` restored the designer-facing two-law boundary on top of main and
+- `8bb9cb7` restored the designer-facing two-law boundary on top of main and
   translated the new-object checklist from flat object ids to per-face
   superfaces/fixed roles/drawless data.
-- `aafdd00` retained WaveRun's full level-relative wall addresses and deleted
-  the obsolete source-recolouring seam suite.
-- `d423fc2` routed generated-wall diagnostics to the authored WaveRun and moved
+- `347401e` retained WaveRun's full level-relative wall addresses and
+  reconciled source coverage with the fixed-role `CUSTOM0` vocabulary. The two
+  obsolete source-recolouring-only commits were removed during history cleanup
+  rather than replayed and deleted.
+- `07eaf0e` routed generated-wall diagnostics to the authored WaveRun and moved
   pose absorption into a total pure law with refusal for poisoned/overflowing
   input.
-- `93b281f` replaced first-face/object-id prefab claims with reads of the real
+- `e046484` replaced first-face/object-id prefab claims with reads of the real
   two touching `CUSTOM0` face labels.
-- `cdf4f3b` made gdUnit success depend on a source census and three exact
+- `e5f874c` made gdUnit success depend on a source census and three exact
   terminal records rather than process exit or a generic `PASSED` line.
-- `4cf55b4` removed remaining live flat-object-id/source-colouring prose,
-  `32cedf7` aligned bootstrap diagnostics with repository pins, and `e009f6e`
+- `1ab7f82` removed remaining live flat-object-id/source-colouring prose,
+  `e01469d` aligned bootstrap diagnostics with repository pins, and `5e647da`
   made the pure core's documentation state the superface truth.
-- `696517e` clarified that generated RunSeg walls keep real level-relative
+- `517b483` clarified that generated RunSeg walls keep real level-relative
   paint addresses while their authored WaveRun owns the repairable editor
   warning.
 

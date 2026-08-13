@@ -488,7 +488,7 @@ pub fn assign(sf: &Superfaces, anchors: &[(usize, f64)], palette: &[f64]) -> Lab
 This plan is the frozen design/execution route that produced the architecture
 the editor-authoring campaign inherited at merge base `dfbb69a`.
 
-- Campaign commit `73702bd` ported its Godot/Rust authoring laws onto this
+- Campaign commit `8bb9cb7` ported its Godot/Rust authoring laws onto this
   per-face model. World solids enter the superface graph; sources and creatures
   retain fixed role labels; intentionally drawless data consumes no label.
   Any earlier campaign plan that describes six-slot source recolouring or a

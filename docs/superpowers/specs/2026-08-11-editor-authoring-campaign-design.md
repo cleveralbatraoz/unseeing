@@ -283,7 +283,7 @@ re-derive either fact from scratch.
    only a three-line adapter, so success criterion 6's reference to the razor
    being stated there is historical. The enforceable two-law split and
    new-object checklist live in `AGENTS.md`, and GDScript is tests/probes-only,
-   not designer-facing residue. At `cdf4f3b` the automated census is 405 Cargo
+   not designer-facing residue. At `e5f874c` the automated census is 405 Cargo
    tests, 320 gdUnit cases in 31 suites, 19 classes, and ten icons. Feature
    implementation is complete, but human-editor, integration, wiki,
    deployment, and issue-closure gates remain separate; none is authorized by
