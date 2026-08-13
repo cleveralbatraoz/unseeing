@@ -188,8 +188,10 @@ _SELFTEST_FIXTURES = [
      [(0, [50, 50, 50]), (4, [0, 7, 3])],
      [[50, 50, 50], [50, 57, 60]]),
     # Multi-channel: Sub across a 3-channel (RGB, colour type 2) row —
-    # the left neighbour is bpp=3 bytes back, not 1, so a per-channel
-    # stride bug would only show up here.
+    # the left neighbour is bpp=3 bytes back, not 1, so this is where a
+    # per-channel stride bug in the SUB branch shows up. Sub is one of
+    # three branches that read a strided neighbour; the other two are
+    # covered further down.
     ("rgb_3channel_sub", 2, 2,
      [(1, [10, 20, 30, 5, 6, 7])],
      [[10, 20, 30, 15, 26, 37]]),
@@ -197,6 +199,40 @@ _SELFTEST_FIXTURES = [
     ("rgba_4channel_up", 6, 2,
      [(0, [1, 2, 3, 4, 5, 6, 7, 8]), (2, [10, 10, 10, 10, 1, 1, 1, 1])],
      [[1, 2, 3, 4, 5, 6, 7, 8], [11, 12, 13, 14, 6, 7, 8, 9]]),
+    # Multi-channel AVERAGE and PAETH — the combination real captures
+    # actually take, and the one the fixtures above miss entirely. Both of
+    # those branches read a neighbour `channels` bytes back, and every
+    # other Average/Paeth fixture here is colour type 0, where `x -
+    # channels` and `x - 1` are the same expression. Chrome hands this
+    # gate colour type 2 (see decode_png's own docstring) and picks a
+    # filter per row, so a stride bug in exactly these two branches would
+    # misdecode production screenshots while the self-test stayed green.
+    #
+    # Average, RGB: row 0 is unfiltered, so row 1 exercises a real `b`
+    # (above) alongside the strided `a` (left). At x = 3 the true left
+    # neighbour is byte 0 (6), not byte 2 (18) — 4 + (6+40)//2 = 27, where
+    # the 1-byte stride would give 4 + (18+40)//2 = 33.
+    ("rgb_3channel_average", 2, 2,
+     [(0, [10, 20, 30, 40, 50, 60]), (3, [1, 2, 3, 4, 5, 6])],
+     [[10, 20, 30, 40, 50, 60], [6, 12, 18, 27, 36, 45]]),
+    # Paeth reads TWO strided neighbours — `a` from this row and `c` from
+    # the row above — so it takes two fixtures to pin both.
+    #
+    # `a`: a uniform row above makes b == c, which drives the predictor
+    # straight to `a` (p = a + b - c = a, so pa = 0 wins outright). At
+    # x = 3 that is byte 0 (101), giving 4 + 101 = 105; a 1-byte stride
+    # would read byte 2 (103) and give 107.
+    ("rgb_3channel_paeth_left_stride", 2, 2,
+     [(0, [100, 100, 100, 100, 100, 100]), (4, [1, 2, 3, 4, 5, 6])],
+     [[100, 100, 100, 100, 100, 100], [101, 102, 103, 105, 107, 109]]),
+    # `c`: here the left neighbour is 10 under EITHER stride, so only the
+    # above-left byte can move the answer — and it moves it across a
+    # branch, not by a little. True c = prev[0] = 200 gives
+    # paeth(10, 200, 200) = a = 10; a 1-byte stride reads prev[2] = 10 and
+    # gives paeth(10, 200, 10) = b = 200.
+    ("rgb_3channel_paeth_upleft_stride", 2, 2,
+     [(0, [200, 5, 10, 200, 60, 70]), (4, [66, 0, 0, 0, 0, 0])],
+     [[200, 5, 10, 200, 60, 70], [10, 5, 10, 10, 60, 70]]),
     # All five filter types, mixed across consecutive rows of ONE image —
     # the shape a real screenshot actually takes (Chrome picks a filter
     # per row independently), not five isolated single-row PNGs.
@@ -358,6 +394,38 @@ def count_lit(data):
     return lit, w * h
 
 
+def data_pass_split(data, lit_floor=8, split=8):
+    """(pixels whose G differs from their R, non-black pixels) — the
+    witness that a screenshot really is the DATA pass and not the
+    composited game.
+
+    The composite cannot produce a single such pixel. hearing_post.gdshader
+    builds its whole output from `vec3(scalar)` terms — `vec3(edge *
+    reveal)`, the per-pulse `col += vec3(...)`, the `vec3(0.006)` void, a
+    scalar vignette multiply and a scalar grain add — so R, G and B are
+    EQUAL in every composited pixel, healthy or dead. The data pass packs
+    three different quantities instead (`data_core.gdshaderinc::pack_data`:
+    R reveal, G label, B distance), so its pixels disagree.
+
+    `split` and `lit_floor` are tolerances, not thresholds: the composite's
+    channels are equal exactly, so any positive `split` separates the two
+    images, and `lit_floor` only drops the untouched background the camera
+    never wrote to."""
+    w, h, raw, channels, stride = decode_png(data)
+    assert channels >= 3, "no R/G split to measure in a greyscale screenshot"
+    apart = seen = 0
+    for row in range(h):
+        line = raw[row * stride + 1: (row + 1) * stride]
+        for x in range(0, len(line), channels):
+            r, g, b = line[x], line[x + 1], line[x + 2]
+            if max(r, g, b) <= lit_floor:
+                continue
+            seen += 1
+            if abs(g - r) > split:
+                apart += 1
+    return apart, seen
+
+
 def g_channel_levels(data, bucket=8, min_pixels=6):
     """Distinct quantized G-channel byte values, each covering at least
     min_pixels pixels (a handful of anti-aliased seam pixels at one
@@ -475,6 +543,36 @@ for _ in range(10):
         break
     prev_levels = levels
     time.sleep(1)
+
+# WHICH IMAGE IS THIS? The level count below is only meaningful on the data
+# pass. The composite is guaranteed to carry many G levels — its void term
+# lights every pixel and the vignette and grain spread that across dozens
+# of buckets — so if the ?gprobe hide (main.gd's `_post_quad`) ever stops
+# firing, the probe would screenshot the COMPOSITE and report PASS for a
+# gate that had stopped looking at CUSTOM0 at all. Two conditions cannot be
+# allowed to collapse into one: this repo has paid for a silently green
+# gate twice already (deploy.sh reading UNSEEING_BUILD back off the live
+# page; gdUnit4's empty run).
+#
+# One in eight is the floor, and it is deliberately far below what the data
+# pass produces rather than tight against it. Measured on this gate, same
+# build, two runs: the data pass split 87056/184320 (47%) and
+# 184097/184320 (99.9%) — it swings with how much of the room the demo tap
+# has revealed by capture time — while the COMPOSITE captured in those same
+# two runs split 0/21365 and 0/21332. Exactly zero, both times, as the
+# shader says it must. There is no threshold to tune between those two
+# populations; the only real risk is a floor high enough to redden a
+# healthy run, so it sits well under the lower observation.
+apart, seen = data_pass_split(png2)
+print(f"smoke: data_pass_split={apart}/{seen}")
+if seen == 0 or apart * 8 < seen:
+    print(
+        "smoke: FAIL — this screenshot is the composited game, not the data "
+        "pass: R and G agree almost everywhere, which only hearing_post can "
+        "produce. The ?gprobe post-quad hide is not firing, so the G reading "
+        "below would prove nothing about CUSTOM0."
+    )
+    sys.exit(1)
 
 print(f"smoke: gprobe_overlay={g_overlay} g_levels={sorted(levels)}")
 if len(levels) <= 1:
