@@ -1,19 +1,51 @@
 //! Pure, atomic derivation of the labels a level boundary later applies.
 
+use std::collections::BTreeSet;
+
 use crate::oid_palette::Box3;
-use crate::render::faces::{Face, Shape, bounds, faces};
+use crate::render::faces::{Face, Shape, bounds, faces, paint_ordinal_count, planar_face_count};
 use crate::render::labels;
-use crate::render::paint::{self, ShapeKind};
 use crate::render::superface::{Superfaces, superfaces};
 
 const LABEL_MIN: f64 = 0.15;
 const LABEL_MAX: f64 = 0.96;
 pub const MAX_PAINT_ENTRIES: usize = 256;
 pub const MAX_PAINT_SOURCES: usize = 256;
-pub const MAX_PALETTE_VALUES: usize = 64;
+pub const MAX_PALETTE_VALUES: usize = 11;
 pub const MAX_SOURCE_ROLES: usize = 512;
-const MAX_PAINT_CLASSES: usize = 2_304;
 type Separations = Vec<(usize, usize)>;
+
+struct SeparationBuilder {
+    ordered: Separations,
+    seen: BTreeSet<(usize, usize)>,
+}
+
+impl SeparationBuilder {
+    fn from_existing(existing: &[(usize, usize)]) -> Self {
+        let mut builder = Self {
+            ordered: Vec::with_capacity(existing.len()),
+            seen: BTreeSet::new(),
+        };
+        for &(a, b) in existing {
+            builder.add(a, b);
+        }
+        builder
+    }
+
+    fn add(&mut self, a: usize, b: usize) {
+        if a == b {
+            return;
+        }
+        let pair = if a < b { (a, b) } else { (b, a) };
+        if self.seen.insert(pair) {
+            self.ordered.push(pair);
+        }
+    }
+
+    fn finish(self) -> Separations {
+        self.ordered
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SourceRoleInput {
@@ -28,18 +60,8 @@ pub(crate) struct SourceRoleGraph {
     pub(crate) classes_of_source: Vec<Vec<usize>>,
 }
 
-fn add_sep(separations: &mut Separations, a: usize, b: usize) {
-    if a == b {
-        return;
-    }
-    let pair = if a < b { (a, b) } else { (b, a) };
-    if !separations.contains(&pair) {
-        separations.push(pair);
-    }
-}
-
 fn separate_from_touching_neighbours(
-    separations: &mut Separations,
+    separations: &mut SeparationBuilder,
     class: usize,
     solid: usize,
     faces: &[Face],
@@ -59,7 +81,7 @@ fn separate_from_touching_neighbours(
             if face.solid == other
                 && let Some(&other_class) = sf.class_of.get(index)
             {
-                add_sep(separations, class, other_class);
+                separations.add(class, other_class);
             }
         }
     }
@@ -72,8 +94,8 @@ pub(crate) fn add_flank_classes(
     flank_solids: &[usize],
 ) -> Result<(Vec<usize>, usize, Separations), PaintPlanError> {
     let mut classes = sf.classes;
-    let mut separations = sf.separations.clone();
-    let mut flank_classes = reserved(flank_solids.len())?;
+    let mut separations = SeparationBuilder::from_existing(&sf.separations);
+    let mut flank_classes = reserved(flank_solids.len());
     let cluster_span = sf
         .cluster_of_solid
         .iter()
@@ -82,7 +104,7 @@ pub(crate) fn add_flank_classes(
         .map(|max| max.checked_add(1).ok_or(PaintPlanError::ClassOverflow))
         .transpose()?
         .unwrap_or(0);
-    let mut cluster_sizes = filled(cluster_span, 0usize)?;
+    let mut cluster_sizes = filled(cluster_span, 0usize);
     for &cluster in &sf.cluster_of_solid {
         let Some(size) = cluster_sizes.get_mut(cluster) else {
             return Err(PaintPlanError::ClassOverflow);
@@ -114,7 +136,7 @@ pub(crate) fn add_flank_classes(
                 let Some(&rim_class) = sf.class_of.get(index) else {
                     return Err(PaintPlanError::ClassOverflow);
                 };
-                add_sep(&mut separations, class, rim_class);
+                separations.add(class, rim_class);
             }
         }
         separate_from_touching_neighbours(&mut separations, class, solid, faces, sf, touching);
@@ -125,15 +147,11 @@ pub(crate) fn add_flank_classes(
                 .iter()
                 .any(|&(x, y)| (x == a_solid && y == b_solid) || (x == b_solid && y == a_solid))
             {
-                add_sep(
-                    &mut separations,
-                    flank_classes[a_index],
-                    flank_classes[b_index],
-                );
+                separations.add(flank_classes[a_index], flank_classes[b_index]);
             }
         }
     }
-    Ok((flank_classes, classes, separations))
+    Ok((flank_classes, classes, separations.finish()))
 }
 
 pub(crate) fn add_source_role_classes(
@@ -145,11 +163,11 @@ pub(crate) fn add_source_role_classes(
 ) -> Result<SourceRoleGraph, PaintPlanError> {
     let world_classes = classes;
     let mut classes = classes;
-    let mut separations = separations.to_vec();
-    let mut classes_of_source = reserved(sources.len())?;
+    let mut separations = SeparationBuilder::from_existing(separations);
+    let mut classes_of_source = reserved(sources.len());
     for source in sources {
         let role_count = usize::from(source.roles);
-        let mut roles = reserved(role_count)?;
+        let mut roles = reserved(role_count);
         for _ in 0..role_count {
             roles.push(classes);
             classes = classes
@@ -158,7 +176,7 @@ pub(crate) fn add_source_role_classes(
         }
         for (index, &a) in roles.iter().enumerate() {
             for &b in roles.iter().skip(index + 1) {
-                add_sep(&mut separations, a, b);
+                separations.add(a, b);
             }
         }
         classes_of_source.push(roles);
@@ -169,7 +187,7 @@ pub(crate) fn add_source_role_classes(
                 for &role in roles {
                     for &class in owned {
                         if class < world_classes {
-                            add_sep(&mut separations, role, class);
+                            separations.add(role, class);
                         }
                     }
                 }
@@ -181,7 +199,7 @@ pub(crate) fn add_source_role_classes(
             if a.area.touches(&b.area) {
                 for &a_class in a_roles {
                     for &b_class in b_roles {
-                        add_sep(&mut separations, a_class, b_class);
+                        separations.add(a_class, b_class);
                     }
                 }
             }
@@ -189,7 +207,7 @@ pub(crate) fn add_source_role_classes(
     }
     Ok(SourceRoleGraph {
         classes,
-        separations,
+        separations: separations.finish(),
         classes_of_source,
     })
 }
@@ -225,7 +243,6 @@ pub fn update_role_labels(previous: &[Option<f64>], supplied: &[f64]) -> Vec<Opt
 
 pub struct PaintEntryInput {
     pub shape: Shape,
-    pub kind: ShapeKind,
     pub anchor: Option<f64>,
     pub is_wall: bool,
 }
@@ -300,8 +317,6 @@ pub enum RequestDomain {
     Sources,
     PaletteValues,
     SourceRoles,
-    Classes,
-    WorkingMemory,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -310,9 +325,6 @@ pub enum PaintPlanError {
         domain: RequestDomain,
         actual: usize,
         limit: usize,
-    },
-    AllocationFailed {
-        domain: RequestDomain,
     },
     EmptyPalette,
     InvalidPaletteValue {
@@ -354,20 +366,14 @@ fn check_limit(domain: RequestDomain, actual: usize, limit: usize) -> Result<(),
     }
 }
 
-fn reserved<T>(capacity: usize) -> Result<Vec<T>, PaintPlanError> {
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(capacity)
-        .map_err(|_| PaintPlanError::AllocationFailed {
-            domain: RequestDomain::WorkingMemory,
-        })?;
-    Ok(values)
+fn reserved<T>(capacity: usize) -> Vec<T> {
+    Vec::with_capacity(capacity)
 }
 
-fn filled<T: Clone>(length: usize, value: T) -> Result<Vec<T>, PaintPlanError> {
-    let mut values = reserved(length)?;
+fn filled<T: Clone>(length: usize, value: T) -> Vec<T> {
+    let mut values = reserved(length);
     values.resize(length, value);
-    Ok(values)
+    values
 }
 
 fn validate_request_size(request: &PaintRequest) -> Result<(), PaintPlanError> {
@@ -397,20 +403,7 @@ fn validate_request_size(request: &PaintRequest) -> Result<(), PaintPlanError> {
         });
     };
     check_limit(RequestDomain::SourceRoles, source_roles, MAX_SOURCE_ROLES)?;
-    let face_classes = request.entries.iter().try_fold(0usize, |count, input| {
-        count
-            .checked_add(paint::face_count(input.kind))
-            .and_then(|count| count.checked_add(usize::from(input.kind == ShapeKind::Column)))
-    });
-    let classes = face_classes.and_then(|count| count.checked_add(source_roles));
-    let Some(classes) = classes else {
-        return Err(PaintPlanError::RequestTooLarge {
-            domain: RequestDomain::Classes,
-            actual: usize::MAX,
-            limit: MAX_PAINT_CLASSES,
-        });
-    };
-    check_limit(RequestDomain::Classes, classes, MAX_PAINT_CLASSES)
+    Ok(())
 }
 
 fn valid_label(label: f64) -> bool {
@@ -451,19 +444,19 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
         }
     }
 
-    let mut entry_commands = filled(request.entries.len(), PaintCommand::KeepExisting)?;
-    let mut entry_faults = reserved(request.entries.len())?;
-    let mut accepted = filled(request.entries.len(), false)?;
-    let mut entry_areas = filled(request.entries.len(), None)?;
+    let mut entry_commands = filled(request.entries.len(), PaintCommand::KeepExisting);
+    let mut entry_faults = reserved(request.entries.len());
+    let mut accepted = filled(request.entries.len(), false);
+    let mut entry_areas = filled(request.entries.len(), None);
     let face_capacity = request
         .entries
         .iter()
         .try_fold(0usize, |count, input| {
-            count.checked_add(paint::face_count(input.kind))
+            count.checked_add(paint_ordinal_count(&input.shape))
         })
         .ok_or(PaintPlanError::ClassOverflow)?;
-    let mut all_faces = reserved(face_capacity)?;
-    let mut ordinal_of_face = reserved(face_capacity)?;
+    let mut all_faces = reserved(face_capacity);
+    let mut ordinal_of_face = reserved(face_capacity);
     for (entry, input) in request.entries.iter().enumerate() {
         let Some(area) = bounds(&input.shape) else {
             entry_faults.push(IndexedEntryFault {
@@ -473,10 +466,7 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
             continue;
         };
         let built = faces(entry, &input.shape);
-        let expected = match input.kind {
-            ShapeKind::Column => paint::face_count(input.kind) - 1,
-            _ => paint::face_count(input.kind),
-        };
+        let expected = planar_face_count(&input.shape);
         if built.len() != expected {
             entry_faults.push(IndexedEntryFault {
                 entry,
@@ -499,7 +489,7 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
         .checked_mul(request.entries.len().saturating_sub(1))
         .and_then(|pairs| pairs.checked_div(2))
         .ok_or(PaintPlanError::ClassOverflow)?;
-    let mut touching = reserved(pair_capacity)?;
+    let mut touching = reserved(pair_capacity);
     for first in 0..request.entries.len() {
         if !accepted[first] {
             continue;
@@ -520,7 +510,7 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
         .iter()
         .enumerate()
         .filter_map(|(entry, input)| {
-            (accepted[entry] && input.kind == ShapeKind::Column).then_some(entry)
+            (accepted[entry] && matches!(input.shape, Shape::Column { .. })).then_some(entry)
         })
         .collect();
     sf.classes
@@ -528,11 +518,11 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
         .ok_or(PaintPlanError::ClassOverflow)?;
     let (flank_classes, classes, separations) =
         add_flank_classes(&sf, &all_faces, &touching, &flank_entries)?;
-    let mut flank_of_entry = filled(request.entries.len(), None)?;
+    let mut flank_of_entry = filled(request.entries.len(), None);
     for (entry, class) in flank_entries.iter().copied().zip(flank_classes) {
         flank_of_entry[entry] = Some(class);
     }
-    let mut classes_of_entry = filled(request.entries.len(), Vec::new())?;
+    let mut classes_of_entry = filled(request.entries.len(), Vec::new());
     for (face_index, face) in all_faces.iter().enumerate() {
         let Some(&class) = sf.class_of.get(face_index) else {
             return Err(PaintPlanError::ClassOverflow);
@@ -545,7 +535,7 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
         }
     }
 
-    let mut anchor_by_class = filled(classes, None)?;
+    let mut anchor_by_class = filled(classes, None);
     for (entry, input) in request.entries.iter().enumerate() {
         let Some(label) = input.anchor else { continue };
         let mut seen = Vec::new();
@@ -591,10 +581,10 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
         }
     }
 
-    let mut source_commands = filled(request.sources.len(), PaintCommand::KeepExisting)?;
-    let mut source_faults = reserved(request.sources.len())?;
-    let mut valid_source_indices = reserved(request.sources.len())?;
-    let mut source_inputs = reserved(request.sources.len())?;
+    let mut source_commands = filled(request.sources.len(), PaintCommand::KeepExisting);
+    let mut source_faults = reserved(request.sources.len());
+    let mut valid_source_indices = reserved(request.sources.len());
+    let mut source_inputs = reserved(request.sources.len());
     for (source, input) in request.sources.iter().enumerate() {
         let Some(area) = input.area else { continue };
         if !input.sweep_margin.is_finite() {
@@ -664,7 +654,7 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
         if !accepted[entry] {
             continue;
         }
-        let mut labels_by_ordinal = vec![0.0; paint::face_count(input.kind)];
+        let mut labels_by_ordinal = vec![0.0; paint_ordinal_count(&input.shape)];
         for (face_index, face) in all_faces.iter().enumerate() {
             if face.solid != entry {
                 continue;
@@ -791,7 +781,6 @@ mod tests {
                 size,
                 basis: IDENTITY,
             },
-            kind: ShapeKind::Box,
             anchor: None,
             is_wall: false,
         }
@@ -885,6 +874,45 @@ mod tests {
                 actual: usize::from(u8::MAX) * 3,
                 limit: MAX_SOURCE_ROLES,
             })
+        );
+    }
+
+    #[test]
+    fn exact_public_request_ceilings_are_admitted() {
+        let entries = (0..MAX_PAINT_ENTRIES)
+            .map(|index| box_entry([index as f64 * 10.0, 0.0, 0.0], [1.0; 3]))
+            .collect();
+        assert!(plan(request(entries)).is_ok());
+
+        let mut sources = vec![
+            PaintSourceInput {
+                area: None,
+                sweep_margin: 0.0,
+                roles: 0,
+            };
+            MAX_PAINT_SOURCES
+        ];
+        sources[0].roles = u8::MAX;
+        sources[1].roles = u8::MAX;
+        sources[2].roles = 2;
+        assert!(
+            plan(PaintRequest {
+                entries: Vec::new(),
+                sources,
+                palette: PALETTE.to_vec(),
+            })
+            .is_ok()
+        );
+
+        assert!(
+            plan(PaintRequest {
+                entries: Vec::new(),
+                sources: Vec::new(),
+                palette: vec![
+                    0.15, 0.23, 0.31, 0.39, 0.47, 0.55, 0.63, 0.71, 0.79, 0.87, 0.95
+                ],
+            })
+            .is_ok()
         );
     }
 
@@ -1102,7 +1130,6 @@ mod tests {
                 radius: 0.3,
                 half_height: 0.5,
             },
-            kind: ShapeKind::Column,
             anchor: None,
             is_wall: false,
         };
@@ -1574,6 +1601,54 @@ mod tests {
                     assert!(separated(out.label_of_class[a], out.label_of_class[b]));
                 }
             }
+        }
+
+        /// The largest admitted role population can form one clique. Building
+        /// it must remain practical and contain every pair exactly once; a
+        /// linear scan for each insertion turns this case cubic.
+        #[test]
+        fn maximum_source_role_clique_has_one_edge_per_pair() {
+            let sources = [
+                SourceRoleInput {
+                    area: Box3::from_center_size([0.0; 3], [1.0; 3]),
+                    roles: u8::MAX,
+                },
+                SourceRoleInput {
+                    area: Box3::from_center_size([0.0; 3], [1.0; 3]),
+                    roles: u8::MAX,
+                },
+                SourceRoleInput {
+                    area: Box3::from_center_size([0.0; 3], [1.0; 3]),
+                    roles: 2,
+                },
+            ];
+
+            let graph = add_source_role_classes(0, &[], &sources, &[], &[]).unwrap();
+            assert_eq!(graph.classes, MAX_SOURCE_ROLES);
+            assert_eq!(graph.separations.len(), 130_816);
+            assert_eq!(graph.separations.first(), Some(&(0, 1)));
+            assert_eq!(graph.separations.last(), Some(&(509, 511)));
+        }
+
+        /// Repeated ownership and repeated seed edges are common graph paths,
+        /// but each normalized pair remains present exactly once and keeps the
+        /// first insertion position.
+        #[test]
+        fn separation_builder_deduplicates_without_reordering() {
+            let source = SourceRoleInput {
+                area: Box3::from_center_size([0.0; 3], [1.0; 3]),
+                roles: 1,
+            };
+            let graph = add_source_role_classes(
+                2,
+                &[(1, 0), (0, 1)],
+                &[source],
+                &[source.area],
+                &[vec![0, 0, 1, 1]],
+            )
+            .unwrap();
+
+            assert_eq!(graph.separations, vec![(0, 1), (0, 2), (1, 2)]);
         }
 
         /// Distance is permission to reuse labels. Two source boxes that do not

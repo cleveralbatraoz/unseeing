@@ -52,6 +52,27 @@ pub enum Shape {
     },
 }
 
+/// Number of analytic planar faces this shape must produce when valid.
+#[must_use]
+pub const fn planar_face_count(shape: &Shape) -> usize {
+    match shape {
+        Shape::Box3d { .. } => 6,
+        Shape::Wedge { .. } => 5,
+        Shape::Column { .. } => 2,
+    }
+}
+
+/// Number of paint ordinals in the submitted static mesh. A column adds its
+/// curved flank to its two analytic rims.
+#[must_use]
+pub const fn paint_ordinal_count(shape: &Shape) -> usize {
+    match shape {
+        Shape::Box3d { .. } => 6,
+        Shape::Wedge { .. } => 5,
+        Shape::Column { .. } => 3,
+    }
+}
+
 /// The smallest axis-aligned world box enclosing `shape`, or `None` when
 /// malformed/non-finite coordinates cannot describe a safe paint extent.
 /// This is derived beside the shape vocabulary so touch decisions never trust
@@ -394,6 +415,115 @@ pub fn faces(solid: usize, shape: &Shape) -> Vec<Face> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounds_enclose_box_and_slab_shapes_with_negative_extents() {
+        let shape = Shape::Box3d {
+            center: [2.0, 3.0, 4.0],
+            size: [-4.0, 2.0, -6.0],
+            basis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        assert_eq!(
+            bounds(&shape),
+            Some(Box3 {
+                min: [0.0, 2.0, 1.0],
+                max: [4.0, 4.0, 7.0],
+            })
+        );
+        assert_eq!(planar_face_count(&shape), 6);
+        assert_eq!(paint_ordinal_count(&shape), 6);
+    }
+
+    #[test]
+    fn bounds_rotate_box_reach_into_world_axes() {
+        let shape = Shape::Box3d {
+            center: [10.0, 20.0, 30.0],
+            size: [2.0, 4.0, 6.0],
+            basis: [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+        };
+        assert_eq!(
+            bounds(&shape),
+            Some(Box3 {
+                min: [7.0, 18.0, 29.0],
+                max: [13.0, 22.0, 31.0],
+            })
+        );
+    }
+
+    #[test]
+    fn bounds_enclose_every_wedge_hull_point() {
+        let shape = Shape::Wedge {
+            hull: [
+                [-2.0, 1.0, 3.0],
+                [4.0, -5.0, 6.0],
+                [1.0, 2.0, -7.0],
+                [0.0, 8.0, 1.0],
+                [3.0, 4.0, 5.0],
+                [-1.0, 0.0, 2.0],
+            ],
+        };
+        assert_eq!(
+            bounds(&shape),
+            Some(Box3 {
+                min: [-2.0, -5.0, -7.0],
+                max: [4.0, 8.0, 6.0],
+            })
+        );
+        assert_eq!(planar_face_count(&shape), 5);
+        assert_eq!(paint_ordinal_count(&shape), 5);
+    }
+
+    #[test]
+    fn bounds_enclose_columns_and_keep_degenerate_shapes_ordered() {
+        let column = Shape::Column {
+            center: [2.0, 3.0, 4.0],
+            radius: -2.0,
+            half_height: -5.0,
+        };
+        assert_eq!(
+            bounds(&column),
+            Some(Box3 {
+                min: [0.0, -2.0, 2.0],
+                max: [4.0, 8.0, 6.0],
+            })
+        );
+        assert_eq!(planar_face_count(&column), 2);
+        assert_eq!(paint_ordinal_count(&column), 3);
+
+        let point = Shape::Column {
+            center: [1.0, 2.0, 3.0],
+            radius: 0.0,
+            half_height: 0.0,
+        };
+        assert_eq!(
+            bounds(&point),
+            Some(Box3 {
+                min: [1.0, 2.0, 3.0],
+                max: [1.0, 2.0, 3.0],
+            })
+        );
+    }
+
+    #[test]
+    fn bounds_reject_non_finite_input_and_finite_overflow() {
+        for shape in [
+            Shape::Box3d {
+                center: [f64::MAX, 0.0, 0.0],
+                size: [f64::MAX, 1.0, 1.0],
+                basis: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            },
+            Shape::Wedge {
+                hull: [[f64::INFINITY, 0.0, 0.0]; 6],
+            },
+            Shape::Column {
+                center: [f64::MAX, 0.0, 0.0],
+                radius: f64::MAX,
+                half_height: 1.0,
+            },
+        ] {
+            assert_eq!(bounds(&shape), None);
+        }
+    }
 
     /// A unit box at the origin yields six faces whose normals are the six
     /// axis directions and whose offsets are ±0.5 — the break this catches

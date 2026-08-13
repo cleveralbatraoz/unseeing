@@ -135,17 +135,6 @@ enum PaintItem {
 }
 
 impl PaintItem {
-    /// The `render::paint::ShapeKind` this item's mesh was built with — the
-    /// ordinal count [`render::paint::face_count`] answers for.
-    fn kind(&self) -> render::paint::ShapeKind {
-        match self {
-            PaintItem::Slab { .. } => render::paint::ShapeKind::Slab,
-            PaintItem::Wall(_) | PaintItem::Prop(_) => render::paint::ShapeKind::Box,
-            PaintItem::Column(_) => render::paint::ShapeKind::Column,
-            PaintItem::Wedge(_) => render::paint::ShapeKind::Wedge,
-        }
-    }
-
     /// The solid scene node this paint entry came from. The two slabs belong
     /// to the level itself, so only solid entries have a node address. A
     /// generated RunSeg wall keeps that derived address here; `faults_for`
@@ -163,9 +152,7 @@ impl PaintItem {
 
 /// One item [`WaveLevel::paint_labels`] colours: a floor/ceiling slab or an
 /// solid node (authored or derived), carrying its world-space `render::Shape` (what
-/// `render::faces` builds faces from) and the world box the touch graph
-/// reasons about — the SAME box the retired per-solid `oid_palette::assign`
-/// used, measured the identical way.
+/// `render::faces` builds faces and conservative touch bounds from).
 ///
 /// A slab's `shape` is a real `Box3d` like any other box (Wave S) — it
 /// used to be `None`, back when a slab was fed through `render::faces` not
@@ -1022,7 +1009,6 @@ impl WaveLevel {
                 .iter()
                 .map(|entry| render::paint_plan::PaintEntryInput {
                     shape: entry.shape.clone(),
-                    kind: entry.item.kind(),
                     anchor: match entry.item {
                         PaintItem::Slab { lid } => Some(render::role_label(if lid {
                             render::Role::Ceiling

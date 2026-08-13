@@ -6,7 +6,7 @@ boundary measures authored entries and sources, calls
 request returns `Ok`. `rust/src/render/paint.rs` remains the `ArrayMesh`
 submission boundary.
 
-`PaintRequest` carries world-space shapes, shape kinds, optional level anchors,
+`PaintRequest` carries world-space shapes, optional level anchors,
 wall classification, source bounds/sweep margins/role counts, and the candidate
 palette. The pure shape vocabulary derives each entry's conservative world
 bound; there is no independent entry AABB that can disagree with its geometry.
@@ -40,5 +40,9 @@ iteration. The planned algorithm retains the existing pairwise geometry and
 touch complexity and performs checked capacity/class arithmetic before the
 boundary mutates a mesh or source. Public requests are bounded before
 quadratic work by `paint_plan::{MAX_PAINT_ENTRIES, MAX_PAINT_SOURCES,
-MAX_PALETTE_VALUES, MAX_SOURCE_ROLES}`; over-limit requests and fallible
-working-memory reservation return explicit `PaintPlanError` variants atomically.
+MAX_PALETTE_VALUES, MAX_SOURCE_ROLES}`; over-limit requests return an explicit
+`PaintPlanError::RequestTooLarge` atomically. Inside that admitted domain,
+class and pair capacities are checked before allocation. Separation dedup uses
+a deterministic ordered set for logarithmic membership while preserving the
+existing insertion order, so even the admitted 512-role clique stays bounded
+by its 130,816 unique pairs rather than rescanning the accumulated edge list.
