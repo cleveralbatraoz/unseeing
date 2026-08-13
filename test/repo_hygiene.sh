@@ -118,6 +118,38 @@ else
     || bad "Superpowers metadata or gitlink violates the pin"
 fi
 
+# --- developer-only MCP tooling stays in a checkout, not a deployment ------
+# The client manifest and addon installer are useful in a developer checkout,
+# but deploy.sh ships `git archive` output.  Assert both halves of that
+# boundary: the tracked files remain available locally while export-ignore
+# removes them from the exact archive mechanism used for deployment.
+if [ "${HYGIENE_NESTED:-0}" = 1 ]; then
+  skip "developer-only MCP archive boundary (nested scratch tree carries no MCP tooling)"
+elif [ "$HAVE_INDEX" = 0 ]; then
+  if [ ! -e "$DIR/.mcp.json" ] && [ ! -e "$DIR/tools/setup-mcp.sh" ]; then
+    ok "developer-only MCP tooling is absent from exported tree"
+  else
+    bad "developer-only MCP tooling leaked into exported tree"
+  fi
+else
+  if [ -s "$DIR/.mcp.json" ] && [ -x "$DIR/tools/setup-mcp.sh" ]; then
+    ok "developer-only MCP tooling remains available in the checkout"
+  else
+    bad "developer checkout must retain .mcp.json and executable tools/setup-mcp.sh"
+  fi
+
+  # Read the candidate .gitattributes from the working tree so the fix can be
+  # proved before commit; after commit this is identical to deploy's archive.
+  MCP_ARCHIVE_PATHS="$(git -C "$DIR" archive --worktree-attributes HEAD | tar -tf - \
+    | grep -E '^(\.mcp\.json|tools/setup-mcp\.sh)$' || true)"
+  if [ -z "$MCP_ARCHIVE_PATHS" ]; then
+    ok "developer-only MCP tooling is absent from git archive"
+  else
+    bad "developer-only MCP tooling leaked into git archive:"
+    echo "$MCP_ARCHIVE_PATHS" | sed 's/^/hygiene:      /'
+  fi
+fi
+
 # --- the one addon that must stay out --------------------------------------
 # The ignore rule above is half the guard: it stops `git add -A` from sweeping
 # the addon in. This is the other half, and it is the one that matters after
