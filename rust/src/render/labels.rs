@@ -32,15 +32,20 @@
 //! channel round-trips linearly there, byte = 255 x label within a byte,
 //! so the 0.10 gap arrives as ~0.094 and still saturates the crease.
 //!
-//! That scope is exact, not a hedge. Two values in the game DO come within
-//! `MIN_SEP` of `Case`, and both are placeholder ORDINALS rather than
-//! labels — a mesh's `CUSTOM0` before a derive has painted it, where
-//! ordinal 0 is `0.0`, five hundredths from `Case`. A solid wears them in
-//! the EDITOR (`WaveLevel::derive` returns before painting there), and on
-//! a solid the derive REFUSED out loud for a degenerate size (whose bake
-//! is skipped, so it keeps what its builder wrote). Neither is a state the
-//! colouring can produce, and the second announces itself by name; but the
-//! sentence above is a claim about the label table, so it says labels.
+//! That scope is exact, not a hedge. Values in the game DO come within
+//! `MIN_SEP` of `Case`, and every one of them is a placeholder ORDINAL
+//! rather than a label — a mesh's `CUSTOM0` before a derive has painted
+//! it, where ordinal 0 is `0.0`, five hundredths from `Case`. **Any**
+//! unpainted mesh is such a state, so read the general clause rather than
+//! the examples; the three that exist today are the EDITOR
+//! (`WaveLevel::derive` returns before painting there), a solid the derive
+//! REFUSED out loud for a degenerate size (whose bake is skipped, so it
+//! keeps what its builder wrote), and a solid added under the level AFTER
+//! `_ready` — `derive` runs only from `ready` and there is no re-derive
+//! hook, so nothing ever paints it. None is a value the colouring can
+//! produce, which is why the sentence above is scoped to labels: it is a
+//! claim about the label table, not an inventory of every float that can
+//! reach the G channel.
 //!
 //! Not a pattern to copy, because 0.10 is the smallest margin any pair in
 //! the table carries, and a SECOND label down here would have nothing to

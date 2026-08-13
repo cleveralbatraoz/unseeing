@@ -295,26 +295,28 @@ fn triangle_arrays(triangles: &[(Vector3, Vector3, f32)]) -> Array<Variant> {
 }
 
 /// Rewrite `mesh`'s single surface IN PLACE — no index buffer — from
-/// `(position, normal, CUSTOM0 ordinal)` triples: a shape whose triangles
+/// `(position, normal, CUSTOM0 label)` triples: a shape whose triangles
 /// are not already grouped into indexed quads the way [`labelled_box`]
-/// builds them. Doubles as the FIRST build too, not only a later resize:
-/// `clear_surfaces()` is a no-op on a mesh that has none yet, so the
-/// column and wedge builders can call this once from `_ready` (on a mesh
-/// built empty by `ArrayMesh::new_gd()`) and again on every knob drag,
-/// with no separate "fresh mesh" path to risk drifting from this one.
-/// Mutating the existing resource rather than handing back a fresh one is
-/// load-bearing on every call, for the identical reason
+/// builds them. Mutating the existing resource rather than handing back a
+/// fresh one is load-bearing on every call, for the identical reason
 /// [`resize_box_surface`]'s doc comment gives: `Node.duplicate()` shares a
 /// mesh by reference, so a rebuild has to land on every reference that
 /// mesh has.
 ///
-/// The CUSTOM0 value in each triple is written STRAIGHT THROUGH — this is
-/// the entry point for every caller that already knows the label it wants
-/// on every vertex, which is every per-frame builder in the game
+/// THE WRITE-THROUGH DOOR, and it serves exactly one population: callers
+/// that already know the label they want on every vertex, and choose it
+/// afresh on every call. That is every per-frame builder in the game
 /// (`nodes::hero`'s cane and body, `nodes::cat`'s mesh) and every sound
-/// source limb. A static solid whose label was chosen by the level's
-/// derive wants [`resize_triangle_surface_preserving_labels`] instead; see
-/// [`carry_labels_over`] for why that is a separate door and not a flag.
+/// source limb (`nodes::fan`, `nodes::radio`), each of which bakes one
+/// fixed [`super::role_label`] value straight into the triples.
+///
+/// **A STATIC SOLID DOES NOT BELONG HERE.** A wall, prop, slab, column or
+/// wedge wears the label the level's derive chose for it, which lives
+/// nowhere but the mesh — routing a new one through this door would
+/// silently overwrite that with whatever placeholder its builder happened
+/// to pass. [`resize_triangle_surface_preserving_labels`] is its door; see
+/// [`carry_labels_over`] for why the two are separate functions rather
+/// than one with a flag.
 pub fn resize_triangle_surface(mesh: &mut Gd<ArrayMesh>, triangles: &[(Vector3, Vector3, f32)]) {
     submit_triangle_arrays(mesh, triangle_arrays(triangles));
 }
@@ -324,9 +326,18 @@ pub fn resize_triangle_surface(mesh: &mut Gd<ArrayMesh>, triangles: &[(Vector3, 
 /// after the level's derive does not undo the paint pass. The ordinals in
 /// `triangles` are then only the placeholders a FIRST build needs.
 ///
+/// Doubles as that first build, not only a later resize:
+/// `clear_surfaces()` is a no-op on a mesh that has none yet, and
+/// [`carry_labels_over`] returns immediately when there is no surface to
+/// carry from — so the column and wedge builders call THIS once from
+/// `_ready` (on a mesh built empty by `ArrayMesh::new_gd()`, where the
+/// placeholders land untouched) and again on every knob drag, with no
+/// separate "fresh mesh" path to risk drifting from this one.
+///
 /// The two static solids built from triangles rather than indexed quads —
-/// a column and a wedge — are its only callers, and must stay so. The
-/// reasoning, and the cost of getting it wrong, is in
+/// a column (`nodes::props::WaveColumn::reshape`) and a wedge
+/// (`nodes::props::cut_wedge`) — are its only callers, and must stay so.
+/// The reasoning, and the cost of getting it wrong, is in
 /// [`carry_labels_over`].
 pub fn resize_triangle_surface_preserving_labels(
     mesh: &mut Gd<ArrayMesh>,
