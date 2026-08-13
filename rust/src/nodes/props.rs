@@ -356,7 +356,7 @@ impl WaveColumn {
         let height = self.height as f32;
         if let Some(mesh) = self.mesh.as_mut() {
             let triangles = prop_shape::column_triangles(radius, height * 0.5);
-            render::paint::resize_triangle_surface_preserving_labels(mesh, &triangles);
+            render::paint::resize_outward_triangle_surface_preserving_labels(mesh, &triangles);
         }
         if let Some(shape) = self.shape.as_mut() {
             shape.set_radius(radius);
@@ -614,7 +614,7 @@ fn cut_wedge(mesh: &mut Gd<ArrayMesh>, shape: &mut Gd<ConvexPolygonShape3D>, siz
         .enumerate()
         .map(|(i, (v, n))| (v, n, prop_shape::WEDGE_TRIANGLE_ORDINALS[i / 3]))
         .collect();
-    render::paint::resize_triangle_surface_preserving_labels(mesh, &triangles);
+    render::paint::resize_outward_triangle_surface_preserving_labels(mesh, &triangles);
     shape.set_points(&PackedVector3Array::from(&prop_shape::wedge_hull(size)));
 }
 

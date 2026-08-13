@@ -46,6 +46,37 @@ func _limbs(node: Node, out: Array[MeshInstance3D]) -> Array[MeshInstance3D]:
 	return out
 
 
+## Assert one actual source limb mesh obeys Godot's clockwise-front-face
+## convention. Sources mix indexed boxes with unindexed columns and tori,
+## all behind cull_back, so both representations are handled here.
+func _assert_limb_winds_clockwise(limb: MeshInstance3D) -> int:
+	var mesh := limb.mesh as ArrayMesh
+	assert_object(mesh).is_not_null()
+	if mesh == null:
+		return 0
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	var indexed := arrays[Mesh.ARRAY_INDEX] is PackedInt32Array
+	var indices: PackedInt32Array = (
+		arrays[Mesh.ARRAY_INDEX] as PackedInt32Array if indexed else PackedInt32Array()
+	)
+	var corner_count := indices.size() if indexed else verts.size()
+	var witnessed := 0
+	for triangle in corner_count / 3:
+		var at := triangle * 3
+		var i0: int = indices[at] if indexed else at
+		var i1: int = indices[at + 1] if indexed else at + 1
+		var i2: int = indices[at + 2] if indexed else at + 2
+		var cross: Vector3 = (verts[i1] - verts[i0]).cross(verts[i2] - verts[i0])
+		if cross.length_squared() > 1e-12:
+			var normal := (normals[i0] + normals[i1] + normals[i2]) / 3.0
+			assert_float(cross.dot(normal)).is_less(0.0)
+			witnessed += 1
+	assert_int(witnessed).is_greater(0)
+	return witnessed
+
+
 ## The standing acoustic image a source is currently carrying, read back
 ## off its limbs — the value the x-ray skin will use as its reveal floor.
 ## Fails the caller loudly if the limbs disagree, because a source that
@@ -310,6 +341,29 @@ func test_radio_limbs_carry_case_and_shell_labels() -> void:
 	radio.data_mat = ShaderMaterial.new()
 	add_child(radio)
 	_assert_limbs_carry_their_labels(radio, [0.05, 0.33] as Array[float])
+
+
+## Fan and radio together exercise every source mesh family: indexed boxes,
+## conventional columns and conventional tori. Check every limb from the
+## real registered nodes so changing any one call back to the direct
+## animated-limb adapter is mutation-live.
+func test_source_meshes_wind_clockwise_for_godot() -> void:
+	var fan: SoundFan = auto_free(SoundFan.new())
+	fan.pulses = Pulses.new()
+	fan.data_mat = ShaderMaterial.new()
+	add_child(fan)
+	var radio: SoundRadio = auto_free(SoundRadio.new())
+	radio.pulses = Pulses.new()
+	radio.data_mat = ShaderMaterial.new()
+	add_child(radio)
+	var limb_count := 0
+	var triangle_count := 0
+	for source: Node3D in [fan, radio]:
+		for limb: MeshInstance3D in _limbs(source, [] as Array[MeshInstance3D]):
+			limb_count += 1
+			triangle_count += _assert_limb_winds_clockwise(limb)
+	assert_int(limb_count).is_equal(14)
+	assert_int(triangle_count).is_greater(0)
 
 
 ## Nothing about a running source is frozen at build time. Volume, speed and

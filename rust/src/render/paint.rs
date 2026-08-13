@@ -39,11 +39,13 @@ pub const FACE_ORDER: [Vector3; 6] = [
     Vector3::new(0.0, 0.0, 1.0),
 ];
 
-/// Each face's four corners, as ±1 multiples of the half-extent, wound so
-/// that `(v1−v0) × (v2−v0)` points along that face's own outward normal —
-/// hand-derived from the cross product rather than read off any renderer,
-/// so a winding mistake here cannot pass by agreeing with itself. Order
-/// matches [`FACE_ORDER`].
+/// Each face's four corners, as ±1 multiples of the half-extent, in the
+/// mathematical counter-clockwise order where `(v1−v0) × (v2−v0)` points
+/// along that face's own outward normal. [`labelled_box_arrays`] reverses
+/// each submitted triangle at the Godot boundary because the engine calls
+/// CLOCKWISE front-facing; keeping that renderer convention out of this
+/// table lets the pure face geometry retain the usual outward-cross law.
+/// Order matches [`FACE_ORDER`].
 const FACE_CORNERS: [[Vector3; 4]; 6] = [
     // -X: (v1-v0)=(0,0,2hz), (v2-v0)=(0,2hy,2hz) -> cross = (-4hy*hz,0,0)
     [
@@ -111,14 +113,17 @@ fn labelled_box_arrays(size: Vector3, lift: Vector3, face_labels: [f32; 6]) -> A
             normals.push(normal);
             custom.push(label);
         }
-        // two triangles from the quad's four corners, no vertex shared
-        // with any other face
+        // Two triangles from the quad's four corners, no vertex shared
+        // with any other face. FACE_CORNERS is mathematically CCW/outward;
+        // Godot calls CLOCKWISE front-facing, so reverse each triangle only
+        // in the submitted index order. The vertex blocks themselves stay
+        // in FACE_ORDER for paint/read-back stability.
         indices.push(base);
+        indices.push(base + 2);
         indices.push(base + 1);
-        indices.push(base + 2);
         indices.push(base);
-        indices.push(base + 2);
         indices.push(base + 3);
+        indices.push(base + 2);
     }
 
     let mut arrays = Array::<Variant>::new();
@@ -186,10 +191,9 @@ pub fn resize_box_surface(mesh: &mut Gd<ArrayMesh>, size: Vector3, face_labels: 
 /// ONLY THOSE FIVE. The creatures, the viewmodel and the sound sources
 /// rebuild triangle surfaces too — `nodes::hero`'s cane and body,
 /// `nodes::cat`'s whole mesh, `nodes::fan`/`nodes::radio`'s limbs — and
-/// they must NOT come through here, which is why the triangle path has two
-/// entry points ([`resize_triangle_surface`] and
-/// [`resize_triangle_surface_preserving_labels`]) rather than one function
-/// with a flag. Two reasons, both load-bearing. Those builders choose their
+/// they must NOT come through here, which is why the triangle path keeps
+/// its label-carrying static door separate from both non-carry doors.
+/// Two reasons, both load-bearing. Those builders choose their
 /// own label every call (a fixed `render::role_label`, baked into every
 /// vertex), so there is nothing to carry and a carry would silently freeze
 /// the first build's labels forever — their tessellations are
@@ -298,14 +302,38 @@ pub fn vertex_ordinal(kind: ShapeKind, vertex: usize) -> Option<usize> {
     }
 }
 
-/// The vertex/normal/CUSTOM0 arrays a triangle-list mesh (no index
-/// buffer) is built from — the [`labelled_box_arrays`] of
-/// [`resize_triangle_surface`].
-fn triangle_arrays(triangles: &[(Vector3, Vector3, f32)]) -> Array<Variant> {
+/// Build the vertex/normal/CUSTOM0 arrays for a triangle-list mesh with no
+/// index buffer. `reverse_for_godot` converts conventional outward triples;
+/// already-clockwise animated limbs pass `false`.
+fn triangle_arrays(
+    triangles: &[(Vector3, Vector3, f32)],
+    reverse_for_godot: bool,
+) -> Array<Variant> {
     let mut verts = PackedVector3Array::new();
     let mut normals = PackedVector3Array::new();
     let mut custom = PackedFloat32Array::new();
-    for (pos, normal, ordinal) in triangles {
+    // Pure prop/source generators use the conventional CCW/outward law,
+    // while animated limb builders already emit Godot-clockwise order. Keep
+    // that distinction explicit at the direct and outward public doors.
+    // All shipped callers provide complete triples; chunks_exact makes a malformed
+    // internal tail harmless rather than indexing or panicking.
+    let mut chunks = triangles.chunks_exact(3);
+    for triangle in &mut chunks {
+        let order = if reverse_for_godot {
+            [0, 2, 1]
+        } else {
+            [0, 1, 2]
+        };
+        for corner in order {
+            let (pos, normal, ordinal) = triangle[corner];
+            verts.push(pos);
+            normals.push(normal);
+            custom.push(ordinal);
+        }
+    }
+    for (pos, normal, ordinal) in chunks.remainder() {
+        // Preserve malformed internal data for diagnostics/validator
+        // visibility; never guess a triangle or panic at this total boundary.
         verts.push(*pos);
         normals.push(*normal);
         custom.push(*ordinal);
@@ -330,51 +358,50 @@ fn triangle_arrays(triangles: &[(Vector3, Vector3, f32)]) -> Array<Variant> {
 /// THE WRITE-THROUGH DOOR, and it serves exactly one population: callers
 /// that already know the label they want on every vertex, and choose it
 /// afresh on every call. That is every per-frame builder in the game
-/// (`nodes::hero`'s cane and body, `nodes::cat`'s mesh) and every sound
-/// source limb (`nodes::fan`, `nodes::radio`), each of which bakes one
-/// fixed [`super::role_label`] value straight into the triples.
+/// (`nodes::hero`'s cane and body, `nodes::cat`'s mesh). Each already emits
+/// Godot-clockwise geometry and bakes one fixed [`super::role_label`] value
+/// straight into the triples. Conventional CCW/outward generators use
+/// [`resize_outward_triangle_surface`] instead.
 ///
 /// **A STATIC SOLID DOES NOT BELONG HERE.** A wall, prop, slab, column or
 /// wedge wears the label the level's derive chose for it, which lives
 /// nowhere but the mesh — routing a new one through this door would
 /// silently overwrite that with whatever placeholder its builder happened
-/// to pass. [`resize_triangle_surface_preserving_labels`] is its door; see
-/// [`carry_labels_over`] for why the two are separate functions rather
-/// than one with a flag.
+/// to pass. [`resize_outward_triangle_surface_preserving_labels`] is its
+/// door; see [`carry_labels_over`] for why label carry is explicit.
 pub fn resize_triangle_surface(mesh: &mut Gd<ArrayMesh>, triangles: &[(Vector3, Vector3, f32)]) {
-    submit_triangle_arrays(mesh, triangle_arrays(triangles));
+    submit_triangle_arrays(mesh, triangle_arrays(triangles, false));
 }
 
-/// [`resize_triangle_surface`], but keeping whatever CUSTOM0 the mesh
-/// already carries when the vertex count is unchanged — so a knob dragged
-/// after the level's derive does not undo the paint pass. The ordinals in
-/// `triangles` are then only the placeholders a FIRST build needs.
-///
-/// Doubles as that first build, not only a later resize:
-/// `clear_surfaces()` is a no-op on a mesh that has none yet, and
-/// [`carry_labels_over`] returns immediately when there is no surface to
-/// carry from — so the column and wedge builders call THIS once from
-/// `_ready` (on a mesh built empty by `ArrayMesh::new_gd()`, where the
-/// placeholders land untouched) and again on every knob drag, with no
-/// separate "fresh mesh" path to risk drifting from this one.
-///
-/// The two static solids built from triangles rather than indexed quads —
-/// a column (`nodes::props::WaveColumn::reshape`) and a wedge
-/// (`nodes::props::cut_wedge`) — are its only callers, and must stay so.
-/// The reasoning, and the cost of getting it wrong, is in
-/// [`carry_labels_over`].
-pub fn resize_triangle_surface_preserving_labels(
+/// The conventional-geometry sibling of [`resize_triangle_surface`].
+/// `triangles` wind counter-clockwise when seen from outside, so their
+/// cross product follows the stored outward normal. Godot calls CLOCKWISE
+/// front-facing; reverse each complete triple only as it enters ArrayMesh.
+/// Pure prop/source generators use this door; animated limbs must not.
+pub fn resize_outward_triangle_surface(
     mesh: &mut Gd<ArrayMesh>,
     triangles: &[(Vector3, Vector3, f32)],
 ) {
-    let mut arrays = triangle_arrays(triangles);
+    submit_triangle_arrays(mesh, triangle_arrays(triangles, true));
+}
+
+/// [`resize_outward_triangle_surface`], but keeping whatever CUSTOM0 the
+/// mesh already carries when the vertex count is unchanged — so a knob
+/// dragged after derive does not undo the paint pass. Incoming triples use
+/// conventional CCW/outward order; their ordinals are only placeholders on
+/// a FIRST build. Columns and wedges are the current callers.
+pub fn resize_outward_triangle_surface_preserving_labels(
+    mesh: &mut Gd<ArrayMesh>,
+    triangles: &[(Vector3, Vector3, f32)],
+) {
+    let mut arrays = triangle_arrays(triangles, true);
     carry_labels_over(mesh, &mut arrays);
     submit_triangle_arrays(mesh, arrays);
 }
 
-/// Replace `mesh`'s single surface with `arrays` — the half the two entry
-/// points above share verbatim, kept in one place so they can never drift
-/// apart on the surface flag.
+/// Replace `mesh`'s single surface with `arrays` — the submission half all
+/// three entry points above share verbatim, kept in one place so they can
+/// never drift apart on the surface flag.
 fn submit_triangle_arrays(mesh: &mut Gd<ArrayMesh>, arrays: Array<Variant>) {
     mesh.clear_surfaces();
     mesh.add_surface_from_arrays_ex(PrimitiveType::TRIANGLES, &arrays)
@@ -1314,7 +1341,7 @@ mod tests {
         assert!(separated(out.label_of_class[0], 0.33));
     }
 
-    // `resize_triangle_surface` cannot be cargo-tested past this either,
+    // The ArrayMesh resize doors cannot be cargo-tested past this either,
     // for the identical reason `labelled_box` below cannot: it too
     // reaches a live `Gd<ArrayMesh>`. The triples it merely copies are
     // where the real geometry is built and where it stays pure and

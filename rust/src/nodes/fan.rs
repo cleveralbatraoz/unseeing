@@ -174,9 +174,9 @@ impl SoundFan {
         self.voice().slot_pressure()
     }
 
-    /// Driven by the level with the simulated clock — the engine-facing
-    /// name for [`SoundSource::advance`], kept so GDScript and the suites
-    /// call the fan the way they always have.
+    /// Driven by the Rust level/composition root with the simulated clock —
+    /// the engine-facing name for [`SoundSource::advance`]. It remains
+    /// callable so boundary suites can exercise the same typed door.
     #[func]
     fn update(&mut self, t: f64) {
         SoundSource::advance(self, t);
@@ -369,8 +369,8 @@ impl SoundSource for SoundFan {
 /// `CUSTOM0` channel to bake a label into. Reuses
 /// [`prop_shape::column_triangles`]'s already-tested geometry outright,
 /// discarding its bottom/top/flank ordinal (a source's own limb reads as
-/// ONE label, not three), so the winding this crate already proved outward
-/// for every column in the level comes along for free.
+/// ONE label, not three). The pure triples wind counter-clockwise/outward;
+/// the explicit ArrayMesh door converts them to Godot-clockwise order.
 fn labelled_cyl(radius: f32, height: f32, label: f64) -> Gd<Mesh> {
     let label = label as f32;
     let triangles: Vec<(Vector3, Vector3, f32)> =
@@ -379,7 +379,7 @@ fn labelled_cyl(radius: f32, height: f32, label: f64) -> Gd<Mesh> {
             .map(|(v, n, _ordinal)| (v, n, label))
             .collect();
     let mut mesh = ArrayMesh::new_gd();
-    render::paint::resize_triangle_surface(&mut mesh, &triangles);
+    render::paint::resize_outward_triangle_surface(&mut mesh, &triangles);
     mesh.upcast()
 }
 
@@ -393,7 +393,8 @@ fn labelled_boxm(x: f32, y: f32, z: f32, label: f64) -> Gd<Mesh> {
 
 /// A torus (donut), baked with a single constant label — replaces the
 /// `TorusMesh` engine primitive: [`source_shape::torus_triangles`] is the
-/// pure geometry, already proven to wind outward (load-bearing here, since
+/// pure geometry, already proven to wind outward and converted at the
+/// ArrayMesh boundary (load-bearing here, since
 /// a source's limbs render through the acoustic-image skin's `cull_back`,
 /// not the world skin's `cull_disabled` — see that module's own doc
 /// comment).
@@ -405,6 +406,6 @@ fn labelled_torus(inner_radius: f32, outer_radius: f32, label: f64) -> Gd<Mesh> 
             .map(|(v, n)| (v, n, label))
             .collect();
     let mut mesh = ArrayMesh::new_gd();
-    render::paint::resize_triangle_surface(&mut mesh, &triangles);
+    render::paint::resize_outward_triangle_surface(&mut mesh, &triangles);
     mesh.upcast()
 }

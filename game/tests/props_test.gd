@@ -38,6 +38,34 @@ func _run(from: Vector2, to: Vector2, openings: PackedVector2Array = []) -> Wave
 	return run
 
 
+## Count the non-degenerate triangles in one real ArrayMesh and assert each
+## obeys Godot's clockwise-front-face convention against its stored outward
+## normal. Handles indexed boxes and unindexed generated shapes so callers
+## cannot accidentally test a different representation from production.
+func _assert_mesh_winds_clockwise(mesh: ArrayMesh) -> int:
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	var indexed := arrays[Mesh.ARRAY_INDEX] is PackedInt32Array
+	var indices: PackedInt32Array = (
+		arrays[Mesh.ARRAY_INDEX] as PackedInt32Array if indexed else PackedInt32Array()
+	)
+	var corner_count := indices.size() if indexed else verts.size()
+	var witnessed := 0
+	for triangle in corner_count / 3:
+		var at := triangle * 3
+		var i0: int = indices[at] if indexed else at
+		var i1: int = indices[at + 1] if indexed else at + 1
+		var i2: int = indices[at + 2] if indexed else at + 2
+		var cross: Vector3 = (verts[i1] - verts[i0]).cross(verts[i2] - verts[i0])
+		if cross.length_squared() > 1e-12:
+			var normal := (normals[i0] + normals[i1] + normals[i2]) / 3.0
+			assert_float(cross.dot(normal)).is_less(0.0)
+			witnessed += 1
+	assert_int(witnessed).is_greater(0)
+	return witnessed
+
+
 ## A run injected before tree entry remembers the level skin, then emits the
 ## same two shipped divider walls as ownerless typed children at ready time.
 func test_wave_run_emits_named_materialized_walls() -> void:
@@ -541,6 +569,21 @@ func test_column_mesh_carries_custom0_ordinals_for_rims_and_flank() -> void:
 			assert_float(custom[i]).is_equal_approx(1.0, 1e-6)
 		for i: int in range(base + 6, base + 12):
 			assert_float(custom[i]).is_equal_approx(2.0, 1e-6)
+
+
+## The two conventional pure generators cross the engine boundary through
+## the explicit outward adapter. This checks the actual WaveColumn and
+## WaveWedge meshes, not only their pre-ArrayMesh Rust vectors.
+func test_generated_prop_meshes_wind_clockwise_for_godot() -> void:
+	var column: WaveColumn = auto_free(WaveColumn.new())
+	column.radius = 0.3
+	column.height = 0.9
+	add_child(column)
+	var wedge: WaveWedge = auto_free(WaveWedge.new())
+	wedge.size = Vector3(1.2, 0.6, 0.8)
+	add_child(wedge)
+	assert_int(_assert_mesh_winds_clockwise(_skin(column).mesh as ArrayMesh)).is_equal(128)
+	assert_int(_assert_mesh_winds_clockwise(_skin(wedge).mesh as ArrayMesh)).is_equal(8)
 
 
 ## The origin law again: a wedge stands on its node, so a ramp placed at

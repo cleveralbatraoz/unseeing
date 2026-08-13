@@ -33,6 +33,32 @@ func test_a_labelled_box_carries_one_label_per_face() -> void:
 		assert_float(custom[i]).is_equal_approx(0.25, 1e-6)
 
 
+## Godot treats CLOCKWISE triangles as front faces. Every submitted triangle
+## must therefore cross opposite its stored outward normal. This
+## engine-boundary witness catches mathematically outward/CCW geometry that
+## the world's deliberately two-sided material can hide; under the acoustic
+## image's cull_back skin it instead culls the intended exterior faces and
+## may let far/interior faces win.
+func test_a_labelled_box_winds_clockwise_for_godot() -> void:
+	var mesh: ArrayMesh = WaveLevel.debug_labelled_box(
+		Vector3(2, 3, 0.3), Vector3.ZERO, PackedFloat32Array([0.25, 0.25, 0.34, 0.34, 0.43, 0.43])
+	)
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	var indices: PackedInt32Array = arrays[Mesh.ARRAY_INDEX]
+	var witnessed := 0
+	for triangle in indices.size() / 3:
+		var i0: int = indices[triangle * 3]
+		var i1: int = indices[triangle * 3 + 1]
+		var i2: int = indices[triangle * 3 + 2]
+		var cross: Vector3 = (verts[i1] - verts[i0]).cross(verts[i2] - verts[i0])
+		if cross.length_squared() > 1e-12:
+			assert_float(cross.dot(normals[i0])).is_less(0.0)
+			witnessed += 1
+	assert_int(witnessed).is_equal(12)
+
+
 ## A box has exactly six faces, and no reading of a five- or seven-entry
 ## array is "close enough" — it would silently assign some face a label
 ## meant for another. The guard refuses loudly (checked via the exact
@@ -75,16 +101,16 @@ func test_wrong_length_face_labels_is_refused() -> void:
 
 
 ## THE PER-FRAME REBUILD MUST NOT INHERIT THE LAST FRAME'S LABEL.
-## `render::paint::resize_triangle_surface` is shared by two populations
-## that want opposite things. A column and a wedge are STATIC solids
-## rebuilt only when a designer drags a knob, and must keep the label the
-## level's derive already baked — that is
-## `resize_triangle_surface_preserving_labels`, pinned in level_test.gd.
-## The hero's cane and body and the cat's whole mesh are rebuilt EVERY
-## frame from a label their builder chose this frame; carrying the old
-## CUSTOM0 across there would freeze frame one's labels forever, because
-## the tessellations are fixed-resolution so the length always matches and
-## the carry always fires.
+## `render::paint` exposes separate doors for two populations that want
+## opposite things. A column and a wedge are STATIC solids rebuilt only when
+## a designer drags a knob, and must keep the label the level's derive already
+## baked — that is
+## `resize_outward_triangle_surface_preserving_labels`, pinned in level_test.gd.
+## The direct `resize_triangle_surface` door serves the hero's cane/body and
+## the cat's whole mesh, rebuilt EVERY frame from a label their builder chose
+## this frame. Carrying old CUSTOM0 there would freeze frame one's labels
+## forever, because the fixed-resolution tessellations always match in length
+## and the carry always fires.
 ##
 ## No shipped caller varies its label today (every creature, viewmodel and
 ## source limb bakes one constant role label), which is exactly why this
@@ -104,3 +130,16 @@ func test_a_rebuilt_triangle_surface_takes_the_label_it_was_just_given() -> void
 	assert_int(second.size()).is_equal(3)
 	for label: float in second:
 		assert_float(label).is_equal_approx(0.63, 1e-6)
+
+
+## The direct unindexed triangle-list door obeys the same clockwise-front-face
+## engine convention as the indexed box path. The debug triangle is already
+## Godot-clockwise; its stored normal is +Y, so its submitted vertex cross
+## product must point -Y without passing through the outward adapter.
+func test_a_rebuilt_triangle_surface_winds_clockwise_for_godot() -> void:
+	var mesh := WaveLevel.debug_triangle_surface(ArrayMesh.new(), 0.25)
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	var cross: Vector3 = (verts[1] - verts[0]).cross(verts[2] - verts[0])
+	assert_float(cross.dot(normals[0])).is_less(0.0)

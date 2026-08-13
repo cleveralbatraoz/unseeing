@@ -474,8 +474,8 @@ impl WaveLevel {
     /// on a healthy level, and one per complaint the level printed while
     /// deriving. Exposed as a number, not as the sentences, because the
     /// sentences are for a person and this is for whatever has to DECIDE
-    /// something: a suite holding the shipped map silent today, and the
-    /// editor-side warning that has yet to be built.
+    /// something: a suite holding the shipped map silent and the live
+    /// editor-warning boundary.
     #[func]
     fn unfloored_solids(&self) -> i64 {
         self.unfloored
@@ -622,14 +622,10 @@ impl WaveLevel {
     }
 
     /// Debug-facing shim, the triangle path's sibling of
-    /// [`Self::debug_labelled_box`] and served for the same reason: no
-    /// SHIPPED caller of [`render::paint::resize_triangle_surface`] ever
-    /// varies the label it hands the same mesh — a column and a wedge
-    /// write placeholder ordinals, and every creature, viewmodel and
-    /// source limb bakes one constant role label — so the one behaviour
-    /// that separates that function from
-    /// [`render::paint::resize_triangle_surface_preserving_labels`] is
-    /// unreachable from any node, and would go untested without a door.
+    /// [`Self::debug_labelled_box`]. No shipped direct-door caller rebuilds
+    /// the same mesh with a different constant role label, so the
+    /// write-through behaviour separating [`render::paint::resize_triangle_surface`]
+    /// from the carry door would otherwise be unreachable from a test.
     ///
     /// Rebuilds `mesh` in place as ONE triangle whose three vertices all
     /// carry `label`, exactly the way a per-frame builder rebuilds its own
@@ -639,8 +635,8 @@ impl WaveLevel {
         let mut mesh = mesh;
         let triangles = [
             (Vector3::ZERO, Vector3::UP, label),
-            (Vector3::RIGHT, Vector3::UP, label),
             (Vector3::FORWARD, Vector3::UP, label),
+            (Vector3::RIGHT, Vector3::UP, label),
         ];
         render::paint::resize_triangle_surface(&mut mesh, &triangles);
         mesh
@@ -1672,9 +1668,9 @@ impl WaveLevel {
     }
 
     /// Every companion creature in scene order, still TYPED — [`Self::cats`]
-    /// hands the same handles to GDScript, which drives their clocks; this
-    /// is the in-crate door the capture reads each cat's whole private life
-    /// through (brain, gait, tail, pose), none of which is `#[func]`.
+    /// exposes only the test-facing node list, while Rust drives their clocks.
+    /// This is the in-crate door capture uses to read each cat's whole private
+    /// life (brain, gait, tail, pose), none of which is `#[func]`.
     ///
     /// Scene order is not a convenience here, it is the blob's own
     /// precondition: the capture encodes and compares cats POSITIONALLY,

@@ -4,16 +4,16 @@
 //! is three now — box, column, wedge — and the two that need real geometry
 //! are built here where cargo can hold them.
 //!
-//! Only the WEDGE needs generated triangles: a box and a cylinder are
-//! engine primitives with engine colliders, but a triangular prism is
-//! neither. Its faces are emitted with explicit normals and separate face
-//! vertices so the derive-time paint pass can assign each planar face its
-//! own CUSTOM0 label. A wedge with smeared/shared face data would lose the
-//! slope boundary the outline must preserve.
+//! Wedges and columns both expose generated triangle lists here. A wedge
+//! needs separate face vertices so derive-time paint can preserve its slope;
+//! columns share the same pure geometry with source limbs that need CUSTOM0.
+//! Colliders remain engine primitives or explicit convex hulls at the node
+//! boundary.
 //!
-//! Winding is not load-bearing: the world skin renders `cull_disabled`
-//! (`data_pass.gdshader`), so a face is never dropped for facing away. The
-//! normals are what must be right.
+//! The pure generators use the conventional counter-clockwise/outward law.
+//! Godot calls clockwise triangles front-facing, so the ArrayMesh boundary
+//! reverses complete triples. That conversion is load-bearing for source
+//! limbs rendered with `cull_back`, even though the world skin is two-sided.
 
 use godot::builtin::{Basis, Vector3};
 
@@ -512,6 +512,28 @@ mod tests {
         assert_eq!(tris.len(), 24);
         for (_, n) in &tris {
             assert!((n.length() - 1.0).abs() < 1e-5, "normal not unit: {n}");
+        }
+    }
+
+    /// Every wedge triangle follows the pure module's conventional
+    /// counter-clockwise/outward law. The ArrayMesh boundary deliberately
+    /// reverses these triples for Godot's clockwise front faces; keeping
+    /// this test positive proves the renderer convention did not leak back
+    /// into reusable geometry.
+    #[test]
+    fn every_wedge_triangle_winds_outward() {
+        let tris = wedge_triangles(SIZE);
+        assert_eq!(tris.len(), 24);
+        for (triangle, chunk) in tris.chunks_exact(3).enumerate() {
+            let (v0, n0) = chunk[0];
+            let (v1, n1) = chunk[1];
+            let (v2, n2) = chunk[2];
+            let cross = (v1 - v0).cross(v2 - v0);
+            let outward = (n0 + n1 + n2) / 3.0;
+            assert!(
+                cross.dot(outward) > 0.0,
+                "wedge triangle {triangle} does not wind toward {outward:?}: {cross:?}"
+            );
         }
     }
 

@@ -67,6 +67,30 @@ func _assert_mesh_built_finite(mesh: ArrayMesh) -> void:
 		assert_int(broken).is_equal(0)
 
 
+## Animated limbs already emit Godot-clockwise triangles and therefore use
+## the direct triangle-list door, unlike conventional CCW/outward prop and
+## source generators. At least one non-degenerate triangle in each layer
+## must face the stored normal under Godot's negative-dot convention.
+func test_viewmodel_meshes_wind_clockwise_for_godot() -> void:
+	_step(_walk_vel)
+	_assert_mesh_winds_clockwise(_hero.cane_mesh())
+	_assert_mesh_winds_clockwise(_hero.body_mesh())
+
+
+func _assert_mesh_winds_clockwise(mesh: ArrayMesh) -> void:
+	var arrays: Array = mesh.surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	var witnessed := 0
+	for triangle in verts.size() / 3:
+		var at := triangle * 3
+		var cross: Vector3 = (verts[at + 1] - verts[at]).cross(verts[at + 2] - verts[at])
+		if cross.length_squared() > 1e-12:
+			assert_float(cross.dot(normals[at])).is_less(0.0)
+			witnessed += 1
+	assert_int(witnessed).is_greater(0)
+
+
 ## Both viewmodel layers carry their role label (HeroCane 0.96, HeroBody
 ## 0.82 — render::labels::role_label, rust/src/render/labels.rs) on every
 ## vertex of their baked mesh's CUSTOM0 — what the shader's G channel reads

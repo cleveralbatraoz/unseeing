@@ -24,10 +24,20 @@
 //! Sources render through the acoustic-image skin (`data_xray.gdshader`,
 //! `render_mode ... cull_back`, `game/tests/data_skins_test.gd`'s own
 //! pin) — UNLIKE the world skin the static solids draw through
-//! (`cull_disabled`, `prop_shape.rs`'s own doc comment). Winding is
-//! therefore load-bearing here, not cosmetic: a torus wound inward would
-//! cull to nothing from outside. [`tests::every_triangle_winds_outward`]
-//! is the guard.
+//! (`cull_disabled`). Winding is therefore load-bearing here, not cosmetic:
+//! backwards submitted triangles can cull the intended exterior/near faces
+//! and expose farther or interior faces under the source's always-pass depth
+//! path. A closed mesh need not disappear completely for its packed distance
+//! and self-overlap to be wrong.
+//!
+//! This pure module uses the conventional mathematical order:
+//! `(v1 - v0).cross(v2 - v0)` points along the outward normal. Godot 4.7 calls
+//! CLOCKWISE triangles front-facing, so `nodes::fan` and `nodes::radio` pass
+//! these triples through
+//! [`crate::render::paint::resize_outward_triangle_surface`], which reverses
+//! each complete triangle only at the ArrayMesh boundary.
+//! [`tests::every_triangle_winds_outward`] guards the pure half of that
+//! contract; engine-bound source tests guard the submitted half.
 //!
 //! # A disclosed fidelity trade-off, not a silent one
 //!
@@ -88,6 +98,8 @@ fn point(major: f32, minor: f32, theta: f32, phi: f32) -> (Vector3, Vector3) {
 /// may be given in either order; a degenerate ring (either radius zero, or
 /// the two equal) still yields a finite, if flattened or hairline, mesh —
 /// never a NaN, since [`point`]'s normal never divides by a radius at all.
+/// Complete nondegenerate triples use conventional counter-clockwise/outward
+/// order; the Godot boundary conversion is deliberately not owned here.
 #[must_use]
 pub fn torus_triangles(inner_radius: f32, outer_radius: f32) -> Vec<(Vector3, Vector3)> {
     let inner_radius = inner_radius.abs();
@@ -110,9 +122,10 @@ pub fn torus_triangles(inner_radius: f32, outer_radius: f32) -> Vec<(Vector3, Ve
             let c = point(major, minor, theta1, phi1);
             let d = point(major, minor, theta0, phi1);
 
-            // two triangles per quad cell, wound outward — see
+            // Two triangles per quad cell, conventionally CCW/outward — see
             // `tests::every_triangle_winds_outward` for the independent
-            // proof this ordering is not a guess.
+            // proof this ordering is not a guess. Godot conversion happens
+            // after this pure result reaches render::paint.
             out.push(a);
             out.push(d);
             out.push(b);
@@ -178,13 +191,15 @@ mod tests {
         }
     }
 
-    /// Every triangle winds OUTWARD: the independent proof this crate's
+    /// Every pure triangle winds conventionally CCW/OUTWARD: the independent
+    /// proof this crate's
     /// other generated shapes hold themselves to
     /// (`prop_shape::column_flank_winds_radially_outward`,
     /// `render::paint::every_face_winds_outward`) — and the one property
-    /// that matters here specifically, since a source's limbs render
-    /// through the acoustic-image skin's `cull_back`, not the world
-    /// skin's `cull_disabled` (`game/tests/data_skins_test.gd`). Checked
+    /// that matters before `render::paint` converts it to Godot's clockwise
+    /// front-face order. Source limbs render through the acoustic-image skin's
+    /// `cull_back`, not the world skin's `cull_disabled`
+    /// (`game/tests/data_skins_test.gd`). Checked
     /// against EVERY triangle's own analytic normal (the mean of its three
     /// corners' normals, which for this smooth, convex-in-cross-section
     /// shape always points the same way the flat triangle should), not a

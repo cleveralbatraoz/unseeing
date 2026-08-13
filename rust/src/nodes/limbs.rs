@@ -10,9 +10,13 @@
 //! frame — `Vec::clear` keeps its capacity, so a buffer that has settled
 //! into its steady-state size after a few frames allocates nothing more
 //! for the rest of the cat's life. The caller hands the finished triples
-//! to [`crate::render::paint::resize_triangle_surface`], the same
-//! derive-time bake every column and wedge already builds its own mesh
-//! through.
+//! to [`crate::render::paint::resize_triangle_surface`], the direct
+//! Godot-clockwise door. That distinction is load-bearing: sphere and tube
+//! triples here already use Godot 4.7's CLOCKWISE front-face order, whereas
+//! pure wedge, column, and torus generators use conventional
+//! counter-clockwise/outward order and enter through
+//! [`crate::render::paint::resize_outward_triangle_surface`]. Sending these
+//! limb buffers through that converting door would reverse them a second time.
 //!
 //! `label` is one constant per whole creature or viewmodel layer — the
 //! cat is one silhouette, the hero's arm is another — so every call in a
@@ -23,13 +27,16 @@ use std::f64::consts::{PI, TAU};
 use godot::prelude::*;
 
 /// One built limb's raw geometry: `(position, normal, CUSTOM0 label)`
-/// triples, local space, three per triangle, no index buffer — exactly
-/// what [`crate::render::paint::resize_triangle_surface`] takes.
+/// triples, local space, three per triangle, no index buffer, already in
+/// Godot-clockwise order — exactly what the direct
+/// [`crate::render::paint::resize_triangle_surface`] door takes. Every
+/// nondegenerate triangle's cross product points opposite its stored outward
+/// normal.
 pub(super) type LimbBuf = Vec<(Vector3, Vector3, f32)>;
 
 /// A latitude/longitude sphere fan at the full 6 x 12 tessellation (two
-/// triangles per cell, a normal per vertex) — the hero body's spheres,
-/// unchanged.
+/// Godot-clockwise triangles per cell, an outward normal per vertex) — the
+/// hero body's spheres, unchanged.
 pub(super) fn sphere(buf: &mut LimbBuf, c: Vector3, r: f32, label: f32) {
     sphere_res(buf, c, r, 6, 12, label);
 }
@@ -50,7 +57,9 @@ pub(super) fn sphere_lod(buf: &mut LimbBuf, c: Vector3, r: f32, label: f32) {
     sphere_res(buf, c, r, la, lo, label);
 }
 
-/// The general lat/long sphere fan at an explicit resolution.
+/// The general lat/long sphere fan at an explicit resolution, already wound
+/// for direct Godot submission. Pole triangles may be geometrically
+/// degenerate but remain finite and preserve complete triples.
 fn sphere_res(buf: &mut LimbBuf, c: Vector3, r: f32, la: i32, lo: i32, label: f32) {
     for i in 0..la {
         let t0 = f64::from(i) / f64::from(la) * PI;
@@ -80,14 +89,15 @@ fn lat_lon_normal(theta: f64, phi: f64) -> Vector3 {
 }
 
 /// A tapered tube between two points at the full 10-segment
-/// tessellation (quad split into two triangles, the radial direction as
-/// the normal) — the hero body's tubes, unchanged.
+/// tessellation (quad split into two Godot-clockwise triangles, the radial
+/// direction as the outward normal) — the hero body's tubes, unchanged.
 pub(super) fn tube(buf: &mut LimbBuf, a: Vector3, b: Vector3, r1: f32, r2: f32, label: f32) {
     tube_res(buf, a, b, r1, r2, 10, label);
 }
 
 /// A tapered tube at an explicit radial segment count — hair-thin parts
-/// (whiskers) read as one line at 4 segments and needn't pay for 10.
+/// (whiskers) read as one line at 4 segments and needn't pay for 10. Its
+/// triples are already wound for the direct Godot submission door.
 pub(super) fn tube_res(
     buf: &mut LimbBuf,
     a: Vector3,

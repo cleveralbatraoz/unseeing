@@ -107,6 +107,29 @@ func test_cat_mesh_carries_the_cat_label_in_custom0() -> void:
 		assert_float(label).is_equal_approx(0.70, 0.0001)
 
 
+## The animated cat limb builder already emits Godot-clockwise triangles;
+## it must not pass through the conventional-outward reversal used by
+## static props and sources. Check every non-degenerate submitted triangle
+## against its own stored normal so either a shared-door regression or one
+## bad primitive fails.
+func test_cat_mesh_winds_clockwise_for_godot() -> void:
+	_add_floor()
+	_add_cat()
+	await get_tree().physics_frame
+	await get_tree().process_frame
+	var arrays: Array = _cat.cat_mesh().surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+	var witnessed := 0
+	for triangle in verts.size() / 3:
+		var at := triangle * 3
+		var cross: Vector3 = (verts[at + 1] - verts[at]).cross(verts[at + 2] - verts[at])
+		if cross.length_squared() > 1e-12:
+			assert_float(cross.dot(normals[at])).is_less(0.0)
+			witnessed += 1
+	assert_int(witnessed).is_greater(0)
+
+
 ## Four paws on the floor: the observable paw positions stay at ground
 ## level (planted or barely lifted) while the cat lives its life.
 func test_paws_ride_the_floor() -> void:
