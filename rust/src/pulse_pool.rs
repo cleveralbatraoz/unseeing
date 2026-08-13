@@ -169,8 +169,8 @@ impl PulsePool {
     /// came from. [`crate::reproduce::first_divergence`] compares the world
     /// against the blob's fields and is right to see nothing. What knows
     /// the difference is the blob's own stored hash, and the one place that
-    /// is compared is `main.gd::restore_blob`, after the transaction
-    /// succeeds — see the note there.
+    /// is compared is `UnseeingGame::restore_blob`, after the transaction
+    /// succeeds — see the composition-root transaction note there.
     #[must_use]
     pub fn from_slots(slots: &[SlotCapture; MAXP]) -> Self {
         let mut pool = Self::new();

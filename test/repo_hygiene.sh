@@ -74,8 +74,9 @@ if git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then HAVE_INDEX=1; fi
 # game/addons/godot_mcp/ is the godot-mcp editor addon: a developer tool, and
 # the one tenant of game/addons/ that must never be committed. deploy.sh ships
 # the tree by `git archive` into a bare repo, so a committed addon reaches the
-# droplet and the wasm export; and ci/vendor-gdunit4.sh fingerprints this
-# directory believing gdUnit4 is alone in it.
+# droplet checkout even though every game export preset excludes addons/*. Its
+# project.godot enablement is deliberately local too: a tracked reference to an
+# ignored per-machine addon makes fresh editors rewrite the project differently.
 if [ "$HAVE_INDEX" = 0 ]; then
   skip "ignore rules (no git metadata — deploy work tree is a tar extract)"
 else

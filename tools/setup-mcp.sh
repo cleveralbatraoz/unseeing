@@ -40,9 +40,9 @@ npx -y "@satelliteoflove/godot-mcp@$VERSION" --install-addon "$DIR/game" || {
 # file is tracked, so enabling the plugin here would commit a reference to
 # an addon that stays untracked by policy (game/addons/godot_mcp/ is
 # gitignored — see AGENTS.md's godot-mcp policy; CLAUDE.md is only its adapter.
-# A committed addon would ship to the droplet and the wasm export via
-# deploy.sh's `git archive`, and would break ci/vendor-gdunit4.sh's assumption
-# that gdUnit4 is the only tenant of game/addons/). That reference would NOT be
+# A committed addon would reach the droplet checkout through deploy.sh's
+# `git archive`, even though every game export preset correctly excludes
+# addons/*. More importantly, an enabled reference would NOT be
 # caught by this project's CI boot gate: [editor_plugins] only loads in the
 # EDITOR, so the headless `--quit-after` boot check (no `-e`) produces no
 # output at all for a missing addon, and even an editor-mode run only WARNS

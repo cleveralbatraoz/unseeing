@@ -305,20 +305,21 @@ impl WaveObserver {
         }
     }
 
-    /// A blob's env group, spelled the way `main.gd::capture_env` spells
+    /// A blob's env group, spelled the way `UnseeingGame::capture_env` spells
     /// it — real floats, and the flicker's stream position as a plain int
     /// — or a one-key refusal naming what was wrong with it.
     ///
-    /// The composition root OWNS the env: `now`, the demo tap's schedule
-    /// and the flicker envelope are GDScript fields no Rust node can
-    /// write, so applying a captured env back is GDScript's job. But
-    /// GDScript cannot READ the blob's own spelling of a float. Measured
+    /// The composition root OWNS the env: `now`, the demo tap's schedule,
+    /// the flicker envelope and its RNG state. Applying a captured env back
+    /// is therefore [`UnseeingGame`](super::game::UnseeingGame)'s boundary
+    /// job. Godot's dynamic values cannot safely parse the blob's own
+    /// spelling of every float, though. Measured
     /// on this build: `String.to_float` is not correctly rounded (it reads
     /// "0.016666666666666666" back one ULP away from 1/60), it drops the
     /// sign of "-0", and it reads "NaN" as zero — the same three losses
     /// that keep every float in the blob out of JSON's number syntax in
     /// the first place. So the text-to-float step stays here, and the
-    /// restore's GDScript half is handed nine values it only has to
+    /// restore boundary is handed nine already-parsed values it only has to
     /// assign.
     ///
     /// `pub(super)`: `UnseeingGame::restore_blob` calls this directly
@@ -1719,10 +1720,10 @@ fn pose_dict(pose: &CatPose) -> VarDictionary {
 ///
 /// Two dictionaries reach this parser and only one of them has ever been
 /// near JSON. The blob has: it is written to a file, so every float in it
-/// is text (see the wire note). The env group `main.gd::capture_env`
+/// is text (see the wire note). The env group `UnseeingGame::capture_env`
 /// hands to [`WaveObserver::capture`] has NOT: it is passed straight
 /// across the boundary in the same process, so its floats are real Godot
-/// floats and rendering them as text in GDScript would be the very
+/// floats and rendering them as text at the Godot boundary would be the very
 /// rounding this format exists to avoid.
 #[derive(Clone, Copy)]
 enum Floats {
@@ -2085,11 +2086,11 @@ fn parse_env_group(group: &Group) -> Result<EnvCapture, String> {
 }
 
 /// The env group as the CALLER hands it to [`WaveObserver::capture`]: the
-/// same nine fields, but composed in GDScript and passed straight across
+/// same nine fields, but composed as live Godot values and passed straight across
 /// the boundary rather than through a file — so the floats are real
 /// floats, the stream position is still a plain int, and the refusal
 /// wears the [`BAD_ENV`] grammar rather than a dotted path, because the
-/// reader who has to fix it is looking at `main.gd::capture_env`.
+/// reader who has to fix it is looking at `UnseeingGame::capture_env`.
 fn parse_env(env: &VarDictionary) -> Result<EnvCapture, String> {
     let group = Group::new(env, Floats::Native, String::new());
     let flicker_rng_state = group.i64("flicker_rng_state").map_err(bad_env)?;

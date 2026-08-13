@@ -62,20 +62,21 @@ touch `game/project.godot` to do this for you.
 
 `game/addons/godot_mcp/` is in `.gitignore`, and `test/repo_hygiene.sh` pins
 that from both directions — nothing under the path may be tracked, and the
-ignore rule must still cover it. Three reasons, all load-bearing (the same
-three the authoritative `AGENTS.md` godot-mcp policy names; `CLAUDE.md` is
-only its adapter):
+ignore rule must still cover it. The reasons are load-bearing project hygiene;
+`AGENTS.md` is authoritative and `CLAUDE.md` is only its adapter:
 
 1. `deploy.sh` ships the tree by `git archive` into a bare repo whose
    post-receive hook untars it. Anything committed under `game/addons/`
    reaches the **droplet** — a Node-backed debugging tool riding into the
    shipped, running game server.
-2. The identical `git archive` mechanism reaches the **wasm export** too —
-   the same commit that ships to the droplet ships into the web build's
-   asset tree.
-3. `ci/vendor-gdunit4.sh verify` fingerprints `game/addons/` believing
-   gdUnit4 is its only tenant. A second addon is drift it would have to be
-   taught to forgive.
+2. Every export preset excludes `addons/*`, so the addon is deliberately not
+   a game/export dependency. Tracking an editor-only Node tool would still
+   pollute the repository and server checkout for no shipped benefit.
+3. The enabled-plugin list is stored in tracked `game/project.godot`, but the
+   addon is per-machine. Committing that entry would make fresh clones open a
+   broken plugin row and let Godot rewrite the tracked file according to local
+   install state. Setup therefore installs the ignored addon and leaves the
+   one enable click local.
 
 The cost of this choice: the version is not pinned in-tree by any lock file
 (unlike gdUnit4's `ci/gdunit4.lock`) — `.mcp.json` and `tools/setup-mcp.sh`

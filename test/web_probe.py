@@ -467,8 +467,9 @@ print("smoke: PASS")
 # raw per-vertex label from OUTSIDE the engine is to look BEHIND the
 # hearing pass, exactly as tests/probe/occlusion_probe.gd's `_hide_quad`
 # already does natively for the windowed GPU probe: reload with `&gprobe`
-# appended, which tells main.gd (see its `_post_quad` field) to hide its
-# own post-processing quad so the data pass's own unshaded ALBEDO —
+# appended, which tells UnseeingGame (see `setup_post_quad` in
+# rust/src/nodes/game.rs) to hide its own post-processing quad so the data
+# pass's own unshaded ALBEDO —
 # (reveal, label, distance) packed by data_core.gdshaderinc's pack_data —
 # reaches the screen directly, camera and all. A healthy label channel
 # shows several distinct values wherever the camera sees more than one
@@ -547,7 +548,7 @@ for _ in range(10):
 # WHICH IMAGE IS THIS? The level count below is only meaningful on the data
 # pass. The composite is guaranteed to carry many G levels — its void term
 # lights every pixel and the vignette and grain spread that across dozens
-# of buckets — so if the ?gprobe hide (main.gd's `_post_quad`) ever stops
+# of buckets — so if the ?gprobe hide (`UnseeingGame::setup_post_quad`) stops
 # firing, the probe would screenshot the COMPOSITE and report PASS for a
 # gate that had stopped looking at CUSTOM0 at all. Two conditions cannot be
 # allowed to collapse into one: this repo has paid for a silently green

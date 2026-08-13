@@ -46,7 +46,8 @@
 //! blob: the transaction cannot roll the engine back (undoing a restore
 //! would need the same doors that just failed), so a refused verdict is
 //! fatal to the run, never a warning to carry on past. The composition
-//! root does roll back the half it owns — see `main.gd::restore_blob`.
+//! root does roll back the half it owns — see
+//! [`UnseeingGame::restore_blob`](super::game::UnseeingGame).
 
 use godot::classes::Node;
 use godot::prelude::*;
