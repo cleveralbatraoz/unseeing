@@ -45,7 +45,20 @@ command -v caffeinate >/dev/null 2>&1 && KEEP_AWAKE="caffeinate -dis"
 # test/repo_hygiene.sh pins that so a crashed run cannot leave a committable
 # stray behind.
 OVERRIDE="$DIR/game/override.cfg"
-trap 'rm -f "$OVERRIDE"' EXIT INT TERM
+# A pre-existing override.cfg belongs to whoever wrote it — another probe run,
+# or a designer debugging a window setting by hand. Clobbering it and then
+# deleting it on the way out destroys their file and leaves no trace of having
+# done so, so refuse instead. probe_display.sh already refuses on the same
+# grounds; this is the writer end of that agreement.
+if [ -e "$OVERRIDE" ]; then
+  echo "probe: FAILED game/override.cfg already exists — this probe would overwrite and then delete it."
+  echo "probe: remove it yourself if it is a leftover, or wait for the run that owns it to finish."
+  exit 2
+fi
+# HUP as well as INT and TERM: closing the terminal on a windowed probe is the
+# ordinary way these runs end, and it is exactly the case that used to leave a
+# stray override.cfg behind — a file the repository forbids shipping.
+trap 'rm -f "$OVERRIDE"' EXIT INT TERM HUP
 cat > "$OVERRIDE" <<'CFG'
 [display]
 

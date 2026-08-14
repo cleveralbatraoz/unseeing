@@ -221,13 +221,19 @@ echo "ci: exporting Web build (clean)"
 rm -rf "$DIR/game/build/web"
 mkdir -p "$DIR/game/build/web"
 touch "$DIR/game/build/.gdignore"
-if ! "$GODOT" --headless --path "$DIR/game" --export-release "Web" build/web/index.html > /tmp/godot-export.log 2>&1; then
-  tail -15 /tmp/godot-export.log
+# Not /tmp/godot-export.log: that is one fixed name shared by every worktree,
+# every concurrent run and every user on the box, and TMPDIR exists precisely
+# so a sandboxed or multi-user host can put it somewhere private.
+EXPORT_LOG="$(mktemp "${TMPDIR:-/tmp}/unseeing-export.XXXXXX")"
+if ! "$GODOT" --headless --path "$DIR/game" --export-release "Web" build/web/index.html > "$EXPORT_LOG" 2>&1; then
+  tail -15 "$EXPORT_LOG"
+  rm -f "$EXPORT_LOG"
   echo "ci: export FAILED (non-zero exit)"
   exit 1
 fi
 # index.side.wasm is the Rust GDExtension: without it the game boots into a
 # world with no engine nodes at all, so it belongs in the same guard
+rm -f "$EXPORT_LOG"
 for f in index.html index.js index.wasm index.side.wasm index.pck; do
   [ -s "$DIR/game/build/web/$f" ] || { echo "ci: export FAILED (missing $f)"; exit 1; }
 done
