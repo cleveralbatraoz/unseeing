@@ -77,11 +77,12 @@ func test_pool_slab_test_mirrors_the_rust_reference() -> void:
 
 
 ## One muffle vocabulary: HUM_THROUGH lives once in the pulse-pool include,
-## and every wave-borne dim reads it — the surface reveal (data_core) and
-## the hum shell (hearing_post). No literal 0.55 drifts out of step.
+## and every wave-borne dim reads it — the hum shell (hearing_post). No
+## literal 0.55 drifts out of step. The data core has left this vocabulary
+## outright: a wall now stops its wave dead rather than muffling it, so
+## source_reveal_vis no longer reads HUM_THROUGH at all.
 func test_hum_through_is_one_shared_constant() -> void:
 	assert_str(_text(POOL_PATH)).contains("const float HUM_THROUGH = 0.55;")
-	assert_str(_text(CORE_PATH)).contains("pow(HUM_THROUGH, float(blocked))")
 	assert_str(_text(POST_PATH)).contains("mute = HUM_THROUGH;")
 
 
@@ -123,7 +124,7 @@ func test_reveal_loop_bounds_a_pulse_before_walking_the_walls() -> void:
 	var src := _text(CORE_PATH)
 	assert_str(src).contains("float bound = min(flare, 1.0) * atten * cone * gain * peak;")
 	assert_str(src).contains("if (bound <= reveal) { continue; }")
-	assert_str(src).contains("bound * source_reveal_vis(typ, u_ppos[i], world)")
+	assert_str(src).contains("bound * source_reveal_vis(u_ppos[i], world)")
 	# the bound must be formed BEFORE the wall walk, or it buys nothing
 	assert_bool(src.find("float bound =") < src.find("bound * source_reveal_vis")).is_true()
 

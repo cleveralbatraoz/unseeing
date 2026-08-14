@@ -87,17 +87,22 @@ func test_data_core_reads_the_per_vertex_label_into_g() -> void:
 		)
 
 
-## The data core occludes a source's REVEAL by the shared wall table now,
-## not a room rectangle: source_reveal_vis counts the walls between the
-## source and the lit point (wall_crossings_from, the birth wall skipped)
-## and cuts player sounds crisp, muffling only the hum by HUM_THROUGH per
-## wall. Pinned as source text so the GLSL cannot drift from its
-## cargo-pinned reference, rust/src/sight.rs.
+## The data core counts the walls between a source and the lit point and
+## extinguishes the reveal once there is one, for every kind alike: a wall
+## is a barrier, not a muffle, and no kind buys a wave passage through it.
+## Pinned as source text so the GLSL cannot drift from its cargo-pinned
+## reference, rust/src/sight.rs::reveal_visibility.
 func test_data_core_occludes_reveal_by_the_wall_table() -> void:
 	var core := _read(CORE_PATH)
-	assert_str(core).contains("float source_reveal_vis(float typ, vec3 src, vec3 world)")
+	assert_str(core).contains("float source_reveal_vis(vec3 src, vec3 world)")
 	assert_str(core).contains("wall_crossings_from(src, world)")
-	assert_str(core).contains("pow(HUM_THROUGH, float(blocked))")
+	(
+		assert_bool(core.contains("HUM_THROUGH"))
+		. append_failure_message(
+			"data_core still grants a wave kind a transmission privilege; a wall stops every sound"
+		)
+		. is_false()
+	)
 	var pool := _include_text()
 	assert_str(pool).contains("int wall_crossings_from(vec3 from, vec3 to)")
 	assert_str(pool).contains("bool wall_contains(vec4 rect, vec3 p, float top)")

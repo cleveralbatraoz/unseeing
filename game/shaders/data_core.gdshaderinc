@@ -62,27 +62,22 @@ float source_depth(float dist) {
 	return ALWAYS_ON_TOP - SOURCE_BAND * clamp(dist / DIST_PACK_RANGE, 0.0, 1.0);
 }
 
-// How much a wave of this kind still reveals `world`, given the WALLS
-// between it and its source (props are transparent to waves — only walls
-// obstruct). The wave flows through openings and lights the next room
-// through a doorway, but a wall stops it. EVERY wave obeys this, echoes
-// included: an echo is a reflected wave, and a reflection is stopped by a
-// wall like any sound — the reflection ray only decides where the echo is
-// BORN, never that its reveal may pass through a wall.
-//   - a cane tap, its echoes, and footsteps (0, 1, 2) are cut CRISP at a
-//     wall — a player sound does not pass, and their shells die at the
-//     world too;
-//   - a world SOURCE's wave (3 — the fan's hum, the radio) is MUFFLED,
-//     not silenced: HUM_THROUGH per wall,
-//     the same factor its shell passes by, so a far surface dims instead
-//     of turning black against a ring still travelling through the wall.
+// How much a wave still reveals `world`, given the WALLS between it and
+// its source (props are transparent to waves — only walls obstruct). A
+// wall is a BARRIER, not a muffle: the wave flows through openings and
+// lights the next room through a doorway, and stops dead at a wall. Kind
+// does not enter — a cane tap, its echoes, a footstep and a world
+// source's hum are all cut crisp alike, which is why this takes no `typ`.
+// EVERY wave obeys it, echoes included: an echo is a reflected wave, and
+// a reflection is stopped by a wall like any sound — the reflection ray
+// only decides where the echo is BORN, never that its reveal may pass
+// through a wall.
 // crossings_from skips the wall the source is born inside, so a tap or an
 // echo struck ON a wall still lights that wall's own near face.
-float source_reveal_vis(float typ, vec3 src, vec3 world) {
-	int blocked = wall_crossings_from(src, world);
-	if (blocked == 0) { return 1.0; }
-	if (typ > 2.5) { return pow(HUM_THROUGH, float(blocked)); }
-	return 0.0;  // tap, echo, footstep: cut crisp at a wall
+// rust/src/sight.rs::reveal_visibility is the cargo-pinned reference this
+// transliterates.
+float source_reveal_vis(vec3 src, vec3 world) {
+	return wall_crossings_from(src, world) == 0 ? 1.0 : 0.0;
 }
 
 // How strongly the waves in flight reveal this world point: the struck
@@ -124,11 +119,12 @@ float reveal_at(vec3 world) {
 		float flare = 1.3 * exp(-ga / 0.25) + 0.5 * exp(-ga / 3.0);
 		// EXACT early-out, and it is the loop's whole affordability. The
 		// accumulator is a max, and source_reveal_vis only ever returns a
-		// value in [0, 1] (1, 0, or HUM_THROUGH^walls) — so `bound` below,
-		// computed with that factor at its maximum, is an upper bound on
-		// what this pulse could contribute. A pulse that cannot beat what is
-		// already accumulated changes nothing, and is dropped BEFORE the
-		// wall loop rather than after it. No pixel differs; only the cost.
+		// value in [0, 1] (1 with a clear line, 0 behind a wall) — so
+		// `bound` below, computed with that factor at its maximum, is an
+		// upper bound on what this pulse could contribute. A pulse that
+		// cannot beat what is already accumulated changes nothing, and is
+		// dropped BEFORE the wall loop rather than after it. No pixel
+		// differs; only the cost.
 		//
 		// This matters most for an EVEN source: a directed wash is thrown
 		// out by the cone gate above over most of the screen, but a radio's
@@ -137,7 +133,7 @@ float reveal_at(vec3 world) {
 		// walk in every direction, forever.
 		float bound = min(flare, 1.0) * atten * cone * gain * peak;
 		if (bound <= reveal) { continue; }
-		reveal = max(reveal, bound * source_reveal_vis(typ, u_ppos[i], world));
+		reveal = max(reveal, bound * source_reveal_vis(u_ppos[i], world));
 	}
 	return reveal;
 }
