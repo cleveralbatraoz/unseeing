@@ -15,3 +15,5 @@
 tools/superpowers export-ignore
 .mcp.json export-ignore
 tools/setup-mcp.sh export-ignore
+tools/setup-agents.sh export-ignore
+tools/update-superpowers.sh export-ignore

@@ -1,0 +1,12 @@
+# Provenance for the developer-agent plugin submodule at tools/superpowers.
+# Never hand-edit — run: tools/update-superpowers.sh <vX.Y.Z> on a clean
+# isolated worktree, which rewrites this file and then asks you to review it.
+#
+# The same three values used to be written out in four places
+# (ci/verify-superpowers.sh, tools/setup-agents.sh, and twice in
+# test/verify_superpowers_test.sh), none of which the documented update path
+# touched — so the upgrade it prescribes always ended in a verification failure
+# whose cause was three files away.
+pin=b36e0829c6d0140e93cfef2ca599b1b07d4a7797
+tag=v6.3.0
+version=6.3.0

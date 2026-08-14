@@ -9,8 +9,16 @@ case "$HOST" in claude|codex|all) ;; *) echo "usage: $0 [--migrate] [claude|code
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 SUB="$ROOT/tools/superpowers"
-PIN=b36e0829c6d0140e93cfef2ca599b1b07d4a7797
-VERSION=6.3.0
+# One home for the pin, the tag and the version: ci/superpowers.lock, which
+# tools/update-superpowers.sh rewrites. They used to be spelled out in four
+# files the update path never touched.
+sp_lock_get() { sed -n "s/^$1=//p" "$2" | head -1; }
+LOCK="$ROOT/ci/superpowers.lock"
+[ -f "$LOCK" ] || { echo "setup-agents: no lock at $LOCK" >&2; exit 1; }
+PIN="$(sp_lock_get pin "$LOCK")"
+VERSION="$(sp_lock_get version "$LOCK")"
+[ -n "$PIN" ] && [ -n "$VERSION" ] \
+  || { echo "setup-agents: $LOCK is missing pin or version" >&2; exit 1; }
 # Preflight, the way tools/setup-mcp.sh gates on node: every JSON reader below
 # shells out to python3, and without it this script died mid-run with a bare
 # "python3: not found" after having already touched the plugin marketplace.

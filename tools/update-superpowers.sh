@@ -36,9 +36,23 @@ if [ "$version" = "$old_version" ] && [ "$candidate" != "$old" ]; then
   exit 1
 fi
 
+# The documented upgrade path used to leave every pin behind, so the very next
+# command it told you to run — ci/verify-superpowers.sh full — failed against
+# constants three files away. The lock is the one place they live now, and this
+# is what moves them.
+cat >"$ROOT/ci/superpowers.lock" <<LOCK
+# Provenance for the developer-agent plugin submodule at tools/superpowers.
+# Never hand-edit — run: tools/update-superpowers.sh <vX.Y.Z> on a clean
+# isolated worktree, which rewrites this file and then asks you to review it.
+pin=$candidate
+tag=$TAG
+version=$version
+LOCK
+echo "Rewrote ci/superpowers.lock to $TAG at $candidate"
+
 echo "Candidate $TAG"
 git -C "$SUB" show --no-patch --format='  %H%n  %s%n  authored %aI' "$candidate"
 echo "Upstream change from $old:"
 git -C "$SUB" diff --stat "$old..$candidate"
 echo "Candidate is detached and un-staged. Review it, run ci/verify-superpowers.sh full,"
-echo "then stage only tools/superpowers. After merge, rerun tools/setup-agents.sh."
+echo "then stage tools/superpowers AND ci/superpowers.lock. After merge, rerun tools/setup-agents.sh."
