@@ -15,14 +15,6 @@ const int MAXP = 64;
 // floor-and-ceiling slab pair's own diagonal under this range.
 const float DIST_PACK_RANGE = 40.0;
 
-// How much a constant source's hum survives crossing ONE wall — the one
-// muffle vocabulary the whole renderer speaks. A wall dims but never
-// silences the hum: its shell still passes muffled in the air
-// (hearing_post), and the surfaces it washes on the far side reveal at
-// this factor per wall (data_core reveal). Player-made taps do not pass at
-// all — this is the standing source's privilege, felt from another room.
-const float HUM_THROUGH = 0.55;
-
 uniform float u_time = 0.0;
 uniform float u_flick = 1.0;
 uniform int u_count = 0;

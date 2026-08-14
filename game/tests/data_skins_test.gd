@@ -1,9 +1,10 @@
 extends GdUnitTestSuite
 ## The data-writing skins, held to their cross-language contracts. The
-## sight math lives in three places at once — rust/src/sight.rs (the
-## cargo-pinned reference), pulse_pool.gdshaderinc (its GLSL
-## transliteration) and the HUM_THROUGH muffle constant shared across the
-## renderer — and none of them can see another break.
+## sight math lives in two places at once — rust/src/sight.rs (the
+## cargo-pinned reference) and pulse_pool.gdshaderinc (its GLSL
+## transliteration) — and neither can see the other break. A wall is now an
+## absolute barrier for every wave, so no shader speaks a muffle vocabulary
+## at all.
 ##
 ## Most of this suite reads the shader sources as TEXT and holds the
 ## transliteration to the reference's constants, the way shader_contract_test
@@ -76,14 +77,19 @@ func test_pool_slab_test_mirrors_the_rust_reference() -> void:
 	assert_str(src).contains("min(from.x, to.x) <= rect.z && max(from.x, to.x) >= rect.x")
 
 
-## One muffle vocabulary: HUM_THROUGH lives once in the pulse-pool include,
-## and every wave-borne dim reads it — the hum shell (hearing_post). No
-## literal 0.55 drifts out of step. The data core has left this vocabulary
-## outright: a wall now stops its wave dead rather than muffling it, so
-## source_reveal_vis no longer reads HUM_THROUGH at all.
-func test_hum_through_is_one_shared_constant() -> void:
-	assert_str(_text(POOL_PATH)).contains("const float HUM_THROUGH = 0.55;")
-	assert_str(_text(POST_PATH)).contains("mute = HUM_THROUGH;")
+## The muffle vocabulary is gone outright: a wall stops a wave dead, whether
+## the wave reveals geometry (data_core) or carries a shell through the air
+## (hearing_post's player rings and a standing source's hum alike). No file
+## may still speak HUM_THROUGH, the old "passes muffled" escape hatch.
+func test_no_shader_lets_a_wave_through_a_wall() -> void:
+	for path: String in [POOL_PATH, CORE_PATH, POST_PATH]:
+		(
+			assert_bool(_text(path).contains("HUM_THROUGH"))
+			. append_failure_message(
+				"%s still speaks the muffle vocabulary; a wall stops a wave outright" % path
+			)
+			. is_false()
+		)
 
 
 ## The hearing pass never washes a player-made ring over an x-ray surface

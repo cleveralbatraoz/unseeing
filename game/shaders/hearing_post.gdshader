@@ -119,15 +119,13 @@ void fragment() {
 			float t = -b + (s == 0 ? -sq : sq);
 			if (t <= 0.05) { continue; }
 			vec3 hp = cam + rd * t;
-			float mute = 1.0;
-			if (typ < 2.5) {
-				// a player-made ring dies at the world, and never washes an
-				// x-rayed source seen through a wall — the hero's sound is in
-				// another room from it
-				if (t >= scene_d || seen_walled) { continue; }
-			} else if (t >= scene_d) {
-				mute = HUM_THROUGH;  // the hum passes the world, muffled
-			}
+			// EVERY ring dies at the world, whatever made it, and none
+			// washes an x-rayed source seen through a wall. seen_walled is
+			// not redundant with the depth test: the always-on-top source
+			// skins corrupt packed depth at their own pixels, so scene_d
+			// alone cannot be trusted on a ray that reaches a source
+			// through a wall.
+			if (t >= scene_d || seen_walled) { continue; }
 			vec3 sn = (hp - u_ppos[i]) / radius;
 			float cone = pulse_cone(cn, sn);
 			if (cone <= 0.0) { continue; }
@@ -136,7 +134,7 @@ void fragment() {
 			// constant source is a throb the whole room can feel
 			float body = typ > 2.5 ? 0.22 : 0.05;
 			float ink = 0.55 + 0.45 * n2(hp.xz * 1.7 + hp.y * 0.9);
-			col += vec3(env * mute * cone * (body + (1.0 - body) * pow(max(grz, 0.0), 4.0)) * ink * exp(-t * 0.09));
+			col += vec3(env * cone * (body + (1.0 - body) * pow(max(grz, 0.0), 4.0)) * ink * exp(-t * 0.09));
 		}
 	}
 
