@@ -153,7 +153,13 @@ fi
 [ "$SEED" = '' ] || export UNSEEING_SEED="$SEED"
 [ "$DEMO" = 0 ] || export UNSEEING_DEMO=1
 
-echo "run-game: playing${SCENE:+ $SCENE}${WINDOWED:+ }$([ "$WINDOWED" = 1 ] && printf '(windowed %s)' "$GEOMETRY")"
+# Built up rather than interpolated: ${WINDOWED:+ } tests for a NON-EMPTY
+# value, and WINDOWED is "0" when off, so the conditional space was never
+# conditional and every ordinary run announced itself with a trailing blank.
+ANNOUNCE="run-game: playing"
+[ -z "$SCENE" ] || ANNOUNCE="$ANNOUNCE $SCENE"
+[ "$WINDOWED" = 0 ] || ANNOUNCE="$ANNOUNCE (windowed $GEOMETRY)"
+echo "$ANNOUNCE"
 # No -e and no --editor: this is the world, not the authoring environment.
 # shellcheck disable=SC2086
 if [ -n "$SCENE" ]; then
