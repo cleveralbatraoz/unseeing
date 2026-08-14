@@ -48,6 +48,8 @@ echo "ci: GDScript tests/probes-only placement"
 "$DIR/ci/check_gdscript_policy.sh" || exit 1
 echo "ci: gdUnit source/summary gate self-test"
 "$DIR/test/ci_gdunit_gate.sh" || exit 1
+echo "ci: engine-selection self-test (discovery + the pinned-version predicate)"
+"$DIR/test/engine_select_test.sh" || exit 1
 echo "ci: POSIX designer-bootstrap self-test"
 "$DIR/test/bootstrap_posix_test.sh" || exit 1
 if command -v pwsh >/dev/null 2>&1; then
