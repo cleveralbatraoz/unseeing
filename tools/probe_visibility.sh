@@ -11,6 +11,15 @@
 # probe therefore runs TWICE and both verdicts must agree; only a
 # reproduced PASS counts. set -eu fails the script on the first FAIL.
 #
+# occlusion_probe.gd's source-reveal case (case 1) is an ABSOLUTE
+# measurement of a continuous source, not a before/after delta, so it has
+# no way to subtract out a wave the run didn't ask for. That means this
+# boot must contain NO sound the probe did not itself queue — which is
+# why it seeds with UNSEEING_SEED (determinism only) and must NEVER be
+# switched to UNSEEING_DEMO: that var also arms an automatic tap
+# (rust/src/demo_tap.rs) that fires near case 1's spawn-room sample
+# points and would read as a false wall-law failure.
+#
 # Env knobs: GODOT (binary).
 set -eu
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -69,7 +78,7 @@ CFG
 
 # shellcheck disable=SC2086
 run_scene() {
-  UNSEEING_DEMO=1 $KEEP_AWAKE "$GODOT" --path "$DIR/game" "$@"
+  UNSEEING_SEED=1 $KEEP_AWAKE "$GODOT" --path "$DIR/game" "$@"
 }
 
 for scene in res://tests/probe/occlusion_probe.tscn; do
