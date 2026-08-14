@@ -20,8 +20,34 @@ case "$(uname)" in
     ;;
 esac
 
+# The engine gate runs FIRST. It costs milliseconds, needs nothing the build
+# produces, and a wrong or missing editor is the single most likely reason a
+# fresh machine cannot bootstrap — so paying for a full release build before
+# saying so is pure waste. tools/bootstrap.ps1 has always checked Godot first;
+# this is the POSIX side agreeing with it.
+echo "bootstrap: locating Godot${GODOT:+ (GODOT=$GODOT)}"
+# shellcheck source=tools/lib/engine.sh
+. "$DIR/tools/lib/engine.sh"
+WANT="$(unseeing_engine_pin "$DIR")" || {
+  echo "bootstrap: FAILED .godot-version does not name a Godot release"
+  echo "bootstrap: fix: restore it from the repository; it is what every tool here pins against"
+  exit 2
+}
+GODOT="$(unseeing_engine_select "$DIR" "${GODOT:-}")" || {
+  echo "bootstrap: FAILED no Godot $WANT found"
+  echo "bootstrap: fix: install Godot $WANT (brew install godot, scoop install godot, or godotengine.org),"
+  echo "bootstrap: fix: leave it on PATH under any of its usual names, or set GODOT=/path/to/godot"
+  exit 2
+}
+echo "bootstrap: godot OK ($(unseeing_engine_version "$GODOT"))"
+
 echo "bootstrap: checking for rustup/cargo"
-[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+# rustup-init installs into CARGO_HOME when it is set — Docker's rust images and
+# many CI images set it away from $HOME. Looking only at $HOME/.cargo reported a
+# perfectly successful install as a failed one, and advised reopening a terminal
+# that could never have helped.
+CARGO_DIR="${CARGO_HOME:-${HOME:-}/.cargo}"
+[ -f "$CARGO_DIR/env" ] && . "$CARGO_DIR/env"
 RUSTUP="${UNSEEING_BOOTSTRAP_RUSTUP:-}"
 if [ -z "$RUSTUP" ] && command -v rustup >/dev/null 2>&1; then
   RUSTUP="$(command -v rustup)"
@@ -38,13 +64,13 @@ if [ -z "$RUSTUP" ]; then
   else
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y || true
   fi
-  [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-  [ -x "$HOME/.cargo/bin/rustup" ] && PATH="$HOME/.cargo/bin:$PATH"
+  [ -f "$CARGO_DIR/env" ] && . "$CARGO_DIR/env"
+  [ -x "$CARGO_DIR/bin/rustup" ] && PATH="$CARGO_DIR/bin:$PATH"
   command -v rustup >/dev/null 2>&1 && RUSTUP="$(command -v rustup)"
   [ -n "$RUSTUP" ] || {
     echo "bootstrap: FAILED the install did not leave a usable rustup on PATH"
     echo "bootstrap: check the rustup/curl output above for why, then either:"
-    echo "bootstrap: fix: install rustup yourself from https://rustup.rs, run . \"\$HOME/.cargo/env\" (or reopen your terminal), and re-run tools/bootstrap.sh"
+    echo "bootstrap: fix: install rustup yourself from https://rustup.rs, run . \"$CARGO_DIR/env\" (or reopen your terminal), and re-run tools/bootstrap.sh"
     exit 2
   }
 fi
@@ -117,33 +143,6 @@ rm -f "$ARTIFACT" || {
   exit 1
 }
 echo "bootstrap: engine built ($ARTIFACT)"
-
-GODOT="${GODOT:-}"
-echo "bootstrap: locating Godot${GODOT:+ (GODOT=$GODOT)}"
-if [ -z "$GODOT" ]; then
-  for g in godot "$HOME/bin/godot" /opt/homebrew/bin/godot; do
-    if command -v "$g" >/dev/null 2>&1 || [ -x "$g" ]; then GODOT="$g"; break; fi
-  done
-fi
-[ -n "$GODOT" ] || {
-  echo "bootstrap: FAILED godot not found"
-  WANT="$(cat "$DIR/.godot-version" 2>/dev/null || printf '%s' 'the version pinned in .godot-version')"
-  echo "bootstrap: fix: brew install godot (macOS) or download $WANT from godotengine.org and put it on PATH; then re-run, or set GODOT=/path/to/godot"
-  exit 2
-}
-HAVE="$("$GODOT" --version 2>/dev/null | head -1)"
-if [ -f "$DIR/.godot-version" ]; then
-  WANT="$(cat "$DIR/.godot-version")"
-  case "$HAVE" in
-    "$WANT"*) : ;;
-    *)
-      echo "bootstrap: FAILED godot version '$HAVE' != pinned '$WANT'"
-      echo "bootstrap: fix: install Godot $WANT (brew install godot, or godotengine.org), or set GODOT=/path/to/matching/binary"
-      exit 2
-      ;;
-  esac
-fi
-echo "bootstrap: godot OK ($HAVE)"
 
 # After the build, never before: the engine records a failed extension load
 # in .godot/extension_list.cfg at import time, and a running editor never
