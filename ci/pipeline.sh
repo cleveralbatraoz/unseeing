@@ -57,6 +57,8 @@ echo "ci: engine-caller self-test (every script that runs Godot applies the pin)
 "$DIR/test/engine_callers_test.sh" || exit 1
 echo "ci: content-digest self-test (a missing hasher must refuse, not agree)"
 "$DIR/test/digest_test.sh" || exit 1
+echo "ci: run-the-game self-test (it plays the world, never the editor)"
+"$DIR/test/run_game_test.sh" || exit 1
 # Nothing ran this suite. It was written, committed, and then never invoked by
 # any script or workflow — so the gate guarding every macOS release had no gate
 # of its own. It reports its own SKIP on hosts without lipo, loudly, rather than
