@@ -42,19 +42,29 @@ godot --editor --path "$PWD\game"
 From Command Prompt, the equivalent paths are `tools\bootstrap.cmd` and
 `godot --editor --path "%CD%\game"`.
 
-Wait for the first command to end with `bootstrap: OK`. If `godot` is not on
-your `PATH` on macOS, use the application executable directly:
+Wait for the first command to end with `bootstrap: OK`.
+
+To play the game rather than author it, there is one command and it needs no
+editor open:
+
+```sh
+tools/run_game.sh            # add --windowed for a window instead of full screen
+```
+
+```powershell
+.\tools\run_game.cmd -Windowed
+```
+
+The bootstrap finds Godot under every name it normally installs under, including
+`/Applications/Godot.app` and the official Windows archive's own filename. If
+yours is somewhere else, name it:
 
 ```sh
 GODOT=/Applications/Godot.app/Contents/MacOS/Godot tools/bootstrap.sh
-/Applications/Godot.app/Contents/MacOS/Godot --editor --path "$PWD/game"
 ```
-
-For a portable Godot executable on Windows that is not on `PATH`:
 
 ```powershell
 .\tools\bootstrap.cmd -Godot 'C:\path\to\Godot_v4.7.1-stable_win64_console.exe'
-& 'C:\path\to\Godot_v4.7.1-stable_win64.exe' --editor --path "$PWD\game"
 ```
 
 The remaining sections explain every step, including how to select the correct
@@ -113,37 +123,45 @@ writing it is exactly `4.7.1.stable.official`; another 4.x release is not an
 equivalent substitute because the extension ABI and editor behaviour are
 version-sensitive.
 
-On macOS, either install the matching standard build from Godot's official
-download page or use Homebrew:
+Install it however your platform prefers. Every tool here finds the editor
+through one shared search (`tools/lib/engine.sh`, and its PowerShell twin in
+`tools/bootstrap.ps1`), which knows the names Godot actually installs under:
+
+- `godot`, `godot4`, `godot-4`, `godot-editor`, `Godot` on `PATH`
+- Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`), `/usr/bin`, `~/bin`
+- `/Applications/Godot.app` and `~/Applications/Godot.app`
+- Scoop, WinGet and `%LOCALAPPDATA%\Programs\Godot` on Windows
+- the official archive under its own shipped filename —
+  `Godot_v4.7.1-stable_linux.x86_64`, `Godot_v4.7.1-stable_win64_console.exe` —
+  anywhere on `PATH`, beside the checkout, or in `godot-bin/`
+- a repository-local `godot-bin/godot`
+
+So on macOS `brew install godot`, on Windows `scoop install godot`, and on Linux
+unzipping the official build somewhere on `PATH` all work without renaming
+anything.
+
+**The version must match `.godot-version` exactly** — another 4.x release is not
+an equivalent substitute, because the extension ABI and editor behaviour are
+version-sensitive. A Mono/.NET build of the pinned version *is* accepted: the pin
+constrains the version, not the build flavour.
+
+Search is version-aware, so a machine holding several editors gets the right
+one: the first candidate that satisfies the pin wins, not the first that exists.
 
 ```sh
-brew install godot
+cat .godot-version           # what this checkout requires
+godot --version              # what you installed, if it is on PATH
 ```
 
-Check the installed version:
+If your editor lives somewhere the search does not reach, name it — and it will
+still be version-checked, never trusted blindly:
 
 ```sh
-godot --version
-cat .godot-version
+GODOT=/path/to/godot tools/bootstrap.sh
 ```
-
-The first line must begin with the complete value on the second line. For a
-Godot application installed outside `PATH`, check it with:
-
-```sh
-/Applications/Godot.app/Contents/MacOS/Godot --version
-```
-
-On Linux, put the matching Godot executable on `PATH`, or pass its path through
-the `GODOT` environment variable when running the bootstrap command.
-
-On Windows, put the matching standard editor on `PATH`, install it with Scoop,
-or pass the portable console executable to `tools\bootstrap.cmd`:
 
 ```powershell
-scoop bucket add extras
-scoop install godot
-godot --version
+.\tools\bootstrap.cmd -Godot C:\path\to\Godot_v4.7.1-stable_win64_console.exe
 ```
 
 ### Native build tools
@@ -436,7 +454,21 @@ warning should clear by itself.
 
 ## 7. Run the game or a selected level
 
-There are two different Godot commands, and the distinction matters.
+Outside the editor, `tools/run_game.sh` (`.\tools\run_game.cmd` on Windows)
+builds the engine and plays the world in one command:
+
+```sh
+tools/run_game.sh                                  # full screen, as it ships
+tools/run_game.sh --windowed                       # 1280x720 window
+tools/run_game.sh --windowed 1920x1080 --seed 1    # a reproducible world
+tools/run_game.sh --skip-build --scene res://scenes/level_02.tscn
+```
+
+It never opens the editor. `--windowed` works by writing `game/override.cfg`,
+because Godot's own window flags lose to the project setting; the file is
+removed however the run ends, and a run refuses to start if one already exists.
+
+Inside the editor there are two different commands, and the distinction matters.
 
 ### Run the shipped default with F5
 
@@ -576,7 +608,16 @@ On Windows:
 .\tools\bootstrap.cmd -Godot 'C:\path\to\matching\Godot_console.exe'
 ```
 
-Do not bypass the version check with a nearby Godot release.
+Do not bypass the version check with a nearby Godot release. A Mono/.NET build
+of the *pinned* version is fine — the pin constrains the version, not the build
+flavour — and the refusal prints the version it actually found, so you can tell
+the two cases apart. If a machine holds several editors, the search takes the
+one that satisfies the pin rather than the first it happens to meet.
+
+### Bootstrap says an editor reported no version
+
+A GUI-subsystem Godot has no console to answer on. Point the command at its
+`_console.exe` sibling, which ships in the same archive.
 
 ### Bootstrap cannot find a linker
 
