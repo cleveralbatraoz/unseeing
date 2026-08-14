@@ -95,6 +95,35 @@ claimed falsely to have fixed:
 
 Ten mutations of `tools/lib/engine.sh`, all killed.
 
+## Found by running it
+
+Three defects surfaced only when something other than a developer's machine ran
+the work, and all three were the same shape — a check that passed for a reason
+other than the one it claimed.
+
+- **CI, round one.** `test/engine_select_test.sh` was not hermetic against an
+  inherited `GODOT`. `.github/workflows/test.yml` exports it for the whole Linux
+  pipeline, an inherited `GODOT` is an *explicit* engine to the library, and an
+  explicit engine skips the candidate walk — so nine discovery cases were asking
+  about the runner's editor instead of their fixtures.
+- **CI, round two.** The identical defect in `test/bootstrap_windows_test.ps1`,
+  which passed on the Windows job (no `GODOT`) and failed on the Linux one. The
+  first fix was applied to one language and not generalised. Both PowerShell
+  suites carry the guard now. `pwsh` is installed on the development machine so
+  `ci/pipeline.sh` runs them locally rather than skipping them, which is what
+  let round two be reproduced instead of inferred from a log.
+- **A real `--migrate` run.** `tools/setup-agents.sh` uninstalled with a
+  hardcoded `--scope user`, and the CLI refuses that against a `local` install,
+  naming the scope it actually wants. Worse, the plugin in question was
+  `local`-scoped to an unrelated checkout: it cannot load here, so blocking
+  setup over it was wrong and removing it would have deleted a plugin out of
+  somebody else's project. Scope now decides — `user` competes, `local`/`project`
+  competes only when it belongs to this repository, an unreported scope is
+  treated as competing — and the uninstall uses the scope the plugin reports.
+  `test/setup_agents_test.sh` drives a recording fake CLI and asserts both the
+  scope on the wire and that another project's plugin survives `--migrate`
+  untouched.
+
 ## Evidence
 
 | Check | Before | After |
