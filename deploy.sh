@@ -27,6 +27,35 @@ DIRTY="$(git -C "$DIR" status --porcelain --untracked-files=no)"
 HEAD_SHA="$(git -C "$DIR" rev-parse HEAD)"
 echo "deploy: shipping $(printf %.9s "$HEAD_SHA") from a clean main"
 
+# Everything this deploy needs from the machine, asked for before anything is
+# built or sent. Without it the run cross-compiled two cores, uploaded both to
+# the droplet, and only then discovered there was no `production` remote to push
+# to — leaving the server holding artifacts for a commit it never received, and
+# the next deploy's freshness check comparing against them.
+missing=''
+command -v cargo-zigbuild >/dev/null 2>&1 || command -v cargo >/dev/null 2>&1 \
+  || missing="$missing\n  cargo (install rustup from https://rustup.rs)"
+if command -v cargo >/dev/null 2>&1 && ! cargo zigbuild --version >/dev/null 2>&1; then
+  missing="$missing\n  cargo-zigbuild (cargo install cargo-zigbuild, plus a Zig toolchain)"
+fi
+[ -x "$DIR/rust/build-wasm.sh" ] || missing="$missing\n  rust/build-wasm.sh (missing or not executable)"
+command -v ssh >/dev/null 2>&1 || missing="$missing\n  ssh"
+command -v scp >/dev/null 2>&1 || missing="$missing\n  scp"
+command -v curl >/dev/null 2>&1 || missing="$missing\n  curl (the deploy verifies what the site serves)"
+git -C "$DIR" remote get-url production >/dev/null 2>&1 \
+  || missing="$missing\n  a 'production' git remote (git remote add production <droplet>)"
+# BatchMode so an unreachable or unknown host fails here instead of parking on
+# a password prompt in the middle of an upload.
+ssh -o BatchMode=yes -o ConnectTimeout=10 vpn true >/dev/null 2>&1 \
+  || missing="$missing\n  a working 'vpn' ssh alias (it receives the prebuilt cores)"
+if [ -n "$missing" ]; then
+  echo "deploy: FAILED this machine cannot complete a deploy:"
+  # shellcheck disable=SC2059
+  printf "$missing\n"
+  exit 2
+fi
+echo "deploy: preflight OK (zigbuild, wasm recipe, ssh to vpn, production remote, curl)"
+
 echo "== local checks =="
 SKIP_EXPORT=1 "$DIR/ci/pipeline.sh"
 

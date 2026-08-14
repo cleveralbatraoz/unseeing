@@ -374,12 +374,32 @@ status = shot = None
 deadline = time.time() + 60
 while (status is None or shot is None) and time.time() < deadline:
     msg = json.loads(recv_msg())
+    # A DevTools reply carries either "result" or "error", never both. Reaching
+    # for ["result"]["data"] on an error reply raised a bare KeyError, and a
+    # deadline that expired handed an empty string to the PNG decoder, which
+    # then failed an assertion about a magic number. Both read as "the probe is
+    # broken" when what actually happened is that the browser said no.
+    if "error" in msg and msg.get("id") in (1, 2):
+        which = "the status query" if msg.get("id") == 1 else "the screenshot"
+        detail = msg["error"].get("message", msg["error"])
+        print("smoke: FAIL — the browser refused %s: %s" % (which, detail))
+        sys.exit(1)
     if msg.get("id") == 1:
         status = msg.get("result", {}).get("result", {}).get("value")
     if msg.get("id") == 2:
-        shot = msg["result"]["data"]
+        shot = msg.get("result", {}).get("data")
 
-png = base64.b64decode(shot or "")
+if status is None or shot is None:
+    missing = []
+    if status is None:
+        missing.append("the loader-overlay status")
+    if shot is None:
+        missing.append("a screenshot")
+    print("smoke: FAIL — the browser never returned %s within 60s. "
+          "The page is loaded but the renderer is not answering." % " or ".join(missing))
+    sys.exit(1)
+
+png = base64.b64decode(shot)
 
 
 def count_lit(data):
