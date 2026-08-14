@@ -153,6 +153,28 @@ pub fn crossings_from(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f
         .sum()
 }
 
+/// How much of a wave's REVEAL survives the walls between its source and
+/// the lit point.
+///
+/// A wall is a barrier no sound crosses, so this is a gate and not an
+/// attenuation: full reveal with a clear line, nothing at all once any
+/// wall stands in the way. Pulse kind is deliberately absent — a cane
+/// tap, its echoes, a footstep and a world source's wave all stop at a
+/// wall alike, and a parameter that cannot change the answer would be a
+/// lie about the domain.
+///
+/// `source_crossings` comes from [`crossings_from`], which skips the wall
+/// a source is born inside, so a sound struck flush on a wall still
+/// lights that wall's own near face.
+///
+/// The GLSL `source_reveal_vis` in `game/shaders/data_core.gdshaderinc`
+/// transliterates this function; the two are held in step by
+/// `game/tests/shader_contract_test.gd`.
+#[must_use]
+pub const fn reveal_visibility(source_crossings: u32) -> f64 {
+    if source_crossings == 0 { 1.0 } else { 0.0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,5 +477,19 @@ mod tests {
             crossings_from(spawn, fan, &retired_map_rects(), WALL_TOP),
             1
         );
+    }
+
+    /// The reveal law is TOTAL and kind-free: a wave reveals fully when no
+    /// wall stands between its source and the lit point, and reveals
+    /// NOTHING once one does. Catches the break this branch exists to fix —
+    /// any per-kind transmission privilege reintroduced here (a hum
+    /// surviving at 0.55, say) makes the second assertion fail. The third
+    /// pins that more walls cannot resurrect a wave.
+    #[test]
+    fn a_wall_extinguishes_a_wave_whatever_made_it() {
+        assert!((reveal_visibility(0) - 1.0).abs() < 1e-12);
+        assert!(reveal_visibility(1).abs() < 1e-12);
+        assert!(reveal_visibility(2).abs() < 1e-12);
+        assert!(reveal_visibility(u32::MAX).abs() < 1e-12);
     }
 }

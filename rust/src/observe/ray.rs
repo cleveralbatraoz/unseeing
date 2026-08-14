@@ -8,8 +8,8 @@
 
 use godot::builtin::{Vector3, Vector4};
 
-use crate::level_plan::{HUM_THROUGH, SOURCE_THROUGH};
-use crate::sight::{contains, crosses, crossings, crossings_from};
+use crate::level_plan::SOURCE_THROUGH;
+use crate::sight::{contains, crosses, crossings, crossings_from, reveal_visibility};
 
 /// One wall's answer for one sight line.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -36,10 +36,11 @@ pub struct RayExplanation {
     pub camera_crossings: u32,
     /// Source to lit point: the birth wall is skipped.
     pub source_crossings: u32,
-    /// `HUM_THROUGH ^ source_crossings` — how much of a source's WAVE
-    /// survives (the shader's `source_reveal_vis`, keyed to the SOURCE
-    /// occluder so a sound born flush on a wall still lights its own face).
-    pub hum_transmission: f64,
+    /// How much of the source's WAVE survives — the shader's
+    /// `source_reveal_vis`, keyed to the SOURCE occluder so a sound born
+    /// flush on a wall still lights its own face. A gate, not a fade: a
+    /// wall stops a wave whatever kind made it.
+    pub wave_transmission: f64,
     /// `SOURCE_THROUGH ^ camera_crossings` — how much of its SILHOUETTE
     /// survives (the engine's `source_muffle`, keyed to the CAMERA
     /// occluder — every wall between the eye and the source counts).
@@ -75,10 +76,10 @@ pub fn explain_ray(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32)
         walls,
         camera_crossings,
         source_crossings,
-        // HUM_THROUGH is the source_reveal_vis exponent base
-        // (data_core.gdshaderinc), which reads off wall_crossings_from —
-        // the SOURCE occluder that skips the wall a source is born inside.
-        hum_transmission: HUM_THROUGH.powi(source_crossings as i32),
+        // sight::reveal_visibility is the law the GLSL source_reveal_vis
+        // transliterates; it reads off the SOURCE occluder, which skips
+        // the wall a source is born inside.
+        wave_transmission: reveal_visibility(source_crossings),
         // SOURCE_THROUGH is the source_muffle exponent base
         // (nodes/level.rs), which reads off sight::crossings — the CAMERA
         // occluder, every wall counted.
@@ -122,8 +123,9 @@ mod tests {
 
     /// Spawn to fan head crosses exactly one wall — and the explanation
     /// must NAME it, not merely count it. Wall index 4 is DividerNorth.
-    /// Transmission is then 0.55^1 for the wave and 0.30^1 for the
-    /// silhouette, hand-derived from the constants in level_plan.
+    /// Transmission is then 0.0 for the wave (a wall is a gate, not an
+    /// attenuator) and 0.30^1 for the silhouette, hand-derived from the
+    /// constant in level_plan.
     #[test]
     fn one_wall_is_named_and_its_transmission_derived() {
         let e = explain_ray(
@@ -140,12 +142,17 @@ mod tests {
             .map(|w| w.index)
             .collect();
         assert_eq!(crossed, vec![4]);
-        assert!((e.hum_transmission - 0.55).abs() < 1e-9);
+        // One wall stands between source and lit point, so the wave is
+        // extinguished — 0.0, not a surviving fraction. The silhouette is
+        // a DIFFERENT law and still dims to 0.30; asserting both here is
+        // what keeps a future edit from collapsing the two.
+        assert!((e.wave_transmission - 0.0).abs() < 1e-9);
         assert!((e.source_transmission - 0.30).abs() < 1e-9);
     }
 
-    /// Two walls compose as k^2 — the composition law, hand-derived:
-    /// 0.55^2 = 0.3025 and 0.30^2 = 0.09.
+    /// Composition is now the SILHOUETTE's law alone: 0.30^2 = 0.09,
+    /// hand-derived. The wave's answer is a gate, not an exponent — two
+    /// walls extinguish exactly as one does, so it stays 0.0.
     #[test]
     fn two_walls_compose_their_transmission() {
         let e = explain_ray(
@@ -156,9 +163,9 @@ mod tests {
         );
         assert_eq!(e.camera_crossings, 2);
         assert!(
-            (e.hum_transmission - 0.3025).abs() < 1e-9,
+            (e.wave_transmission - 0.0).abs() < 1e-9,
             "got {}",
-            e.hum_transmission
+            e.wave_transmission
         );
         assert!(
             (e.source_transmission - 0.09).abs() < 1e-9,
@@ -181,7 +188,7 @@ mod tests {
         assert_eq!(e.camera_crossings, 0);
         assert_eq!(e.walls.len(), 10);
         assert!(e.walls.iter().all(|w| !w.crossed));
-        assert!((e.hum_transmission - 1.0).abs() < 1e-9);
+        assert!((e.wave_transmission - 1.0).abs() < 1e-9);
     }
 
     /// The birth-wall asymmetry, made visible. A source standing on the
@@ -210,14 +217,14 @@ mod tests {
 
     /// The two transmissions must be keyed to their own occluder, not both
     /// to the camera's. On the birth-wall geometry the SOURCE occluder
-    /// (`source_crossings`) sees zero walls, so `hum_transmission` — the
-    /// exponent `source_reveal_vis` in the shader actually applies — is
-    /// full at 1.0 (`0.55^0`); the CAMERA occluder still sees the one wall
-    /// it exits, so `source_transmission` — the exponent `source_muffle`
-    /// applies — is dimmed to 0.30 (`0.30^1`). A version that exponentiates
-    /// both by `camera_crossings` would report 0.55 for `hum_transmission`
-    /// here instead of 1.0, and no other test in this module can tell the
-    /// two exponent bases apart.
+    /// (`source_crossings`) sees zero walls, so `wave_transmission` — the
+    /// gate `source_reveal_vis` in the shader actually applies — is full
+    /// at 1.0; the CAMERA occluder still sees the one wall it exits, so
+    /// `source_transmission` — the exponent `source_muffle` applies — is
+    /// dimmed to 0.30 (`0.30^1`). A version that exponentiates both by
+    /// `camera_crossings` would report 0.0 for `wave_transmission` here
+    /// instead of 1.0, and no other test in this module can tell the two
+    /// occluders apart.
     #[test]
     fn the_two_transmissions_use_their_own_occluder() {
         let e = explain_ray(
@@ -227,9 +234,9 @@ mod tests {
             WALL_TOP,
         );
         assert!(
-            (e.hum_transmission - 1.0).abs() < 1e-9,
+            (e.wave_transmission - 1.0).abs() < 1e-9,
             "got {}",
-            e.hum_transmission
+            e.wave_transmission
         );
         assert!(
             (e.source_transmission - 0.30).abs() < 1e-9,

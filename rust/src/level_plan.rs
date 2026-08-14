@@ -27,12 +27,6 @@ use crate::oid_palette::Box3;
 /// Wall height in meters — walls run floor to ceiling.
 pub const WALL_H: f64 = 3.0;
 
-/// How much a constant source's hum WAVES survive crossing one wall — the
-/// CPU half of the muffle vocabulary the shaders speak as `HUM_THROUGH` in
-/// pulse_pool.gdshaderinc (the shells in the air, the surfaces they wash).
-/// Kept in step by [`crate::sight`] tests and the shader contract.
-pub const HUM_THROUGH: f64 = 0.55;
-
 /// How much a source's own SILHOUETTE survives crossing one wall — dimmer
 /// than its waves, so a source felt through a wall is a faint ghost of
 /// itself, fainter still through two. This attenuates the source skin's
@@ -1364,7 +1358,7 @@ pub const ROOM_SEGMENTS: usize = 4;
 /// The range the sight shaders pack camera distance into — the CPU mirror
 /// of `DIST_PACK_RANGE` in `game/shaders/pulse_pool.gdshaderinc`, whose
 /// copy is the one that renders. Held to it by
-/// `game/tests/shader_contract_test.gd`, exactly as [`HUM_THROUGH`] is.
+/// `game/tests/shader_contract_test.gd`.
 ///
 /// It is a CEILING ON THE MAP, which is why the level checks itself against
 /// it: `data_core.gdshaderinc` writes `clamp(vd / DIST_PACK_RANGE, 0, 1)`

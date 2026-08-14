@@ -34,10 +34,6 @@ const MAIN_SCENE := preload("res://scenes/main.tscn")
 ## and cadence are knobs, not law, and are read straight off the live node
 ## instead of duplicated as constants.
 const SOURCE_THROUGH := 0.3
-## HUM_THROUGH (0.55, level_plan.rs), the per-wall wave-transmission law
-## explain_ray's own hum_transmission field reads through — the SOURCE
-## occluder's counterpart to SOURCE_THROUGH above.
-const HUM_THROUGH := 0.55
 const FULL_REACH := 12.0
 ## Every world source is born at SOURCE_KIND = 3 (sound_source.rs), whose
 ## fade tail — pulse_pool::fade_tail(3) — is a fixed 2 s: an engine law,
@@ -717,9 +713,9 @@ func _one_wall_level() -> WaveLevel:
 
 
 ## Occlusion, answerable. The line crosses the one wall this fixture holds
-## exactly once, born well clear of it, so the fan's WAVE arrives at
-## HUM_THROUGH and its silhouette at SOURCE_THROUGH — the engine law, not
-## a fact about any one map's layout.
+## exactly once, born well clear of it, so the fan's WAVE is extinguished
+## (0.0) while its silhouette survives at SOURCE_THROUGH — two different
+## laws, which is the break this assertion catches.
 func test_explain_ray_names_the_wall_it_crosses() -> void:
 	var level := _one_wall_level()
 	var obs := _observer()
@@ -727,7 +723,7 @@ func test_explain_ray_names_the_wall_it_crosses() -> void:
 	var e: Dictionary = obs.explain_ray(Vector3(3.0, 0.9, 4.0), Vector3(10.0, 0.9, 4.0))
 	assert_int(e["camera_crossings"]).is_equal(1)
 	assert_int(e["source_crossings"]).is_equal(1)
-	assert_float(e["hum_transmission"]).is_equal_approx(HUM_THROUGH, 0.0001)
+	assert_float(e["wave_transmission"]).is_equal_approx(0.0, 0.0001)
 	assert_float(e["source_transmission"]).is_equal_approx(SOURCE_THROUGH, 0.0001)
 	var crossed: Array[String] = []
 	for wall: Dictionary in e["walls"]:
