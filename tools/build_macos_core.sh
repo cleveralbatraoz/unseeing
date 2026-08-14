@@ -32,9 +32,19 @@ command -v lipo >/dev/null 2>&1 || {
   echo "build-macos-core: lipo not found (install the Xcode command line tools)"
   exit 2
 }
-if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
+CARGO_DIR="${CARGO_HOME:-${HOME:-}/.cargo}"
+if [ -f "$CARGO_DIR/env" ]; then . "$CARGO_DIR/env"; fi
 command -v cargo >/dev/null 2>&1 || {
   echo "build-macos-core: cargo not found (install rustup; rust-toolchain.toml pins the version)"
+  exit 2
+}
+# The target gate below is a rustup question, not a cargo one. A Rust installed
+# by Homebrew or a distro package has cargo and no rustup at all, and without
+# this the gate answered "rust target aarch64-apple-darwin is not installed"
+# and prescribed `rustup target add` — a command that host cannot run.
+command -v rustup >/dev/null 2>&1 || {
+  echo "build-macos-core: rustup not found, and the Apple slices need it to select the pinned toolchain"
+  echo "build-macos-core:        fix: install rustup from https://rustup.rs (a package-manager cargo cannot honour rust-toolchain.toml)"
   exit 2
 }
 
@@ -48,10 +58,20 @@ X86_64_TRIPLE=x86_64-apple-darwin
 # Both triples are already listed in rust/rust-toolchain.toml, so a rustup
 # that honours the pin has them. Say so precisely when it does not, rather
 # than letting cargo's own error explain a project rule it has never read.
+#
+# Asked from inside rust/, because that is where the pin lives. rustup resolves
+# a toolchain from the CURRENT DIRECTORY, so run from the repository root — the
+# ordinary way anyone invokes this — the question went to the default toolchain
+# instead of the pinned one, while the build below runs in rust/ and uses the
+# pinned one. On a machine whose default toolchain lacks the Apple targets that
+# reported a failure the build would not have had, and the remedy it printed
+# added the target to the wrong toolchain, so re-running never converged.
+INSTALLED_TARGETS="$(cd "$DIR/rust" && rustup target list --installed 2>/dev/null)" || INSTALLED_TARGETS=""
 for triple in "$ARM64_TRIPLE" "$X86_64_TRIPLE"; do
-  if ! rustup target list --installed 2>/dev/null | grep -qx "$triple"; then
-    echo "build-macos-core: FAILED rust target $triple is not installed"
-    echo "build-macos-core:        rustup target add $triple (rust-toolchain.toml already lists it)"
+  if ! printf '%s\n' "$INSTALLED_TARGETS" | grep -qx "$triple"; then
+    echo "build-macos-core: FAILED rust target $triple is not installed for the pinned toolchain"
+    echo "build-macos-core:        fix: (cd rust && rustup target add $triple)"
+    echo "build-macos-core:        rust-toolchain.toml already lists it; running this from rust/ is what aims it at the pin"
     exit 2
   fi
 done

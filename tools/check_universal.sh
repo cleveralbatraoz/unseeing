@@ -40,6 +40,19 @@ command -v lipo >/dev/null 2>&1 || {
 }
 
 if ! ARCHS="$(lipo -archs "$TARGET" 2>&1)"; then
+  # `command -v lipo` above only proves a stub exists. On a Mac whose Xcode
+  # command line tools are missing or point at a removed developer directory,
+  # that stub runs and fails — and blaming the artifact for it sends the reader
+  # to rebuild a binary that was fine. A broken host is exit 2, like every other
+  # environment failure here; a genuinely unreadable artifact stays exit 1.
+  case "$ARCHS" in
+    *xcrun*|*"developer path"*|*"active developer"*|*CommandLineTools*|*"can't be located"*)
+      echo "check_universal: lipo is present but unusable — the Xcode command line tools are not set up"
+      printf 'check_universal:        %s\n' "$ARCHS"
+      echo "check_universal:        fix: xcode-select --install"
+      exit 2
+      ;;
+  esac
   echo "check_universal: FAILED $TARGET is not a Mach-O binary lipo can read"
   printf 'check_universal:        %s\n' "$ARCHS"
   exit 1

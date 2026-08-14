@@ -57,6 +57,12 @@ echo "ci: engine-caller self-test (every script that runs Godot applies the pin)
 "$DIR/test/engine_callers_test.sh" || exit 1
 echo "ci: content-digest self-test (a missing hasher must refuse, not agree)"
 "$DIR/test/digest_test.sh" || exit 1
+# Nothing ran this suite. It was written, committed, and then never invoked by
+# any script or workflow — so the gate guarding every macOS release had no gate
+# of its own. It reports its own SKIP on hosts without lipo, loudly, rather than
+# passing as though it had checked something.
+echo "ci: macOS universal-gate self-test"
+"$DIR/test/macos_universal_test.sh" || exit 1
 echo "ci: POSIX designer-bootstrap self-test"
 "$DIR/test/bootstrap_posix_test.sh" || exit 1
 if command -v pwsh >/dev/null 2>&1; then
