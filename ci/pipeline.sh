@@ -17,6 +17,20 @@ GODOT="$(unseeing_engine_select "$DIR" "${GODOT:-}")" || {
   exit 2
 }
 
+# Resolved here rather than beside the format stage it feeds: the check costs
+# nothing and its absence is fatal, so discovering it after the full Rust gate
+# meant paying cargo fmt + clippy + test + a release build to be told a two-
+# millisecond precondition was missing. It also mis-reads further down: the
+# pre-commit hook the hygiene suite drives refuses without these, and the suite
+# then blames whichever guard it happened to be exercising.
+# ~/.local/bin is pipx's default and is not on every login PATH.
+GDFORMAT="$(command -v gdformat || echo "$HOME/.local/bin/gdformat")"
+GDLINT="$(command -v gdlint || echo "$HOME/.local/bin/gdlint")"
+[ -x "$GDFORMAT" ] && [ -x "$GDLINT" ] || {
+  echo "ci: FAILED gdformat/gdlint not found (pipx install 'gdtoolkit==4.*')"
+  exit 2
+}
+
 # Cheapest gate in the pipeline (no Godot, no network) — run it first so a
 # stray export binary or an unignored worktree fails in milliseconds.
 echo "ci: repository hygiene"
@@ -114,12 +128,7 @@ else
 fi
 
 echo "ci: gdscript format + lint"
-GDFORMAT="$(command -v gdformat || echo "$HOME/.local/bin/gdformat")"
-GDLINT="$(command -v gdlint || echo "$HOME/.local/bin/gdlint")"
-[ -x "$GDFORMAT" ] && [ -x "$GDLINT" ] || {
-  echo "ci: FAILED gdformat/gdlint not found (pipx install 'gdtoolkit==4.*')"
-  exit 2
-}
+# GDFORMAT/GDLINT were resolved and gated at the top of this file.
 # The placement checker runs in its own process; source the shared functions in
 # this shell for the independent format/lint stage too.
 . "$DIR/ci/gdscript_files.sh"

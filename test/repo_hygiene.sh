@@ -216,8 +216,20 @@ fi
 # must reject. The hook is read from this tree (not core.hooksPath) so the
 # file under review is the file under test.
 HOOK="$DIR/.githooks/pre-commit"
+# The hook refuses outright when gdformat/gdlint are absent, and every probe
+# below then reads that refusal as the verdict of whichever guard it was
+# exercising. On a machine without gdtoolkit that produced twenty confident
+# failures — "size guard yields to ALLOW_BIG=1", "pre-commit does not name the
+# illegal project autoload" — not one of which mentioned the actual cause.
+# One accurate failure is worth more than twenty misleading ones, and it stays
+# a FAILURE rather than a skip so it can never pass vacuously.
+HOOK_TOOLS_PATH="$PATH:$HOME/.local/bin"
 if [ ! -x "$HOOK" ]; then
   bad ".githooks/pre-commit missing or not executable"
+elif ! PATH="$HOOK_TOOLS_PATH" command -v gdformat >/dev/null 2>&1 ||
+  ! PATH="$HOOK_TOOLS_PATH" command -v gdlint >/dev/null 2>&1; then
+  bad "pre-commit source guards cannot be exercised: gdformat/gdlint are not installed"
+  echo "hygiene:      fix: pipx install 'gdtoolkit==4.*' (the hook gates every commit on them)"
 else
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
