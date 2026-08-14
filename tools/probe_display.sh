@@ -17,13 +17,14 @@
 set -eu
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-GODOT="${GODOT:-}"
-if [ -z "$GODOT" ]; then
-  for g in godot "$HOME/bin/godot" /opt/homebrew/bin/godot; do
-    if command -v "$g" >/dev/null 2>&1 || [ -x "$g" ]; then GODOT="$g"; break; fi
-  done
-fi
-[ -n "$GODOT" ] || { echo "probe: godot not found; set GODOT=/path/to/godot"; exit 2; }
+# One owner decides which engine is the pinned one, and refuses anything
+# else — including an explicitly supplied mismatch. tools/lib/engine.sh.
+# shellcheck source=tools/lib/engine.sh
+. "$DIR/tools/lib/engine.sh"
+GODOT="$(unseeing_engine_select "$DIR" "${GODOT:-}")" || {
+  echo "probe: no Godot matching .godot-version; set GODOT=/path/to/godot"
+  exit 2
+}
 
 # A stale override.cfg from a killed probe_visibility.sh run would force this
 # probe windowed and make every full-screen check fail for the wrong reason.

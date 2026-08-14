@@ -8,25 +8,28 @@
 set -eu
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-GODOT="${GODOT:-}"
-if [ -z "$GODOT" ]; then
-  for g in godot "$HOME/bin/godot" /opt/homebrew/bin/godot; do
-    if command -v "$g" >/dev/null 2>&1 || [ -x "$g" ]; then GODOT="$g"; break; fi
-  done
-fi
-[ -n "$GODOT" ] || { echo "ci: godot not found; set GODOT=/path/to/godot"; exit 2; }
+# One owner decides which engine is the pinned one, and refuses anything
+# else — including an explicitly supplied mismatch. tools/lib/engine.sh.
+# shellcheck source=tools/lib/engine.sh
+. "$DIR/tools/lib/engine.sh"
+GODOT="$(unseeing_engine_select "$DIR" "${GODOT:-}")" || {
+  echo "ci: FAILED no Godot matching .godot-version; set GODOT=/path/to/godot"
+  exit 2
+}
 
-if [ -f "$DIR/.godot-version" ]; then
-  WANT="$(cat "$DIR/.godot-version")"
-  HAVE="$("$GODOT" --version 2>/dev/null | head -1)"
-  case "$HAVE" in
-    "$WANT"*) : ;;
-    *)
-      echo "ci: FAILED godot version '$HAVE' != pinned '$WANT' (set GODOT= to a matching binary)"
-      exit 2
-      ;;
-  esac
-fi
+# Resolved here rather than beside the format stage it feeds: the check costs
+# nothing and its absence is fatal, so discovering it after the full Rust gate
+# meant paying cargo fmt + clippy + test + a release build to be told a two-
+# millisecond precondition was missing. It also mis-reads further down: the
+# pre-commit hook the hygiene suite drives refuses without these, and the suite
+# then blames whichever guard it happened to be exercising.
+# ~/.local/bin is pipx's default and is not on every login PATH.
+GDFORMAT="$(command -v gdformat || echo "$HOME/.local/bin/gdformat")"
+GDLINT="$(command -v gdlint || echo "$HOME/.local/bin/gdlint")"
+[ -x "$GDFORMAT" ] && [ -x "$GDLINT" ] || {
+  echo "ci: FAILED gdformat/gdlint not found (pipx install 'gdtoolkit==4.*')"
+  exit 2
+}
 
 # Cheapest gate in the pipeline (no Godot, no network) — run it first so a
 # stray export binary or an unignored worktree fails in milliseconds.
@@ -48,13 +51,31 @@ echo "ci: GDScript tests/probes-only placement"
 "$DIR/ci/check_gdscript_policy.sh" || exit 1
 echo "ci: gdUnit source/summary gate self-test"
 "$DIR/test/ci_gdunit_gate.sh" || exit 1
+echo "ci: engine-selection self-test (discovery + the pinned-version predicate)"
+"$DIR/test/engine_select_test.sh" || exit 1
+echo "ci: engine-caller self-test (every script that runs Godot applies the pin)"
+"$DIR/test/engine_callers_test.sh" || exit 1
+echo "ci: content-digest self-test (a missing hasher must refuse, not agree)"
+"$DIR/test/digest_test.sh" || exit 1
+echo "ci: agent-plugin scope self-test (another project's plugin is not ours to remove)"
+"$DIR/test/setup_agents_test.sh" || exit 1
+echo "ci: run-the-game self-test (it plays the world, never the editor)"
+"$DIR/test/run_game_test.sh" || exit 1
+# Nothing ran this suite. It was written, committed, and then never invoked by
+# any script or workflow — so the gate guarding every macOS release had no gate
+# of its own. It reports its own SKIP on hosts without lipo, loudly, rather than
+# passing as though it had checked something.
+echo "ci: macOS universal-gate self-test"
+"$DIR/test/macos_universal_test.sh" || exit 1
 echo "ci: POSIX designer-bootstrap self-test"
 "$DIR/test/bootstrap_posix_test.sh" || exit 1
 if command -v pwsh >/dev/null 2>&1; then
   echo "ci: Windows designer-bootstrap self-test (PowerShell boundary fakes)"
   pwsh -NoProfile -File "$DIR/test/bootstrap_windows_test.ps1" || exit 1
+  echo "ci: Windows run-the-game self-test"
+  pwsh -NoProfile -File "$DIR/test/run_game_windows_test.ps1" || exit 1
 else
-  echo "ci: Windows designer-bootstrap self-test SKIP (pwsh unavailable; Windows CI runs it)"
+  echo "ci: Windows self-tests SKIP (pwsh unavailable; Windows CI runs them)"
 fi
 
 # The test bench is vendored third-party code, so nothing else in this
@@ -121,12 +142,7 @@ else
 fi
 
 echo "ci: gdscript format + lint"
-GDFORMAT="$(command -v gdformat || echo "$HOME/.local/bin/gdformat")"
-GDLINT="$(command -v gdlint || echo "$HOME/.local/bin/gdlint")"
-[ -x "$GDFORMAT" ] && [ -x "$GDLINT" ] || {
-  echo "ci: FAILED gdformat/gdlint not found (pipx install 'gdtoolkit==4.*')"
-  exit 2
-}
+# GDFORMAT/GDLINT were resolved and gated at the top of this file.
 # The placement checker runs in its own process; source the shared functions in
 # this shell for the independent format/lint stage too.
 . "$DIR/ci/gdscript_files.sh"
@@ -219,13 +235,19 @@ echo "ci: exporting Web build (clean)"
 rm -rf "$DIR/game/build/web"
 mkdir -p "$DIR/game/build/web"
 touch "$DIR/game/build/.gdignore"
-if ! "$GODOT" --headless --path "$DIR/game" --export-release "Web" build/web/index.html > /tmp/godot-export.log 2>&1; then
-  tail -15 /tmp/godot-export.log
+# Not /tmp/godot-export.log: that is one fixed name shared by every worktree,
+# every concurrent run and every user on the box, and TMPDIR exists precisely
+# so a sandboxed or multi-user host can put it somewhere private.
+EXPORT_LOG="$(mktemp "${TMPDIR:-/tmp}/unseeing-export.XXXXXX")"
+if ! "$GODOT" --headless --path "$DIR/game" --export-release "Web" build/web/index.html > "$EXPORT_LOG" 2>&1; then
+  tail -15 "$EXPORT_LOG"
+  rm -f "$EXPORT_LOG"
   echo "ci: export FAILED (non-zero exit)"
   exit 1
 fi
 # index.side.wasm is the Rust GDExtension: without it the game boots into a
 # world with no engine nodes at all, so it belongs in the same guard
+rm -f "$EXPORT_LOG"
 for f in index.html index.js index.wasm index.side.wasm index.pck; do
   [ -s "$DIR/game/build/web/$f" ] || { echo "ci: export FAILED (missing $f)"; exit 1; }
 done

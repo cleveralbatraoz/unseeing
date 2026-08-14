@@ -48,11 +48,23 @@ trap 'rm -rf "$T"' EXIT INT TERM
 printf 'int unseeing_fixture(void){return 0;}\n' > "$T/u.c"
 
 slice() { # slice <arch> <out>
-  cc -arch "$1" -dynamiclib -o "$2" "$T/u.c" 2>/dev/null
+  # Errors kept, not discarded. Under `set -eu` a cc that cannot cross-compile
+  # — a Mac with only one SDK arch, or command line tools that resolve to a
+  # removed developer directory — aborted the whole suite on this line with a
+  # bare exit code and not one word about why.
+  if ! cc -arch "$1" -dynamiclib -o "$2" "$T/u.c" 2>"$T/cc.err"; then
+    bad "cannot build a $1 fixture slice — this host cannot exercise the universal gate"
+    sed 's/^/universal:      /' "$T/cc.err"
+    exit 1
+  fi
 }
 slice arm64 "$T/arm64.dylib"
 slice x86_64 "$T/x86_64.dylib"
-lipo -create -output "$T/universal.dylib" "$T/arm64.dylib" "$T/x86_64.dylib"
+if ! lipo -create -output "$T/universal.dylib" "$T/arm64.dylib" "$T/x86_64.dylib" 2>"$T/lipo.err"; then
+  bad "cannot fuse the fixture slices — lipo is present but not usable here"
+  sed 's/^/universal:      /' "$T/lipo.err"
+  exit 1
+fi
 printf 'this is not a Mach-O file\n' > "$T/text.dylib"
 
 # `probe <script> <expected-exit> <label> [argument...]` — a non-zero exit is

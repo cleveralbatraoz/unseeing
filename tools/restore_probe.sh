@@ -5,17 +5,34 @@
 # A missing hash is a failure, never a pass.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-GODOT="${GODOT:-godot}"
-# a full path template, not `mktemp -t`: GNU mktemp demands the X's at the
-# end of the template, and the droplet running this pipeline is Linux
-BLOB="$(mktemp "${TMPDIR:-/tmp}/unseeing-blob.XXXXXX")"
+# One owner decides which engine is the pinned one, and refuses anything
+# else — including an explicitly supplied mismatch. tools/lib/engine.sh.
+# shellcheck source=tools/lib/engine.sh
+. "$DIR/tools/lib/engine.sh"
+GODOT="$(unseeing_engine_select "$DIR" "${GODOT:-}")" || {
+  echo "restore: no Godot matching .godot-version; set GODOT=/path/to/godot"
+  exit 2
+}
+# Beside the project, not in /tmp. The blob is a path handed to the ENGINE, and
+# a snap- or Flatpak-confined Godot gets a private /tmp of its own: the capture
+# leg writes into the sandbox's namespace, the shell sees an empty file, and
+# KEEP_BLOB=1 then prints a path that does not exist. game/build/ is somewhere
+# the engine can always reach, because it can already reach the project — and
+# .gitignore covers it, with game/build/.gdignore keeping Godot from importing
+# whatever lands there.
+#
+# A full path template, not `mktemp -t`: GNU mktemp demands the X's at the end
+# of the template, and the droplet running this pipeline is Linux.
+BLOB_DIR="$DIR/game/build"
+mkdir -p "$BLOB_DIR"
+BLOB="$(mktemp "$BLOB_DIR/unseeing-blob.XXXXXX")"
 # KEEP_BLOB=1 skips the cleanup trap and prints the path instead, so a
 # diverging CI run can be pulled back and post-mortemed instead of re-run
 # blind. Default behavior (delete on exit) is unchanged.
 if [ "${KEEP_BLOB:-0}" = 1 ]; then
-  trap 'echo "restore: KEEP_BLOB=1 — blob kept at $BLOB"' EXIT
+  trap 'echo "restore: KEEP_BLOB=1 — blob kept at $BLOB"' EXIT INT TERM HUP
 else
-  trap 'rm -f "$BLOB"' EXIT
+  trap 'rm -f "$BLOB"' EXIT INT TERM HUP
 fi
 
 leg() {

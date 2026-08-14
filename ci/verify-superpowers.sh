@@ -4,8 +4,11 @@ set -eu
 MODE="${1:-}"
 case "$MODE" in metadata|full) ;; *) echo "usage: $0 metadata|full" >&2; exit 2 ;; esac
 ROOT="${SUPERPOWERS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-PIN=b36e0829c6d0140e93cfef2ca599b1b07d4a7797
-TAG=v6.3.0
+# One home for the pin, the tag and the version: ci/superpowers.lock, which
+# tools/update-superpowers.sh rewrites. They used to be spelled out in four
+# files the update path never touched.
+sp_lock_get() { sed -n "s/^$1=//p" "$2" | head -1; }
+LOCK="$ROOT/ci/superpowers.lock"
 PATH_PIN=tools/superpowers
 URL=https://github.com/obra/superpowers.git
 
@@ -17,6 +20,16 @@ if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
   echo "superpowers: metadata OK (developer tooling absent from archive)"
   exit 0
 fi
+
+# Read after the archive check, never before: an exported tree carries no
+# submodule to pin, so demanding the lock there would fail the one case that
+# proves developer tooling stayed out of the deploy.
+[ -f "$LOCK" ] || fail "no lock at $LOCK"
+PIN="$(sp_lock_get pin "$LOCK")"
+TAG="$(sp_lock_get tag "$LOCK")"
+SP_VERSION="$(sp_lock_get version "$LOCK")"
+[ -n "$PIN" ] && [ -n "$TAG" ] && [ -n "$SP_VERSION" ] \
+  || fail "$LOCK is missing pin, tag or version"
 
 [ -f "$ROOT/.gitmodules" ] || fail ".gitmodules is missing"
 paths="$(git -C "$ROOT" config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}')"
@@ -42,7 +55,7 @@ versions="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
   "$ROOT/$PATH_PIN/.claude-plugin/marketplace.json" \
   "$ROOT/$PATH_PIN/.codex-plugin/plugin.json" \
   "$ROOT/$PATH_PIN/package.json" | sort -u)"
-[ "$versions" = 6.3.0 ] || fail "upstream manifests disagree with version 6.3.0 (found: $versions)"
+[ "$versions" = "$SP_VERSION" ] || fail "upstream manifests disagree with version $SP_VERSION (found: $versions)"
 
 for skill in brainstorming dispatching-parallel-agents executing-plans \
   finishing-a-development-branch receiving-code-review requesting-code-review \

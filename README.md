@@ -57,17 +57,50 @@ One Godot project, exported everywhere — no per-platform code:
 - **Windows** — twin exports, `"Windows x86_64"` and `"Windows arm64"`
   presets. The game never relies on a particular architecture.
 
-## Development
+## Setup
 
-For the complete first-time setup, correct-worktree check, editor tour, and
-code-free level-running workflow, follow
-[Opening and running Unseeing in Godot](docs/opening-in-godot.md). The short
-version is to run `tools/bootstrap.sh` on macOS/Linux or
-`tools\bootstrap.cmd` on Windows, open `game/project.godot` in the Godot
-version pinned by `.godot-version`, and press play. Renderer is
-`gl_compatibility` — required for the Web export. One-time contributor setup:
-`git config core.hooksPath .githooks` and `pipx install "gdtoolkit==4.*"` —
-every commit is gated by `gdformat` and `gdlint`.
+Install four things, then run one command.
+
+| Tool | Version | Why |
+| --- | --- | --- |
+| **Godot** | exactly `.godot-version` (`4.7.1.stable`) | the engine. Standard or .NET build, installed any way you like — the bootstrap searches `godot`, `godot4`, `godot-4`, Homebrew, Scoop, WinGet, `~/bin`, `/Applications`, and the official archive's own filename on `PATH`. |
+| **rustup** | any | the framework is a Rust GDExtension. `rust/rust-toolchain.toml` pins the compiler; rustup installs it. The bootstrap installs rustup itself if it is missing. |
+| **A C linker** | any | Rust needs one. `build-essential` on Linux, `xcode-select --install` on macOS, Visual Studio 2022 Build Tools with **Desktop development with C++** on Windows. |
+| **gdtoolkit** | `4.*` | `pipx install "gdtoolkit==4.*"` — `gdformat` and `gdlint` gate every commit and every CI run. |
+
+Then:
+
+```sh
+tools/bootstrap.sh                 # macOS and Linux
+git config core.hooksPath .githooks
+```
+
+```powershell
+.\tools\bootstrap.cmd              # Windows
+git config core.hooksPath .githooks
+```
+
+The bootstrap ends with `bootstrap: OK` only after every engine class has
+registered — the expected count lives in `ci/engine_class_count`, and a
+mismatch names that file. If it cannot find your editor, pass it:
+`GODOT=/path/to/godot tools/bootstrap.sh`, or
+`.\tools\bootstrap.cmd -Godot C:\path\to\Godot_console.exe`.
+
+**Play the game:** `tools/run_game.sh` (`.\tools\run_game.cmd` on Windows) —
+builds the engine and launches the world. Add `--windowed` for a window instead
+of full screen, `--skip-build` to play what is already built.
+
+**Author levels:** open `game/project.godot` in Godot and press play. Renderer
+is `gl_compatibility`, required for the Web export. The editor tour, the
+correct-worktree check, and the code-free level workflow are in
+[Opening and running Unseeing in Godot](docs/opening-in-godot.md).
+
+**Check everything:** `ci/pipeline.sh` — the same script CI and the droplet run.
+`SKIP_EXPORT=1` for checks only.
+
+Needed only for particular jobs, not for setup: Node 20+ (`tools/setup-mcp.sh`,
+the Godot editor bridge), Chrome or Chromium plus Python 3 (the web smoke test),
+`cargo-zigbuild` and emsdk (`deploy.sh`).
 
 Claude Code and Codex App/CLI contributors should follow the pinned,
 repository-local setup and upgrade guide in [docs/agent-workflow.md](docs/agent-workflow.md).

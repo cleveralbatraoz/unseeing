@@ -105,9 +105,11 @@ move HEAD in the checkout under review.
   browser tests under `test/`, and movie-maker frames for visual verification.
 - Debug root causes, one hypothesis at a time, with a failing regression test
   before the fix. After three failed fixes, stop and question the architecture.
-- Poll for conditions instead of arbitrary waits. Existing debt is limited to
-  the Chrome startup sleep in `test/web_smoke.sh` and `SMOKE_WAIT` in
-  `test/web_probe.py`; do not add more.
+- Poll for conditions instead of arbitrary waits. `test/web_smoke.sh` now polls
+  the local HTTP server and the browser's DevTools endpoint, so its Chrome
+  startup sleep is gone. Existing debt is limited to `SMOKE_WAIT` in
+  `test/web_probe.py`, which bounds how long first paint may take; do not add
+  more.
 
 The game boots fullscreen at native resolution, except web. Command-line
 window flags cannot override the project setting. For deterministic windowed

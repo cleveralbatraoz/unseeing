@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The pin under test comes from the lock the update path rewrites, so this
+# suite cannot drift away from what it is meant to be verifying.
+SP_PIN="$(sed -n 's/^pin=//p' "$ROOT/ci/superpowers.lock" | head -1)"
+[ -n "$SP_PIN" ] || { echo "verify-superpowers-test: ci/superpowers.lock has no pin" >&2; exit 1; }
 VERIFY="$ROOT/ci/verify-superpowers.sh"
 
 # Every fixture below is built by copying the repo's real `.gitmodules`, and
@@ -32,8 +36,12 @@ make_repo() {
   git -C "$repo" config user.email test@example.invalid
   cp "$VERIFY" "$repo/verify.sh"
   cp "$ROOT/.gitmodules" "$repo/.gitmodules"
-  git -C "$repo" add .gitmodules verify.sh
-  git -C "$repo" update-index --add --cacheinfo 160000,b36e0829c6d0140e93cfef2ca599b1b07d4a7797,tools/superpowers
+  # The lock is what the verifier reads its pin from, so it is part of the
+  # fixture. Copied rather than written, so this suite exercises the real file.
+  mkdir -p "$repo/ci"
+  cp "$ROOT/ci/superpowers.lock" "$repo/ci/superpowers.lock"
+  git -C "$repo" add .gitmodules verify.sh ci/superpowers.lock
+  git -C "$repo" update-index --add --cacheinfo 160000,$SP_PIN,tools/superpowers
 }
 expect() {
   want="$1" label="$2"; shift 2
@@ -56,8 +64,22 @@ git -C "$TMP/branch" config -f .gitmodules submodule.tools/superpowers.branch ma
 expect 1 "rejects a floating branch" env SUPERPOWERS_ROOT="$TMP/branch" "$TMP/branch/verify.sh" metadata
 
 make_repo "$TMP/extra"
-git -C "$TMP/extra" update-index --add --cacheinfo 160000,b36e0829c6d0140e93cfef2ca599b1b07d4a7797,vendor/embedded
+git -C "$TMP/extra" update-index --add --cacheinfo 160000,$SP_PIN,vendor/embedded
 expect 1 "rejects a second gitlink" env SUPERPOWERS_ROOT="$TMP/extra" "$TMP/extra/verify.sh" metadata
+
+# The lock is new, and nothing yet proved the verifier actually READS it. Both
+# cases below fail if the pin is hardcoded again, or if the lock is consulted
+# and its answer then ignored.
+make_repo "$TMP/wrongpin"
+sed 's/^pin=.*/pin=0000000000000000000000000000000000000000/' \
+  "$ROOT/ci/superpowers.lock" >"$TMP/wrongpin/ci/superpowers.lock"
+expect 1 "rejects a gitlink that does not match the lock's pin" \
+  env SUPERPOWERS_ROOT="$TMP/wrongpin" "$TMP/wrongpin/verify.sh" metadata
+
+make_repo "$TMP/nolock"
+rm -f "$TMP/nolock/ci/superpowers.lock"
+expect 1 "refuses a checkout with no lock rather than assuming a pin" \
+  env SUPERPOWERS_ROOT="$TMP/nolock" "$TMP/nolock/verify.sh" metadata
 
 mkdir -p "$TMP/archive"
 cp "$VERIFY" "$TMP/archive/verify.sh"
