@@ -34,6 +34,12 @@ function Require([bool]$Condition, [string]$What) {
 Require (Test-Path -LiteralPath $Subject -PathType Leaf) "the PowerShell run tool exists"
 if ($Failed -ne 0) { exit $Failed }
 
+# Same guard as the two sibling suites: an inherited GODOT is an explicit
+# engine, and an explicit engine skips the candidate walk these cases exist
+# to exercise. CI exports it for the whole Linux pipeline.
+$PriorGodotEnv = $env:GODOT
+Remove-Item Env:GODOT -ErrorAction SilentlyContinue
+
 $IsWindowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 $Sandbox = Join-Path ([IO.Path]::GetTempPath()) ("unseeing-run-{0}" -f [guid]::NewGuid())
 $Repo = Join-Path $Sandbox "repo with spaces"
@@ -216,6 +222,9 @@ try {
     Require (-not (HasArg $noCore "--path")) "a missing core never launches the game"
     Set-Content -LiteralPath $missingCore -Value "fixture core"
 } finally {
+    if ($null -eq $PriorGodotEnv) {
+        Remove-Item Env:GODOT -ErrorAction SilentlyContinue
+    } else { $env:GODOT = $PriorGodotEnv }
     Remove-Item Env:RUN_GAME_TEST_LOG -ErrorAction SilentlyContinue
     Remove-Item Env:RUN_GAME_TEST_OVERRIDE -ErrorAction SilentlyContinue
     Remove-Item Env:UNSEEING_ENGINE_CANDIDATES -ErrorAction SilentlyContinue

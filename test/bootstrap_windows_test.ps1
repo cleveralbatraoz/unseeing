@@ -43,6 +43,15 @@ if ($Failed -ne 0) {
     exit $Failed
 }
 
+# An inherited GODOT is an EXPLICIT engine to Find-Godot, and an explicit engine
+# skips the candidate walk entirely — so the discovery case below would ask about
+# the host's editor instead of its fixtures. .github/workflows/test.yml runs the
+# Linux pipeline as `GODOT="$PWD/godot-bin/godot" ci/pipeline.sh`, which is
+# exactly that: the case passed on the Windows job and failed on the Linux one.
+# The POSIX suite carries the same guard for the same reason.
+$PriorGodotEnv = $env:GODOT
+Remove-Item Env:GODOT -ErrorAction SilentlyContinue
+
 $Sandbox = Join-Path ([IO.Path]::GetTempPath()) ("unseeing-bootstrap-{0}" -f [guid]::NewGuid())
 $Log = Join-Path $Sandbox "calls.log"
 $Stdout = Join-Path $Sandbox "stdout.log"
@@ -634,6 +643,9 @@ $global:LASTEXITCODE = 0
     }
     Set-Content -LiteralPath $streamGate -Value "go"
     $streamProcess.WaitForExit()
+    if ($null -eq $PriorGodotEnv) {
+        Remove-Item Env:GODOT -ErrorAction SilentlyContinue
+    } else { $env:GODOT = $PriorGodotEnv }
     Remove-Item Env:BOOTSTRAP_TEST_STREAM_GATE -ErrorAction SilentlyContinue
     Require $sawMarkerWhileRunning `
         "build output reaches the console while the build is still running"
