@@ -121,13 +121,14 @@ case "${1:-verify}" in
     tag="${2:-}"
     [ -n "$tag" ] || { echo "vendor: usage: ci/vendor-gdunit4.sh update <tag>   (e.g. v6.2.0)"; exit 2; }
 
-    GODOT="${GODOT:-}"
-    if [ -z "$GODOT" ]; then
-      for g in godot "$HOME/bin/godot" /opt/homebrew/bin/godot; do
-        if command -v "$g" >/dev/null 2>&1 || [ -x "$g" ]; then GODOT="$g"; break; fi
-      done
-    fi
-    [ -n "$GODOT" ] || { echo "vendor: FAILED godot not found; set GODOT=/path/to/godot"; exit 2; }
+    # One owner decides which engine is the pinned one, and refuses anything
+    # else — including an explicitly supplied mismatch. tools/lib/engine.sh.
+    # shellcheck source=tools/lib/engine.sh
+    . "$DIR/tools/lib/engine.sh"
+    GODOT="$(unseeing_engine_select "$DIR" "${GODOT:-}")" || {
+      echo "vendor: FAILED no Godot matching .godot-version; set GODOT=/path/to/godot"
+      exit 2
+    }
 
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT

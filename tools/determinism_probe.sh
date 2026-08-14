@@ -7,7 +7,14 @@
 # refused must not read as "the runs agreed".
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-GODOT="${GODOT:-godot}"
+# One owner decides which engine is the pinned one, and refuses anything
+# else — including an explicitly supplied mismatch. tools/lib/engine.sh.
+# shellcheck source=tools/lib/engine.sh
+. "$DIR/tools/lib/engine.sh"
+GODOT="$(unseeing_engine_select "$DIR" "${GODOT:-}")" || {
+  echo "determinism: no Godot matching .godot-version; set GODOT=/path/to/godot"
+  exit 2
+}
 
 run_once() {
   UNSEEING_SEED=1 "$GODOT" --headless --fixed-fps 60 --path "$DIR/game" \

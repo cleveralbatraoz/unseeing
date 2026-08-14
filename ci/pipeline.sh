@@ -8,25 +8,14 @@
 set -eu
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-GODOT="${GODOT:-}"
-if [ -z "$GODOT" ]; then
-  for g in godot "$HOME/bin/godot" /opt/homebrew/bin/godot; do
-    if command -v "$g" >/dev/null 2>&1 || [ -x "$g" ]; then GODOT="$g"; break; fi
-  done
-fi
-[ -n "$GODOT" ] || { echo "ci: godot not found; set GODOT=/path/to/godot"; exit 2; }
-
-if [ -f "$DIR/.godot-version" ]; then
-  WANT="$(cat "$DIR/.godot-version")"
-  HAVE="$("$GODOT" --version 2>/dev/null | head -1)"
-  case "$HAVE" in
-    "$WANT"*) : ;;
-    *)
-      echo "ci: FAILED godot version '$HAVE' != pinned '$WANT' (set GODOT= to a matching binary)"
-      exit 2
-      ;;
-  esac
-fi
+# One owner decides which engine is the pinned one, and refuses anything
+# else — including an explicitly supplied mismatch. tools/lib/engine.sh.
+# shellcheck source=tools/lib/engine.sh
+. "$DIR/tools/lib/engine.sh"
+GODOT="$(unseeing_engine_select "$DIR" "${GODOT:-}")" || {
+  echo "ci: FAILED no Godot matching .godot-version; set GODOT=/path/to/godot"
+  exit 2
+}
 
 # Cheapest gate in the pipeline (no Godot, no network) — run it first so a
 # stray export binary or an unignored worktree fails in milliseconds.
@@ -50,6 +39,8 @@ echo "ci: gdUnit source/summary gate self-test"
 "$DIR/test/ci_gdunit_gate.sh" || exit 1
 echo "ci: engine-selection self-test (discovery + the pinned-version predicate)"
 "$DIR/test/engine_select_test.sh" || exit 1
+echo "ci: engine-caller self-test (every script that runs Godot applies the pin)"
+"$DIR/test/engine_callers_test.sh" || exit 1
 echo "ci: POSIX designer-bootstrap self-test"
 "$DIR/test/bootstrap_posix_test.sh" || exit 1
 if command -v pwsh >/dev/null 2>&1; then

@@ -5,7 +5,14 @@
 # A missing hash is a failure, never a pass.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-GODOT="${GODOT:-godot}"
+# One owner decides which engine is the pinned one, and refuses anything
+# else — including an explicitly supplied mismatch. tools/lib/engine.sh.
+# shellcheck source=tools/lib/engine.sh
+. "$DIR/tools/lib/engine.sh"
+GODOT="$(unseeing_engine_select "$DIR" "${GODOT:-}")" || {
+  echo "restore: no Godot matching .godot-version; set GODOT=/path/to/godot"
+  exit 2
+}
 # a full path template, not `mktemp -t`: GNU mktemp demands the X's at the
 # end of the template, and the droplet running this pipeline is Linux
 BLOB="$(mktemp "${TMPDIR:-/tmp}/unseeing-blob.XXXXXX")"
