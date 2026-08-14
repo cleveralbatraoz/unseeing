@@ -516,6 +516,16 @@ if ($import.ExitCode -ne 0) {
     Write-Output "bootstrap: import exited $($import.ExitCode); continuing to the authoritative class census"
 }
 
+# One home for the expected class count; tools/bootstrap.sh carries the note on
+# why it stays hand-maintained rather than derived from the probe's own roster.
+$CountFile = Join-Path $Root "ci/engine_class_count"
+if (-not (Test-Path -LiteralPath $CountFile -PathType Leaf)) {
+    Stop-Bootstrap 2 "ci/engine_class_count is missing; it names the expected registered-class count"
+}
+$Classes = (Get-Content -LiteralPath $CountFile -Raw).Trim()
+if ($Classes -notmatch '^[0-9]+$') {
+    Stop-Bootstrap 2 "ci/engine_class_count does not name a class count"
+}
 Write-Output "bootstrap: verifying every engine class registered"
 $census = Invoke-Captured $GodotPath @(
     "--headless", "--path", $GameDirectory,
@@ -527,8 +537,9 @@ foreach ($line in $census.Lines) {
 if ($census.ExitCode -ne 0) {
     Stop-Bootstrap 1 "the engine census probe failed (exit $($census.ExitCode); see output above)"
 }
-if (-not (($census.Lines -join "`n").Contains("probe: PASS (19 checks)"))) {
-    Stop-Bootstrap 1 "the engine census returned success without the exact 19-class verdict"
+if (-not (($census.Lines -join "`n").Contains("probe: PASS ($Classes checks)"))) {
+    Write-Output "bootstrap: fix: if a class was added or removed on purpose, update ci/engine_class_count"
+    Stop-Bootstrap 1 "the engine census returned success without the exact $Classes-class verdict"
 }
 
 Write-Output "bootstrap: OK - open game/project.godot in Godot $Want"

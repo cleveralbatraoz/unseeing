@@ -56,10 +56,25 @@ $Shell = (Get-Process -Id $PID).Path
 New-Item -ItemType Directory -Path $Sandbox | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $Repo "rust") | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $Repo "game") | Out-Null
-Copy-Item -LiteralPath (Join-Path $Root "rust/rust-toolchain.toml") `
-    -Destination (Join-Path $Repo "rust/rust-toolchain.toml")
+# The fixture carries its OWN pin, deliberately not the project's. Copying the
+# live rust-toolchain.toml and then asserting a hardcoded version made this a
+# constant-change detector: bumping Rust broke a dozen assertions with nothing
+# to say about the bump. A pin the project does not use also proves something
+# stronger — that the bootstrap READS the file rather than knowing a number.
+$FixturePin = "1.90.7"
+Set-Content -LiteralPath (Join-Path $Repo "rust/rust-toolchain.toml") -Encoding ascii -Value @(
+    "[toolchain]"
+    "channel = `"$FixturePin`""
+    "components = [`"rustfmt`", `"clippy`"]"
+)
 Set-Content -LiteralPath (Join-Path $Repo ".godot-version") `
     -Value "4.7.1.stable.official" -Encoding ascii
+# The count the fixture pretends the roster has — again not the project's, so a
+# real class being added or removed cannot break these assertions.
+$FixtureClasses = 7
+New-Item -ItemType Directory -Path (Join-Path $Repo "ci") -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $Repo "ci/engine_class_count") `
+    -Value "$FixtureClasses" -Encoding ascii
 
 try {
     . $Bootstrap -NoRun
@@ -233,7 +248,7 @@ if ($args.Count -eq 1 -and $args[0] -eq "--version") {
     Write-Output "rustup 1.28.2 (fixture)"
     exit 0
 }
-if (($args -join " ") -eq "run 1.97.1 rustc --version") {
+if (($args -join " ") -eq "run $env:BOOTSTRAP_TEST_PIN rustc --version") {
     $requiredCwd = if ($env:BOOTSTRAP_TEST_REQUIRED_RUST_CWD) {
         (Resolve-Path -LiteralPath $env:BOOTSTRAP_TEST_REQUIRED_RUST_CWD).Path
     } else {
@@ -254,16 +269,16 @@ if (($args -join " ") -eq "run 1.97.1 rustc --version") {
     if ($env:BOOTSTRAP_TEST_RUSTC_VERSION) {
         Write-Output $env:BOOTSTRAP_TEST_RUSTC_VERSION
     } else {
-        Write-Output "rustc 1.97.1 (fixture)"
+        Write-Output "rustc $env:BOOTSTRAP_TEST_PIN (fixture)"
     }
     exit 0
 }
-if (($args -join " ") -eq "toolchain install 1.97.1 --profile minimal") {
+if (($args -join " ") -eq "toolchain install $env:BOOTSTRAP_TEST_PIN --profile minimal") {
     Set-Content -LiteralPath $env:BOOTSTRAP_TEST_TOOLCHAIN_SENTINEL -Value "installed"
     exit 0
 }
-if (($args -join " ") -eq "run 1.97.1 cargo --version") {
-    Write-Output "cargo 1.97.1 (fixture)"
+if (($args -join " ") -eq "run $env:BOOTSTRAP_TEST_PIN cargo --version") {
+    Write-Output "cargo $env:BOOTSTRAP_TEST_PIN (fixture)"
     exit 0
 }
 if (($args -join " ").StartsWith("target add ")) {
@@ -314,9 +329,9 @@ if (($args -join " ").Contains("--import") -and $env:BOOTSTRAP_TEST_IMPORT_FAIL 
 }
 if (($args -join " ").Contains("engine_census_probe.gd")) {
     if ($env:BOOTSTRAP_TEST_WRONG_CENSUS -eq "1") {
-        Write-Output "probe: PASS (18 checks)"
+        Write-Output "probe: PASS ($([int]$env:BOOTSTRAP_TEST_CLASSES - 1) checks)"
     } else {
-        Write-Output "probe: PASS (19 checks)"
+        Write-Output "probe: PASS ($env:BOOTSTRAP_TEST_CLASSES checks)"
     }
 }
 exit 0
@@ -359,6 +374,8 @@ $global:LASTEXITCODE = 0
             Remove-Item -LiteralPath $Log -Force
         }
         $env:BOOTSTRAP_TEST_LOG = $Log
+        $env:BOOTSTRAP_TEST_PIN = $FixturePin
+        $env:BOOTSTRAP_TEST_CLASSES = $FixtureClasses
         $env:BOOTSTRAP_TEST_REQUIRED_RUST_CWD = Join-Path $Repo "rust"
         $env:BOOTSTRAP_TEST_TOOLCHAIN_SENTINEL = Join-Path $Sandbox "toolchain-installed"
         Remove-Item -LiteralPath $env:BOOTSTRAP_TEST_TOOLCHAIN_SENTINEL `
@@ -440,14 +457,14 @@ $global:LASTEXITCODE = 0
     $x64 = Invoke-Fixture "X64"
     Require ($x64.ExitCode -eq 0) "x86_64 fixture completes"
     Require (Calls-Contain $x64 (
-        "rustup-cwd " + (Join-Path $Repo "rust") + " run 1.97.1 rustc --version"
+        "rustup-cwd " + (Join-Path $Repo "rust") + " run $FixturePin rustc --version"
     )) "the exact compiler pin is selected through rustup inside rust/"
-    Require (Calls-Contain $x64 "rustup toolchain install 1.97.1 --profile minimal") `
+    Require (Calls-Contain $x64 "rustup toolchain install $FixturePin --profile minimal") `
         "a fresh rustup receives the pinned toolchain without a second command"
-    Require (Calls-Contain $x64 "rustup target add x86_64-pc-windows-msvc --toolchain 1.97.1") `
+    Require (Calls-Contain $x64 "rustup target add x86_64-pc-windows-msvc --toolchain $FixturePin") `
         "x86_64 standard library is installed for the selected Godot target"
     Require (Calls-Contain $x64 (
-        "rustup run 1.97.1 cargo build --release --features editor-docs " +
+        "rustup run $FixturePin cargo build --release --features editor-docs " +
         "--target x86_64-pc-windows-msvc " +
         "--target-dir " + (Join-Path $Repo "rust/target")
     )) `
@@ -463,18 +480,18 @@ $global:LASTEXITCODE = 0
     Require ($freshRustup.ExitCode -eq 0 -and
         (Calls-Contain $freshRustup "rustup installer invoked")) `
         "rustup absence invokes the installer and completes in one command"
-    Require (Calls-Contain $freshRustup "rustup run 1.97.1 cargo build") `
+    Require (Calls-Contain $freshRustup "rustup run $FixturePin cargo build") `
         "the newly installed rustup is discovered in the current process"
 
     $arm64 = Invoke-Fixture "Arm64"
     Require ($arm64.ExitCode -eq 0) "ARM64 fixture completes"
     Require (Calls-Contain $arm64 (
-        "rustup run 1.97.1 cargo build --release --features editor-docs " +
+        "rustup run $FixturePin cargo build --release --features editor-docs " +
         "--target aarch64-pc-windows-msvc " +
         "--target-dir " + (Join-Path $Repo "rust/target")
     )) `
         "ARM64 builds the release editor artifact at its declared target"
-    Require (Calls-Contain $arm64 "rustup target add aarch64-pc-windows-msvc --toolchain 1.97.1") `
+    Require (Calls-Contain $arm64 "rustup target add aarch64-pc-windows-msvc --toolchain $FixturePin") `
         "ARM64 standard library is installed for the selected Godot target"
 
     $calls = $arm64.Calls -join "`n"
@@ -503,7 +520,7 @@ $global:LASTEXITCODE = 0
     Require (-not (Calls-Contain $noArtifact "--import")) `
         "a missing fresh DLL never reaches import"
 
-    $env:BOOTSTRAP_TEST_RUSTC_VERSION = "rustc 1.97.0 (fixture)"
+    $env:BOOTSTRAP_TEST_RUSTC_VERSION = "rustc 1.90.6 (fixture)"
     $wrongRust = Invoke-Fixture "X64"
     Remove-Item Env:BOOTSTRAP_TEST_RUSTC_VERSION
     Require ($wrongRust.ExitCode -eq 2) `
@@ -628,6 +645,8 @@ $global:LASTEXITCODE = 0
     Remove-Item Env:BOOTSTRAP_TEST_GODOT_SILENT -ErrorAction SilentlyContinue
     Remove-Item Env:UNSEEING_ENGINE_CANDIDATES -ErrorAction SilentlyContinue
     Remove-Item Env:BOOTSTRAP_TEST_LOG -ErrorAction SilentlyContinue
+    Remove-Item Env:BOOTSTRAP_TEST_PIN -ErrorAction SilentlyContinue
+    Remove-Item Env:BOOTSTRAP_TEST_CLASSES -ErrorAction SilentlyContinue
     Remove-Item Env:BOOTSTRAP_TEST_GODOT_VERSION -ErrorAction SilentlyContinue
     Remove-Item Env:BOOTSTRAP_TEST_CARGO_FAIL -ErrorAction SilentlyContinue
     Remove-Item Env:BOOTSTRAP_TEST_CENSUS_FAIL -ErrorAction SilentlyContinue

@@ -6,6 +6,9 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SUBJECT="${BOOTSTRAP_SUBJECT:-$ROOT/tools/bootstrap.sh}"
+# The pin this fixture pretends the project has.
+FIXTURE_PIN=1.90.7
+export FIXTURE_PIN
 FAIL=0
 
 ok() { echo "bootstrap-posix: OK   $1"; }
@@ -34,9 +37,24 @@ cp "$SUBJECT" "$REPO/tools/bootstrap.sh"
 # The engine gate is part of the subject: bootstrap.sh sources it, and it is
 # what decides whether the fixture editor is the pinned one.
 cp "$ROOT/tools/lib/engine.sh" "$REPO/tools/lib/engine.sh"
-cp "$ROOT/rust/rust-toolchain.toml" "$REPO/rust/rust-toolchain.toml"
+# The fixture carries its OWN pin, deliberately not the project's. Copying the
+# live rust-toolchain.toml and then asserting a hardcoded version made this a
+# constant-change detector: bumping Rust broke ten assertions that had nothing
+# to say about the bump. A pin the project does not use also proves something
+# stronger — that bootstrap READS the file rather than knowing a number.
+cat >"$REPO/rust/rust-toolchain.toml" <<TOOLCHAIN
+[toolchain]
+channel = "$FIXTURE_PIN"
+components = ["rustfmt", "clippy"]
+TOOLCHAIN
 chmod +x "$REPO/tools/bootstrap.sh"
 printf '%s\n' '4.7.1.stable.official' >"$REPO/.godot-version"
+mkdir -p "$REPO/ci"
+# The count the fixture pretends the roster has — again not the project's,
+# so a real class being added or removed cannot break these assertions.
+FIXTURE_CLASSES=7
+export FIXTURE_CLASSES
+printf '%s\n' "$FIXTURE_CLASSES" >"$REPO/ci/engine_class_count"
 
 cat >"$FAKE/rustup" <<'EOF'
 #!/bin/sh
@@ -45,24 +63,24 @@ if [ "$*" = "--version" ]; then
   echo 'rustup 1.28.2 (fixture)'
   exit 0
 fi
-if [ "$*" = "run 1.97.1 rustc --version" ]; then
+if [ "$*" = "run $FIXTURE_PIN rustc --version" ]; then
   if [ ! -f "$BOOTSTRAP_TEST_TOOLCHAIN_SENTINEL" ]; then
     echo 'error: pinned fixture toolchain is not installed' >&2
     exit 1
   fi
-  echo "${BOOTSTRAP_TEST_RUSTC_VERSION:-rustc 1.97.1 (fixture)}"
+  echo "${BOOTSTRAP_TEST_RUSTC_VERSION:-rustc $FIXTURE_PIN (fixture)}"
   exit 0
 fi
-if [ "$*" = "toolchain install 1.97.1 --profile minimal" ]; then
+if [ "$*" = "toolchain install $FIXTURE_PIN --profile minimal" ]; then
   : >"$BOOTSTRAP_TEST_TOOLCHAIN_SENTINEL"
   exit 0
 fi
-if [ "$*" = "run 1.97.1 cargo --version" ]; then
-  echo 'cargo 1.97.1 (fixture)'
+if [ "$*" = "run $FIXTURE_PIN cargo --version" ]; then
+  echo "cargo $FIXTURE_PIN (fixture)"
   exit 0
 fi
 case "$*" in
-  'run 1.97.1 cargo build --release --features editor-docs --target-dir '*)
+  "run $FIXTURE_PIN cargo build --release --features editor-docs --target-dir "*)
     [ "${BOOTSTRAP_TEST_CARGO_FAIL:-0}" != 1 ] || exit 19
     if [ "${BOOTSTRAP_TEST_SKIP_ARTIFACT:-0}" != 1 ]; then
       mkdir -p "$(dirname "$BOOTSTRAP_TEST_ARTIFACT")"
@@ -86,9 +104,9 @@ case " $* " in
   *engine_census_probe.gd*)
     [ "${BOOTSTRAP_TEST_CENSUS_FAIL:-0}" != 1 ] || exit 23
     if [ "${BOOTSTRAP_TEST_WRONG_CENSUS:-0}" = 1 ]; then
-      echo 'probe: PASS (18 checks)'
+      echo "probe: PASS ($((FIXTURE_CLASSES - 1)) checks)"
     else
-      echo 'probe: PASS (19 checks)'
+      echo "probe: PASS ($FIXTURE_CLASSES checks)"
     fi
     ;;
 esac
@@ -162,11 +180,11 @@ clear_flags
 run_fixture
 require "the checkout path with spaces completes" test "$status" -eq 0
 require "the release editor-docs artifact is built" \
-  grep -q "rustup run 1.97.1 cargo build --release --features editor-docs --target-dir $REPO/rust/target" "$LOG"
+  grep -q "rustup run $FIXTURE_PIN cargo build --release --features editor-docs --target-dir $REPO/rust/target" "$LOG"
 require "the exact compiler pin is selected through rustup" \
-  grep -q "rustup run 1.97.1 rustc --version" "$LOG"
+  grep -q "rustup run $FIXTURE_PIN rustc --version" "$LOG"
 require "a fresh rustup receives the pinned toolchain without a second command" \
-  grep -q "rustup toolchain install 1.97.1 --profile minimal" "$LOG"
+  grep -q "rustup toolchain install $FIXTURE_PIN --profile minimal" "$LOG"
 require "the exact census permits success" grep -q "bootstrap: OK" "$OUT"
 import_line="$(grep -n -- '--import' "$LOG" | cut -d: -f1 | head -1)"
 census_line="$(grep -n -- 'engine_census_probe.gd' "$LOG" | cut -d: -f1 | head -1)"
@@ -185,7 +203,7 @@ require "rustup absence invokes the installer and completes in one command" test
 require "the rustup installer boundary was actually crossed" \
   grep -q "rustup installer invoked" "$LOG"
 require "the newly installed rustup is discovered in the current process" \
-  grep -q "rustup run 1.97.1 cargo build" "$LOG"
+  grep -q "rustup run $FIXTURE_PIN cargo build" "$LOG"
 
 # Docker's rust images, and plenty of CI images, export CARGO_HOME away from
 # $HOME/.cargo. rustup-init honours it; the bootstrap looked only at

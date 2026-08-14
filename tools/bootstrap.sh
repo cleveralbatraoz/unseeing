@@ -150,6 +150,16 @@ echo "bootstrap: engine built ($ARTIFACT)"
 echo "bootstrap: importing the project"
 "$GODOT" --headless --path "$DIR/game" --import >/dev/null 2>&1 || true
 
+# The expected class count lives in ci/engine_class_count, not in four files
+# that have to be edited together. It stays a HAND-MAINTAINED number rather
+# than something derived from the probe's own roster: deriving it would make
+# the gate agree with whatever the probe happened to check, which is the one
+# thing it exists to refuse.
+CLASSES="$(awk 'NR==1{gsub(/[^0-9]/,""); print; exit}' "$DIR/ci/engine_class_count" 2>/dev/null)" || CLASSES=""
+[ -n "$CLASSES" ] || {
+  echo "bootstrap: FAILED ci/engine_class_count does not name a class count"
+  exit 2
+}
 echo "bootstrap: verifying every engine class registered"
 if CENSUS="$("$GODOT" --headless --path "$DIR/game" \
   -s res://tests/probe/engine_census_probe.gd 2>&1)"; then
@@ -162,9 +172,10 @@ else
 fi
 printf '%s\n' "$CENSUS"
 case "$CENSUS" in
-  *"probe: PASS (19 checks)"*) : ;;
+  *"probe: PASS ($CLASSES checks)"*) : ;;
   *)
-    echo "bootstrap: FAILED the engine census returned success without the exact 19-class verdict"
+    echo "bootstrap: FAILED the engine census returned success without the exact $CLASSES-class verdict"
+    echo "bootstrap: fix: if a class was added or removed on purpose, update ci/engine_class_count"
     exit 1
     ;;
 esac
