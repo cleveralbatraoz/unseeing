@@ -8,11 +8,19 @@ extends Node
 ##      wall must stop the fan's own wave dead. Run before cases 2 and 3
 ##      on purpose: a player tap fired near the sample points would light
 ##      them legitimately and swamp a real leak;
-##   2. FINAL IMAGE (hearing pass ON): tapping the wall must not brighten
+##   2. POSITIVE CONTROL (hearing pass OFF): every OTHER check here only
+##      asserts a reading stays dark, which an end-to-end inverted reveal
+##      gate satisfies trivially — everything legitimate goes dark right
+##      along with the leak. So this one asserts a surface that must be
+##      LIT is lit, and it must be a DELTA across the tap rather than an
+##      absolute reading: under an inverted gate the fan lights the struck
+##      face THROUGH the divider and an absolute reading passes anyway.
+##      The tap's own contribution is the difference it makes;
+##   3. FINAL IMAGE (hearing pass ON): tapping the wall must not brighten
 ##      the fan behind it — not its shell wash, not its OUTLINE borrowing
 ##      the lit wall. Sampled on the fan's OUTLINE (guard ring), where the
 ##      flare showed;
-##   3. REVEAL (hearing pass OFF): the same tap — its direct pulse AND its
+##   4. REVEAL (hearing pass OFF): the same tap — its direct pulse AND its
 ##      echoes — must not reach the fan's own data reveal. Sampled on the
 ##      fan's SOLID interior only; the outline points sit at the fan/wall
 ##      boundary and would read the wall the tap rightly lights.
@@ -36,6 +44,10 @@ const FAN_CORE: Array[Vector3] = [
 	Vector3(8.6, 1.15, 4.4),  # motor hub — a solid box, tolerance stays on it
 ]
 const WALL_TAP := Vector3(6.25, 1.5, 4.06)  # the aimed strike on the divider face
+## The struck face itself, read as the positive control. The strike point
+## is its own brightest spot, and it is the one surface whose lighting the
+## hero's tap OWNS under the shipped law: the fan is a wall away from it.
+const WALL_FACE: Array[Vector3] = [WALL_TAP]
 
 ## The hero at the spawn marker, in the room WEST of the Divider (x = 6.4,
 ## whose doorway spans z in [8, 12.4]). The fan at (8.6, 4.4) is east of
@@ -87,13 +99,45 @@ func _ready() -> void:
 	main.player.position = AT_WALL
 	main.player.camera.look_at(FAN, Vector3.UP)
 	await _settle(20)
-	# 2 — FINAL IMAGE: tapping the wall must not FLARE the fan's outline
+	# 2 — POSITIVE CONTROL, and it must be a DELTA. Every other check here
+	# is one-sided: each asserts a reading stays BELOW a darkness floor,
+	# which holds trivially once everything legitimate has gone dark too.
+	# So a reveal gate inverted wholesale — data_core.gdshaderinc's
+	# `wall_crossings_from(src, world) == 0` flipped to `!= 0`, lighting
+	# only what sits BEHIND a wall — passed every one of them.
+	#
+	# An ABSOLUTE brightness reading here does not catch it either, and the
+	# measurement says why: the tap strikes flush on the divider, so
+	# crossings_from's birth-wall skip (rust/src/sight.rs) leaves it ZERO
+	# crossings to that face and an inverted gate gives it nothing — but
+	# the FAN reaches the same face through one wall, which an inverted
+	# gate rewards with full brightness, and reveal is a MAX over live
+	# pulses. The face stays lit by the wrong source (0.675 measured).
+	#
+	# The DIFFERENCE the tap makes is what separates them. Baseline first,
+	# before any player sound exists: under the shipped law the fan cannot
+	# light this face at all, so it is dark until the tap lands and the
+	# delta is the whole reading. Under an inverted gate the fan holds the
+	# face at a steady glow before AND after, while the tap adds nothing,
+	# so the delta collapses to zero.
+	_set_quad(main, false)
+	var wall_base := await _peak_r(main, WALL_FACE, 12)
+	main.player.queue_wave(0, WALL_TAP, 6.0, 5.5, 1.0, 6, Vector3(-1, 0, 0))
+	var wall_lit := await _peak_r(main, WALL_FACE, 26) - wall_base
+	print("# occlusion @wall: tap lights its own struck face by %.3f" % wall_lit)
+	_check(
+		"the tap DOES light the wall's own face at the strike point (%.3f > 0.15)" % wall_lit,
+		wall_lit > 0.15
+	)
+	_set_quad(main, true)
+	await _settle(40)
+	# 3 — FINAL IMAGE: tapping the wall must not FLARE the fan's outline
 	# (the borrowed-outline + shell-wash bug the reporter saw)
 	var base_img := await _peak_r(main, FAN_EDGE, 12)
 	main.player.queue_wave(0, WALL_TAP, 6.0, 5.5, 1.0, 6, Vector3(-1, 0, 0))
 	var flare := await _peak_r(main, FAN_EDGE, 26) - base_img
 	await _settle(40)
-	# 3 — REVEAL: the same tap (its direct pulse AND its echoes) must not
+	# 4 — REVEAL: the same tap (its direct pulse AND its echoes) must not
 	# light the fan's own data reveal — read on the fan's solid interior,
 	# hearing quad out of the way
 	_set_quad(main, false)
