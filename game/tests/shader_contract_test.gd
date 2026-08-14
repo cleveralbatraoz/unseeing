@@ -90,12 +90,19 @@ func test_data_core_reads_the_per_vertex_label_into_g() -> void:
 ## The data core counts the walls between a source and the lit point and
 ## extinguishes the reveal once there is one, for every kind alike: a wall
 ## is a barrier, not a muffle, and no kind buys a wave passage through it.
-## Pinned as source text so the GLSL cannot drift from its cargo-pinned
-## reference, rust/src/sight.rs::reveal_visibility.
+## Pins the shipped gate EXPRESSION — including its polarity — as source
+## text, so a silent inversion (`!= 0`, lighting only what sits BEHIND a
+## wall) cannot pass unnoticed. This does not execute the GLSL: it proves
+## only that the source text still says what it must, not that the shader
+## behaves; behavioural proof is the rendered probe,
+## game/tests/probe/occlusion_probe.gd. Cross-referenced against
+## rust/src/sight.rs::reveal_visibility, the cargo-pinned law this
+## transliterates.
 func test_data_core_occludes_reveal_by_the_wall_table() -> void:
 	var core := _read(CORE_PATH)
 	assert_str(core).contains("float source_reveal_vis(vec3 src, vec3 world)")
 	assert_str(core).contains("wall_crossings_from(src, world)")
+	assert_str(core).contains("return wall_crossings_from(src, world) == 0 ? 1.0 : 0.0;")
 	(
 		assert_bool(core.contains("HUM_THROUGH"))
 		. append_failure_message(
