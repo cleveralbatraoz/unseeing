@@ -21,8 +21,9 @@ the visible game.
 - `scenes/level_01.tscn` and `scenes/level_02.tscn` — levels authored in the
   editor from typed walls, runs, solid pieces, sources, creatures, spawns,
   and reusable plain-root prefabs. Their `WaveLevel` root derives wall
-  centerlines, the occluder table sound is muffled through, spawn, demo tap,
-  and the per-face superface labels from what the designer placed.
+  centerlines, the occluder table that stops a wave at a wall and muffles a
+  source's silhouette through one, spawn, demo tap, and the per-face
+  superface labels from what the designer placed.
 - `../rust/src/` — the engine: cargo-tested pure wave, viewmodel, level-plan,
   and `render/` face/superface/label laws. `render/paint_plan.rs` owns the
   complete atomic face/source paint decision; `render/paint.rs` only reads and

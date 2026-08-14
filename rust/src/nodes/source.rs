@@ -3,9 +3,9 @@
 //!
 //! The world's own sounds (the ones the hero did NOT make) all behave the
 //! same way and differ only in their [`Voice`]: they are born as pulse kind
-//! [`SOURCE_KIND`], their waves pass walls muffled instead of dying at them,
-//! and they wear the always-on-top acoustic-image skin so their silhouette
-//! is felt through a wall as a dimmed ghost. A fan and a radio are two
+//! [`SOURCE_KIND`], their waves die at a wall like any other sound, and
+//! they wear the always-on-top acoustic-image skin so their silhouette is
+//! still felt through a wall as a dimmed ghost. A fan and a radio are two
 //! voices, not two systems.
 //!
 //! WHY A TRAIT AND NOT A BASE CLASS. gdext cannot derive one registered

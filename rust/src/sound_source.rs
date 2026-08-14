@@ -1,9 +1,9 @@
 //! What a sound SOURCE is, as pure math — the world's own sounds, the ones
 //! the hero did not make. A blind person FEELS a steady source from another
-//! room: its waves pass walls muffled instead of dying at them, and its
-//! standing acoustic image is felt through the wall as a dimmed ghost. That
-//! privilege is the pool's kind [`SOURCE_KIND`], and every source in the
-//! world speaks through it.
+//! room: its waves stop dead at a wall like any other sound, but its
+//! standing acoustic image is still felt through the wall as a dimmed
+//! ghost. That standing-image privilege is the pool's kind [`SOURCE_KIND`],
+//! and every source in the world speaks through it.
 //!
 //! Sources differ in FOUR properties, and this module is the whole
 //! vocabulary:
@@ -33,8 +33,9 @@ use godot::builtin::Vector3;
 use crate::pulse_pool::{self, OMNI_COS};
 
 /// The pulse kind every world sound source is born as: the one sound the
-/// hero did not make. Its shells pass walls muffled and its surfaces
-/// reveal muffled, where a player-made sound is cut crisp.
+/// hero did not make. Its waves are cut crisp at a wall exactly like a
+/// player-made sound; only its standing acoustic image still passes a
+/// wall muffled, dimming toward a ghost rather than vanishing outright.
 pub const SOURCE_KIND: i32 = 3;
 
 /// Meters a source at FULL volume reaches. The scale of the whole loudness

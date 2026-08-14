@@ -111,9 +111,9 @@ pub fn crosses(from: Vector3, to: Vector3, rect: Vector4, wall_top: f32) -> bool
 }
 
 /// How many of the wall rects the sight line `from -> to` crosses — the
-/// muffle exponent (0.55^n) and the discard predicate (n > 0) of the
-/// acoustic-image shaders. This is the CAMERA occluder (eye -> shaded
-/// point): every wall the line pierces counts.
+/// `level_plan::SOURCE_THROUGH^n` muffle exponent and the discard
+/// predicate (n > 0) of the acoustic-image shaders. This is the CAMERA
+/// occluder (eye -> shaded point): every wall the line pierces counts.
 #[must_use]
 pub fn crossings(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32) -> u32 {
     rects

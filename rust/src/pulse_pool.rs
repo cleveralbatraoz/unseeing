@@ -14,7 +14,7 @@
 //!
 //! Kinds: 0 = cane tap, 1 = ECHO (secondary reflection), 2 = footstep,
 //! 3 = source hum (constant world sources like the fan — the one sound the
-//! hero did not make; drawn through walls, muffled).
+//! hero did not make; its wave stops at a wall like every other kind).
 //!
 //! Precision law, pinned from the original: clocks and lifetimes live in
 //! f64 (`now`, `_t0`, `_end` were GDScript floats / PackedFloat64Array),

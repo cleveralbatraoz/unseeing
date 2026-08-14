@@ -27,12 +27,14 @@ use crate::oid_palette::Box3;
 /// Wall height in meters — walls run floor to ceiling.
 pub const WALL_H: f64 = 3.0;
 
-/// How much a source's own SILHOUETTE survives crossing one wall — dimmer
-/// than its waves, so a source felt through a wall is a faint ghost of
-/// itself, fainter still through two. This attenuates the source skin's
-/// standing floor per wall between the eye and the source (see
-/// [`crate::nodes`]' `source_muffle`); a wall dims the shape, never erases
-/// it — the source is always felt, just muted.
+/// How much a source's own SILHOUETTE survives crossing one wall — its
+/// wave, by contrast, stops dead at that same wall
+/// (`crate::sight::reveal_visibility`), so a source felt through a wall is
+/// a shape with nothing behind it: a faint ghost, fainter still through
+/// two. This attenuates the source skin's standing floor per wall between
+/// the eye and the source (see [`crate::nodes`]' `source_muffle`); a wall
+/// dims the shape, never erases it — the source is always felt, just
+/// muted.
 pub const SOURCE_THROUGH: f64 = 0.3;
 
 /// Half-thickness of a wall in meters.

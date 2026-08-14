@@ -107,12 +107,15 @@ func _ready() -> void:
 	# only what sits BEHIND a wall — passed every one of them.
 	#
 	# An ABSOLUTE brightness reading here does not catch it either, and the
-	# measurement says why: the tap strikes flush on the divider, so
-	# crossings_from's birth-wall skip (rust/src/sight.rs) leaves it ZERO
-	# crossings to that face and an inverted gate gives it nothing — but
-	# the FAN reaches the same face through one wall, which an inverted
-	# gate rewards with full brightness, and reveal is a MAX over live
-	# pulses. The face stays lit by the wrong source (0.675 measured).
+	# measurement says why: the tap is queued AT the strike point, so the
+	# segment fed to the wall test is near-degenerate (from == to), and
+	# WALL_TAP (x = 6.25) sits 0.02 m OUTSIDE the divider's occluder rect —
+	# shrunk by RECT_SHRINK (rust/src/sight.rs) from the wall's real
+	# half-thickness — so it reads ZERO crossings to its own face and an
+	# inverted gate gives it nothing — but the FAN reaches the same face
+	# through one wall, which an inverted gate rewards with full
+	# brightness, and reveal is a MAX over live pulses. The face stays lit
+	# by the wrong source (0.675 measured).
 	#
 	# The DIFFERENCE the tap makes is what separates them. Baseline first,
 	# before any player sound exists: under the shipped law the fan cannot

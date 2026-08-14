@@ -19,7 +19,8 @@ extends RefCounted
 ##                    omnidirectional (cane taps, footsteps)
 ## Types: 0 = cane tap, 1 = ECHO (secondary reflection), 2 = footstep,
 ##        3 = source hum (constant world sources like the fan — the one
-##        sound the hero did not make; drawn through walls, muffled).
+##        sound the hero did not make; its wave stops at a wall like every
+##        other type).
 ##
 ## REFLECTIONS — the heart of echo-location. A primary sound samples the
 ## world with real physics rays from its origin; every surface point struck

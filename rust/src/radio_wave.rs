@@ -1,9 +1,9 @@
 //! The radio's voice — the world's second sound source, and the one that
 //! proves the source abstraction is an abstraction. It shares every law
 //! with the fan ([`crate::sound_source`]): the same pulse kind, the same
-//! privilege of passing walls muffled, the same standing acoustic image
-//! felt through them. It differs in exactly the two ways a designer can
-//! hear:
+//! wave that stops dead at a wall, the same standing acoustic image still
+//! felt muffled through one. It differs in exactly the two ways a designer
+//! can hear:
 //!
 //! - **It is LOUDER.** Full volume against the fan's three quarters, which
 //!   by the volume law is also further (12 m against 9) and more strongly
