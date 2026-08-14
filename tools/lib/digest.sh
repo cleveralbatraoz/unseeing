@@ -64,3 +64,21 @@ unseeing_digest_tree() {
   fi
   printf '%s\n' "$_udt_out" | $_udt_cmd | cut -d' ' -f1
 }
+
+# Do two trees hold the same content? 0 identical, 1 they differ, 2 CANNOT TELL.
+#
+# The third answer is why this function exists rather than being left to the
+# caller. The obvious thing to write is
+#
+#     [ "$(unseeing_digest_tree "$a")" = "$(unseeing_digest_tree "$b")" ]
+#
+# and command substitution DISCARDS exit status — so on a host with no hasher
+# both sides are the empty string, the test finds them equal, and a tampered
+# tree is certified identical to its pin. That is the exact silent agreement
+# this file was written to refuse, reintroduced one layer up. Keeping the
+# comparison here is what makes the refusal survive it.
+unseeing_digest_trees_match() {
+  _udm_a="$(unseeing_digest_tree "${1:-}")" || return 2
+  _udm_b="$(unseeing_digest_tree "${2:-}")" || return 2
+  [ "$_udm_a" = "$_udm_b" ]
+}

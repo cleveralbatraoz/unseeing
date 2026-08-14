@@ -107,7 +107,13 @@ unseeing_engine_resolve() {
 unseeing_engine_version() {
   _uev_bin="${1:-}"
   [ -n "$_uev_bin" ] || return 1
-  _uev_out="$("$_uev_bin" --version 2>/dev/null | tr -d '\r' | head -1)" || _uev_out=""
+  # </dev/null matters: the candidate walk feeds itself from a heredoc, and a
+  # child inherits that stdin. A binary that reads it — any wrapper, or an
+  # unrelated program that happens to be called `godot` — swallows the rest of
+  # the candidate list, the loop hits EOF, and the engine further down is never
+  # tried. The refusal then says no engine exists while a correct one is sitting
+  # right there. A candidate must lose the walk, not end it.
+  _uev_out="$("$_uev_bin" --version </dev/null 2>/dev/null | tr -d '\r' | head -1)" || _uev_out=""
   [ -n "$_uev_out" ] || return 1
   printf '%s\n' "$_uev_out"
 }

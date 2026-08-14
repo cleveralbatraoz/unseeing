@@ -80,4 +80,30 @@ refute "no digest tool on PATH is a failure, not a silent empty hash" \
   test "$status" -eq 0
 require "no digest tool on PATH produces no digest to compare" test -z "$out"
 
+# --- the comparison, because that is where the refusal was being thrown away --
+# A caller reaching for `[ "$(digest a)" = "$(digest b)" ]` loses the status:
+# command substitution discards it, so two failed digests compare as two equal
+# empty strings and a tampered tree is reported identical. The comparison has to
+# live where the status still exists, and it has to have a THIRD answer.
+status=0
+unseeing_digest_trees_match "$A" "$A" >/dev/null 2>&1 || status=$?
+require "a tree matches itself" test "$status" -eq 0
+
+printf 'alpha tampered\n' >"$B/skills/a file.md"
+status=0
+unseeing_digest_trees_match "$A" "$B" >/dev/null 2>&1 || status=$?
+require "two different trees are reported as differing, not as unknowable" \
+  test "$status" -eq 1
+
+# The case the whole file exists for, asked of the comparison rather than the
+# digest: with no hasher, "I cannot tell" must not be spelled "they match".
+status=0
+PATH="$STRIP" unseeing_digest_trees_match "$A" "$B" >/dev/null 2>&1 || status=$?
+require "with no digest tool, the answer is 'cannot tell' (2)" test "$status" -eq 2
+refute "with no digest tool, the answer is never 'identical'" test "$status" -eq 0
+
+status=0
+unseeing_digest_trees_match "$A" "$T/does-not-exist" >/dev/null 2>&1 || status=$?
+require "an unreadable side is 'cannot tell', not a difference" test "$status" -eq 2
+
 exit "$FAIL"

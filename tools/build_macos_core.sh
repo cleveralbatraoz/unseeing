@@ -66,7 +66,26 @@ X86_64_TRIPLE=x86_64-apple-darwin
 # pinned one. On a machine whose default toolchain lacks the Apple targets that
 # reported a failure the build would not have had, and the remedy it printed
 # added the target to the wrong toolchain, so re-running never converged.
-INSTALLED_TARGETS="$(cd "$DIR/rust" && rustup target list --installed 2>/dev/null)" || INSTALLED_TARGETS=""
+#
+# Asked with an explicit --toolchain rather than by cd-ing into rust/. Letting
+# rustup resolve the pin from the directory ALSO makes it auto-install that
+# toolchain when it is absent — so a machine one step behind silently downloaded
+# a whole Rust release inside what reads as a two-millisecond check, and if the
+# download failed the empty output became "the Apple targets are missing". The
+# toolchain's presence is now its own question, with its own answer.
+PIN="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+  "$DIR/rust/rust-toolchain.toml" | head -1)"
+[ -n "$PIN" ] || {
+  echo "build-macos-core: FAILED rust/rust-toolchain.toml carries no channel pin"
+  exit 2
+}
+rustup toolchain list 2>/dev/null | grep -q "^$PIN" || {
+  echo "build-macos-core: FAILED the pinned Rust $PIN toolchain is not installed"
+  echo "build-macos-core:        fix: run tools/bootstrap.sh — it installs the pin"
+  exit 2
+}
+INSTALLED_TARGETS="$(rustup target list --installed --toolchain "$PIN" 2>/dev/null)" \
+  || INSTALLED_TARGETS=""
 for triple in "$ARM64_TRIPLE" "$X86_64_TRIPLE"; do
   if ! printf '%s\n' "$INSTALLED_TARGETS" | grep -qx "$triple"; then
     echo "build-macos-core: FAILED rust target $triple is not installed for the pinned toolchain"

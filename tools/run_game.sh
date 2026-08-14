@@ -31,21 +31,32 @@ SCENE=''
 SEED=''
 DEMO=0
 BUILD=1
-PASSTHROUGH=''
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --windowed)
       WINDOWED=1
-      # The size is optional, so only swallow the next argument when it looks
-      # like one. Otherwise `--windowed --demo` would silently lose --demo.
+      # The size is optional, so only swallow the next argument when it IS one.
+      # `[0-9]*x[0-9]*` alone would accept 1280x720p and 1920x1080x2 and then
+      # split them blindly into override.cfg, so the shape is checked in full.
       case "${2:-}" in
-        [0-9]*x[0-9]*) GEOMETRY="$2"; shift ;;
+        *[!0-9x]*|x*|*x) : ;;
+        *x*)
+          case "${2%x*}${2#*x}" in
+            ''|*[!0-9]*) : ;;
+            *) GEOMETRY="$2"; shift ;;
+          esac
+          ;;
       esac
       ;;
     --scene)
       SCENE="${2:-}"
-      [ -n "$SCENE" ] || { echo "run-game: --scene needs a res:// path" >&2; usage; exit 2; }
+      # Refuses an option as its value, the way --seed does. `--scene --demo`
+      # otherwise set SCENE=--demo, dropped --demo, and handed the engine a
+      # positional argument that is not a scene.
+      case "$SCENE" in
+        ''|-*) echo "run-game: --scene needs a res:// path" >&2; usage; exit 2 ;;
+      esac
       shift
       ;;
     --seed)
@@ -58,7 +69,11 @@ while [ "$#" -gt 0 ]; do
     --demo) DEMO=1 ;;
     --skip-build) BUILD=0 ;;
     -h|--help) usage; exit 0 ;;
-    --) shift; PASSTHROUGH="$*"; break ;;
+    # break BEFORE the trailing shift, so "$@" is exactly the arguments after
+    # the separator. They were flattened into one string and re-split, which
+    # tore apart any Godot argument containing a space — a --write-movie path,
+    # for one, and this repository tests itself under "repo with spaces".
+    --) shift; break ;;
     *)
       echo "run-game: unknown option '$1'" >&2
       usage
@@ -161,9 +176,8 @@ ANNOUNCE="run-game: playing"
 [ "$WINDOWED" = 0 ] || ANNOUNCE="$ANNOUNCE (windowed $GEOMETRY)"
 echo "$ANNOUNCE"
 # No -e and no --editor: this is the world, not the authoring environment.
-# shellcheck disable=SC2086
 if [ -n "$SCENE" ]; then
-  "$GODOT" --path "$DIR/game" $PASSTHROUGH "$SCENE"
+  "$GODOT" --path "$DIR/game" "$@" "$SCENE"
 else
-  "$GODOT" --path "$DIR/game" $PASSTHROUGH
+  "$GODOT" --path "$DIR/game" "$@"
 fi

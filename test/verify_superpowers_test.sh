@@ -67,6 +67,20 @@ make_repo "$TMP/extra"
 git -C "$TMP/extra" update-index --add --cacheinfo 160000,$SP_PIN,vendor/embedded
 expect 1 "rejects a second gitlink" env SUPERPOWERS_ROOT="$TMP/extra" "$TMP/extra/verify.sh" metadata
 
+# The lock is new, and nothing yet proved the verifier actually READS it. Both
+# cases below fail if the pin is hardcoded again, or if the lock is consulted
+# and its answer then ignored.
+make_repo "$TMP/wrongpin"
+sed 's/^pin=.*/pin=0000000000000000000000000000000000000000/' \
+  "$ROOT/ci/superpowers.lock" >"$TMP/wrongpin/ci/superpowers.lock"
+expect 1 "rejects a gitlink that does not match the lock's pin" \
+  env SUPERPOWERS_ROOT="$TMP/wrongpin" "$TMP/wrongpin/verify.sh" metadata
+
+make_repo "$TMP/nolock"
+rm -f "$TMP/nolock/ci/superpowers.lock"
+expect 1 "refuses a checkout with no lock rather than assuming a pin" \
+  env SUPERPOWERS_ROOT="$TMP/nolock" "$TMP/nolock/verify.sh" metadata
+
 mkdir -p "$TMP/archive"
 cp "$VERIFY" "$TMP/archive/verify.sh"
 expect 0 "accepts a developer-tool-free archive" env SUPERPOWERS_ROOT="$TMP/archive" "$TMP/archive/verify.sh" metadata

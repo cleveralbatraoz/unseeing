@@ -141,12 +141,19 @@ EOF
 chmod +x "$T/broken/godot"
 printf '#!/bin/sh\nexit 0\n' >"$T/broken/godot-silent"
 chmod +x "$T/broken/godot-silent"
+# A candidate that drains stdin. The walk feeds itself from a heredoc, and a
+# child inherits that stdin — so a binary which reads it swallows the remaining
+# candidate lines and the loop sees EOF. The engine sitting further down the
+# list is then never tried, and the refusal claims no engine exists at all.
+printf '#!/bin/sh\ncat >/dev/null\nexit 1\n' >"$T/broken/godot-stdin"
+chmod +x "$T/broken/godot-stdin"
 CANDIDATES_BROKEN="$T/broken/godot
 $T/broken/godot-silent
+$T/broken/godot-stdin
 $T/does-not-exist/godot
 $BIN/bin/godot"
 SEL="$(UNSEEING_ENGINE_CANDIDATES="$CANDIDATES_BROKEN" unseeing_engine_select "$REPO" '' 2>/dev/null)" || SEL='<failed>'
-require "a candidate that exits nonzero, prints nothing, or is absent is skipped" \
+require "a candidate that exits nonzero, prints nothing, drains stdin, or is absent is skipped" \
   test "$SEL" = "$BIN/bin/godot"
 
 status=0
@@ -217,6 +224,36 @@ HOME="$T/empty-home" PATH="$FIX:/usr/bin:/bin" \
   unseeing_engine_select "$REPO" '' >/dev/null 2>&1 || status=$?
 require "an official archive of the wrong version is refused by the default list" \
   test "$status" -eq 2
+
+# The plainest install of all, and the one nothing covered: an editor called
+# `godot`, on PATH, resolved by name rather than by an absolute path. Every
+# other case here injects a full path, so the bare-name branch of
+# unseeing_engine_resolve was a surviving mutation — replacing it with `return 1`
+# left this suite entirely green while the most common install stopped being
+# discoverable.
+#
+# Hermetic: PATH holds the fixture directory and nothing but the few utilities
+# the library itself shells out to, so a real Godot on the host cannot decide
+# the outcome either way.
+HERM="$T/hermetic"
+mkdir -p "$HERM" "$T/hermetic-home"
+for u in uname awk tr head sed sort find; do
+  up="$(command -v "$u" 2>/dev/null)" && ln -sf "$up" "$HERM/$u"
+done
+fake_engine "$HERM/godot" '4.7.1.stable.official.a13da4feb'
+SEL="$(HOME="$T/hermetic-home" PATH="$HERM" \
+  unseeing_engine_select "$REPO" '' 2>/dev/null)" || SEL='<failed>'
+require "a bare 'godot' on PATH is resolved by name" test "$SEL" = "$HERM/godot"
+
+# ...and a bare name that fails the pin must not shadow a correct engine further
+# down the list. `godot` is the very first candidate; ~/bin/godot comes later.
+fake_engine "$HERM/godot" '4.7.stable.mono.official.5b4e0cb0f'
+mkdir -p "$T/hermetic-home/bin"
+fake_engine "$T/hermetic-home/bin/godot" '4.7.1.stable.official.a13da4feb'
+SEL="$(HOME="$T/hermetic-home" PATH="$HERM" \
+  unseeing_engine_select "$REPO" '' 2>/dev/null)" || SEL='<failed>'
+require "a wrong-version bare 'godot' does not shadow a correct one further down" \
+  test "$SEL" = "$T/hermetic-home/bin/godot"
 
 # Nothing in the library may exit the calling shell: every caller owns its own
 # exit code and message prefix, and the suites grep those prefixes.

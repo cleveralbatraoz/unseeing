@@ -49,12 +49,31 @@ make_engine() {
   cat >"$1" <<EOF
 #!/bin/sh
 printf 'engine %s\n' "\$*" >>"\$RUN_GAME_TEST_LOG"
-# The engine reads override.cfg at startup, so the only question worth asking
-# is whether the file existed at the moment the engine ran.
-[ ! -f "\$RUN_GAME_TEST_OVERRIDE" ] || \
+# One line per argument as well, so assertions can match a WHOLE argument.
+# Grepping the joined string for ' -e ' only finds -e in a non-final position:
+# a launch ending in -e opens the editor and slips past unnoticed.
+for a in "\$@"; do printf 'arg %s\n' "\$a" >>"\$RUN_GAME_TEST_LOG"; done
+# The engine reads override.cfg at startup, so the questions worth asking are
+# whether it existed at that moment and what it actually said.
+if [ -f "\$RUN_GAME_TEST_OVERRIDE" ]; then
   printf 'override-present %s\n' "\$*" >>"\$RUN_GAME_TEST_LOG"
-[ "\$1" = "--version" ] || exit "\${RUN_GAME_TEST_EXIT:-0}"
-printf '%s\n' '$2'
+  sed 's/^/override-line /' "\$RUN_GAME_TEST_OVERRIDE" >>"\$RUN_GAME_TEST_LOG"
+fi
+[ "\$1" = "--version" ] || exit_now=1
+if [ "\$1" = "--version" ]; then
+  printf '%s\n' '$2'
+  exit 0
+fi
+# A run in progress, so the signal arms of the caller's trap can be reached.
+# Only the real play invocation parks; the import must still return.
+case " \$* " in
+  *" --import "*) exit "\${RUN_GAME_TEST_EXIT:-0}" ;;
+esac
+if [ -n "\${RUN_GAME_TEST_HANG:-}" ]; then
+  printf '%s\n' "\$\$" >"\$RUN_GAME_TEST_HANG"
+  while :; do sleep 1; done
+fi
+exit "\${RUN_GAME_TEST_EXIT:-0}"
 EOF
   chmod +x "$1"
 }
@@ -87,8 +106,11 @@ OVERRIDE="$REPO/game/override.cfg"
 run godot-right
 require "a default run completes" test "$status" -eq 0
 require "the engine is launched against game/" logged -- "--path"
-refute "the run never opens the editor" logged -- ' -e '
-refute "the run never opens the editor by long flag" logged -- '--editor'
+# Matched as a whole argument, on its own line. A launch whose LAST argument is
+# -e opens the authoring environment, and a joined-string search for ' -e '
+# cannot see it — measured: appending -e to the launch left all assertions green.
+refute "the run never opens the editor" grep -qx -- 'arg -e' "$LOG"
+refute "the run never opens the editor by long flag" grep -qx -- 'arg --editor' "$LOG"
 # The extension is recorded as failed-to-load in .godot/extension_list.cfg at
 # import time and never retried, so a play that precedes the import gets a
 # world with no engine classes in it at all.
@@ -138,8 +160,73 @@ refute "--windowed leaves no override.cfg behind" test -f "$OVERRIDE"
 run godot-right --windowed
 require "override.cfg exists while the engine runs" logged -- 'override-present'
 
+# What the file SAYS, not merely that it existed. Nothing read it before, so a
+# tool writing mode=2 (full screen) and ignoring the requested size passed every
+# windowed assertion here.
 run godot-right --windowed 640x480
 require "--windowed takes an explicit size" test "$status" -eq 0
+require "the override asks for windowed mode, not full screen" \
+  grep -qx 'override-line window/size/mode=0' "$LOG"
+require "the override carries the requested width" \
+  grep -qx 'override-line window/size/viewport_width=640' "$LOG"
+require "the override carries the requested height" \
+  grep -qx 'override-line window/size/viewport_height=480' "$LOG"
+
+run godot-right --windowed
+require "the default size is 1280x720" \
+  grep -qx 'override-line window/size/viewport_width=1280' "$LOG"
+
+# A size the tool cannot split must not reach override.cfg as junk — the engine
+# would read a non-numeric viewport and nothing downstream would catch it. It is
+# refused rather than quietly replaced by the default, because someone who typed
+# a size meant that size and a silent fallback hides the typo.
+run godot-right --windowed 1280x720p
+require "a malformed size is refused" test "$status" -eq 2
+refute "a malformed size never reaches override.cfg" \
+  grep -q '1280x720p' "$LOG"
+refute "a malformed size never launches" logged -- "--path"
+
+# ...while a flag following --windowed is still a flag, not a size.
+run godot-right --skip-build --windowed --demo
+require "--windowed does not swallow the option after it" test "$status" -eq 0
+require "the option after --windowed still took effect" \
+  grep -qx 'override-line window/size/viewport_width=1280' "$LOG"
+
+# The signal arms of the trap were never exercised — every case above exits
+# normally, so deleting `INT TERM HUP` left the suite green while the failure
+# they exist for (closing a terminal on a windowed run) leaked the file.
+: >"$LOG"
+ENGINE_PID_FILE="$T/engine.pid"
+rm -f "$ENGINE_PID_FILE"
+env -u GODOT \
+  RUN_GAME_TEST_LOG="$LOG" \
+  RUN_GAME_TEST_OVERRIDE="$OVERRIDE" \
+  RUN_GAME_TEST_HANG="$ENGINE_PID_FILE" \
+  UNSEEING_ENGINE_CANDIDATES="$T/bin/godot-right" \
+  UNSEEING_RUN_CARGO="$T/bin/cargo" \
+  "$REPO/tools/run_game.sh" --skip-build --windowed >"$T/out" 2>&1 &
+hang_pid=$!
+# Poll for the engine reporting itself in play, not a guessed interval. The
+# bound exists only so a broken tool cannot hang the suite.
+tries=0
+while [ ! -s "$ENGINE_PID_FILE" ] && [ "$tries" -lt 400 ]; do
+  tries=$((tries + 1))
+  sleep 0.01 2>/dev/null || true
+done
+if [ -s "$ENGINE_PID_FILE" ] && [ -f "$OVERRIDE" ]; then
+  # What closing a terminal actually does: HUP reaches the shell and the child
+  # it is waiting on. Without HUP in the trap the shell dies from the signal
+  # outright, the EXIT arm never runs, and the file is left behind.
+  kill -HUP "$hang_pid" 2>/dev/null || true
+  kill -HUP "$(cat "$ENGINE_PID_FILE")" 2>/dev/null || true
+  wait "$hang_pid" 2>/dev/null || true
+  refute "a hung-up windowed run still removes override.cfg" test -f "$OVERRIDE"
+else
+  kill "$hang_pid" 2>/dev/null || true
+  wait "$hang_pid" 2>/dev/null || true
+  bad "a hung-up windowed run still removes override.cfg (the run never reached play)"
+fi
+rm -f "$OVERRIDE" "$ENGINE_PID_FILE"
 
 # A pre-existing override.cfg belongs to whoever wrote it — another probe, or a
 # designer mid-experiment. Overwriting and then deleting it destroys their work
@@ -155,8 +242,22 @@ rm -f "$OVERRIDE"
 run godot-right --skip-build --scene 'res://scenes/level_02.tscn'
 require "--scene reaches the engine" logged -- 'res://scenes/level_02.tscn'
 
+run godot-right --skip-build --scene --demo
+require "--scene refuses an option as its value" test "$status" -eq 2
+refute "--scene never launches with an option as its scene" logged -- "--path"
+
 run godot-right --skip-build -- --verbose
 require "arguments after -- reach the engine" logged -- '--verbose'
+
+# One argument, not three. Flattening the passthrough into a string and letting
+# the shell re-split it tore apart any Godot argument containing a space — a
+# --write-movie path, for one, and this fixture checkout is itself under a path
+# with a space in it.
+run godot-right --skip-build -- --write-movie '/tmp/My Frames/out.avi'
+require "a passthrough argument containing a space arrives whole" \
+  grep -qx -- 'arg /tmp/My Frames/out.avi' "$LOG"
+refute "a passthrough argument containing a space is not split" \
+  grep -qx -- 'arg /tmp/My' "$LOG"
 
 run godot-right --no-such-option
 require "an unknown option is refused" test "$status" -eq 2

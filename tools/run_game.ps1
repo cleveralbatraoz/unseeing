@@ -1,47 +1,101 @@
-[CmdletBinding()]
-param(
-    [string]$Godot = "",
-    [switch]$Windowed,
-    [string]$Geometry = "1280x720",
-    [string]$Scene = "",
-    [string]$Seed = "",
-    [switch]$Demo,
-    [switch]$SkipBuild,
-    [ValidateSet("Auto", "X64", "Arm64")]
-    [string]$Architecture = "Auto",
-    [string]$RepositoryRoot = "",
-    # NOT named -GodotArguments: -Godot is a prefix of it, and a remaining-
-    # arguments parameter swallows the ambiguous -Godot along with its value,
-    # so an explicitly named editor silently never arrived.
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$Passthrough = @()
-)
-
-# Build the engine and play the GAME — not the editor. The POSIX half is
-# tools/run_game.sh; this is the same contract on Windows.
-#
-# Engine discovery, the pinned-version predicate, the PE architecture read and
-# the streaming subprocess runner all belong to tools/bootstrap.ps1 already, so
-# they are borrowed rather than written twice: -NoRun defines its functions
-# without running any of it.
+# NO param() block, deliberately. PowerShell resolves a leading `--` the same as
+# `-`, so a declared -Scene parameter swallows `--scene`, -Seed swallows
+# `--seed`, -Windowed swallows `--windowed` — and `--scene --demo` dies with
+# "Missing an argument for parameter 'Scene'" before a line of this file runs.
+# Declaring the parameters is precisely what made the POSIX spellings
+# unreachable. Parsing $args by hand is what lets both spellings mean the same
+# thing, which is what README.md and tools/run_game.sh promise Windows.
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+
+function Stop-Run([int]$Code, [string]$Message) {
+    Write-Output "run-game: FAILED $Message"
+    exit $Code
+}
+function Show-Usage() {
+    Write-Output "usage: tools\run_game.cmd [--windowed [WxH]] [--scene res://path.tscn]"
+    Write-Output "                          [--seed <n>] [--demo] [--skip-build]"
+    Write-Output "                          [-Godot <path>] [-- <godot args>]"
+}
+
+$RequestedGodot = ""
+$RequestedArchitecture = "Auto"
+$RepositoryRoot = ""
+$Geometry = "1280x720"
+$Scene = ""
+$Seed = ""
+$UseWindow = $false
+$SkipTheBuild = $false
+$DemoMode = $false
+$Extra = New-Object System.Collections.Generic.List[string]
+
+$tokens = @($args)
+$index = 0
+$verbatim = $false
+while ($index -lt $tokens.Count) {
+    $token = [string]$tokens[$index]
+    if ($verbatim) { [void]$Extra.Add($token); $index++; continue }
+    $value = $null
+    $needsValue = $token -match '^(--scene|-Scene|--seed|-Seed|--geometry|-Geometry|--godot|-Godot|--repository-root|-RepositoryRoot|--architecture|-Architecture)$'
+    if ($needsValue) {
+        if ($index + 1 -ge $tokens.Count) { Stop-Run 2 "$token needs a value" }
+        $index++
+        $value = [string]$tokens[$index]
+    }
+    switch -Regex ($token) {
+        '^--$' { $verbatim = $true }
+        '^(--windowed|-Windowed)$' {
+            $UseWindow = $true
+            # Only consume the next token when it IS a size, so `--windowed
+            # --demo` does not lose --demo, and `--windowed 1280x720p` is not
+            # split blindly into a non-numeric viewport.
+            if ($index + 1 -lt $tokens.Count -and ([string]$tokens[$index + 1]) -match '^[0-9]+x[0-9]+$') {
+                $Geometry = [string]$tokens[$index + 1]
+                $index++
+            }
+        }
+        '^(--skip-build|-SkipBuild)$' { $SkipTheBuild = $true }
+        '^(--demo|-Demo)$' { $DemoMode = $true }
+        '^(--scene|-Scene)$' {
+            if ($value.StartsWith("-")) { Stop-Run 2 "--scene needs a res:// path" }
+            $Scene = $value
+        }
+        '^(--seed|-Seed)$' {
+            if ($value -notmatch '^[0-9]+$') { Stop-Run 2 "--seed needs a whole number" }
+            $Seed = $value
+        }
+        '^(--geometry|-Geometry)$' { $Geometry = $value }
+        '^(--godot|-Godot)$' { $RequestedGodot = $value }
+        '^(--repository-root|-RepositoryRoot)$' { $RepositoryRoot = $value }
+        '^(--architecture|-Architecture)$' { $RequestedArchitecture = $value }
+        '^(-h|--help|-Help)$' { Show-Usage; exit 0 }
+        default { [void]$Extra.Add($token) }
+    }
+    $index++
+}
+
+if (@("Auto", "X64", "Arm64") -notcontains $RequestedArchitecture) {
+    Stop-Run 2 "the architecture must be Auto, X64 or Arm64 (got '$RequestedArchitecture')"
+}
+if ($Geometry -notmatch '^[0-9]+x[0-9]+$') {
+    Stop-Run 2 "the window size must look like 1280x720 (got '$Geometry')"
+}
 
 $Root = if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 } else {
     try { (Resolve-Path -LiteralPath $RepositoryRoot).Path }
-    catch { Write-Output "run-game: FAILED repository root '$RepositoryRoot' does not exist"; exit 2 }
+    catch { Stop-Run 2 "repository root '$RepositoryRoot' does not exist" }
 }
 
-# Dot-sourcing runs bootstrap.ps1's own param() block IN THIS SCOPE, so every
-# parameter it shares a name with — Godot, Architecture, RepositoryRoot — is
-# reset to its default the moment the functions are borrowed. Keep what was
-# asked for first; an explicitly named editor was otherwise thrown away and the
-# tool went hunting for one instead.
-$RequestedGodot = $Godot
-$RequestedArchitecture = $Architecture
-
+# Build the engine and play the GAME - not the editor. The POSIX half is
+# tools/run_game.sh; this is the same contract on Windows.
+#
+# Engine discovery, the pinned-version predicate, the PE architecture read and
+# the streaming subprocess runner all belong to tools/bootstrap.ps1 already, so
+# they are borrowed rather than written twice: -NoRun defines its functions
+# without running any of it. Dot-sourcing also executes bootstrap's own param()
+# block in this scope, which is a second reason nothing above shares its names.
 . (Join-Path $PSScriptRoot "bootstrap.ps1") -NoRun
 
 # Borrowed code refuses through Stop-Bootstrap, and a message reading
@@ -64,13 +118,6 @@ if ([string]::IsNullOrWhiteSpace($Want)) {
     Stop-Bootstrap 2 ".godot-version is blank; it must carry the pinned Godot release"
 }
 
-if ($Geometry -notmatch '^[0-9]+x[0-9]+$') {
-    Stop-Bootstrap 2 "-Geometry must look like 1280x720 (got '$Geometry')"
-}
-if (-not [string]::IsNullOrWhiteSpace($Seed) -and $Seed -notmatch '^[0-9]+$') {
-    Stop-Bootstrap 2 "-Seed must be a whole number (got '$Seed')"
-}
-
 # The engine gate first, for the same reason the bootstrap does it first: it
 # costs milliseconds, and rebuilding the core for an editor that will be
 # refused afterwards is time spent for nothing.
@@ -81,7 +128,7 @@ Write-Output "run-game: godot OK ($(Get-GodotVersion $GodotPath))"
 $Target = Get-WindowsTarget $GodotPath $RequestedArchitecture
 $Artifact = Join-Path $RustDirectory "target\$Target\release\unseeing_core.dll"
 
-if (-not $SkipBuild) {
+if (-not $SkipTheBuild) {
     $RustupPath = Find-Rustup ""
     if ($null -eq $RustupPath) {
         Stop-Bootstrap 2 "rustup not found - run tools\bootstrap.cmd first, it installs the toolchain"
@@ -121,14 +168,16 @@ if (-not (Test-Path -LiteralPath $Artifact -PathType Leaf)) {
 # launch and removed however this script ends — the finally block covers a
 # failure and Ctrl-C alike, because the repository forbids shipping this file.
 $Override = Join-Path $GameDirectory "override.cfg"
-if ($Windowed -and (Test-Path -LiteralPath $Override)) {
+if ($UseWindow -and (Test-Path -LiteralPath $Override)) {
     Write-Output "run-game:        remove it if it is a leftover, or wait for the run that owns it to finish."
     Stop-Bootstrap 2 "game\override.cfg already exists - a windowed run would overwrite and then delete it."
 }
 
 $exitCode = 0
+$PriorSeed = $env:UNSEEING_SEED
+$PriorDemo = $env:UNSEEING_DEMO
 try {
-    if ($Windowed) {
+    if ($UseWindow) {
         $size = $Geometry -split "x"
         Set-Content -LiteralPath $Override -Encoding ascii -Value @(
             "[display]"
@@ -145,12 +194,12 @@ try {
     Invoke-Captured $GodotPath @("--headless", "--path", $GameDirectory, "--import") | Out-Null
 
     if (-not [string]::IsNullOrWhiteSpace($Seed)) { $env:UNSEEING_SEED = $Seed }
-    if ($Demo) { $env:UNSEEING_DEMO = "1" }
+    if ($DemoMode) { $env:UNSEEING_DEMO = "1" }
 
     $launch = New-Object System.Collections.Generic.List[string]
     [void]$launch.Add("--path")
     [void]$launch.Add($GameDirectory)
-    foreach ($extra in $Passthrough) { [void]$launch.Add($extra) }
+    foreach ($extra in $Extra) { [void]$launch.Add($extra) }
     if (-not [string]::IsNullOrWhiteSpace($Scene)) { [void]$launch.Add($Scene) }
 
     # Built up rather than interpolated: Windows PowerShell 5.1 cannot parse a
@@ -158,14 +207,23 @@ try {
     # double-quoted string, and the whole file fails to load if it tries.
     $announce = "run-game: playing"
     if (-not [string]::IsNullOrWhiteSpace($Scene)) { $announce += " $Scene" }
-    if ($Windowed) { $announce += " (windowed $Geometry)" }
+    if ($UseWindow) { $announce += " (windowed $Geometry)" }
     Write-Output $announce
     # No -e and no --editor: this is the world, not the authoring environment.
     & $GodotPath @launch
     $exitCode = $LASTEXITCODE
 } finally {
-    if ($Windowed) {
+    if ($UseWindow) {
         Remove-Item -LiteralPath $Override -Force -ErrorAction SilentlyContinue
     }
+    # A .ps1 runs IN the caller's session, so $env: assignments outlive it —
+    # unlike the POSIX half, where export dies with the script's own process.
+    # Without this, one -Seed 42 quietly seeded every later run in that window.
+    if ($null -eq $PriorSeed) {
+        Remove-Item Env:UNSEEING_SEED -ErrorAction SilentlyContinue
+    } else { $env:UNSEEING_SEED = $PriorSeed }
+    if ($null -eq $PriorDemo) {
+        Remove-Item Env:UNSEEING_DEMO -ErrorAction SilentlyContinue
+    } else { $env:UNSEEING_DEMO = $PriorDemo }
 }
 exit $exitCode

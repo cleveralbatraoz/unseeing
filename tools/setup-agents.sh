@@ -57,11 +57,28 @@ for x in xs:
 }
 # shellcheck source=tools/lib/digest.sh
 . "$ROOT/tools/lib/digest.sh"
-# Was bare `shasum` over a prefix-stripped path list. shasum is a Perl script
-# and is simply absent from minimal and container images — and with it missing
-# BOTH sides of the comparison below came back empty, so a tampered skill cache
-# passed this gate silently. The library refuses instead of agreeing.
-hash_tree() { unseeing_digest_tree "$1"; }
+# Was bare `shasum` over a prefix-stripped path list, compared inside a `[ ... ]`
+# as two command substitutions. shasum is a Perl script and simply absent from
+# minimal and container images — and command substitution discards exit status,
+# so with it missing BOTH sides came back empty, compared equal, and a tampered
+# skill cache passed this gate silently. Moving the hashing into the library was
+# only half the repair: the COMPARISON has to be where the status still exists,
+# which is why it is a three-answer call and not a string test.
+check_skills() { # check_skills <host label> <pinned tree> <installed tree>
+  unseeing_digest_trees_match "$2" "$3"
+  case "$?" in
+    0) return 0 ;;
+    1)
+      echo "setup-agents: $1 skill cache differs from repository pin" >&2
+      return 1
+      ;;
+    *)
+      echo "setup-agents: $1 skill cache cannot be verified — no working content hasher" >&2
+      echo "setup-agents: fix: install coreutils (sha256sum) or perl (shasum), then re-run" >&2
+      return 1
+      ;;
+  esac
+}
 
 setup_claude() {
   command -v claude >/dev/null 2>&1 || { echo "setup-agents: Claude Code is not installed; skipping"; return; }
@@ -101,7 +118,7 @@ $record
 EOF
   fi
   [ "$version" = "$VERSION" ] && [ "$enabled" = true ] || { echo "setup-agents: Claude verification failed" >&2; exit 1; }
-  [ "$(hash_tree "$SUB/skills")" = "$(hash_tree "$install_path/skills")" ] || { echo "setup-agents: Claude skill cache differs from repository pin" >&2; exit 1; }
+  check_skills "Claude" "$SUB/skills" "$install_path/skills" || exit 1
   echo "setup-agents: Claude Code enabled superpowers@superpowers-dev v$VERSION"
 }
 
@@ -139,7 +156,7 @@ EOF
     install_path="${CODEX_HOME:-$HOME/.codex}/plugins/cache/superpowers-dev/superpowers/$VERSION"
   fi
   [ "$version" = "$VERSION" ] && [ "$enabled" = true ] || { echo "setup-agents: Codex verification failed" >&2; exit 1; }
-  [ "$(hash_tree "$SUB/skills")" = "$(hash_tree "$install_path/skills")" ] || { echo "setup-agents: Codex skill cache differs from repository pin" >&2; exit 1; }
+  check_skills "Codex" "$SUB/skills" "$install_path/skills" || exit 1
   echo "setup-agents: Codex App/CLI enabled superpowers@superpowers-dev v$VERSION"
 }
 

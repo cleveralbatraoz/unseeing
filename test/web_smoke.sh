@@ -64,15 +64,22 @@ if [ -n "${SMOKE_PORT:-}" ]; then
   PORT="$SMOKE_PORT"
   DBG="$((PORT + 1))"
 else
+  # Both sockets are held open until BOTH ports are known. Closing the first
+  # before asking for the second lets the kernel hand back the same ephemeral
+  # port twice — measured here at roughly 1 in 20 000 — and when it does, the
+  # server binds it, Chrome cannot, and the run fails thirty seconds later
+  # blaming the browser for a collision in the harness.
   PORTS="$(python3 - <<'PY'
 import socket
-def free():
+held = []
+for _ in range(2):
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
+    held.append(s)
+ports = [s.getsockname()[1] for s in held]
+for s in held:
     s.close()
-    return port
-print(free(), free())
+print(ports[0], ports[1])
 PY
 )" || { echo "smoke: FAILED could not reserve local ports"; exit 2; }
   PORT="${PORTS% *}"
@@ -82,7 +89,19 @@ fi
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$BUILD" >/dev/null 2>&1 &
 SRV=$!
 PROFILE="$(mktemp -d)"
-trap 'kill "${CHR:-}" "$SRV" 2>/dev/null || true; wait "${CHR:-}" "$SRV" 2>/dev/null || true; rm -rf "$PROFILE" 2>/dev/null || true' EXIT INT TERM HUP
+# Each child killed on its own line. `kill "" "$SRV"` does not kill the server:
+# dash's kill rejects the empty first argument and abandons the whole call, and
+# CHR is unset for the entire window between starting the server and starting
+# the browser — which is exactly where the server-readiness poll can fail. The
+# result was a leaked python http.server holding the port, on the failure path.
+smoke_cleanup() {
+  [ -z "${CHR:-}" ] || kill "$CHR" 2>/dev/null || true
+  [ -z "${SRV:-}" ] || kill "$SRV" 2>/dev/null || true
+  [ -z "${CHR:-}" ] || wait "$CHR" 2>/dev/null || true
+  [ -z "${SRV:-}" ] || wait "$SRV" 2>/dev/null || true
+  [ -z "${PROFILE:-}" ] || rm -rf "$PROFILE" 2>/dev/null || true
+}
+trap smoke_cleanup EXIT INT TERM HUP
 
 # Poll, never guess. A server that has not finished binding produced a browser
 # that loaded nothing, which the probe then reported as a shader or engine

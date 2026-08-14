@@ -80,9 +80,11 @@ git config core.hooksPath .githooks
 git config core.hooksPath .githooks
 ```
 
-The bootstrap ends with `bootstrap: OK` only after all 19 engine classes have
-registered. If it cannot find your editor, pass it: `GODOT=/path/to/godot
-tools/bootstrap.sh`, or `.\tools\bootstrap.cmd -Godot C:\path\to\Godot_console.exe`.
+The bootstrap ends with `bootstrap: OK` only after every engine class has
+registered — the expected count lives in `ci/engine_class_count`, and a
+mismatch names that file. If it cannot find your editor, pass it:
+`GODOT=/path/to/godot tools/bootstrap.sh`, or
+`.\tools\bootstrap.cmd -Godot C:\path\to\Godot_console.exe`.
 
 **Play the game:** `tools/run_game.sh` (`.\tools\run_game.cmd` on Windows) —
 builds the engine and launches the world. Add `--windowed` for a window instead

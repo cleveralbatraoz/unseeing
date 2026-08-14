@@ -52,8 +52,12 @@ tools/run_game.sh            # add --windowed for a window instead of full scree
 ```
 
 ```powershell
-.\tools\run_game.cmd -Windowed
+.\tools\run_game.cmd --windowed
 ```
+
+Windows accepts both spellings — `--windowed` and `-Windowed`, `--skip-build`
+and `-SkipBuild` — so a command copied from either half of the documentation
+works.
 
 The bootstrap finds Godot under every name it normally installs under, including
 `/Applications/Godot.app` and the official Windows archive's own filename. If
@@ -118,10 +122,7 @@ work. All commands below must run from this same directory.
 
 ### Godot
 
-The required editor version is recorded in `.godot-version`. At the time of
-writing it is exactly `4.7.1.stable.official`; another 4.x release is not an
-equivalent substitute because the extension ABI and editor behaviour are
-version-sensitive.
+The required editor version is recorded in `.godot-version`.
 
 Install it however your platform prefers. Every tool here finds the editor
 through one shared search (`tools/lib/engine.sh`, and its PowerShell twin in
@@ -199,7 +200,8 @@ Godot editor is x86_64 or ARM64, and builds the matching target automatically:
 
 You do not need to choose a target; automatic selection is the supported
 designer workflow. The same command validates the Godot pin, imports the
-project, and must report `PASS (19 checks)` before `bootstrap: OK`. If the MSVC
+project, and must report the exact class count from `ci/engine_class_count`
+before `bootstrap: OK`. If the MSVC
 linker is missing, its failure names the Build Tools components to install.
 
 ## 3. Build the editor engine before opening Godot
@@ -590,8 +592,8 @@ commit. The complete debugging loop is documented in
 ### The custom nodes say MissingNode
 
 The release GDExtension was absent or failed to load. Quit every Godot process,
-run the platform bootstrap again, confirm `PASS (19 checks)`, and reopen the
-editor. Merely closing and reopening the scene tab is not enough.
+run the platform bootstrap again, confirm it ends with `bootstrap: OK`, and
+reopen the editor. Merely closing and reopening the scene tab is not enough.
 
 ### Bootstrap says the Godot version is wrong
 

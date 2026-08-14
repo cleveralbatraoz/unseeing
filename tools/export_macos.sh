@@ -34,15 +34,15 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 }
 
 # The export templates are versioned with the engine, so a mismatched binary
-# One owner decides which engine is the pinned one, and refuses anything
-# else — including an explicitly supplied mismatch. tools/lib/engine.sh.
+# would wrap this build in someone else's runtime. One owner decides which
+# engine is the pinned one, and refuses anything else — including an explicitly
+# supplied mismatch. tools/lib/engine.sh.
 # shellcheck source=tools/lib/engine.sh
 . "$DIR/tools/lib/engine.sh"
 GODOT="$(unseeing_engine_select "$DIR" "${GODOT:-}")" || {
   echo "export-macos: FAILED no Godot matching .godot-version; set GODOT=/path/to/godot"
   exit 2
 }
-fi
 
 # The path game/unseeing.gdextension names for both macOS keys.
 CORE="$DIR/rust/target/release/libunseeing_core.dylib"

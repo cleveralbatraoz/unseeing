@@ -57,6 +57,44 @@ preflight and a gate that stops skipping itself.
     `test/run_game_test.sh` (28 cases).
 13. **this commit** — README, `docs/opening-in-godot.md`, and the wiki.
 
+## Review round
+
+A five-dimension review of the finished branch, each finding challenged by two
+independent skeptics, returned 20 that survived. All 20 are fixed; the ones
+worth naming because they were real defects the work itself introduced or
+claimed falsely to have fixed:
+
+- **`tools/export_macos.sh` could not be parsed.** The migration deleted an
+  `if` and left its `fi`, and nothing noticed: the script's own `uname` guard
+  exits before the shell reaches the bad line, so on Linux the file is never
+  parsed that far and the pipeline stayed green. The only machine that would
+  have found it is a Mac, at the moment someone cut a release.
+  `test/shell_syntax_test.sh` now parses every tracked shell script, and was
+  confirmed to catch this exact fault when it is put back.
+- **The digest refusal never reached its caller.** `tools/lib/digest.sh`
+  correctly refuses without a hasher, but `setup-agents.sh` compared two
+  command substitutions — which discard exit status — so two failed digests
+  compared equal and a tampered cache still passed. The comparison moved into
+  the library as a three-answer call (identical / differ / cannot tell).
+  Measured both ways: the old form certified a tampered tree, the new one
+  refuses.
+- **`test/web_smoke.sh`'s cleanup killed neither child.** `kill "" "$SRV"`
+  aborts on the empty first argument in dash, and `CHR` is unset for the whole
+  window between starting the server and starting the browser — which is where
+  the readiness poll can fail. It leaked the HTTP server on the failure path.
+- **PowerShell was claiming the POSIX flags.** A leading `--` resolves the same
+  as `-`, so a declared `-Scene` parameter swallowed `--scene` and
+  `--scene --demo` died before the script ran. `run_game.ps1` declares no
+  parameters at all now and parses `$args` itself, so both spellings work and
+  `--verbose` reaches Godot instead of PowerShell.
+- **Assertions that could not fail.** "The run never opens the editor" searched
+  a joined string for `' -e '`, which cannot see a launch whose last argument is
+  `-e`; the windowed cases never read `override.cfg`, so writing full-screen
+  mode passed; the trap's signal arms and the bare-name-on-PATH branch were both
+  surviving mutations. Each is now killed by a named case.
+
+Ten mutations of `tools/lib/engine.sh`, all killed.
+
 ## Evidence
 
 | Check | Before | After |

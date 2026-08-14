@@ -70,8 +70,10 @@ echo "ci: POSIX designer-bootstrap self-test"
 if command -v pwsh >/dev/null 2>&1; then
   echo "ci: Windows designer-bootstrap self-test (PowerShell boundary fakes)"
   pwsh -NoProfile -File "$DIR/test/bootstrap_windows_test.ps1" || exit 1
+  echo "ci: Windows run-the-game self-test"
+  pwsh -NoProfile -File "$DIR/test/run_game_windows_test.ps1" || exit 1
 else
-  echo "ci: Windows designer-bootstrap self-test SKIP (pwsh unavailable; Windows CI runs it)"
+  echo "ci: Windows self-tests SKIP (pwsh unavailable; Windows CI runs them)"
 fi
 
 # The test bench is vendored third-party code, so nothing else in this
