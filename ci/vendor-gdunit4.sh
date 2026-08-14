@@ -37,12 +37,30 @@ fi
 # with no git metadata. The exec bits are in there because losing one is real
 # drift: the hand-vendored copy shipped runtest.sh non-executable.
 # $SHACMD is deliberately unquoted: "shasum -a 256" must word-split into argv.
+#
+# Desktop droppings are excluded because they are not drift. A macOS Finder
+# visit leaves .DS_Store inside the addon; Explorer leaves Thumbs.db. Counting
+# them made `verify` fail with "does not match ci/gdunit4.lock" and point at
+# `update <tag>`, whose only effect would be to bake the dropping into the lock
+# and spread it to every other machine. They are not upstream content, they are
+# never committed, and no vendored tree has ever held one — so the fingerprint
+# of a clean tree is unchanged by ignoring them (516 files, same hash).
+
+# Counted the same way the fingerprint hashes, so the number a run reports can
+# never disagree with the gate that produced the verdict beside it.
+count_files() {
+  find "$1" -type f ! -name .DS_Store ! -name Thumbs.db ! -name desktop.ini \
+    -print | wc -l | tr -d ' '
+}
+
 fingerprint() {
   # shellcheck disable=SC2086
   (
     cd "$1" || exit 1
-    find . -type f -print | LC_ALL=C sort | tr '\n' '\0' | xargs -0 $SHACMD
-    find . -type f -perm -u+x -print | LC_ALL=C sort | sed 's/^/x /'
+    find . -type f ! -name .DS_Store ! -name Thumbs.db ! -name desktop.ini \
+      -print | LC_ALL=C sort | tr '\n' '\0' | xargs -0 $SHACMD
+    find . -type f -perm -u+x ! -name .DS_Store ! -name Thumbs.db \
+      ! -name desktop.ini -print | LC_ALL=C sort | sed 's/^/x /'
   ) | $SHACMD | cut -d' ' -f1
 }
 
@@ -97,7 +115,7 @@ case "${1:-verify}" in
       echo "vendor: vendored code is never hand-edited — re-run ci/vendor-gdunit4.sh update $(lock_get tag)"
       exit 1
     fi
-    echo "vendor: gdUnit4 $(lock_get tag) matches the lock ($(find "$ADDON" -type f | wc -l | tr -d ' ') files)"
+    echo "vendor: gdUnit4 $(lock_get tag) matches the lock ($(count_files "$ADDON") files)"
     ;;
 
   check-upstream)
@@ -134,7 +152,7 @@ case "${1:-verify}" in
     trap 'rm -rf "$tmp"' EXIT
     src="$(fetch_upstream "$tag" "$tmp")"
     src_sha="$(fingerprint "$src")"
-    echo "vendor: fetched $REPO $tag ($(find "$src" -type f | wc -l | tr -d ' ') source files)"
+    echo "vendor: fetched $REPO $tag ($(count_files "$src") source files)"
 
     # Keep the sidecars Godot already minted. Their uids are random, so
     # regenerating them wholesale would churn every .tscn ext_resource and bury
@@ -180,10 +198,10 @@ tag=$tag
 commit=$commit
 # fingerprint of upstream's addons/gdUnit4 as shipped in the source tarball
 source_sha256=$src_sha
-source_files=$(find "$src" -type f | wc -l | tr -d ' ')
+source_files=$(count_files "$src")
 # fingerprint of our tree: the above plus the .uid/.import sidecars Godot mints
 tree_sha256=$(fingerprint "$ADDON")
-tree_files=$(find "$ADDON" -type f | wc -l | tr -d ' ')
+tree_files=$(count_files "$ADDON")
 EOF
     echo "vendor: wrote $LOCK"
     echo "vendor: review the diff, then commit both the addon and the lock"

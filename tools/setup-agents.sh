@@ -11,6 +11,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 SUB="$ROOT/tools/superpowers"
 PIN=b36e0829c6d0140e93cfef2ca599b1b07d4a7797
 VERSION=6.3.0
+# Preflight, the way tools/setup-mcp.sh gates on node: every JSON reader below
+# shells out to python3, and without it this script died mid-run with a bare
+# "python3: not found" after having already touched the plugin marketplace.
+command -v python3 >/dev/null 2>&1 || {
+  echo "setup-agents: FAILED python3 not found" >&2
+  echo "setup-agents: fix: install Python 3 (it reads the agent CLIs' JSON output), then re-run" >&2
+  exit 2
+}
 gitdir="$(git -C "$ROOT" rev-parse --path-format=absolute --git-dir)"
 common="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)"
 [ "$gitdir" = "$common" ] || {
@@ -39,11 +47,13 @@ for x in xs:
  i=x.get("id",x.get("pluginId",""))
  if i=="superpowers@superpowers-dev": print("%s|%s|%s"%(x.get("version",""),str(x.get("enabled",False)).lower(),x.get("installPath",x.get("installedPath",""))))'
 }
-hash_tree() {
-  find "$1" -type f -print | LC_ALL=C sort | while IFS= read -r f; do
-    rel="${f#$1/}"; printf '%s  %s\n' "$(shasum -a 256 "$f" | awk '{print $1}')" "$rel"
-  done | shasum -a 256 | awk '{print $1}'
-}
+# shellcheck source=tools/lib/digest.sh
+. "$ROOT/tools/lib/digest.sh"
+# Was bare `shasum` over a prefix-stripped path list. shasum is a Perl script
+# and is simply absent from minimal and container images — and with it missing
+# BOTH sides of the comparison below came back empty, so a tampered skill cache
+# passed this gate silently. The library refuses instead of agreeing.
+hash_tree() { unseeing_digest_tree "$1"; }
 
 setup_claude() {
   command -v claude >/dev/null 2>&1 || { echo "setup-agents: Claude Code is not installed; skipping"; return; }

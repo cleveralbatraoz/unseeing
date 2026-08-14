@@ -55,6 +55,8 @@ echo "ci: engine-selection self-test (discovery + the pinned-version predicate)"
 "$DIR/test/engine_select_test.sh" || exit 1
 echo "ci: engine-caller self-test (every script that runs Godot applies the pin)"
 "$DIR/test/engine_callers_test.sh" || exit 1
+echo "ci: content-digest self-test (a missing hasher must refuse, not agree)"
+"$DIR/test/digest_test.sh" || exit 1
 echo "ci: POSIX designer-bootstrap self-test"
 "$DIR/test/bootstrap_posix_test.sh" || exit 1
 if command -v pwsh >/dev/null 2>&1; then
