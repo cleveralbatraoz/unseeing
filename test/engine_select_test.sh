@@ -27,6 +27,16 @@ refute() {
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 
 [ -f "$LIB" ] || { echo "engine-select: FAIL $LIB does not exist"; exit 1; }
+
+# An inherited GODOT is an EXPLICIT engine as far as the library is concerned,
+# and an explicit engine skips the candidate walk entirely — so every discovery
+# case below would silently test the host's editor instead of its fixtures.
+# .github/workflows/test.yml runs the pipeline as `GODOT="$PWD/godot-bin/godot"
+# ci/pipeline.sh`, which is exactly that, and it is why these cases passed on
+# two developer machines and failed on the runner. The one case that does test
+# the environment sets GODOT for its own invocation.
+unset GODOT
+
 # shellcheck source=/dev/null
 . "$LIB"
 
