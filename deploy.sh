@@ -27,34 +27,10 @@ DIRTY="$(git -C "$DIR" status --porcelain --untracked-files=no)"
 HEAD_SHA="$(git -C "$DIR" rev-parse HEAD)"
 echo "deploy: shipping $(printf %.9s "$HEAD_SHA") from a clean main"
 
-# Everything this deploy needs from the machine, asked for before anything is
-# built or sent. Without it the run cross-compiled two cores, uploaded both to
-# the droplet, and only then discovered there was no `production` remote to push
-# to — leaving the server holding artifacts for a commit it never received, and
-# the next deploy's freshness check comparing against them.
-missing=''
-command -v cargo-zigbuild >/dev/null 2>&1 || command -v cargo >/dev/null 2>&1 \
-  || missing="$missing\n  cargo (install rustup from https://rustup.rs)"
-if command -v cargo >/dev/null 2>&1 && ! cargo zigbuild --version >/dev/null 2>&1; then
-  missing="$missing\n  cargo-zigbuild (cargo install cargo-zigbuild, plus a Zig toolchain)"
-fi
-[ -x "$DIR/rust/build-wasm.sh" ] || missing="$missing\n  rust/build-wasm.sh (missing or not executable)"
-command -v ssh >/dev/null 2>&1 || missing="$missing\n  ssh"
-command -v scp >/dev/null 2>&1 || missing="$missing\n  scp"
-command -v curl >/dev/null 2>&1 || missing="$missing\n  curl (the deploy verifies what the site serves)"
-git -C "$DIR" remote get-url production >/dev/null 2>&1 \
-  || missing="$missing\n  a 'production' git remote (git remote add production <droplet>)"
-# BatchMode so an unreachable or unknown host fails here instead of parking on
-# a password prompt in the middle of an upload.
-ssh -o BatchMode=yes -o ConnectTimeout=10 vpn true >/dev/null 2>&1 \
-  || missing="$missing\n  a working 'vpn' ssh alias (it receives the prebuilt cores)"
-if [ -n "$missing" ]; then
-  echo "deploy: FAILED this machine cannot complete a deploy:"
-  # shellcheck disable=SC2059
-  printf "$missing\n"
-  exit 2
-fi
-echo "deploy: preflight OK (zigbuild, wasm recipe, ssh to vpn, production remote, curl)"
+# Everything this deploy needs from the machine is asked for before anything
+# is built or sent. The component is behavioral-testable without weakening the
+# clean-main provenance above.
+"$DIR/ci/deploy_host_preflight.sh" "$DIR"
 
 echo "== local checks =="
 SKIP_EXPORT=1 "$DIR/ci/pipeline.sh"
@@ -82,7 +58,7 @@ scp -q "$STAMP" vpn:ci/cargo-target/core.commit
 rm -f "$STAMP"
 
 echo "== pushing to production (server-side CI takes over) =="
-git -C "$DIR" push production main
+"$DIR/ci/push_production.sh" "$DIR" "$HEAD_SHA"
 
 echo "== verifying the droplet really deployed =="
 # `git push` succeeds even when post-receive FAILS: the ref is updated before
@@ -97,9 +73,8 @@ LIVE="$(curl -skL --max-time 30 "${CHECK_URL:-https://206.223.241.165/}" \
   echo "deploy: FAILED the site serves build '${LIVE:-none}', not '$SHORT'."
   echo "deploy:        The droplet's pipeline refused this push — its 'ci: FAILED'"
   echo "deploy:        line is above, among the remote: output."
-  echo "deploy:        NOTE production/main already points at this commit, so"
-  echo "deploy:        re-running deploy.sh unchanged will not retry the build."
-  echo "deploy:        Fix the cause and push a new commit."
+  echo "deploy:        Re-running deploy.sh unchanged sends a fresh retry trigger"
+  echo "deploy:        through the same versioned server-side pipeline."
   exit 1
 }
 echo "deploy: the site serves $LIVE"

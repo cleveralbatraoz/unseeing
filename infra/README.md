@@ -4,7 +4,9 @@ Versioned copies of everything that lives on the droplet (206.223.241.165),
 so the deploy path is reconstructable from the repo alone.
 
 - `post-receive` — the bare repo's git hook (`~/git/unseeing.git/hooks/`).
-  Checks out each push to `main` and runs the repo's own `ci/pipeline.sh`.
+  Checks out each push to `main`, plus one-shot `deploy-retry/*` refs when
+  `production/main` already names the requested commit, and runs the repo's
+  own `ci/pipeline.sh`. Retry refs are deleted after either outcome.
   User-owned; update by copying over ssh, no sudo needed.
 - `nginx-unseeing.conf` — the nginx site (`/etc/nginx/sites-available/unseeing`).
   Root-owned; apply with the commands in the file's header (needs sudo).
