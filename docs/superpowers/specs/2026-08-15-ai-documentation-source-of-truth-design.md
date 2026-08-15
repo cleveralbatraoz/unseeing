@@ -153,10 +153,12 @@ every artifact under `specs/` and `plans/` exactly once. Each row contains:
 - one or more residual GitHub issue numbers, or `none`.
 
 `shipped` means that the artifact's resulting behavior or procedure is present
-in the current repository tree; it does not claim that the current branch has
-already been integrated. A residual-issue cell is exactly `none` or a
-comma-separated, non-empty list of unique positive issue references in
-`#<number>` form.
+in the current repository tree. For an explicitly external rollout artifact,
+`shipped` instead means that every authorized external mutation reached its
+planned terminal state and was independently read back from each named
+external authority. It does not claim that the current branch has already
+been integrated. A residual-issue cell is exactly `none` or a comma-separated,
+non-empty list of unique positive issue references in `#<number>` form.
 
 The registry, not an old checkbox, is the status surface. `active` exists only
 to make the required plan-first workflow truthful while an approved artifact
@@ -259,14 +261,19 @@ is never presented as the fix.
   the current superface/paint owners and evidence. Its sole residual acceptance
   criterion is a deterministic rendered regression oracle for the original
   jagged wall-junction artifact; structural mesh/label proof alone does not
-  close it.
+  close it. The oracle includes a positive visible-corner/crease control so a
+  renderer that erases the defect by erasing every crease cannot pass.
 - #15 is rewritten from its historical observability campaign inventory to a
   bounded GPU-evidence issue: branch-sensitive Rust/GLSL wall-crossing parity
-  beyond the existing single-source probe; rendered hearing-post composition
-  of R reveal, G crease, and B silhouette; visible shell-raytrace behavior; and
-  structured framebuffer facts sufficient to diagnose a failed oracle. It
-  removes the repaired gdUnit gate, retired GDScript/seed claims, MCP install,
-  generic trace-capture wishlist, and observer-shipping discussion. It excludes
+  for `rust/src/sight.rs::crossings`/`crossings_from` and the GLSL wall-crossing
+  functions `wall_crossings`/`wall_crossings_from`, beyond the existing
+  single-source probe; counted kind-3 surface reveal at
+  `HUM_THROUGH ^ crossings_from`; the distinct visible-shell law of exactly one
+  `HUM_THROUGH` factor at or behind the front surface; rendered hearing-post
+  composition of R reveal, G crease, and B silhouette; and structured
+  framebuffer facts sufficient to diagnose a failed oracle. It removes the
+  repaired gdUnit gate, retired GDScript/seed claims, MCP install, generic
+  trace-capture wishlist, and observer-shipping discussion. It excludes
   acoustic-image depth (#4), multi-source identity (#1), the wall-junction
   oracle (#14), cross-target determinism (#5), the new `MIN_SEP`/shader-knee
   issue, and the explicitly deferred mood layer.
@@ -281,12 +288,14 @@ implementation proves that this approved disposition has become stale.
 
 Only three new issues are justified by the audit:
 
-1. replace `SMOKE_WAIT` in `test/web_probe.py` with an observable first-paint
-   readiness condition;
+1. replace the fixed first-paint delay that `test/web_smoke.sh` owns/defaults as
+   `SMOKE_WAIT` and passes to `test/web_probe.py` with an observable readiness
+   condition;
 2. mechanically hold Rust's `MIN_SEP` and the hearing shader's upper crease
    knee in agreement without introducing a gameplay mirror-constant test;
-3. exercise clean-host native GDExtension loading on every supported desktop
-   architecture, separating real native-load evidence from cross-compilation.
+3. exercise clean-host, clean-checkout native GDExtension loading on Linux,
+   macOS, and Windows for both declared x86_64 and arm64 architecture contracts,
+   separating real native-load evidence from cross-compilation.
 
 Each issue names the current owner, missing externally visible proof, and
 acceptance evidence. Vague audio ideas, phantom work, and speculative
@@ -311,8 +320,9 @@ with another slug or reserved output.
 renderer. It receives the repository root, full source commit, and output
 directory explicitly. It reads only tracked inputs, writes only the requested
 output tree, and refuses malformed rows, duplicate sources or slugs, missing
-files, path traversal, symlinks outside the repository, invalid UTF-8, and a
-source commit that does not name the input tree.
+files, path traversal, every Git symlink (including one that points outside
+the repository), invalid UTF-8, and a source commit that does not name the
+input tree.
 
 For each manifest page the renderer:
 
