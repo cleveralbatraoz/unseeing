@@ -107,6 +107,7 @@ docs/
       build-test-deploy.md
       debugging.md
       agent-workflow.md
+      tooling.md
   superpowers/
     README.md
     specs/
@@ -116,6 +117,17 @@ docs/
 `docs/README.md` is the sole local documentation index. Its first decision is
 where an agent should go for mechanics, engineering procedure, project policy,
 current work, or historical rationale.
+
+`docs/current/engineering/tooling.md` is the concise capability map for an
+agent deciding which repository tool to invoke. It registers every tracked
+parent-repository entry immediately under `tools/` and every tracked support
+file under `tools/lib/` exactly once, with its path, purpose, execution context,
+and the situation in which an agent should use it. Platform-specific siblings
+remain separate rows because they admit different hosts. The
+`tools/superpowers` gitlink is one opaque, developer-only submodule entry that
+routes to the pinned workflow; its upstream files are neither copied into the
+page nor treated as parent-repository tools. Tooling introduced by this design
+is included in the same inventory before the live-tree gate becomes green.
 
 The root, `game/`, and `infra/` READMEs become scoped routers. Durable content
 from `docs/opening-in-godot.md`, `docs/agent-workflow.md`,
@@ -424,6 +436,10 @@ named failing test and proceeds red-green-refactor. The minimum gates are:
 - README routers do not duplicate canonical mechanics or procedures;
 - current docs contain no task boxes, backlog markers, volatile test totals,
   mutable-branch links, or host-specific paths;
+- every tracked parent-owned `tools/` entry and `tools/lib/` support file is
+  registered exactly once in the tooling capability map, while the
+  `tools/superpowers` gitlink is represented once and its contents are not
+  inventoried as parent-owned tools;
 - every spec and plan is registered exactly once with a terminal outcome and a
   residual issue or `none`;
 - two renders of one commit are byte-identical and use the full commit SHA;
