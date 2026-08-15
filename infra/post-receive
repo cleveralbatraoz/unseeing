@@ -5,7 +5,12 @@ set -e
 REPO="$HOME/git/unseeing.git"
 WORK="$HOME/ci/work"
 while read old new ref; do
-  [ "$ref" = "refs/heads/main" ] || { echo "ci: ignoring $ref"; continue; }
+  retry=0
+  case "$ref" in
+    refs/heads/main) ;;
+    refs/heads/deploy-retry/*) retry=1 ;;
+    *) echo "ci: ignoring $ref"; continue ;;
+  esac
   echo "ci: building $new on $(hostname)"
   rm -rf "$WORK"; mkdir -p "$WORK"
   git --git-dir="$REPO" archive "$new" | tar -x -C "$WORK"
@@ -31,10 +36,20 @@ while read old new ref; do
   # never relied on any of these.
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX \
         GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH
+  status=0
   if (cd "$WORK" && sh ci/pipeline.sh); then
     echo "ci: SUCCESS — $new is live"
   else
     echo "ci: FAILED — nothing deployed"
-    exit 1
+    status=1
   fi
+  # A retry ref is a one-shot event, not durable repository state. Delete it
+  # after either outcome so the bare repo never accumulates deployment refs.
+  if [ "$retry" -eq 1 ]; then
+    git --git-dir="$REPO" update-ref -d "$ref" "$new" || {
+      echo "ci: FAILED — could not remove retry trigger $ref"
+      exit 1
+    }
+  fi
+  [ "$status" -eq 0 ] || exit "$status"
 done

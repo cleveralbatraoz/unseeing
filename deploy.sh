@@ -58,7 +58,7 @@ scp -q "$STAMP" vpn:ci/cargo-target/core.commit
 rm -f "$STAMP"
 
 echo "== pushing to production (server-side CI takes over) =="
-git -C "$DIR" push production main
+"$DIR/ci/push_production.sh" "$DIR" "$HEAD_SHA"
 
 echo "== verifying the droplet really deployed =="
 # `git push` succeeds even when post-receive FAILS: the ref is updated before
@@ -73,9 +73,8 @@ LIVE="$(curl -skL --max-time 30 "${CHECK_URL:-https://206.223.241.165/}" \
   echo "deploy: FAILED the site serves build '${LIVE:-none}', not '$SHORT'."
   echo "deploy:        The droplet's pipeline refused this push — its 'ci: FAILED'"
   echo "deploy:        line is above, among the remote: output."
-  echo "deploy:        NOTE production/main already points at this commit, so"
-  echo "deploy:        re-running deploy.sh unchanged will not retry the build."
-  echo "deploy:        Fix the cause and push a new commit."
+  echo "deploy:        Re-running deploy.sh unchanged sends a fresh retry trigger"
+  echo "deploy:        through the same versioned server-side pipeline."
   exit 1
 }
 echo "deploy: the site serves $LIVE"
