@@ -70,7 +70,7 @@ The authority order is explicit rather than inferred from file age or detail.
 | Approved decisions and their rationale | `docs/superpowers/specs/` | Frozen historical artifacts, not current-behavior documentation. |
 | Approved execution sequences and evidence | `docs/superpowers/plans/` | Frozen historical artifacts; unchecked boxes have no live status. |
 | Public Wiki | Generated from repository docs | Read-only mirror; direct edits are invalid. |
-| Local API details | Rust/Godot inline documentation | Lives beside the API and cannot redefine cross-project policy or behavior. |
+| Local API details | Rust/Godot inline documentation | Lives beside the API, describes only the current local contract, and cannot redefine cross-project policy or retain actionable work. |
 
 `CLAUDE.md` remains a thin compatibility adapter that points agents to
 `AGENTS.md` and the pinned repository workflow. READMEs remain only where a
@@ -131,6 +131,21 @@ they admit different hosts. The
 routes to the pinned workflow; its upstream files are neither copied into the
 page nor treated as parent-repository tools. Tooling introduced by this design
 is included in the same inventory before the live-tree gate becomes green.
+The `Kind` column is an execution-context enum, not free-form prose:
+`POSIX-host shell command`, `Command Prompt command`, `PowerShell command`,
+`POSIX-host shell library`,
+`Python command`, `Python library`, or `developer gitlink`. `Purpose` and `Use
+when` remain concise nonempty agent-facing text. Kind agreement is total and
+index-derived: the exact mode-`160000` Superpowers path is the gitlink; direct
+`.cmd`/`.ps1` files are host commands; direct executable `.sh` files are POSIX
+host shell commands while non-executable `.sh` descendants of `tools/lib/` are
+POSIX-host shell libraries; each row names its actual Bash or POSIX `sh`
+interpreter rather than claiming language portability from the host kind.
+Executable direct `.py` files with Python shebangs are commands,
+while non-executable direct or `tools/lib/` `.py` files without a CLI main are
+libraries. Unknown path/mode/shebang combinations are rejected. The three
+documentation libraries are mode `100644`, the two Python CLIs and POSIX-host
+publisher are mode `100755`, and tests mutation-check those distinctions.
 
 The root, `game/`, and `infra/` READMEs become scoped routers. Durable content
 from `docs/opening-in-godot.md`, `docs/agent-workflow.md`,
@@ -139,6 +154,51 @@ to the appropriate `docs/current/` page, then the old files are removed.
 Unreferenced documentation-only media and obsolete research/campaign prose are
 removed after their durable facts have either been incorporated or rejected.
 Git history retains the old material.
+
+That migration is checked by a source-to-destination ledger covering every
+reduced README and removed documentation surface. Each independently losable
+fact family has its own stable row, destination, and proof tokens; a broad
+source-level or semicolon-bundled assertion cannot hide the loss of a smaller
+contract such as the crash beacon. It preserves fact families, not old
+phrasing: controls and composition, render/wave laws, paint-failure semantics,
+level/editor procedure (including independent WaveWall, WaveSpawn, and WaveRun
+coordinate/pose/lifecycle families), setup/platform boundaries, deployment and
+recovery topology, agent-tooling procedure, winding/submission boundaries, and
+the freeze-first MCP input/step/snapshot/explain loop plus gdUnit fallback
+debugging procedures each have one
+named canonical destination and owner/evidence check before deletion.
+Status tables, volatile counts, host-specific paths, campaign instructions,
+speculative deployment recommendations, and the old screenshot have an
+explicit remove-without-replacement disposition. A generic “reviewed the old
+docs” assertion is not sufficient evidence that migration was lossless.
+
+Inline Rust and shader documentation remains local API evidence, not a hidden
+second backlog. The initial cutover removes the three audited remedy passages:
+the weak-GPU shadow-map/profiling proposal in `data_core.gdshaderinc`, the
+cross-platform cat-quantization proposal in `cat_brain.rs`, and the missing
+Rust/shader-knee gate prose in `render/labels.rs`. Their current facts remain:
+the pulse loop's actual bound and WebGL2 evidence, the cat's per-platform
+determinism boundary, and the independent Rust allocation/rendered-shader
+ownership boundary. Residual work lives only in the approved GitHub issue
+dispositions; changing those comments changes no runtime behavior.
+
+The same comment-only cutover corrects two audited stale shader explanations
+rather than carrying known mechanics misinformation forward. Kinds 0/1/2 reveal zero
+after a counted source-side wall crossing; kind 3 is attenuated by
+`pow(HUM_THROUGH, float(blocked))` where `blocked` comes from
+`wall_crossings_from`, whose count omits the birth wall. Thus a
+world source may reveal through a wall dimly. The old claims that every wave is
+stopped and that sources reveal only through doorways are removed while shader
+tokens, expressions, numeric literals, and behavior remain identical.
+
+The cutover also corrects two known-false settings comments without changing
+code or test behavior. `rust/src/nodes/settings.rs` no longer claims that the
+overlay owns pause or unconditionally unpauses on exit: the always-processing
+adapter borrows the prior pause/mouse modes; ordinary close restores both,
+while tree exit restores the prior pause only so teardown cannot strand the
+tree frozen. `game/tests/settings_test.gd` no longer claims ownership that its
+headless suite does not prove; it states the tested open/close and prior-pause
+restoration boundary and does not claim mouse-capture evidence.
 
 ### Historical artifact registry
 
@@ -154,20 +214,28 @@ every artifact under `specs/` and `plans/` exactly once. Each row contains:
 
 `shipped` means that the artifact's resulting behavior or procedure is present
 in the current repository tree. For an explicitly external rollout artifact,
-`shipped` instead means that every authorized external mutation reached its
-planned terminal state and was independently read back from each named
-external authority. It does not claim that the current branch has already
-been integrated. A residual-issue cell is exactly `none` or a comma-separated,
-non-empty list of unique positive issue references in `#<number>` form.
+`shipped` instead means that every directly authorized live-service mutation
+reached its planned terminal state and was independently read back from each
+named mutation authority. For the issue-migration plan that authority is
+GitHub Issues; source `main`, Actions, and the Wiki are read-only eligibility
+authorities, while the closeout commit records the already observed result.
+It does not claim that the current branch has already been integrated or that
+the result-recording commit has already been mirrored. A residual-issue cell
+is exactly `none` or a comma-separated, non-empty list of unique positive
+issue references in `#<number>` form. Uniqueness is per row; one live issue may
+truthfully be residual to more than one historical artifact.
 
 The registry, not an old checkbox, is the status surface. `active` exists only
 to make the required plan-first workflow truthful while an approved artifact
 is being executed; the execution or rollout closeout must replace it with a
 terminal outcome. The checker accepts `active` as a valid transient state; the
 execution and finish workflows enforce its eventual transition. A residual
-action without an issue is invalid. Artifact bodies remain frozen unless a
-factual provenance correction is required; current behavior is never repaired
-by rewriting history.
+action on a terminal artifact without an issue is invalid. An `active` plan's
+not-yet-executed in-scope operations are not residual work: its row lists every
+already-existing residual issue known at that point, never guesses issue
+numbers that GitHub has not allocated, and adds the actual numbers at terminal
+closeout. Artifact bodies remain frozen unless a factual provenance correction
+is required; current behavior is never repaired by rewriting history.
 
 ## Current-document content contract
 
@@ -194,7 +262,8 @@ effects separate:
   source-side wall crossing; the corresponding in-flight shell stops at the
   front scene surface;
 - kind-3 source surface reveal is attenuated by
-  `HUM_THROUGH ^ source-side-crossings`, where `HUM_THROUGH = 0.55` is owned by
+  `pow(HUM_THROUGH, float(blocked))`, where `blocked` is the counted source-side
+  crossing total and `HUM_THROUGH = 0.55` is owned by
   `rust/src/level_plan.rs` and mirrored in
   `game/shaders/pulse_pool.gdshaderinc`; the visible in-flight source shell in
   `game/shaders/hearing_post.gdshader` instead applies one `HUM_THROUGH` factor
@@ -217,12 +286,57 @@ The rendering page must likewise distinguish:
   `rust/src/render/superface.rs`, including the separate roles of
   `COPLANAR_EPS` and `PATCH_EPS`;
 - graph-coloured face and semantic source-role labels in
-  `rust/src/render/labels.rs`, including `MIN_SEP = 0.08` and the safe label
-  band, plus the sole grandfathered standalone-radio preview exception
-  `Role::Case = 0.05`;
+  `rust/src/render/labels.rs`, including `MIN_SEP = 0.08`, its fixed role
+  table, and the sole grandfathered standalone-radio preview exception
+  `Role::Case = 0.05`; the enforced safe-band bounds are separately owned by
+  `rust/src/render/paint_plan.rs::LABEL_MIN`/`LABEL_MAX` and its
+  `valid_label` submission check;
 - fixed creature role labels versus per-placed-source numeric labels;
 - facts proven from shader source from facts proven by G-channel readback or a
   rendered pixel oracle.
+
+It also retains the paint-failure taxonomy currently hidden in
+`game/README.md`. Local graph-colouring starvation is a total, recoverable plan:
+affected classes/entries/sources receive fallback labels, warnings identify the
+owners, and play continues with only those seams at risk. Invalid global plan
+input instead returns `PaintPlanError` and exposes no `PaintPlan` or command
+set to its caller, even though the pure function may have allocated internal
+candidate vectors before detecting a later error. `WaveLevel::paint_labels`
+records the refusal and returns without applying any mesh command, leaving all
+existing labels unchanged. The pure planner tests and
+source-role warning test are distinguished from the currently source-inspected
+adapter return; no mesh-readback oracle for the invalid-global path is claimed.
+
+It also preserves the winding boundary that the removed authoring documents
+currently carry. Pure box, wedge, column, and source-torus geometry is
+counter-clockwise/outward; the `rust/src/render/paint.rs` ArrayMesh edge
+converts complete triples to Godot-clockwise submission. Animated
+creature/viewmodel limbs from `rust/src/nodes/limbs.rs` are already
+Godot-clockwise and use the direct submission path. The world data skin is
+two-sided (`game/shaders/data_pass.gdshader::cull_disabled`), which can mask a
+world-winding error, while source/acoustic-image geometry uses
+`game/shaders/data_xray.gdshader::cull_back`, making its submitted winding
+load-bearing. Separate source/mesh tests are not mislabeled as a rendered
+culling oracle.
+
+The migrated composition/level pages retain the player-control and WaveRun
+contracts before their old sources are deleted. Delivered `ui_cancel` toggles
+settings on every platform; opening borrows the world pause and frees the
+mouse, while closing restores the exact pre-open pause and mouse modes (only
+the ordinary running/captured case thaws and recaptures). On web, a
+captured-to-uncaptured pointer transition is an additional fallback for an
+Escape the browser consumed, not a replacement for direct Escape and not
+currently browser-proven. Exact prior mouse-mode restoration is currently an
+inspected source contract: headless settings tests prove restoration of a
+prior pause but do not capture the mouse, and the native display probe does not
+assert the restored mouse-mode value. WaveRun endpoints are parent-local `(X,Z)`; an
+opening is an absolute selected-axis start plus width, not an offset from
+`From`. Pre-tree setters accept and store authoring values, `ready()` performs
+the initial segment build, and editor-after-ready changes rebuild. Runtime
+post-ready endpoint/opening changes are refused and own-transform changes are
+reset to preserve the frozen derived level snapshot. The web `?demo` route
+remains the ordinary input-less demo-tap schedule, not a second control
+implementation.
 
 It must not revive the older per-object-ID or production-GDScript architecture.
 The current composition root is `rust/src/nodes/game.rs::UnseeingGame` with
@@ -235,6 +349,49 @@ Issue state changes happen only after the documentation implementation is
 green and present on `main`, so issue claims always point to an integrated
 tree. Before each mutation, the implementation must reread the issue and
 reverify its resolution against current code and tests.
+
+The external rollout is guarded by one private append-only receipt whose
+reviewed request contract freezes all 40 operation IDs, titles, bodies, labels,
+targets, and evidence substitutions. A separate 23-row disposition review at
+the exact integrated main SHA proves that each of the three creations and three
+rewrites still has residual work and that each of the 17 closures still has a
+shipped resolution; a later main descendant cannot authorize an obsolete issue
+merely because these plan blobs stayed unchanged. Bootstrap reads establish
+the still-read-only anchor and cannot authorize a mutation. After approval,
+before every remote re-observation that can authorize or stop an operation or
+the final comparison, the guard installs a durable decision intent. A
+successful preflight/final comparison or a permanent block is the only way to
+close it; an interrupted outcome conservatively blocks without rereading a
+possibly restored service state. One fixed BSD flock in the repository's
+common Git directory serializes all rollout receipts, and the per-receipt lock
+plus both inherited child descriptors closes local crash/race windows. GitHub
+itself has no compare-and-swap issue mutation, so a separately confirmed quiet operator
+window remains required and the receipt does not claim it can prove the absence
+of a transient third-party edit.
+
+Approval is globally exclusive, not merely intent-exclusive: an approved
+receipt remains the sole active receipt through applied, ambiguous, blocked,
+and terminal-but-unretired states. A second receipt cannot approve or read
+remote eligibility until the first is validly abandoned with zero possible
+mutation or is fully closed out and retired. Rollout- and closeout-worktree
+intent records precede their isolation facilities, and immutable closeout
+isolation/commit/proof records make the final registry commit, user-selected
+integration shape, exact Actions/Wiki readback, worktree cleanup, and receipt
+retirement crash-resumable without shell memory. This closed closeout starts
+only from the original rollout `main` SHA; a later descendant requires a
+separate reviewed plan rather than an unrecorded second semantic audit. Its
+isolation intent, immediate pre-integration check, proof, and retirement each
+reread or bind the complete normalized issue/comment state for all 23
+disposition subjects, so the registry cannot call six issues still open from
+stale rollout-time observations.
+
+The receipt proves the complete normalized issue and comment surface it
+defines. GitHub timeline/events, notifications, subscriptions, reactions, and
+project membership are explicitly outside that guarantee because the approved
+operations necessarily create target timeline activity. Rendered issue bodies
+and closure comments use non-linking issue-number wording and reject GitHub's
+cross-target autolink forms, avoiding deliberate timeline activity on other
+issues while stating the remaining provider boundary honestly.
 
 ### Close as already resolved
 
@@ -268,9 +425,10 @@ is never presented as the fix.
   for `rust/src/sight.rs::crossings`/`crossings_from` and the GLSL wall-crossing
   functions `wall_crossings`/`wall_crossings_from`, beyond the existing
   single-source probe; counted kind-3 surface reveal at
-  `HUM_THROUGH ^ crossings_from`; the distinct visible-shell law of exactly one
+  `pow(HUM_THROUGH, float(blocked))` using `crossings_from`; the distinct visible-shell law of exactly one
   `HUM_THROUGH` factor at or behind the front surface; rendered hearing-post
-  composition of R reveal, G crease, and B silhouette; and structured
+  composition of R reveal, G-label-derived crease, and
+  B-distance-derived silhouette; and structured
   framebuffer facts sufficient to diagnose a failed oracle. It removes the
   repaired gdUnit gate, retired GDScript/seed claims, MCP install, generic
   trace-capture wishlist, and observer-shipping discussion. It excludes
@@ -314,7 +472,10 @@ router, historical spec, plan, report, or issue ledger as a behavior page.
 `Home`, `_Sidebar`, `Mirror-Metadata`, and `.unseeing-wiki-mirror` are reserved
 renderer outputs. Manifest slugs omit `.md` and are restricted to ASCII
 `[A-Za-z0-9][A-Za-z0-9_-]*`; validation rejects ASCII-case-folded collisions
-with another slug or reserved output.
+with another slug or reserved output. Navigation titles and sections use a
+closed plain-ASCII safe-label grammar that excludes Markdown controls,
+backslash, raw-HTML delimiters, tabs, newlines, edge whitespace, and doubled
+spaces before those fields are inserted verbatim into generated Markdown.
 
 `tools/render-wiki.py` is a pure, deterministic Python standard-library
 renderer. It receives the repository root, full source commit, and output
@@ -323,6 +484,20 @@ output tree, and refuses malformed rows, duplicate sources or slugs, missing
 files, path traversal, every Git symlink (including one that points outside
 the repository), invalid UTF-8, and a source commit that does not name the
 input tree.
+
+Exact-commit reads are insulated from local Git object substitution. Every
+object and ancestry child starts from an allowlisted environment with no
+inherited `GIT_*`, disables replace objects and lazy promisor fetches,
+rejects any `refs/replace/*` or
+Git/common-Git `info/grafts`, `objects/info/alternates`,
+`objects/info/http-alternates`, or effective partial/promisor
+configuration, and proves the required reachable objects are present locally.
+A partial/promisor checkout with a missing blob therefore fails without
+network access instead of silently consulting its promisor. The raw
+repository-root argument must be the one normalized absolute, non-symlinked
+top-level spelling reported by Git; relative paths, `.`/`..`, trailing
+separators, aliases, subdirectories, and superdirectories are refused before a
+path library can normalize those distinctions away.
 
 For each manifest page the renderer:
 
@@ -351,7 +526,21 @@ contract. The state file records the format version, source SHA, and a digest
 over the sorted, length-delimited `(relative path, bytes)` mapping of every
 other generated file. Including paths makes a rename observable. The digest is
 a fast corruption check, not proof of provenance: provenance is established by
-checking out and independently rendering the recorded source commit. Generated
+independently rendering the recorded source commit with the current trusted
+compatibility renderer selected by that recorded format. Format `1` is frozen
+as `render_format_1`; every output- or acceptance-affecting manifest,
+Markdown, validation, template, and link semantic belongs to that closed
+compatibility entry. Any future change that alters bytes or the accepted input
+domain adds a higher format and preserves prior pure compatibility functions;
+a validation-only tightening may not silently brick a previously valid
+format-1 source. The format-specific contract includes the manifest and
+Markdown parsers, destination escape decoder, range rewriter, heading anchor,
+link classifier, templates, and validation; a historical renderer never calls
+an unsuffixed current-format alias for any of them. Unknown or removed formats are refused. Historical renderer
+code is never executed, especially not inside a credential-bearing job. The
+requested new source is rendered with the current highest format, so a valid
+format-1 Wiki can be verified and upgraded by one ordinary descendant to
+format 2. Generated
 content contains no wall-clock timestamp, hostname, workspace path, or branch
 name. Rendering the same tracked tree twice is byte-identical.
 
@@ -366,6 +555,13 @@ current documentation.
 repositories. It never edits canonical docs. It clones/fetches the Wiki's
 `master`, renders into a fresh directory, compares content, and exits without a
 commit when the mirror is already current.
+
+The publisher applies the same no-replacement, no-graft, no-lazy-fetch object
+contract to both source and Wiki repositories. Only named full-history
+clone/fetch and the final dry-run/real push may use the network; authority and
+render reads cannot trigger it. After explicit fetch, missing reachable
+objects, shallow history, replacement refs, or grafts fail before a candidate
+commit or credentialed operation.
 
 Production mode refuses unless the Actions repository, push event, `main` ref,
 checked-out `HEAD`, and `GITHUB_SHA` all agree with the canonical repository.
@@ -384,8 +580,10 @@ After a generated mirror exists, every run must:
 
 1. require the audited legacy head to remain in Wiki `master` ancestry;
 2. parse the recorded source SHA and fast-check the existing content digest;
-3. check out that source commit from full canonical repository history,
-   independently render it, and compare the complete Wiki tree byte-for-byte;
+3. read that source commit from full canonical repository history and
+   independently render it with the current trusted compatibility function
+   selected by its marker format, then compare the complete Wiki tree
+   byte-for-byte;
 4. reject a direct edit, forged digest, stray file, or malformed marker;
 5. prove the previous source SHA is an ancestor of the requested source SHA;
 6. create one ordinary descendant commit only when generated content differs;
@@ -418,7 +616,12 @@ rendered tree, followed by a fresh publisher run.
 
 The existing tests workflow gains a final `publish-wiki` job with
 `needs: [checks, windows-bootstrap]`. It runs only for a successful push to
-`main`; pull requests render and test the mirror but cannot publish. Workflow
+`main`; the read-only checks job renders the real checked-out full
+`GITHUB_SHA` into a fresh absent temporary tree and verifies its marker for
+both pull requests and pushes, but pull requests cannot publish. This live
+candidate gate exercises the actual manifest, Git-object modes, links,
+fragments, and symlink policy rather than only fixture repositories. Its step
+has no credential, network Git command, or publisher invocation. Workflow
 permissions explicitly set `contents: read` at top level, with
 `contents: write` granted only to the publication job. The publisher fetches
 full source history so ancestry and historical re-rendering work when the
@@ -429,12 +632,15 @@ history unauthenticated, so even checkout cannot receive the implicit
 step through a non-logging credential helper; it never enters a remote URL,
 Git config, page, commit, or captured output.
 
-The workflow keeps feature/PR cancellation but disables cancellation for
-`main`, so a newer push cannot kill a publisher after its push and before
-readback. Main runs serialize through a dedicated Wiki concurrency group with
-`cancel-in-progress: false`. The source-ancestry guard remains authoritative if
-GitHub drops a pending run or schedules an older rerun after a newer source
-while a managed source marker exists. Exact-legacy-head retakeover has no
+The workflow keeps pull-request cancellation but gives every `main` workflow
+run a unique top-level concurrency key, so GitHub's default single-pending
+replacement cannot discard an older pending main run. Publication jobs
+serialize through a dedicated Wiki concurrency group with `queue: max` and no
+in-progress cancellation. GitHub currently bounds that queue at 100; overflow
+is a visible cancelled run and makes that SHA ineligible for issue rollout,
+never permission to publish manually. FIFO is based on when jobs begin waiting,
+not push order, so the source-ancestry guard remains authoritative if an older
+job reaches the queue after a newer source. Exact-legacy-head retakeover has no
 previous marker to compare and therefore accepts only the requested,
 production-guarded canonical `main` event.
 
@@ -444,19 +650,22 @@ run therefore proves the exact push with `--dry-run`; if permission is denied,
 the job fails with the Wiki unchanged. There is no personal-access-token
 fallback and no long-lived secret introduced by this design.
 
-A small workflow with explicit read-only permissions uses the `gollum` event to
-detect human or external-token Wiki edits. It does not trust the event's
+A small workflow with explicit read-only permissions handles GitHub-delivered
+`gollum` events for human or external-token Wiki page creates/updates. It does
+not trust the event's
 `GITHUB_SHA`, which names the source repository's default-branch head rather
 than a Wiki commit. It explicitly fetches Wiki `master`, reads its recorded
 source SHA, checks out that commit from the source repository, independently
 re-renders it, and compares the complete tree for diagnosis. It then fails the
-job unconditionally: even an external commit whose bytes exactly reproduce an
-authorized tree is still an unauthorized Wiki write that tree equality cannot
-authenticate. A direct web or Git edit therefore fails visibly and is never
-adopted as a new source of truth. A mirror push made with `GITHUB_TOKEN`
-normally does not recursively trigger this workflow; the publisher's own
-remote readback is the verification path for that push. If GitHub unexpectedly
-does emit a recursive `gollum` event, that failure is intentionally visible.
+job unconditionally: even a delivered page event whose bytes exactly reproduce
+an authorized tree is still an unauthorized edit that tree equality cannot
+authenticate. Direct edits remain prohibited, but this design does not claim
+that `gollum` authenticates or is delivered for metadata-only Git commits or
+non-page ref writes. Publisher remote readback verifies its own push, and the
+next publisher provenance/complete-tree check is the backstop for page or
+marker tree drift when no guard event was delivered. A mirror push made with
+`GITHUB_TOKEN` normally does not recursively trigger this workflow; if GitHub
+unexpectedly does emit that event, the failure is intentionally visible.
 
 ## Executable documentation contract
 
@@ -466,19 +675,40 @@ named failing test and proceeds red-green-refactor. The minimum gates are:
 - every authority surface exists in its allowed location;
 - every canonical page is indexed and appears exactly once in
   `docs/wiki-pages.tsv`;
-- every local Markdown link, heading fragment, code-owner path, and declared
-  owner symbol resolves;
+- every local Markdown link and heading fragment on a current authority
+  surface, plus every code-owner path, declared owner symbol, and artifact
+  registry current-result link, resolves; frozen spec/plan bodies are excluded
+  wholesale from link and hygiene scanning as immutable historical provenance,
+  while the registry rows that name them remain validated;
 - README routers do not duplicate canonical mechanics or procedures;
 - current docs contain no task boxes, backlog markers, volatile test totals,
-  mutable-branch links, or host-specific paths;
+  mutable-branch links, host-specific paths, or disguised singular/plural
+  gap/flaw/bug/issue/deliberately-unfinished prose, including Markdown-
+  decorated prefix forms nested through any bounded mixture of blockquote and
+  list markers (for example `> - **TODO:**`); neutral boundary/limitation lines
+  with issue links carry no remedy vocabulary;
+- project-owned production Rust and shader line/doc comments contain no
+  actionable “next step,” deferred remedy, or missing-gate prose; vendored
+  code, test fixtures, and frozen artifacts are outside that bounded scan;
+  path-scoped migration witnesses also reject the two known-false shader
+  claims `EVERY wave obeys this` and `never through a wall` until their comments
+  state the exact kind-0/1/2 versus kind-3 crossing law, and separately reject
+  the stale settings source/test claims `PAUSE IS OWNED HERE, AND RELEASED ON
+  THE WAY OUT` and `the pause it owns` until those comments state exact
+  ordinary-close pause/mouse restoration, tree-exit pause-only restoration,
+  and the headless test boundary;
+- the checked legacy-source ledger assigns every durable fact family from each
+  reduced/deleted surface to a canonical destination and gives every discarded
+  family an explicit non-current disposition before the old path disappears;
 - every tracked parent-owned `tools/` entry and `tools/lib/` support file is
   registered exactly once in the tooling capability map, while the
   `tools/superpowers` gitlink is represented once and its contents are not
-  inventoried as parent-owned tools;
+  inventoried as parent-owned tools; every row uses the exact execution-context
+  enum rather than a generic kind;
 - every spec and plan is registered exactly once with a valid outcome and
   either `none` or a comma-separated, duplicate-free non-empty list of
-  `#<positive-number>` residual issues; an `active` row is accepted only during
-  execution and must become terminal in the closeout;
+  `#<positive-number>` residual issues per row; an `active` row is accepted only
+  during execution and must become terminal in the closeout;
 - two renders of one commit are byte-identical and use the full commit SHA;
 - link rewriting, navigation generation, reserved-name rejection, stale-page
   removal, idempotence, takeover locking, digest validation, independent
@@ -541,4 +771,9 @@ separation of touching solids and semantic source roles, label-safe band,
 pure domain functions, absence of mutable global state, one Godot project, one
 native/web Rust behavioral source, and x86_64/arm64/wasm32 support remain
 unchanged. Documentation tooling is developer-only, excluded from deployment
-archives, and cannot become a game, build, export, or deploy dependency.
+archives, and cannot become a game, build, export, or deploy dependency. The
+narrow exception is the generic archive-aware CI adapter and its own boundary
+self-test: they remain in an archive only to verify that every renderer,
+publisher, documentation library/CLI, and focused test is wholly absent and to
+emit explicit skips. They contain no documentation policy and introduce no
+game/build/deploy dependency.
