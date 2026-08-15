@@ -64,15 +64,16 @@ exports it and all developer-agent entry points out together.
 
 - With `.gitmodules` present, both `tools/setup-agents.sh` and its behavioral
   test must exist and the test must run.
-- With `.gitmodules` absent, the setup tool must also be absent and the gate
-  skips explicitly. A leaked setup tool is a refusal, not a reason to execute
-  developer tooling in production.
+- With `.gitmodules` absent, the setup tool and its checkout-only behavioral
+  test must also be absent and the gate skips explicitly. Either leak is a
+  refusal, not a reason to execute developer tooling in production.
 
 `test/deployment_archive_test.sh` composes the real `git archive` mechanism
 with that gate. It proves the archive contains the gate and regression test,
-contains neither `.gitmodules` nor `tools/setup-agents.sh`, and produces the
-explicit archive skip. This keeps developer tooling available to contributors
-without making it a game/build/deploy dependency.
+contains none of `.gitmodules`, `tools/setup-agents.sh`, or
+`test/setup_agents_test.sh`, and produces the explicit archive skip. This keeps
+developer tooling available to contributors without making it a
+game/build/deploy dependency.
 
 ### Retry trigger
 

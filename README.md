@@ -131,11 +131,14 @@ artifacts.
   self-updater is switched off so a version bump is always a reviewed commit.
 - `deploy.sh` — refuses anything but a clean `main` first (the cores below
   are compiled from the working tree while the push ships the branch, so
-  those have to be the same code), then local checks, then cross-builds the
-  linux and wasm cores the 1.8 GB droplet cannot compile itself and seeds
-  them — with the commit they were built from — over ssh. Then
-  `git push production` (the droplet's post-receive hook runs the pipeline
-  server-side and deploys only on green), then `git push origin`.
+  those have to be the same code), proves cargo-zigbuild and Zig separately,
+  runs local checks, then cross-builds the linux and wasm cores the 1.8 GB
+  droplet cannot compile itself and seeds them — with the commit they were
+  built from — over ssh. The droplet's post-receive hook runs the full
+  archive-mode pipeline and deploys only on green. If `production/main`
+  already names the commit after an earlier refused hook, the deploy sends a
+  one-shot retry ref through that same pipeline. Only a matching live build
+  stamp permits the final `git push origin`.
 - `infra/` — versioned copies of the droplet's hook and nginx config.
 
 ## License
