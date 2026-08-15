@@ -120,10 +120,13 @@ current work, or historical rationale.
 
 `docs/current/engineering/tooling.md` is the concise capability map for an
 agent deciding which repository tool to invoke. It registers every tracked
-parent-repository entry immediately under `tools/` and every tracked support
-file under `tools/lib/` exactly once, with its path, purpose, execution context,
-and the situation in which an agent should use it. Platform-specific siblings
-remain separate rows because they admit different hosts. The
+parent-repository regular file or gitlink immediately under `tools/` and every
+tracked regular support file recursively under `tools/lib/` exactly once, with
+its path, purpose, execution context, and the situation in which an agent
+should use it. Directories themselves receive no row; a parent-owned tool in a
+different nested directory is rejected until this authority rule deliberately
+admits that directory. Platform-specific siblings remain separate rows because
+they admit different hosts. The
 `tools/superpowers` gitlink is one opaque, developer-only submodule entry that
 routes to the pinned workflow; its upstream files are neither copied into the
 page nor treated as parent-repository tools. Tooling introduced by this design
@@ -144,14 +147,25 @@ every artifact under `specs/` and `plans/` exactly once. Each row contains:
 
 - artifact path and kind;
 - decision or campaign it records;
-- outcome: `shipped`, `superseded`, or `closed without implementation`;
+- outcome: transient `active`, or terminal `shipped`, `superseded`, or
+  `closed without implementation`;
 - the canonical current-document page that describes the resulting behavior;
-- a residual GitHub issue number or `none`.
+- one or more residual GitHub issue numbers, or `none`.
 
-The registry, not an old checkbox, is the status surface. A residual action
-without an issue is invalid. Artifact bodies remain frozen unless a factual
-provenance correction is required; current behavior is never repaired by
-rewriting history.
+`shipped` means that the artifact's resulting behavior or procedure is present
+in the current repository tree; it does not claim that the current branch has
+already been integrated. A residual-issue cell is exactly `none` or a
+comma-separated, non-empty list of unique positive issue references in
+`#<number>` form.
+
+The registry, not an old checkbox, is the status surface. `active` exists only
+to make the required plan-first workflow truthful while an approved artifact
+is being executed; the execution or rollout closeout must replace it with a
+terminal outcome. The checker accepts `active` as a valid transient state; the
+execution and finish workflows enforce its eventual transition. A residual
+action without an issue is invalid. Artifact bodies remain frozen unless a
+factual provenance correction is required; current behavior is never repaired
+by rewriting history.
 
 ## Current-document content contract
 
@@ -356,9 +370,9 @@ contains only the deployment recovery page published with current `main`. If
 the Wiki advances again before takeover, publication stops for a new audit; it
 never silently overwrites the new head.
 
-After takeover, every run must:
+After a generated mirror exists, every run must:
 
-1. require the audited takeover commit to remain in Wiki `master` ancestry;
+1. require the audited legacy head to remain in Wiki `master` ancestry;
 2. parse the recorded source SHA and fast-check the existing content digest;
 3. check out that source commit from full canonical repository history,
    independently render it, and compare the complete Wiki tree byte-for-byte;
@@ -376,10 +390,13 @@ entry are refused.
 
 The ancestry check refuses source rollback or divergence. It is not an external
 monotonic anchor for Wiki history: if someone force-resets Wiki `master` to an
-older, otherwise valid generated descendant of the takeover, a later publisher
-may safely regenerate the newest source on top of it. A reset that loses the
-takeover ancestry or lands on a tree not independently reproduced from its
-marker is refused.
+older, otherwise valid generated descendant of the audited legacy head, a later
+publisher may safely regenerate the newest source on top of it. A reset exactly
+to the audited legacy head is observationally identical to the first takeover;
+because that exact commit and tree were audited, the publisher safely performs
+the locked takeover again and does not claim to detect that reset. Every other
+markerless head, a reset that loses the audited legacy head from ancestry, or a
+tree not independently reproduced from its marker is refused.
 
 A remote advance after dry-run makes the ordinary push fail atomically. The
 publisher does not force or merge and does not hide the race with an unbounded
@@ -405,7 +422,10 @@ The workflow keeps feature/PR cancellation but disables cancellation for
 `main`, so a newer push cannot kill a publisher after its push and before
 readback. Main runs serialize through a dedicated Wiki concurrency group with
 `cancel-in-progress: false`. The source-ancestry guard remains authoritative if
-GitHub drops a pending run or schedules an older rerun after a newer source.
+GitHub drops a pending run or schedules an older rerun after a newer source
+while a managed source marker exists. Exact-legacy-head retakeover has no
+previous marker to compare and therefore accepts only the requested,
+production-guarded canonical `main` event.
 
 GitHub documents a Wiki as its own `<repository>.wiki.git` repository but does
 not explicitly guarantee Wiki pushes from the built-in token. The first main
@@ -440,13 +460,17 @@ named failing test and proceeds red-green-refactor. The minimum gates are:
   registered exactly once in the tooling capability map, while the
   `tools/superpowers` gitlink is represented once and its contents are not
   inventoried as parent-owned tools;
-- every spec and plan is registered exactly once with a terminal outcome and a
-  residual issue or `none`;
+- every spec and plan is registered exactly once with a valid outcome and
+  either `none` or a comma-separated, duplicate-free non-empty list of
+  `#<positive-number>` residual issues; an `active` row is accepted only during
+  execution and must become terminal in the closeout;
 - two renders of one commit are byte-identical and use the full commit SHA;
 - link rewriting, navigation generation, reserved-name rejection, stale-page
   removal, idempotence, takeover locking, digest validation, independent
   historical re-rendering, source-rollback refusal, non-force push, and remote
   readback are exercised hermetically;
+- a reset exactly to the audited legacy Wiki head is safely re-taken over,
+  while every other markerless head is refused;
 - a page edit accompanied by a forged matching digest is still rejected;
 - an old source several commits behind proves full-history ancestry, and a
   remote advance between dry-run and push fails without altering that remote;
