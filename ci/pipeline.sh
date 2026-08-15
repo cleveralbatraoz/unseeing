@@ -59,8 +59,12 @@ echo "ci: content-digest self-test (a missing hasher must refuse, not agree)"
 "$DIR/test/digest_test.sh" || exit 1
 echo "ci: deploy-host preflight self-test (real cargo-zigbuild and Zig boundaries)"
 "$DIR/test/deploy_host_preflight_test.sh" || exit 1
+echo "ci: agent-tooling checkout/archive gate self-test"
+"$DIR/test/ci_agent_tooling_gate_test.sh" || exit 1
+echo "ci: exact deployment-archive composition self-test"
+"$DIR/test/deployment_archive_test.sh" || exit 1
 echo "ci: agent-plugin scope self-test (another project's plugin is not ours to remove)"
-"$DIR/test/setup_agents_test.sh" || exit 1
+"$DIR/ci/run_agent_tooling_self_test.sh" "$DIR" || exit 1
 echo "ci: run-the-game self-test (it plays the world, never the editor)"
 "$DIR/test/run_game_test.sh" || exit 1
 # Nothing ran this suite. It was written, committed, and then never invoked by

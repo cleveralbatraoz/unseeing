@@ -150,6 +150,61 @@ else
   fi
 fi
 
+# --- developer-agent tooling stays in a checkout, not a deployment ---------
+# The setup entry points and their own behavior test need the pinned submodule
+# and host CLIs. The deployment keeps only the small context gate and the test
+# that proves that gate, so production can establish the omission explicitly
+# without executing or depending on developer tooling.
+if [ "${HYGIENE_NESTED:-0}" = 1 ]; then
+  skip "developer-agent archive boundary (nested scratch tree carries no agent tooling)"
+elif [ "$HAVE_INDEX" = 0 ]; then
+  if [ ! -e "$DIR/.gitmodules" ] \
+    && [ ! -e "$DIR/tools/setup-agents.sh" ] \
+    && [ ! -e "$DIR/tools/update-superpowers.sh" ] \
+    && [ ! -e "$DIR/test/setup_agents_test.sh" ]; then
+    ok "developer-agent tooling is absent from exported tree"
+  else
+    bad "developer-agent tooling leaked into exported tree"
+  fi
+  if [ -x "$DIR/ci/run_agent_tooling_self_test.sh" ] \
+    && [ -x "$DIR/test/ci_agent_tooling_gate_test.sh" ]; then
+    ok "the archive retains its developer-tool omission gate and regression"
+  else
+    bad "the archive lost its developer-tool omission gate or regression"
+  fi
+else
+  if [ -x "$DIR/tools/setup-agents.sh" ] \
+    && [ -x "$DIR/test/setup_agents_test.sh" ] \
+    && [ -x "$DIR/ci/run_agent_tooling_self_test.sh" ] \
+    && [ -x "$DIR/test/ci_agent_tooling_gate_test.sh" ]; then
+    ok "developer checkout retains agent tooling and its archive gate"
+  else
+    bad "developer checkout lost agent tooling or its archive gate"
+  fi
+
+  # `write-tree` is the staged candidate a pre-commit invocation is about to
+  # create. In CI it is bit-identical to HEAD; during TDD it lets a new gate
+  # prove its own exported shape before the first commit exists.
+  AGENT_TREE="$(git -C "$DIR" write-tree)"
+  AGENT_ARCHIVE="$(git -C "$DIR" archive --worktree-attributes "$AGENT_TREE" | tar -tf -)"
+  AGENT_LEAKS="$(printf '%s\n' "$AGENT_ARCHIVE" \
+    | grep -E '^(\.gitmodules|tools/(setup-agents|update-superpowers)\.sh|test/setup_agents_test\.sh)$' \
+    || true)"
+  if [ -z "$AGENT_LEAKS" ]; then
+    ok "developer-agent tooling is absent from git archive"
+  else
+    bad "developer-agent tooling leaked into git archive:"
+    printf '%s\n' "$AGENT_LEAKS" | sed 's/^/hygiene:      /'
+  fi
+  for required in ci/run_agent_tooling_self_test.sh test/ci_agent_tooling_gate_test.sh; do
+    if printf '%s\n' "$AGENT_ARCHIVE" | grep -qx "$required"; then
+      ok "git archive retains $required"
+    else
+      bad "git archive lost required deployment gate $required"
+    fi
+  done
+fi
+
 # --- the one addon that must stay out --------------------------------------
 # The ignore rule above is half the guard: it stops `git add -A` from sweeping
 # the addon in. This is the other half, and it is the one that matters after
