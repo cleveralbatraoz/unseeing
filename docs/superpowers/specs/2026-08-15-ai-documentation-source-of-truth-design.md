@@ -411,12 +411,13 @@ The existing tests workflow gains a final `publish-wiki` job with
 `main`; pull requests render and test the mirror but cannot publish. Workflow
 permissions explicitly set `contents: read` at top level, with
 `contents: write` granted only to the publication job. The publisher fetches
-full source history (`fetch-depth: 0`) so ancestry and historical re-rendering
-work when the previous source is many commits behind. Checkout persistence is
-disabled, no third-party action runs in the write-capable job, and
-`GITHUB_TOKEN` is exposed only to the final dry-run/real-push step through a
-non-logging credential helper; it never enters a remote URL, Git config, page,
-commit, or captured output.
+full source history so ancestry and historical re-rendering work when the
+previous source is many commits behind. No action runs in the write-capable
+job: it initializes a Git repository and fetches the public canonical `main`
+history unauthenticated, so even checkout cannot receive the implicit
+`github.token`. `GITHUB_TOKEN` is exposed only to the final dry-run/real-push
+step through a non-logging credential helper; it never enters a remote URL,
+Git config, page, commit, or captured output.
 
 The workflow keeps feature/PR cancellation but disables cancellation for
 `main`, so a newer push cannot kill a publisher after its push and before
