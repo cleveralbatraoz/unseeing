@@ -438,10 +438,14 @@ detect human or external-token Wiki edits. It does not trust the event's
 `GITHUB_SHA`, which names the source repository's default-branch head rather
 than a Wiki commit. It explicitly fetches Wiki `master`, reads its recorded
 source SHA, checks out that commit from the source repository, independently
-re-renders it, and compares the complete tree. A direct web or Git edit fails
-visibly and is never adopted as a new source of truth. A mirror push made with
-`GITHUB_TOKEN` normally does not recursively trigger this workflow; the
-publisher's own remote readback is the verification path for that push.
+re-renders it, and compares the complete tree for diagnosis. It then fails the
+job unconditionally: even an external commit whose bytes exactly reproduce an
+authorized tree is still an unauthorized Wiki write that tree equality cannot
+authenticate. A direct web or Git edit therefore fails visibly and is never
+adopted as a new source of truth. A mirror push made with `GITHUB_TOKEN`
+normally does not recursively trigger this workflow; the publisher's own
+remote readback is the verification path for that push. If GitHub unexpectedly
+does emit a recursive `gollum` event, that failure is intentionally visible.
 
 ## Executable documentation contract
 
@@ -477,8 +481,8 @@ named failing test and proceeds red-green-refactor. The minimum gates are:
 - workflow tests prove pull requests cannot publish and a main publication
   depends on both Linux/wasm and Windows jobs;
 - guard-workflow tests prove `gollum` runs read-only, fetches Wiki `master`
-  explicitly, and never treats the event's source-repository `GITHUB_SHA` as a
-  Wiki revision.
+  explicitly, never treats the event's source-repository `GITHUB_SHA` as a Wiki
+  revision, and fails every event after read-only diagnostic verification.
 
 Mutation checks must kill realistic changes to manifest uniqueness and reserved
 names, provenance stamping, link resolution and code-span exclusion, content
