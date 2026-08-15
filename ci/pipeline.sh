@@ -57,6 +57,8 @@ echo "ci: engine-caller self-test (every script that runs Godot applies the pin)
 "$DIR/test/engine_callers_test.sh" || exit 1
 echo "ci: content-digest self-test (a missing hasher must refuse, not agree)"
 "$DIR/test/digest_test.sh" || exit 1
+echo "ci: deploy-host preflight self-test (real cargo-zigbuild and Zig boundaries)"
+"$DIR/test/deploy_host_preflight_test.sh" || exit 1
 echo "ci: agent-plugin scope self-test (another project's plugin is not ours to remove)"
 "$DIR/test/setup_agents_test.sh" || exit 1
 echo "ci: run-the-game self-test (it plays the world, never the editor)"
