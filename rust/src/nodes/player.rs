@@ -25,6 +25,7 @@ use godot::global::{Key, MouseButton};
 use godot::prelude::*;
 
 use crate::observe::QueuedWave;
+use crate::render;
 
 /// Eye height above the floor.
 pub const EYE: f64 = 1.6;
@@ -151,8 +152,13 @@ impl ICharacterBody3D for UnseeingPlayer {
         self.base_mut().add_child(&col);
         let mut camera = Camera3D::new_alloc();
         camera.set_position(Vector3::new(0.0, CAM_BASE_Y as f32, 0.0));
-        camera.set_near(0.05);
-        camera.set_far(60.0);
+        // Read from render::depth, not retyped here: the acoustic-image
+        // band's whole safety argument — that no world fragment can
+        // rasterise into it — is a statement about THESE two planes, and a
+        // camera built from its own literals could drift out from under it
+        // silently.
+        camera.set_near(render::depth::CAM_NEAR as f32);
+        camera.set_far(render::depth::CAM_FAR as f32);
         camera.set_fov(66.0); // ~1.15 rad vertical, the validated design FOV
         self.base_mut().add_child(&camera);
         self.camera = Some(camera);

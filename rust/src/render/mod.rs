@@ -4,6 +4,10 @@
 //! every vertex instead, so two overlapping solids agree on the G channel
 //! by CONSTRUCTION rather than by a shader tie-break.
 //!
+//! - [`depth`] — the acoustic-image depth band: how a sound source's skin
+//!   rides over the world without losing its own front-to-back order, with
+//!   the band's width derived from the depth buffer's quantisation and the
+//!   camera's frustum rather than asserted.
 //! - `faces` — pure geometry: a solid's shape becomes its world-space
 //!   planar faces, the vocabulary every later stage (the merge law, the
 //!   label colouring) is built from.
@@ -25,6 +29,7 @@
 //!   the wavefront passed. `sight` says where a wave reaches; this says when
 //!   it stops.
 
+pub mod depth;
 pub mod faces;
 pub mod labels;
 pub mod paint;

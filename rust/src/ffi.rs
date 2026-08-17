@@ -13,6 +13,7 @@ use godot::prelude::*;
 use crate::clustering::{self, RayHit};
 use crate::echo_queue::{ECHO_KIND, ECHO_MAX_R, ECHO_SPEED, EchoQueue, PendingEcho};
 use crate::flicker::Randf;
+use crate::level_plan;
 use crate::observe::reflect::ReflectionRequest;
 use crate::pulse_pool::{MAXP, PulsePool, REFUSAL_MESSAGE, SlotCapture};
 use crate::ray_fan;
@@ -248,6 +249,53 @@ impl WaveCore {
     #[func]
     fn wave_fade_tail(&self, kind: i64) -> f64 {
         render::reveal::reveal_tail(i32::try_from(kind).unwrap_or(i32::MAX))
+    }
+
+    /// The acoustic-image band's width, and the two derived numbers that
+    /// bracket it — exposed so a suite can hold the shipped GLSL literal
+    /// against `render::depth`'s derivation instead of against itself.
+    ///
+    /// The assertion these replace was `1.0e-5 < 1.0 - 0.999999 + 1.0e-5`,
+    /// which reduces to `x < 1e-6 + x` and is true for every x. It passed
+    /// happily while the band was a hundred times too narrow to order one
+    /// source's own limbs.
+    #[func]
+    fn source_band(&self) -> f64 {
+        render::depth::SOURCE_BAND
+    }
+
+    /// Metres of camera distance per distinguishable depth code inside the
+    /// band. Two source surfaces closer than this resolve by opaque draw
+    /// order rather than by distance.
+    #[func]
+    fn source_band_resolution(&self) -> f64 {
+        render::depth::band_resolution(render::depth::SOURCE_BAND, level_plan::DIST_PACK_RANGE)
+    }
+
+    /// The tightest gap between two surfaces of one shipped source that the
+    /// band must still order — the fan's guard-to-blade separation.
+    #[func]
+    fn min_source_limb_gap(&self) -> f64 {
+        render::depth::MIN_SOURCE_LIMB_GAP
+    }
+
+    /// How close to the eye a WORLD surface would have to stand before it
+    /// reached into the band. Beyond this distance nothing in the world can
+    /// compete with the acoustic image drawn over it.
+    #[func]
+    fn deepest_world_fragment_in_band(&self) -> f64 {
+        render::depth::deepest_world_fragment_in_band(
+            render::depth::SOURCE_BAND,
+            render::depth::CAM_NEAR,
+            render::depth::CAM_FAR,
+        )
+    }
+
+    /// The eye's near plane — the other half of the derivation above, and
+    /// the value `UnseeingPlayer` builds its camera with.
+    #[func]
+    fn camera_near(&self) -> f64 {
+        render::depth::CAM_NEAR
     }
 }
 

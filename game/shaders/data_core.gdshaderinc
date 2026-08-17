@@ -49,12 +49,27 @@ const float ALWAYS_ON_TOP = 0.999999;
 // through a near, loud one.
 //
 // So the layer gets a BAND instead of a point: a source's depth is the
-// always-on-top value minus a hair proportional to its true distance. Every
-// source still beats every world fragment (a world surface would have to be
-// inside the near plane to reach this band), while sources — and a single
-// source's own overlapping limbs — resolve by distance like everything
-// else. The band is far narrower than any depth step the world can produce.
-const float SOURCE_BAND = 1.0e-5;
+// always-on-top value minus a hair proportional to its true distance, so
+// sources — and a single source's own overlapping limbs — resolve by
+// distance like everything else.
+//
+// THE WIDTH IS DERIVED, not chosen. rust/src/render/depth.rs states both
+// bounds as functions and cargo-tests them against the shipped camera and
+// the shipped fan:
+//   - wide enough to ORDER. The band is quantised by the 24-bit depth
+//     buffer and, identically, by f32's own 2^-24 ULP near 1.0, so it
+//     carries only band * 2^24 distinct values across DIST_PACK_RANGE. The
+//     old 1.0e-5 carried 168 of them over 40 m — one code every 0.238 m,
+//     coarser than a fan is big, so its housing, guard and blades all wrote
+//     the SAME depth and resolved by opaque draw order. Since a blade's
+//     sort key moves as it spins, the crease pattern on the fan head
+//     reshuffled instead of rotating. 1.0e-3 resolves 2.4 mm, comfortably
+//     under the 12 mm between that guard and those blades;
+//   - narrow enough to stay UNREACHABLE. Under reversed-Z with near 0.05
+//     and far 60, a world surface must stand within 0.05005 m of the eye to
+//     reach a 1.0e-3 band — 0.05 mm past a near plane that already clips
+//     everything closer.
+const float SOURCE_BAND = 1.0e-3;
 
 // Where in the acoustic-image band a source fragment `dist` metres from the
 // eye writes its depth.

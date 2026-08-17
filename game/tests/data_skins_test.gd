@@ -29,6 +29,15 @@ func _text(path: String) -> String:
 	return f.get_as_text() if f != null else ""
 
 
+## The numeric value of `const <type> NAME = <number>;` in a shader source,
+## or NAN when the declaration is missing — NAN fails every numeric assert,
+## so a renamed or deleted constant is a failure rather than a skip.
+func _shader_float(src: String, const_name: String) -> float:
+	var pattern := "const\\s+\\w+\\s+" + const_name + "\\s*=\\s*([0-9.eE+-]+)\\s*;"
+	var m := RegEx.create_from_string(pattern).search(src)
+	return m.get_string(1).to_float() if m != null else NAN
+
+
 ## The x-ray skin: culled back faces (mandatory under an always-pass depth
 ## test), the always-on-top depth write, and the standing acoustic image in
 ## its two independent halves. Both are INSTANCE uniforms, and the world now
@@ -191,13 +200,23 @@ func test_reveal_loop_bounds_a_pulse_before_walking_the_walls() -> void:
 ## true distance.
 func test_the_acoustic_image_layer_is_a_band_ordered_by_distance() -> void:
 	var core := _text(CORE_PATH)
-	assert_str(core).contains("const float SOURCE_BAND = 1.0e-5;")
+	assert_str(core).contains("const float SOURCE_BAND = 1.0e-3;")
 	assert_str(core).contains(
 		"return ALWAYS_ON_TOP - SOURCE_BAND * clamp(dist / DIST_PACK_RANGE, 0.0, 1.0);"
 	)
-	# the band must be far narrower than any depth step the world can make,
-	# or a source would start losing to the geometry it is felt through
-	assert_bool(1.0e-5 < 1.0 - 0.999999 + 1.0e-5).is_true()
+	# The width is DERIVED, and this holds the shipped GLSL literal against
+	# the derivation rather than against itself. What stood here before was
+	# `assert_bool(1.0e-5 < 1.0 - 0.999999 + 1.0e-5)`, which reduces to
+	# `x < 1e-6 + x` — true for every x, so it measured nothing at all and
+	# passed while the band was a hundred times too narrow to order a fan's
+	# own blades against its own housing.
+	var band: WaveCore = auto_free(WaveCore.new())
+	assert_float(_shader_float(core, "SOURCE_BAND")).is_equal(band.source_band())
+	# and both bounds the derivation rests on, read back from Rust:
+	# coarse enough to resolve the tightest gap a shipped source has
+	assert_float(band.source_band_resolution()).is_less(band.min_source_limb_gap())
+	# and still out of reach of any world fragment past the near plane
+	assert_float(band.deepest_world_fragment_in_band()).is_less(band.camera_near() + 0.001)
 	# and the source skin must USE it rather than writing the constant
 	var xray := _text(XRAY_PATH)
 	assert_bool(xray.contains("DEPTH = ALWAYS_ON_TOP;")).is_false()
