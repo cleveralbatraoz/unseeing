@@ -217,10 +217,29 @@ func _ready() -> void:
 	# same sample points — with the quad up, a ring crossing the divider
 	# into the hero's air adds its brightness at exactly these pixels.
 	var shell := await _voice_delta(main, fan, voice, AT_SPAWN, SPAWN_AIM, SPAWN_SIDE, WINDOW)
-	print("# occlusion @spawn: fan's SHELL lifts the walled image by %.3f" % shell)
+	# ...and its positive half, because the NEW failure mode of a per-fragment
+	# source-keyed cut is OVER-blocking, and a darkness delta cannot see that.
+	# `float env = 0.0;` in hearing_post deletes every ring in the game while
+	# every text pin still matches and this case still reads 0 - 0 = 0 and
+	# prints "ok". The plan named this risk directly — "if the probe shows a
+	# source's shell wrongly vanishing inside the hero's own room" — and
+	# without the reading below the probe could never produce that evidence.
+	var shell_lit := await _voice_delta(
+		main, fan, voice, IN_FAN_ROOM, FAN_SIDE[0], FAN_SIDE, SWEEP_WINDOW
+	)
+	print(
+		(
+			"# occlusion @spawn: fan's SHELL lifts the walled image %.3f ; its own room %.3f"
+			% [shell, shell_lit]
+		)
+	)
 	_check(
 		"the fan's ring does NOT cross the divider into the hero's air (%.3f < 0.02)" % shell,
 		shell < 0.02
+	)
+	_check(
+		"the fan's ring IS drawn inside its own room (%.3f > 0.05)" % shell_lit,
+		shell_lit > 0.05
 	)
 	_look(main, AT_WALL, FAN)
 	await _settle(20)

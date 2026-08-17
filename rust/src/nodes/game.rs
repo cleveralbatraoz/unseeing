@@ -254,15 +254,33 @@ impl INode3D for UnseeingGame {
 
         self.demo = DemoTap::new(level.bind().demo_tap(), level.bind().demo_tap_normal());
 
-        // the hearing pass cuts player-sound shells by the walls too: hand
-        // it the same wall table the data skins occlude by.
+        // Every material the ROOT owns that consults the wall table gets it
+        // here, the way the level hands it to the two it owns
+        // (`WaveLevel::push_wall_table`). Three, not one:
+        //
+        //   - the hearing pass cuts every shell by the walls, the hero's and
+        //     a world source's alike;
+        //   - the cane and the body wear `data_pass.gdshader`, which runs
+        //     `reveal_at` -> `source_reveal_vis` -> `wall_blocked_from`
+        //     exactly like the world skin does.
+        //
+        // The last two are why this is a loop. Without a table `u_wall_count`
+        // keeps its shader default of 0, the wall loop breaks on its first
+        // iteration and `wall_blocked_from` answers `false` for every line —
+        // so the barrier law simply did not run on the two surfaces the
+        // player always has in frame, and a source in the next room lit the
+        // hero's own body through the wall. Held by
+        // `game/tests/wiring_test.gd::test_wall_table_reaches_every_occluding_skin`,
+        // which reads the count back off all five materials.
         let rects = level.bind().wall_rects();
-        self.post_mat
-            .set_shader_parameter("u_walls", &rects.to_variant());
-        self.post_mat
-            .set_shader_parameter("u_wall_count", &(rects.len() as i64).to_variant());
-        self.post_mat
-            .set_shader_parameter("u_wall_top", &level_plan::WALL_H.to_variant());
+        let wall_count = (rects.len() as i64).to_variant();
+        let walls = rects.to_variant();
+        let wall_top = level_plan::WALL_H.to_variant();
+        for mat in [&mut self.post_mat, &mut self.cane_mat, &mut self.body_mat] {
+            mat.set_shader_parameter("u_walls", &walls);
+            mat.set_shader_parameter("u_wall_count", &wall_count);
+            mat.set_shader_parameter("u_wall_top", &wall_top);
+        }
 
         // the level's companion creatures — a later process() drives each
         // one's clock from this same handle.

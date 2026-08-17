@@ -45,13 +45,25 @@ func test_priorities_stack_the_perceptual_ladder() -> void:
 	assert_int(main.source_mat.render_priority).is_equal(20)
 
 
-## The wall table reaches every skin that occludes by it — the world
-## (reveal occlusion), the sources (per-object silhouette muffle) and the
-## hearing pass (the shell cut, which is every ring's and not just the
-## hero's, plus the x-rayed-source ring guard). The cane keeps its own
-## standing floor
-## (u_base 0.85); the source skin has NO material-wide floor at all, because
-## each source carries its own per instance.
+## The wall table reaches EVERY skin that occludes by it, and the list is
+## the whole point: the world (reveal occlusion), the sources (per-object
+## silhouette muffle), the hearing pass (the shell cut, which is every
+## ring's and not just the hero's, plus the x-rayed-source ring guard) —
+## AND the hero's own cane and body.
+##
+## Those last two are where this assertion was previously short, and the
+## gap was not cosmetic. Both wear `data_pass.gdshader`, which runs
+## `reveal_at` -> `source_reveal_vis` -> `wall_blocked_from` exactly like
+## the world does; but nothing ever pushed them a table, so `u_wall_count`
+## kept its shader default of 0, the wall loop broke on its first
+## iteration, and the barrier law was a no-op on the two surfaces the
+## player is guaranteed to be looking at. A source humming in the next
+## room lit the hero's own legs through the wall while the same frame
+## painted the room around them black.
+##
+## The cane keeps its own standing floor (u_base 0.85); the source skin has
+## NO material-wide floor at all, because each source carries its own per
+## instance.
 func test_wall_table_reaches_every_occluding_skin() -> void:
 	var main := _main()
 	var wall_segs := main.level.wall_segments()
@@ -60,7 +72,9 @@ func test_wall_table_reaches_every_occluding_skin() -> void:
 	assert_array(wall_segs).is_not_empty()
 	var walls := wall_segs.size()
 	assert_float(main.cane_mat.get_shader_parameter("u_base")).is_equal(0.85)
-	for m: ShaderMaterial in [main.data_mat, main.source_mat, main.post_mat]:
+	for m: ShaderMaterial in [
+		main.data_mat, main.source_mat, main.post_mat, main.cane_mat, main.body_mat
+	]:
 		var rects: PackedVector4Array = m.get_shader_parameter("u_walls")
 		assert_int(rects.size()).is_equal(walls)
 		assert_int(m.get_shader_parameter("u_wall_count")).is_equal(walls)
