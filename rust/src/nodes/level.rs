@@ -1016,12 +1016,27 @@ impl WaveLevel {
                 .iter()
                 .map(|entry| render::paint_plan::PaintEntryInput {
                     shape: entry.shape.clone(),
+                    // The anchor names ONE face: the side of the slab the
+                    // room actually meets — the floor's top, the ceiling's
+                    // underside. Never the whole slab. A slab owns one
+                    // class only while nothing merges with it, and the
+                    // instant a prop set flush into the floor splits its
+                    // faces, an entry-wide anchor put the same label on
+                    // classes the merge law had just separated and the
+                    // whole level went unpainted.
                     anchor: match entry.item {
-                        PaintItem::Slab { lid } => Some(render::role_label(if lid {
-                            render::Role::Ceiling
-                        } else {
-                            render::Role::Floor
-                        })),
+                        PaintItem::Slab { lid } => Some(render::paint_plan::FaceAnchor {
+                            label: render::role_label(if lid {
+                                render::Role::Ceiling
+                            } else {
+                                render::Role::Floor
+                            }),
+                            facing: if lid {
+                                [0.0, -1.0, 0.0]
+                            } else {
+                                [0.0, 1.0, 0.0]
+                            },
+                        }),
                         _ => None,
                     },
                     is_wall: matches!(entry.item, PaintItem::Wall(_)),
