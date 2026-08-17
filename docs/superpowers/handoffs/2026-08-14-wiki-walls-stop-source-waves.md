@@ -150,13 +150,23 @@ reproduced across a cold and a warm boot with identical numbers:
 | check | reading | floor |
 |---|---|---|
 | fan lifts the divider's FAR face | 0.000 | < 0.02 |
-| the same voice lifts its OWN face | 0.310 | > 0.05 |
+| the same voice lifts its OWN face | 0.161–0.314 | > 0.05 |
 | fan's SHELL lifts the walled image | 0.000 | < 0.02 |
-| the tap lights its own struck face | 0.792 | > 0.15 |
+| the same shell inside the fan's OWN room | 0.125–0.314 | > 0.05 |
+| the tap lights its own struck face | 0.788–0.800 | > 0.15 |
 
-The shell row is the one that had never been measured anywhere, and it is not
+The shell rows are the ones that had never been measured anywhere. Neither is
 vacuous: commenting the source-keyed cut out of `hearing_post.gdshader` — the
-pre-fix law — moves it to **0.043** against a 0.02 floor, a reproduced FAIL.
+pre-fix law — moves the walled reading to **0.043** against a 0.02 floor, a
+reproduced FAIL, while the own-room reading is what fails if the new
+per-fragment cut ever OVER-blocks (`float env = 0.0;` deletes every ring in
+the game and every text pin still matches).
+
+The two positive readings span a range because the fan is a swept beam and the
+baseline still carries some of its own unexpired front — `reveal_at` has no
+expiry gate, only `dist > min(radius, d.y)` — so the delta understates. Margin
+against the floor is 2.5–6x, which is enough to gate on but not enough to
+tighten the floor against.
 
 An earlier session recorded 0.263 / 0.165 / 0.000 on Apple A18 Pro / OpenGL 4.1
 Metal. Do not cite those: they were ABSOLUTE readings of a swept source rather
