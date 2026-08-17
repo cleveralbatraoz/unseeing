@@ -2,12 +2,20 @@ extends Node
 ## Regression probe for the wave-through-wall law, reproducing the report:
 ## walk UP TO the divider the fan is behind and tap it. Boots main and
 ## checks:
-##   1. SOURCE REVEAL (hearing pass OFF), measured FIRST and before any
-##      player sound exists: the fan hums untouched behind the divider and
-##      the hero stands in the room beyond it — no tap, no footstep, so a
-##      wall must stop the fan's own wave dead. Run before cases 2 and 3
-##      on purpose: a player tap fired near the sample points would light
-##      them legitimately and swamp a real leak;
+##   1. SOURCE REVEAL (hearing pass OFF), as a DELTA ACROSS THE FAN'S OWN
+##      VOICE: silence the fan, read the spawn room, restore it, read
+##      again. What its voice ADDS behind the divider must be nothing, and
+##      what it adds through the DOORWAY beside it must be something —
+##      the negative and positive halves of one law, in one frame window.
+##      A delta rather than an absolute darkness reading because the fan
+##      is a SWEPT beam and data_core gates on the cone before it consults
+##      the wall table: an absolute check reads dark for part of every
+##      oscillation whatever the wall law says. Run before any player
+##      sound exists, so the room holds only what the sources put there;
+##   1b. THE SHELL (hearing pass ON), the same delta at the same points.
+##      Every other reading here runs with the quad hidden and so cannot
+##      see a ring at all; this is the only check that measures whether a
+##      source's shell crosses a wall in the air;
 ##   2. POSITIVE CONTROL (hearing pass OFF): every OTHER check here only
 ##      asserts a reading stays dark, which an end-to-end inverted reveal
 ##      gate satisfies trivially — everything legitimate goes dark right
@@ -54,9 +62,12 @@ const WALL_FACE: Array[Vector3] = [WALL_TAP]
 ## it, and the fan's sight line to every point below crosses SOLID divider
 ## well clear of that doorway. Nothing the fan emits may light any of them.
 const AT_SPAWN := Vector3(3.0, 0.9, 4.0)
-## What the hero looks at from the spawn: the divider face, north of the
-## tap point so cases 2 and 3's later strike cannot be mistaken for a leak.
-const SPAWN_AIM := Vector3(6.25, 1.0, 6.5)
+## What the hero looks at from the spawn: between the walled samples and
+## the doorway control, so all three project on screen at once. _peak_r
+## CLAMPS an off-screen point to the black image border, so a mis-aimed
+## check passes while measuring nothing — the doorway control is what
+## refuses to let that read as success.
+const SPAWN_AIM := Vector3(6.0, 0.9, 8.2)
 ## Spawn-room surfaces the fan must never reveal. Both are chosen so the
 ## fan-to-point line pierces the divider: (8.6, 4.4) -> (5.0, 6.0) crosses
 ## x = 6.4 at z ~= 5.38, inside the divider's z in [0.6, 8] run.
@@ -64,6 +75,19 @@ const SPAWN_SIDE: Array[Vector3] = [
 	Vector3(6.25, 1.5, 6.5),  # the divider's WEST face, fan directly behind it
 	Vector3(5.0, 0.0, 6.0),  # spawn-room floor
 ]
+## The POSITIVE half of the same law, sampled in the same run and the same
+## frame window: spawn-room floor the fan reaches THROUGH the doorway, so
+## the wall law must NOT darken it. The fan-to-point line leaves the fan
+## room across the divider's opening — at the rect's east face (x = 6.53)
+## it is at z = 8.81 and at the west face (x = 6.27) at z = 9.36, both
+## inside the opening's z in [8, 12.4] with better than half a metre of
+## margin at each end. 7.38 m from the hub, inside the fan's 9 m reach,
+## and inside its wash for part of every sweep.
+##
+## Without this, every check here is one-sided — each asserts a reading
+## stays BELOW a floor, which an occluder that swallowed the whole level
+## satisfies perfectly.
+const THROUGH_DOORWAY: Array[Vector3] = [Vector3(5.5, 0.0, 11.0)]
 
 var _checks := 0
 var _failed := 0
@@ -80,22 +104,78 @@ func _ready() -> void:
 	await _settle(35)
 	Input.set_mouse_mode(Input.MOUSE_MODE_VISIBLE)
 	main.hero.visible = false
-	# 1 — SOURCE REVEAL, measured before any player sound exists. The fan
-	# hums behind the divider and the hero stands in the room beyond it;
-	# the only waves in flight are the sources' own. Absolute, not a delta:
-	# a continuous source has no "before" to subtract. This runs FIRST
-	# because a tap of the hero's own would light this room legitimately.
+	# The level's cat lives in the spawn room and speaks: kind-2 paw pulses
+	# (PAW_RANGE 1.3 m) and a 1.6 s presence beat, from inside its 3.6x4.4
+	# roam at (2.8, 7.6) — close enough to reach the floor sample below. It
+	# is a wave this probe did not queue, so it goes, the way the hero's own
+	# body does. Everything after this point is the sources and the probe.
+	_silence_the_cat(main)
 	main.player.position = AT_SPAWN
 	main.player.camera.look_at(SPAWN_AIM, Vector3.UP)
 	await _settle(30)
 	_set_quad(main, false)
-	var leak := await _peak_r(main, SPAWN_SIDE, 26)
-	print("# occlusion @spawn: fan lifts spawn-room reveal %.3f" % leak)
+	# 1 — SOURCE REVEAL, as a DELTA ACROSS THE FAN'S OWN VOICE rather than
+	# an absolute darkness reading, and each word of that is load-bearing.
+	#
+	# The fan is a SWEPT beam: data_core gates on pulse_cone BEFORE it ever
+	# consults the wall table, so both sample points fall outside the wash
+	# for part of every 11.42 s oscillation. An absolute `leak < floor`
+	# therefore reads dark for a stretch of every cycle no matter WHAT
+	# transmission the wall law grants, and nothing pins which stretch the
+	# 26-frame window lands in. Silencing the fan and measuring what its
+	# voice ADDS attributes the reading to the fan itself, and cannot be
+	# satisfied by a phase that happened to be dark — the baseline was dark
+	# for that reason too.
+	#
+	# It also cancels every other emitter by construction: the radio, the
+	# hero, anything a future level adds to this room appears in both
+	# readings and subtracts out.
+	var fan: SoundFan = main.level.get_node("Fan") as SoundFan
+	var voice: float = fan.volume
+	fan.volume = 0.0
+	await _settle(150)  # outlast fade_tail(SOURCE_KIND) = 2 s of live hum
+	var mute_walled := await _peak_r(main, SPAWN_SIDE, 26)
+	var mute_door := await _peak_r(main, THROUGH_DOORWAY, 26)
+	fan.volume = voice
+	await _settle(150)
+	var leak := await _peak_r(main, SPAWN_SIDE, 26) - mute_walled
+	var doorway := await _peak_r(main, THROUGH_DOORWAY, 26) - mute_door
+	print(
+		(
+			"# occlusion @spawn: fan lifts walled spawn-room reveal %.3f ; through the doorway %.3f"
+			% [leak, doorway]
+		)
+	)
 	_check(
-		"the fan does NOT reveal the spawn room through the divider (%.3f < 0.08)" % leak,
-		leak < 0.08
+		"the fan does NOT reveal the spawn room through the divider (%.3f < 0.02)" % leak,
+		leak < 0.02
+	)
+	# ...and the same wave DOES arrive through the opening beside it. This
+	# is the check that fails if the wall law ever swallows the level
+	# whole, which every darkness assertion here would report as success.
+	_check(
+		"the fan DOES reveal the spawn room through the doorway (%.3f > 0.05)" % doorway,
+		doorway > 0.05
 	)
 	_set_quad(main, true)
+	# 1b — THE SHELL, the same law asked of the ring in the air rather than
+	# the surfaces it lights, and the half nothing had ever measured: every
+	# reading above runs with the hearing quad HIDDEN, so none of them can
+	# see a shell at all. Hearing pass ON, same delta across the same voice,
+	# same sample points — with the quad up, a ring crossing the divider
+	# into the hero's air adds its brightness at exactly these pixels.
+	var shell_mute := await _peak_r(main, SPAWN_SIDE, 26)
+	fan.volume = 0.0
+	await _settle(150)
+	var shell_quiet := await _peak_r(main, SPAWN_SIDE, 26)
+	fan.volume = voice
+	await _settle(150)
+	var shell := shell_mute - shell_quiet
+	print("# occlusion @spawn: fan's SHELL lifts the walled image by %.3f" % shell)
+	_check(
+		"the fan's ring does NOT cross the divider into the hero's air (%.3f < 0.02)" % shell,
+		shell < 0.02
+	)
 	main.player.position = AT_WALL
 	main.player.camera.look_at(FAN, Vector3.UP)
 	await _settle(20)
@@ -178,6 +258,16 @@ func _peak_r(main: UnseeingGame, pts: Array[Vector3], frames: int) -> float:
 					var y := clampi(cy + dy, 0, img.get_height() - 1)
 					peak = maxf(peak, img.get_pixel(x, y).r)
 	return peak
+
+
+## Free every creature in the level. They emit waves this probe did not
+## queue, into the very room it measures — the same reason the hero's own
+## body is hidden above. Freeing rather than hiding, because visibility does
+## not stop a pulse.
+func _silence_the_cat(main: UnseeingGame) -> void:
+	for c: Node in main.level.get_children():
+		if c is WaveCat:
+			c.queue_free()
 
 
 func _set_quad(main: UnseeingGame, shown: bool) -> void:

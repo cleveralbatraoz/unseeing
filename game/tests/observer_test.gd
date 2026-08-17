@@ -730,6 +730,15 @@ func test_explain_ray_names_the_wall_it_crosses() -> void:
 		if wall["crossed"]:
 			crossed.append(wall["name"])
 	assert_array(crossed).is_equal(["TheWall"])
+	# ...and the SAME fixture with a line that crosses nothing, because a
+	# 0.0 on its own is the value a dead field also reports: with only the
+	# assertion above, `entry.set("wave_transmission", 0.0)` in
+	# rust/src/nodes/observer.rs passes every suite in the repository while
+	# the debugging surface AGENTS.md points agents at reports a wall that
+	# is not there. This pair is what makes the field answerable.
+	var clear: Dictionary = obs.explain_ray(Vector3(8.0, 0.9, 4.0), Vector3(10.0, 0.9, 4.0))
+	assert_int(clear["source_crossings"]).is_equal(0)
+	assert_float(clear["wave_transmission"]).is_equal_approx(1.0, 0.0001)
 
 
 ## The wall names are pinned to the table they name, not to whatever the

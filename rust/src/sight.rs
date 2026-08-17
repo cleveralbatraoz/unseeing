@@ -549,6 +549,56 @@ mod tests {
         ));
     }
 
+    /// THE POSITIVE HALF OF THE BARRIER LAW: a wave reaches the next room
+    /// through a DOORWAY, and the doorway is not a special case in the code
+    /// — it is the absence of a rect. `retired_map_rects` runs the divider
+    /// as two segments, z ∈ [0.47, 8.13] and z ∈ [12.27, 19.53], leaving
+    /// the opening between them, so the SAME westward line answers both
+    /// ways depending only on the z it is drawn at.
+    ///
+    /// Without this pair every wave test in the repository asserts that
+    /// something goes DARK, which an occluder that swallowed the whole
+    /// level would satisfy perfectly. This is the case that fails if a
+    /// doorway ever seals — if the shrink grew, if run segments overlapped
+    /// their residues, or if `crosses` stopped honouring the gap.
+    #[test]
+    fn a_doorway_admits_the_wave_the_wall_beside_it_stops() {
+        let rects = retired_map_rects();
+        let through = Vector3::new(3.0, 0.9, 10.2);
+        let beside = Vector3::new(3.0, 0.9, 4.0);
+        assert!(
+            !blocked_from(Vector3::new(8.6, 0.9, 10.2), through, &rects, WALL_TOP),
+            "the divider's opening spans z 8.13..12.27; a line at z = 10.2 crosses no rect"
+        );
+        assert!(blocked_from(
+            Vector3::new(8.6, 0.9, 4.0),
+            beside,
+            &rects,
+            WALL_TOP
+        ));
+        // and the reveal law agrees on both, since it reads the same count
+        assert!(
+            (reveal_visibility(crossings_from(
+                Vector3::new(8.6, 0.9, 10.2),
+                through,
+                &rects,
+                WALL_TOP
+            )) - 1.0)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            reveal_visibility(crossings_from(
+                Vector3::new(8.6, 0.9, 4.0),
+                beside,
+                &rects,
+                WALL_TOP
+            ))
+            .abs()
+                < 1e-12
+        );
+    }
+
     /// `blocked_from` exists only to stop walking walls once the answer can
     /// no longer change — the hearing pass now pays this walk per fragment
     /// per pulse — so it must agree with `crossings_from(..) > 0` on EVERY
