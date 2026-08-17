@@ -144,12 +144,22 @@ Two traps in that probe are worth knowing before trusting a green result:
   the same reason, since `level_01`'s cat speaks kind-2 pulses inside the very
   room the spawn cases measure.
 
-Recorded evidence, measured on Apple A18 Pro / OpenGL 4.1 Metal / Godot 4.7.1:
-with the old muffling law restored the spawn-room check failed at a leak of
-0.263 and 0.165 in two separate sessions; with the shipped law it read 0.000,
-reproduced across a cold and a warm boot. Read those three numbers with care —
-they were taken as ABSOLUTE readings, before the delta form, and the 0.263 run
-predates the `UNSEEING_DEMO` removal, so it includes an uninvited tap. They
-substantiate the reveal only: every one of them was taken with the hearing quad
-hidden, so no measurement on any GPU had looked at the shell until the case
-added 2026-08-17.
+Recorded evidence, measured 2026-08-17 on Mesa / Linux / Godot 4.7.1, PASS
+reproduced across a cold and a warm boot with identical numbers:
+
+| check | reading | floor |
+|---|---|---|
+| fan lifts the divider's FAR face | 0.000 | < 0.02 |
+| the same voice lifts its OWN face | 0.310 | > 0.05 |
+| fan's SHELL lifts the walled image | 0.000 | < 0.02 |
+| the tap lights its own struck face | 0.792 | > 0.15 |
+
+The shell row is the one that had never been measured anywhere, and it is not
+vacuous: commenting the source-keyed cut out of `hearing_post.gdshader` — the
+pre-fix law — moves it to **0.043** against a 0.02 floor, a reproduced FAIL.
+
+An earlier session recorded 0.263 / 0.165 / 0.000 on Apple A18 Pro / OpenGL 4.1
+Metal. Do not cite those: they were ABSOLUTE readings of a swept source rather
+than deltas, the 0.263 predates the `UNSEEING_DEMO` removal and so includes an
+uninvited tap, and all three were taken with the hearing quad hidden, which
+cannot see a shell at all.

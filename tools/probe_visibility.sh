@@ -17,13 +17,18 @@
 # room quiet: it seeds with UNSEEING_SEED (determinism only) and must NEVER
 # be switched to UNSEEING_DEMO, whose automatic tap (rust/src/demo_tap.rs)
 # fires near the spawn-room sample points on a 0.6 s/4 s schedule; the probe
-# itself frees the level's creatures for the same reason.
+# itself silences the level's creatures for the same reason.
 #
-# --fixed-fps pins the simulated clock to the frame COUNT rather than to
-# how fast this machine happens to render, so the fan's 11.42 s sweep is at
-# the same phase in the warm boot as in the cold one. Without it the two
-# boots sample different parts of the oscillation and disagree on a
-# correct build.
+# DO NOT ADD --fixed-fps. It was tried, to pin the fan's 11.42 s sweep to
+# the frame count, and it breaks the tap cases: at a fixed 60 fps a
+# 12-frame baseline is 0.2 s against the fan's own 0.4 s cadence, so the
+# baseline misses a throb of the fan's own body that the 26-frame window
+# catches, and the difference is charged to the tap — measured as a 0.329
+# reveal on the fan where the correct answer is 0.000. Left free-running,
+# each readback frame costs enough wall time that both windows span
+# several cadences and the fan's own rhythm cancels. The sweep phase does
+# not need pinning any more: every case is a delta across the fan's own
+# voice, and the positive control refuses a phase in which it is dark.
 #
 # Env knobs: GODOT (binary).
 set -eu
@@ -83,7 +88,7 @@ CFG
 
 # shellcheck disable=SC2086
 run_scene() {
-  UNSEEING_SEED=1 $KEEP_AWAKE "$GODOT" --fixed-fps 60 --path "$DIR/game" "$@"
+  UNSEEING_SEED=1 $KEEP_AWAKE "$GODOT" --path "$DIR/game" "$@"
 }
 
 for scene in res://tests/probe/occlusion_probe.tscn; do
