@@ -76,18 +76,12 @@ use crate::oid_palette;
 use crate::render;
 use crate::sight;
 
-/// The palette every wall and prop is coloured from. Walls and props share
-/// ONE palette because a prop leaning on a wall needs the same separation
-/// two walls do — the old split palettes left them only 0.06 apart, half
-/// strength. Entries are 0.09 apart, above the shader's 0.08 knee rather
-/// than exactly on it, and the whole band is clear of the floor below
-/// (0.15) and of the creature band above (the cat at 0.7), because every
-/// box stands on the floor and anything may walk in front of one.
-///
-/// Five entries is not a limit on how many solids a level may hold: ids are
-/// assigned by colouring the touch graph, so a hundred walls reuse these
-/// five freely and only differ where they actually meet.
-const WORLD_OIDS: [f64; 5] = [0.25, 0.34, 0.43, 0.52, 0.61];
+/// The palette every wall and prop is coloured from, read from the one
+/// place the whole label universe is visible at once
+/// (`render::labels::WORLD_PALETTE`). It used to be a literal here, which
+/// is why nothing could check it against the creature and viewmodel labels
+/// standing either side of it in the same band.
+const WORLD_OIDS: [f64; 5] = render::labels::WORLD_PALETTE;
 
 /// The names the level writes on the two slab bodies it builds for itself —
 /// its own limbs, recognised on the way back in exactly as a solid

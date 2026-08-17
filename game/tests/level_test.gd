@@ -599,8 +599,9 @@ func test_extents_knob_resizes_slabs() -> void:
 
 
 ## A slab is built through the SAME box path a wall and a prop take, then
-## derive anchors all its faces to the slab's fixed role label. Held on the
-## RESIZED slab specifically: `render::paint::resize_box_surface` rewrites
+## derive anchors it to the slab's fixed role label. A lone slab is a merge
+## singleton, so all six faces collapse into ONE class and carry that one
+## label. Held on the RESIZED slab: `render::paint::resize_box_surface` rewrites
 ## the mesh in place and must preserve that already-painted CUSTOM0 channel,
 ## rather than restoring placeholder ordinals or doubling the array after a
 ## botched `clear_surfaces`.
@@ -612,7 +613,8 @@ func test_a_resized_slab_preserves_its_fixed_role_label() -> void:
 	level.extents = Vector2(8, 6)
 	var slabs := _slabs(level)
 	assert_int(slabs.size()).is_equal(2)
-	var expected := PackedFloat32Array([0.15, 0.90])
+	var roles: Dictionary = WaveCore.new().role_labels()
+	var expected := PackedFloat32Array([roles["Floor"], roles["Ceiling"]])
 	for slab_i: int in slabs.size():
 		var slab := slabs[slab_i]
 		var mesh := _skin(slab).mesh as ArrayMesh
@@ -1035,9 +1037,8 @@ func test_a_degenerate_solid_is_refused_not_mislabelled() -> void:
 ##
 ## The wall stands well inside the default 20x20 extents so the placement
 ## laws stay silent and the only behaviour under test is the resize.
-## 0.15 is the floor slab's own fixed role label
-## (`render::labels::role_label(Role::Floor)`) and 0.08 is MIN_SEP, both
-## written out here rather than read back from the code that chose them.
+## The floor's role label and MIN_SEP are READ from render::labels, not
+## transcribed: a suite with its own copies agrees with a drifted table.
 func test_a_resize_after_the_derive_keeps_the_painted_labels() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	var wall := _wall(4.0, Vector3(5, 0, 5), false)
@@ -1057,8 +1058,10 @@ func test_a_resize_after_the_derive_keeps_the_painted_labels() -> void:
 	for vertex: int in range(24):
 		assert_float(resized[vertex]).is_equal(painted[vertex])
 	# and the seam with the floor it stands on still draws
+	var core := WaveCore.new()
+	var floor_label: float = core.role_labels()["Floor"]
 	for label: float in resized:
-		assert_float(absf(label - 0.15)).is_greater_equal(0.08)
+		assert_float(absf(label - floor_label)).is_greater_equal(core.min_label_separation())
 
 
 ## The same law on the OTHER resize path: a column and a wedge rebuild

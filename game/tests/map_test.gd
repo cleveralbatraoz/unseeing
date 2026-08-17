@@ -10,12 +10,25 @@ extends GdUnitTestSuite
 
 const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
-## Full-strength crease separation, read off hearing_post.gdshader's
-## smoothstep(0.04, 0.08, nrm) upper knee on the G channel.
-const MIN_OID_SEP := 0.08
-
 ## Boxes that share a face register as touching at exactly zero overlap.
 const TOUCH_EPS := 0.01
+
+
+## Full-strength crease separation. Read from render::labels::MIN_SEP
+## rather than declared here: this file used to carry a third executable
+## copy of that number, so a Rust-side change kept the whole gdUnit suite
+## green while the seams it governs rendered at reduced strength.
+## One label from the single role table (render::labels::role_label), read
+## rather than retyped — a suite carrying its own copy of a label agrees
+## with whatever the table says, and the table used to be wrong.
+func _role(name: String) -> float:
+	var table: Dictionary = WaveCore.new().role_labels()
+	assert_bool(table.has(name)).is_true()
+	return table.get(name, NAN)
+
+
+static func _min_sep() -> float:
+	return WaveCore.new().min_label_separation()
 
 
 ## The first mesh limb a node built for itself.
@@ -325,7 +338,7 @@ func test_touching_boxes_draw_their_seam() -> void:
 			for near_label: float in near["labels"]:
 				for far_label: float in far["labels"]:
 					closest = minf(closest, absf(near_label - far_label))
-			if closest < MIN_OID_SEP:
+			if closest < _min_sep():
 				melted.append(
 					(
 						"%s touches %s, closest labels %.3f apart"
@@ -393,10 +406,12 @@ func test_shipped_level_derives_with_no_starved_classes() -> void:
 
 ## The wall<->slab seam at real per-face resolution. A wall's OWN six face
 ## labels — read straight off its mesh CUSTOM0 channel, not the coarser
-## first-face bridge — must clear BOTH Floor (0.15)
-## and Ceiling (0.90) by at least MIN_OID_SEP. Hand-derived: every wall
-## takes its label from the five-entry WORLD_OIDS palette
-## ([0.25, 0.34, 0.43, 0.52, 0.61], `rust/src/nodes/level.rs`) — walls and
+## first-face bridge — must clear BOTH the Floor and the Ceiling role
+## labels by at least MIN_SEP. Both, and the palette, are READ from
+## render::labels rather than retyped, because the whole point of this
+## campaign is that a transcribed copy agrees with a table that has drifted
+## out of its own law. Every wall takes its label from the five-entry
+## WORLD_PALETTE — walls and
 ## source roles are graph-coloured; only slabs are anchored — and every one
 ## of those five sits comfortably clear of both slab role labels
 ## (`render::labels::role_label`) already; this is the wiring pin that
@@ -405,8 +420,8 @@ func test_shipped_level_derives_with_no_starved_classes() -> void:
 ## (the ledgered, currently-unreachable anchor-conflict case). The one wall
 ## below is exact test input; no authored scene is required to keep a wall.
 func test_a_wall_clears_the_floor_and_ceiling_labels() -> void:
-	const FLOOR_LABEL := 0.15
-	const CEILING_LABEL := 0.90
+	var floor_label := _role("Floor")
+	var ceiling_label := _role("Ceiling")
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
 	var wall := WaveWall.new()
@@ -419,11 +434,11 @@ func test_a_wall_clears_the_floor_and_ceiling_labels() -> void:
 	var custom: PackedFloat32Array = _skin(wall).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
 	for f in 6:
 		var label: float = custom[f * 4]
-		if absf(label - FLOOR_LABEL) < MIN_OID_SEP:
-			violations.append("face %d = %.3f too close to Floor (%.2f)" % [f, label, FLOOR_LABEL])
-		if absf(label - CEILING_LABEL) < MIN_OID_SEP:
+		if absf(label - floor_label) < _min_sep():
+			violations.append("face %d = %.3f too close to Floor (%.2f)" % [f, label, floor_label])
+		if absf(label - ceiling_label) < _min_sep():
 			violations.append(
-				"face %d = %.3f too close to Ceiling (%.2f)" % [f, label, CEILING_LABEL]
+				"face %d = %.3f too close to Ceiling (%.2f)" % [f, label, ceiling_label]
 			)
 	(
 		assert_array(violations)
@@ -846,7 +861,7 @@ func test_world_faces_clear_the_source_roles_they_touch() -> void:
 		compared += 1
 		for world_label: float in solid["labels"]:
 			for role_label: float in _source_labels(source):
-				if absf(world_label - role_label) < MIN_OID_SEP:
+				if absf(world_label - role_label) < _min_sep():
 					melted.append(
 						(
 							"%s(%.2f) touches source role(%.2f)"

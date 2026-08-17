@@ -76,10 +76,59 @@ pub enum Role {
     HeroCane,
 }
 
-/// The one role/default table. `Case` 0.05 stays only for the standalone
-/// radio preview (pre-existing and grandfathered below the 0.15 comfort line),
-/// `Floor` 0.15, `Shell` 0.33, `Moving` 0.63, `Cat` 0.70, `HeroBody` 0.82,
-/// `Ceiling` 0.90, `HeroCane` 0.96.
+/// The ladder every label in a shipped level stands on: rungs
+/// [`LADDER_STEP`] apart from [`LADDER_BASE`], filling the sRGB-safe band
+/// [0.15, 0.96] exactly.
+///
+/// The spacing is FORCED, not chosen. Ten labels have to coexist in one
+/// rendered frame — the floor, the five palette entries every wall and prop
+/// is coloured from, the cat, the hero's body, the ceiling and the hero's
+/// cane — and nine gaps across a band 0.81 wide leaves exactly 0.09 each.
+/// Anything wider starves the population; anything narrower than [`MIN_SEP`]
+/// draws the seam at reduced strength. There is no slack anywhere in it,
+/// which is why the previous hand-picked table could not be repaired
+/// locally: pushing the ceiling away from the cane pushed the hero's body
+/// into the ceiling, and pushing the cat clear of that pushed it into the
+/// palette's top entry.
+pub const LADDER_BASE: f64 = 0.15;
+pub const LADDER_STEP: f64 = 0.09;
+pub const LADDER_RUNGS: usize = 10;
+
+/// The `n`th rung, for tests and diagnostics to derive rather than retype.
+/// Rungs beyond [`LADDER_RUNGS`] leave the band and are refused with `None`
+/// rather than silently returning a value the shader cannot show.
+#[must_use]
+pub fn ladder_rung(n: usize) -> Option<f64> {
+    (n < LADDER_RUNGS).then_some(LADDER_BASE + LADDER_STEP * n as f64)
+}
+
+/// The palette every wall, prop and source instance is coloured from —
+/// rungs 1 through 5, leaving rung 0 to the floor below and rungs 6 through
+/// 9 to the creatures and viewmodel above.
+///
+/// Five entries is not a limit on how many solids a level may hold: labels
+/// are assigned by colouring the separation graph, so a hundred walls reuse
+/// these five freely and differ only where they actually meet.
+///
+/// It lives HERE, with the role table and [`MIN_SEP`], rather than in the
+/// level node that consumes it. The law it belongs to is "no two labels that
+/// must draw a seam land within MIN_SEP", and that law is only checkable
+/// where the whole label universe is visible at once.
+pub const WORLD_PALETTE: [f64; 5] = [0.24, 0.33, 0.42, 0.51, 0.60];
+
+/// The one role/default table, every entry a rung of the ladder above.
+///
+/// `Case` 0.05 is the exception and stays one: it is the grandfathered
+/// standalone radio preview, below the band entirely, and never a label a
+/// level allocates.
+///
+/// `Shell` and `Moving` deliberately REUSE palette rungs. They are
+/// standalone blueprint preview defaults — a source dropped in the editor
+/// with no level around it — and a level derives per-instance labels for
+/// those roles instead, so they never stand beside a palette-coloured wall
+/// in a shipped frame. Twelve distinct labels do not fit in a band that
+/// holds eleven, and these two are the pair that provably never needs its
+/// own rung.
 ///
 /// `const fn` on purpose: creatures/slabs build final labels and sources
 /// build standalone preview defaults without repeating numeric literals.
@@ -88,13 +137,45 @@ pub const fn role_label(role: Role) -> f64 {
         Role::Case => 0.05,
         Role::Floor => 0.15,
         Role::Shell => 0.33,
-        Role::Moving => 0.63,
-        Role::Cat => 0.70,
-        Role::HeroBody => 0.82,
-        Role::Ceiling => 0.90,
+        Role::Moving => 0.60,
+        Role::Cat => 0.69,
+        Role::HeroBody => 0.78,
+        Role::Ceiling => 0.87,
         Role::HeroCane => 0.96,
     }
 }
+
+/// Every label that can stand beside another in ONE rendered frame of a
+/// shipped level and be asked to draw a seam between them, named so a
+/// failure says which pair.
+///
+/// This is the population the separation law actually governs, and stating
+/// it explicitly is the point: the graph colouring enforces `MIN_SEP` only
+/// over classes it can see, and creatures, the viewmodel and the palette
+/// itself never enter `paint_entries` at all. Nothing checked them against
+/// each other before, and the shipped table violated the law twice.
+#[must_use]
+pub fn coexisting_labels() -> Vec<(&'static str, f64)> {
+    let mut all = vec![("Role::Floor", role_label(Role::Floor))];
+    for (slot, label) in WORLD_PALETTE.iter().enumerate() {
+        all.push((PALETTE_NAMES[slot], *label));
+    }
+    all.extend([
+        ("Role::Cat", role_label(Role::Cat)),
+        ("Role::HeroBody", role_label(Role::HeroBody)),
+        ("Role::Ceiling", role_label(Role::Ceiling)),
+        ("Role::HeroCane", role_label(Role::HeroCane)),
+    ]);
+    all
+}
+
+const PALETTE_NAMES: [&str; 5] = [
+    "WORLD_PALETTE[0]",
+    "WORLD_PALETTE[1]",
+    "WORLD_PALETTE[2]",
+    "WORLD_PALETTE[3]",
+    "WORLD_PALETTE[4]",
+];
 
 /// Labels at least this far apart draw a full-strength crease off the
 /// shader's own `smoothstep(0.04, 0.08, nrm)` upper knee. Below it the
@@ -281,18 +362,113 @@ mod tests {
             .any(|&candidate| candidate as f32 == label as f32)
     }
 
+    /// THE break this catches, and the law nothing enforced before: EVERY
+    /// pair of labels that can stand together in one rendered frame must be
+    /// able to draw a seam between them.
+    ///
+    /// The graph colouring enforces `MIN_SEP` only over classes it can see,
+    /// and creatures, the viewmodel and the palette itself never enter
+    /// `paint_entries` — so the one mechanism that could have caught this
+    /// was structurally blind to it, and the only test over the table was a
+    /// per-row mirror assertion that would have agreed with any numbers at
+    /// all. The shipped table failed twice: `HeroBody` 0.82 against
+    /// `Ceiling` 0.90 subtracted to 0.079999983 in the f32 the shader
+    /// actually compares, a hair under the knee; `Ceiling` 0.90 against
+    /// `HeroCane` 0.96 was 0.06, and the cane CAN touch the ceiling (eye at
+    /// 1.6, pitch limit 1.35 rad, reach 1.7 — 3.26 m against a 3.0 m
+    /// ceiling), where the distance Laplacian is dead and `nrm` draws the
+    /// seam alone, at half strength.
+    #[test]
+    fn every_label_that_can_share_a_frame_can_draw_a_seam() {
+        let all = coexisting_labels();
+        assert_eq!(all.len(), LADDER_RUNGS, "the ladder is exactly full");
+        for (i, &(first_name, first)) in all.iter().enumerate() {
+            for &(second_name, second) in all.iter().skip(i + 1) {
+                assert!(
+                    separated(first, second),
+                    "{first_name} ({first}) and {second_name} ({second}) land \
+                     {} apart, under MIN_SEP {MIN_SEP} — the seam between them \
+                     draws at reduced strength or not at all",
+                    ((first as f32) - (second as f32)).abs()
+                );
+            }
+        }
+    }
+
+    /// A standalone source blueprint previewed in the editor with no level
+    /// around it shows its own default labels, and those must separate from
+    /// each other too — the same law, over the only other population that
+    /// can share a frame. `Case` sits below the band by grandfathering, so
+    /// this is the one place its clearance is checked at all.
+    #[test]
+    fn a_standalone_source_previews_with_separable_defaults() {
+        let preview = [
+            ("Role::Case", role_label(Role::Case)),
+            ("Role::Shell", role_label(Role::Shell)),
+            ("Role::Moving", role_label(Role::Moving)),
+        ];
+        for (i, &(first_name, first)) in preview.iter().enumerate() {
+            for &(second_name, second) in preview.iter().skip(i + 1) {
+                assert!(
+                    separated(first, second),
+                    "{first_name} ({first}) and {second_name} ({second}) cannot \
+                     draw a seam in a standalone preview"
+                );
+            }
+        }
+    }
+
+    /// Every label in the band is a rung of the one ladder, derived rather
+    /// than retyped — the break this catches is a value nudged by hand to
+    /// fix one pair, which is exactly how the shipped table drifted out of
+    /// the law in the first place. `Case` is the single documented
+    /// exception and is asserted to be exactly that, so a second exception
+    /// cannot be added quietly.
+    #[test]
+    fn every_shipped_label_stands_on_a_rung() {
+        let rungs: Vec<f64> = (0..LADDER_RUNGS)
+            .map(|n| ladder_rung(n).expect("rung in range"))
+            .collect();
+        let on_a_rung = |label: f64| rungs.iter().any(|rung| (rung - label).abs() < 1.0e-9);
+        for (name, label) in coexisting_labels() {
+            assert!(on_a_rung(label), "{name} ({label}) is not on the ladder");
+        }
+        for role in [Role::Shell, Role::Moving] {
+            assert!(
+                on_a_rung(role_label(role)),
+                "{role:?} ({}) is not on the ladder",
+                role_label(role)
+            );
+        }
+        assert_eq!(role_label(Role::Case), 0.05);
+        assert!(!on_a_rung(role_label(Role::Case)));
+        assert_eq!(ladder_rung(LADDER_RUNGS), None);
+    }
+
+    /// The ladder fills the sRGB-safe band exactly: its first rung IS the
+    /// band's floor and its last IS the ceiling, so no rung is wasted and
+    /// none escapes. Hand-derived: 0.15 + 9 x 0.09 = 0.96.
+    #[test]
+    fn the_ladder_fills_the_band_end_to_end() {
+        assert_eq!(ladder_rung(0), Some(0.15));
+        let top = ladder_rung(LADDER_RUNGS - 1).expect("top rung");
+        assert!((top - 0.96).abs() < 1.0e-9, "top rung is {top}");
+    }
+
     /// The role table, spot-checked against the brief's exact numbers —
-    /// the break this catches is a transposed row or a copy from the
-    /// wrong id in `oid_palette`'s own budget table.
+    /// the break this catches is a transposed row. Kept alongside the
+    /// all-pairs law above rather than instead of it: this one would agree
+    /// with any self-consistent set of numbers, which is precisely how the
+    /// two violations above survived.
     #[test]
     fn role_table_matches_the_brief() {
         assert_eq!(role_label(Role::Case), 0.05);
         assert_eq!(role_label(Role::Floor), 0.15);
         assert_eq!(role_label(Role::Shell), 0.33);
-        assert_eq!(role_label(Role::Moving), 0.63);
-        assert_eq!(role_label(Role::Cat), 0.70);
-        assert_eq!(role_label(Role::HeroBody), 0.82);
-        assert_eq!(role_label(Role::Ceiling), 0.90);
+        assert_eq!(role_label(Role::Moving), 0.60);
+        assert_eq!(role_label(Role::Cat), 0.69);
+        assert_eq!(role_label(Role::HeroBody), 0.78);
+        assert_eq!(role_label(Role::Ceiling), 0.87);
         assert_eq!(role_label(Role::HeroCane), 0.96);
     }
 

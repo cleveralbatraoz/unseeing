@@ -297,6 +297,48 @@ impl WaveCore {
     fn camera_near(&self) -> f64 {
         render::depth::CAM_NEAR
     }
+
+    /// The whole role table, by name — `render::labels::role_label` served
+    /// to the suites so they read the one table instead of transcribing it.
+    ///
+    /// Every GDScript case that checks a baked label used to carry its own
+    /// copy of the number, which is how the table drifted out of its own
+    /// separation law and stayed there: the tests agreed with whatever it
+    /// said. Reading it here means a re-spacing moves one place and every
+    /// suite follows, while the law itself — that no two labels able to
+    /// share a frame land within MIN_SEP — is cargo-tested where the whole
+    /// label universe is visible at once.
+    #[func]
+    fn role_labels(&self) -> VarDictionary {
+        use render::labels::Role;
+        let mut table = VarDictionary::new();
+        for (name, role) in [
+            ("Case", Role::Case),
+            ("Floor", Role::Floor),
+            ("Shell", Role::Shell),
+            ("Moving", Role::Moving),
+            ("Cat", Role::Cat),
+            ("HeroBody", Role::HeroBody),
+            ("Ceiling", Role::Ceiling),
+            ("HeroCane", Role::HeroCane),
+        ] {
+            table.set(name, render::labels::role_label(role));
+        }
+        table
+    }
+
+    /// The palette every wall, prop and source instance is coloured from.
+    #[func]
+    fn world_palette(&self) -> PackedFloat64Array {
+        PackedFloat64Array::from(&render::labels::WORLD_PALETTE[..])
+    }
+
+    /// The separation the shader's crease knee demands between two labels
+    /// that must draw a seam — `render::labels::MIN_SEP`.
+    #[func]
+    fn min_label_separation(&self) -> f64 {
+        render::labels::MIN_SEP
+    }
 }
 
 impl WaveCore {

@@ -15,6 +15,15 @@ extends GdUnitTestSuite
 ##     single material-wide muffle could never have.
 
 
+## One label from the single role table (render::labels::role_label), read
+## rather than retyped — a suite carrying its own copy of a label agrees
+## with whatever the table says, and the table used to be wrong.
+func _role(name: String) -> float:
+	var table: Dictionary = WaveCore.new().role_labels()
+	assert_bool(table.has(name)).is_true()
+	return table.get(name, NAN)
+
+
 func _spawn_marker(at: Vector3) -> WaveSpawn:
 	var marker := WaveSpawn.new()
 	marker.position = at
@@ -405,9 +414,10 @@ func test_a_rebuilt_source_keeps_its_derived_role_labels() -> void:
 ## A standalone source blueprint starts with its semantic-role defaults baked
 ## into per-vertex CUSTOM0 — what the shader's G channel reads directly.
 ## Every vertex of a limb carries the SAME label: one label per role limb,
-## never split across it. Hand-derived against the standalone defaults in
-## render::labels::role_label
-## (rust/src/render/labels.rs): Shell 0.33, Moving 0.63, Case 0.05.
+## never split across it. The expected values are READ from
+## render::labels::role_label rather than retyped, so the suite cannot
+## quietly agree with a table that has drifted out of its own separation
+## law.
 ##
 ## Matched APPROXIMATELY, not by exact membership: CUSTOM0 is packed as
 ## `ARRAY_CUSTOM_R_FLOAT`, a 32-bit float, so the f64 role label round-trips
@@ -459,7 +469,8 @@ func test_fan_limbs_carry_shell_and_moving_labels() -> void:
 	fan.pulses = Pulses.new()
 	fan.data_mat = ShaderMaterial.new()
 	add_child(fan)
-	_assert_limbs_carry_their_labels(fan, [0.33, 0.63] as Array[float])
+	var roles: Dictionary = WaveCore.new().role_labels()
+	_assert_limbs_carry_their_labels(fan, [roles["Shell"], roles["Moving"]] as Array[float])
 
 
 func test_radio_limbs_carry_case_and_shell_labels() -> void:
@@ -467,7 +478,7 @@ func test_radio_limbs_carry_case_and_shell_labels() -> void:
 	radio.pulses = Pulses.new()
 	radio.data_mat = ShaderMaterial.new()
 	add_child(radio)
-	_assert_limbs_carry_their_labels(radio, [0.05, 0.33] as Array[float])
+	_assert_limbs_carry_their_labels(radio, [_role("Case"), _role("Shell")] as Array[float])
 
 
 ## Fan and radio together exercise every source mesh family: indexed boxes,

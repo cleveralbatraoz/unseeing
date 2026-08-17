@@ -9,6 +9,15 @@ var _pulses: Pulses
 var _cat: WaveCat
 
 
+## One label from the single role table (render::labels::role_label), read
+## rather than retyped — a suite carrying its own copy of a label agrees
+## with whatever the table says, and the table used to be wrong.
+func _role(name: String) -> float:
+	var table: Dictionary = WaveCore.new().role_labels()
+	assert_bool(table.has(name)).is_true()
+	return table.get(name, NAN)
+
+
 func _add_floor() -> void:
 	var body: StaticBody3D = auto_free(StaticBody3D.new())
 	body.position = Vector3(0, -0.05, 0)
@@ -90,10 +99,14 @@ func test_cat_mesh_builds() -> void:
 	assert_int(_cat.cat_mesh().get_surface_count()).is_equal(1)
 
 
-## Every vertex of the silhouette carries the SAME Cat label (0.70,
-## render::labels::role_label, rust/src/render/labels.rs) in its mesh's
+## Every vertex of the silhouette carries the SAME Cat label in its mesh's
 ## CUSTOM0 — what the shader's G channel reads directly, one silhouette
 ## rather than a heap of joint circles.
+##
+## The expected value is READ from render::labels::role_label rather than
+## retyped: a suite carrying its own copy of the number is a suite that
+## agrees with whatever the table says, which is how the table drifted out
+## of its own separation law and stayed there.
 func test_cat_mesh_carries_the_cat_label_in_custom0() -> void:
 	_add_floor()
 	_add_cat()
@@ -103,8 +116,9 @@ func test_cat_mesh_carries_the_cat_label_in_custom0() -> void:
 	assert_int(mesh.get_surface_count()).is_equal(1)
 	var custom: PackedFloat32Array = mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
 	assert_int(custom.size()).is_greater(0)
+	var cat_label := _role("Cat")
 	for label: float in custom:
-		assert_float(label).is_equal_approx(0.70, 0.0001)
+		assert_float(label).is_equal_approx(cat_label, 0.0001)
 
 
 ## The animated cat limb builder already emits Godot-clockwise triangles;

@@ -58,6 +58,15 @@ const TAP_MAX_R := 6.0
 const TAP_SPEED := 5.5
 
 
+## One label from the single role table (render::labels::role_label), read
+## rather than retyped — a suite carrying its own copy of a label agrees
+## with whatever the table says, and the table used to be wrong.
+func _role(name: String) -> float:
+	var table: Dictionary = WaveCore.new().role_labels()
+	assert_bool(table.has(name)).is_true()
+	return table.get(name, NAN)
+
+
 func test_uninjected_observer_refuses_rather_than_reporting_zeros() -> void:
 	var obs := _observer()
 	var snap: Dictionary = obs.snapshot(0.0)
@@ -419,9 +428,10 @@ func _cat_level() -> Dictionary:
 ## The pairs only carry the ids of boxes that MEET, so a solid standing alone
 ## in a room had a name in the report and no id anywhere — and "which id did
 ## this thing actually get?" is the first question after "which seams are
-## broken". Hand-derived against the one role table
-## (render::labels::role_label, rust/src/render/labels.rs): the floor's
-## Role::Floor is 0.15 and Role::Cat is 0.7.
+## broken". The expected labels are READ from the one role table
+## (render::labels::role_label, rust/src/render/labels.rs) rather than
+## retyped: a suite carrying its own copy agrees with whatever the table
+## says, and the table used to be wrong.
 func test_the_oid_census_reports_the_id_of_every_box() -> void:
 	var fixture := _cat_level()
 	var level: WaveLevel = fixture["level"]
@@ -433,9 +443,9 @@ func test_the_oid_census_reports_the_id_of_every_box() -> void:
 	var oids: PackedFloat64Array = e["oids"]
 	assert_int(oids.size()).is_equal(names.size())
 	assert_array(names).contains(["Floor", str(cat.name)])
-	assert_float(oids[names.find("Floor")]).is_equal_approx(0.15, 0.0001)
+	assert_float(oids[names.find("Floor")]).is_equal_approx(_role("Floor"), 0.0001)
 	var cat_idx := names.find(str(cat.name))
-	assert_float(oids[cat_idx]).is_equal_approx(0.7, 0.0001)
+	assert_float(oids[cat_idx]).is_equal_approx(_role("Cat"), 0.0001)
 
 
 ## The creatures are IN the report. WaveCat and the hero's body occupy the
