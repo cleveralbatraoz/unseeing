@@ -121,6 +121,23 @@ float pulse_gain(vec4 d) {
 	return mod(d.w, 10.0) / 9.0;
 }
 
+// rust/src/pulse_pool.rs::fade_tail — seconds a point keeps hearing a wave
+// after the front passed it, and the very number the CPU retires the slot
+// with (emit() sets end = now + max_r/speed + fade_tail). Both readers must
+// agree or the wave outlives its own data: echoes and footsteps are granted
+// less than taps precisely so their slots free fast.
+//
+// The chain matches the Rust `match`'s wildcard arm exactly: kind 0 and any
+// kind outside 0..3 — which a tampered or future emit could pack — take the
+// tap's long tail rather than falling through to an undefined value.
+float pulse_fade_tail(float typ) {
+	if (typ < 0.5) { return 6.0; }
+	if (typ < 1.5) { return 3.5; }
+	if (typ < 2.5) { return 2.5; }
+	if (typ < 3.5) { return 2.0; }
+	return 6.0;
+}
+
 // Directed sound: only the cone the sound was aimed into carries information.
 // dir_from_src must be the unit vector from the pulse origin toward the point.
 float pulse_cone(vec4 cn, vec3 dir_from_src) {

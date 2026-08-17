@@ -83,6 +83,25 @@ float source_reveal_vis(vec3 src, vec3 world) {
 	return wall_blocked_from(src, world) ? 0.0 : 1.0;
 }
 
+// How strongly a wave still reveals a point `since_front` seconds after its
+// own front passed there, given the tail its kind is granted.
+// rust/src/render/reveal.rs::flare is the cargo-pinned reference.
+//
+// The shape is a fast strike flash plus a slow lingering half; the SHIFT is
+// the law. A sum of exponentials never reaches zero, so before the shift
+// this returned 0.068 of peak (a tap) or 0.257 (a hum) at the very moment
+// the CPU retires the pulse's slot — and kept returning it. A surface a
+// sound once lit stayed lit, and went dark only when some later, unrelated
+// sound happened to claim that slot. Subtracting the shape's own value at
+// the tail lands it on exactly zero there, continuously, while the strike
+// flash still saturates the clamp and is untouched.
+float pulse_flare(float since_front, float tail) {
+	if (since_front < 0.0 || since_front >= tail) { return 0.0; }
+	float shape = 1.3 * exp(-since_front / 0.25) + 0.5 * exp(-since_front / 3.0);
+	float at_tail = 1.3 * exp(-tail / 0.25) + 0.5 * exp(-tail / 3.0);
+	return clamp(shape - at_tail, 0.0, 1.0);
+}
+
 // How strongly the waves in flight reveal this world point: the struck
 // spot lights and falls off fast from the source, occluded by the walls
 // between the source and the lit surface (source_reveal_vis) — a source
@@ -103,6 +122,22 @@ float reveal_at(vec3 world) {
 		float dist = distance(world, u_ppos[i]);
 		float radius = d.z * age;
 		if (dist > min(radius, d.y)) { continue; }
+		// Seconds since THIS pulse's front passed THIS point — the one
+		// coordinate the fade law is written against, so a surface at the
+		// wave's full reach fades exactly as the struck spot did, merely
+		// later. The radius gate above guarantees it is non-negative.
+		float ga = age - dist / d.z;
+		float tail = pulse_fade_tail(typ);
+		// The wave is OVER here. Not merely dim: gone, at the same moment
+		// the pool retires this pulse's slot. Hoisted above the cone gate
+		// and the exponentials because a dead pulse must cost one subtract
+		// and one compare, not a trace. Without it the loop had NO end
+		// condition at all: `dist > min(radius, d.y)` freezes into the
+		// static `dist > max_r` once the front has run its course, so every
+		// point the wave ever reached kept its reveal until the slot was
+		// reused — the visible life of a sound was a property of the slot
+		// allocator, not of the sound.
+		if (ga >= tail) { continue; }
 		vec3 to_src = (u_ppos[i] - world) / max(dist, 0.001);
 		// the beam gate comes first: a fragment outside a DIRECTED wash's
 		// cone reveals nothing, so skip the wall-occlusion loop there. This
@@ -118,23 +153,25 @@ float reveal_at(vec3 world) {
 		float cone = pulse_cone(u_pdir[i], -to_src);
 		if (cone <= 0.0) { continue; }
 		float atten = 1.0 / (1.0 + dist * dist * 0.06);
-		float ga = age - dist / d.z;
-		float flare = 1.3 * exp(-ga / 0.25) + 0.5 * exp(-ga / 3.0);
-		// EXACT early-out, and it is the loop's whole affordability. The
-		// accumulator is a max, and source_reveal_vis only ever returns a
-		// value in [0, 1] (1 with a clear line, 0 behind a wall) — so
-		// `bound` below, computed with that factor at its maximum, is an
-		// upper bound on what this pulse could contribute. A pulse that
-		// cannot beat what is already accumulated changes nothing, and is
-		// dropped BEFORE the wall loop rather than after it. No pixel
-		// differs; only the cost.
+		float flare = pulse_flare(ga, tail);
+		// EXACT early-out. The accumulator is a max, and source_reveal_vis
+		// only ever returns a value in [0, 1] (1 with a clear line, 0
+		// behind a wall) — so `bound` below, computed with that factor at
+		// its maximum, is an upper bound on what this pulse could
+		// contribute. A pulse that cannot beat what is already accumulated
+		// changes nothing, and is dropped BEFORE the wall loop rather than
+		// after it. No pixel differs; only the cost.
 		//
-		// This matters most for an EVEN source: a directed wash is thrown
-		// out by the cone gate above over most of the screen, but a radio's
-		// sphere passes the cone gate everywhere, so without this its
-		// permanently-live waves would each pay the full per-fragment wall
-		// walk in every direction, forever.
-		float bound = min(flare, 1.0) * atten * cone * gain * peak;
+		// It is NOT the loop's whole affordability, and the comment that
+		// said so was left behind by the barrier campaign: once
+		// source_reveal_vis became a 0/1 gate, `reveal` stays exactly 0.0
+		// on any fragment every in-range pulse is walled off from, and an
+		// early-out against 0 can never fire. The fragments that pay the
+		// full walk are precisely the ones in the room next door. What
+		// actually bounds this loop is the radius gate and the death gate
+		// above; this saves the walk only where something is already lit.
+		// pulse_flare already clamps to [0, 1], so no min() is needed here.
+		float bound = flare * atten * cone * gain * peak;
 		if (bound <= reveal) { continue; }
 		reveal = max(reveal, bound * source_reveal_vis(u_ppos[i], world));
 	}

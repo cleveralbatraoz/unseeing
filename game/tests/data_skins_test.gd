@@ -139,20 +139,35 @@ func test_core_defines_the_depth_hack_once_as_fragment_depth() -> void:
 		assert_bool(_text(path).contains("POSITION =")).is_false()
 
 
-## The reveal loop's EXACT early-out, and it is the loop's affordability.
-## The accumulator is a max and source_reveal_vis only ever returns a value
-## in [0, 1], so the bound computed with that factor at its maximum is an
-## upper bound on the pulse's contribution: a pulse that cannot beat what is
-## already accumulated is dropped BEFORE the per-fragment wall walk instead
-## of after it. No pixel differs; only the cost — which matters most for an
-## EVEN source, whose sphere passes the cone gate in every direction.
+## The reveal loop's EXACT early-out. The accumulator is a max and
+## source_reveal_vis only ever returns a value in [0, 1], so the bound
+## computed with that factor at its maximum is an upper bound on the pulse's
+## contribution: a pulse that cannot beat what is already accumulated is
+## dropped BEFORE the per-fragment wall walk instead of after it. No pixel
+## differs; only the cost.
+##
+## It is NOT "the loop's affordability", and this docstring used to say it
+## was. The barrier campaign made source_reveal_vis a 0/1 gate, and against a
+## `reveal` still sitting at exactly 0.0 — which is every fragment that every
+## in-range pulse is walled off from — `bound <= reveal` can never fire. The
+## fragments that pay the full walk are precisely the ones in the room next
+## door. What bounds this loop is the radius gate and the death gate above it.
+##
+## `min(flare, 1.0)` is gone from the expression because pulse_flare returns
+## an already-clamped value: the clamp moved into the law
+## (rust/src/render/reveal.rs::flare) so the cargo-pinned reference and the
+## rendered number are the same one, rather than the reference describing a
+## shape the shader then clamped on its own.
 func test_reveal_loop_bounds_a_pulse_before_walking_the_walls() -> void:
 	var src := _text(CORE_PATH)
-	assert_str(src).contains("float bound = min(flare, 1.0) * atten * cone * gain * peak;")
+	assert_str(src).contains("float bound = flare * atten * cone * gain * peak;")
 	assert_str(src).contains("if (bound <= reveal) { continue; }")
 	assert_str(src).contains("bound * source_reveal_vis(u_ppos[i], world)")
 	# the bound must be formed BEFORE the wall walk, or it buys nothing
 	assert_bool(src.find("float bound =") < src.find("bound * source_reveal_vis")).is_true()
+	# and the flare it multiplies must be the pinned law's own clamped
+	# output, not a raw shape this line then bounds for itself
+	assert_str(src).contains("float flare = pulse_flare(ga, tail);")
 
 
 ## A CONSTANT always-on-top depth only works while the world holds one

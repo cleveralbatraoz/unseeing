@@ -164,6 +164,109 @@ func test_hearing_pass_cuts_every_shell_at_the_wall_that_made_it_unreachable() -
 	)
 
 
+## A WAVE MUST END, and it must end where the CPU says it does.
+##
+## `reveal_at` had no end condition at all. Its only radius gate,
+## `dist > min(radius, d.y)`, freezes into the static `dist > max_r` the
+## moment the front has run its course, and the decay it applied there was a
+## sum of exponentials, which never reaches zero — so every point a wave
+## ever reached kept 0.068 of peak (a tap) or 0.257 (a hum) until some later,
+## unrelated sound reused the pool slot and switched it off in one frame. The
+## visible life of a sound was a property of the slot allocator.
+##
+## Two things are pinned, and the pair is the law. First the death gate
+## itself, as source text, ahead of the cone gate and the exponentials so a
+## dead pulse costs a compare rather than a trace. Second — and this is the
+## part a substring cannot fake — the GLSL tail table is read back branch by
+## branch and held against rust/src/render/reveal.rs's own numbers through
+## WaveCore. Editing one arm of the shader chain without editing Rust gives
+## that kind of sound a different life on screen than its slot was budgeted
+## for, and nothing else in the tree compares the two.
+func test_a_wave_stops_revealing_when_its_pool_slot_expires() -> void:
+	var core := _read(CORE_PATH)
+	(
+		assert_bool(core.contains("if (ga >= tail) { continue; }"))
+		. append_failure_message(
+			(
+				"reveal_at has no death gate; a surface a wave once lit stays lit "
+				+ "until an unrelated sound reuses the slot"
+			)
+		)
+		. is_true()
+	)
+	# the shifted envelope: subtracting the shape's own value at the tail is
+	# what lands it on exactly zero instead of merely small
+	assert_str(core).contains("float pulse_flare(float since_front, float tail)")
+	assert_str(core).contains("return clamp(shape - at_tail, 0.0, 1.0);")
+	# and the gate must be paid BEFORE the cone test, or a dead pulse still
+	# buys a normalize, a dot and a smoothstep on every fragment it reaches
+	(
+		assert_bool(core.find("if (ga >= tail) { continue; }") < core.find("float cone ="))
+		. append_failure_message("the death gate is paid after the cone gate")
+		. is_true()
+	)
+
+	var wave_core: WaveCore = auto_free(WaveCore.new())
+	var chain := _glsl_fade_tail_chain()
+	(
+		assert_array(chain)
+		. append_failure_message("pulse_fade_tail's guarded arms are missing from the pool include")
+		. is_not_empty()
+	)
+	# every kind emit() packs today, plus the two outside that range the
+	# i32/float domain admits and the wildcard arm must still answer
+	for kind: int in [0, 1, 2, 3, 4, -1]:
+		var glsl := _evaluate_glsl_chain(chain, float(kind))
+		(
+			assert_float(glsl)
+			. append_failure_message(
+				(
+					"GLSL grants kind %d a %s s tail while Rust budgets its slot for %s s"
+					% [kind, str(glsl), str(wave_core.wave_fade_tail(kind))]
+				)
+			)
+			. is_equal(wave_core.wave_fade_tail(kind))
+		)
+
+
+## `pulse_fade_tail`'s guarded arms as (threshold, seconds) pairs, in source
+## order, with the unguarded fallthrough appended as an arm no `typ` can
+## miss. Read out of the shipped GLSL rather than retyped, so this suite
+## compares the shader against Rust instead of comparing two of its own
+## transcriptions against each other.
+func _glsl_fade_tail_chain() -> Array[PackedFloat64Array]:
+	var arms: Array[PackedFloat64Array] = []
+	var body := _include_text()
+	var start := body.find("float pulse_fade_tail(")
+	if start < 0:
+		return arms
+	var end := body.find("\n}", start)
+	if end < 0:
+		return arms
+	body = body.substr(start, end - start)
+	for m: RegExMatch in (
+		RegEx
+		. create_from_string("if \\(typ < ([0-9.]+)\\) \\{ return ([0-9.]+); \\}")
+		. search_all(body)
+	):
+		arms.append(PackedFloat64Array([m.get_string(1).to_float(), m.get_string(2).to_float()]))
+	var last := RegEx.create_from_string("\\n\\treturn ([0-9.]+);").search(body)
+	if last == null:
+		arms.clear()
+		return arms
+	arms.append(PackedFloat64Array([INF, last.get_string(1).to_float()]))
+	return arms
+
+
+## The chain evaluated exactly as GLSL evaluates it: first arm whose
+## threshold `typ` falls under wins.
+func _evaluate_glsl_chain(chain: Array[PackedFloat64Array], typ: float) -> float:
+	for arm: PackedFloat64Array in chain:
+		if typ < arm[0]:
+			return arm[1]
+	return NAN
+
+
 ## The numeric value of `const <type> NAME = <number>;` in the include, or
 ## NAN when the declaration is missing — NAN fails every numeric assert.
 func _shader_const(const_name: String) -> float:

@@ -16,6 +16,7 @@ use crate::flicker::Randf;
 use crate::observe::reflect::ReflectionRequest;
 use crate::pulse_pool::{MAXP, PulsePool, REFUSAL_MESSAGE, SlotCapture};
 use crate::ray_fan;
+use crate::render;
 
 /// The flicker law's randomness adapter: Godot's `randf()` returns f32,
 /// widened to f64 at the exact point the GDScript law implicitly did (every
@@ -228,6 +229,25 @@ impl WaveCore {
     #[func]
     fn max_pulses(&self) -> i64 {
         MAXP as i64
+    }
+
+    /// Seconds a wave of `kind` keeps revealing a surface after its front
+    /// passed — the pool's own slot lifetime, and the end of the reveal
+    /// envelope (`render::reveal`).
+    ///
+    /// Exposed so a suite can hold `pulse_pool.gdshaderinc`'s
+    /// `pulse_fade_tail` chain against the Rust table branch by branch. The
+    /// GLSL is the copy that renders and Rust is the copy that reasons; the
+    /// two are joined by nothing else, and a shader-side edit to one arm of
+    /// that chain would otherwise silently give one kind of sound a
+    /// different life on screen than the CPU budgeted its slot for.
+    ///
+    /// Total over every i64, including the kinds `emit` cannot currently
+    /// pack: anything outside 0..=3 takes the tap's long tail, exactly as
+    /// the Rust `match`'s wildcard arm and the GLSL chain's fallthrough do.
+    #[func]
+    fn wave_fade_tail(&self, kind: i64) -> f64 {
+        render::reveal::reveal_tail(i32::try_from(kind).unwrap_or(i32::MAX))
     }
 }
 
