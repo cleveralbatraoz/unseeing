@@ -75,6 +75,54 @@ pub fn flare(since_front: f64, tail: f64) -> f64 {
     (raw(since_front) - raw(tail)).clamp(0.0, 1.0)
 }
 
+/// A sound source's standing acoustic image, as the two INDEPENDENT
+/// numbers the x-ray skin needs rather than the single product it used to
+/// be handed.
+///
+/// They were collapsed into one `volume * muffle` on the CPU and delivered
+/// as a floor, which is what made the muffle powerless: a floor only ever
+/// competes with the source's own wave reveal, and loses to it. Kept apart,
+/// `muffle` can do the one thing a wall must be able to do — take something
+/// away.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceImage {
+    /// How loud this source's silhouette stands on its own, before any wall
+    /// is considered (`Volume::image`).
+    pub volume: f64,
+    /// What survives of it across the walls between the source and the EYE:
+    /// `SOURCE_THROUGH^crossings`. A different occluder from the one the
+    /// wave law uses — this one counts every wall, including the one the
+    /// source stands inside.
+    pub muffle: f64,
+}
+
+/// How brightly a sound source's own body reads: its standing image and any
+/// wave currently washing it, whichever is stronger, and then everything
+/// dimmed together by the walls between it and the eye.
+///
+/// The order is the law. `muffle * max(wave, volume)` lets a wall dim the
+/// whole acoustic image; `max(wave, volume * muffle)` — which is what
+/// shipped — lets the source's own wave step straight over the muffle,
+/// because a source's hub is by construction unwalled from its own body, so
+/// `wave` there is near 1.0 whatever stands between the source and the
+/// player. Two walls, three walls, a whole map of walls: the silhouette
+/// read the same. The documented `0.30 / 0.09 / 0.027` ladder existed only
+/// while the source happened to be silent.
+///
+/// Total over every input: non-finite or negative arguments answer 0.0
+/// rather than propagating into the G-buffer, and the result is clamped to
+/// the channel's own `[0, 1]`.
+#[must_use]
+pub fn source_image(wave: f64, image: SourceImage) -> f64 {
+    if !wave.is_finite() || !image.volume.is_finite() || !image.muffle.is_finite() {
+        return 0.0;
+    }
+    let wave = wave.max(0.0);
+    let volume = image.volume.max(0.0);
+    let muffle = image.muffle.clamp(0.0, 1.0);
+    (muffle * wave.max(volume)).clamp(0.0, 1.0)
+}
+
 /// The tail a pulse of `kind` grants the points it sweeps — the same
 /// number [`PulsePool::emit`](crate::pulse_pool::PulsePool::emit) budgets
 /// the slot's lifetime with, so a wave's reveal and its slot die together
@@ -192,6 +240,131 @@ mod tests {
         assert_eq!(flare(f64::INFINITY, 6.0), 0.0);
         assert_eq!(flare(1.0, f64::INFINITY), 0.0);
         assert_eq!(flare(f64::NEG_INFINITY, 6.0), 0.0);
+    }
+
+    /// THE break this catches: a wall must be able to take something away
+    /// from a source's silhouette, and under the shipped
+    /// `max(wave, volume * muffle)` it could not. A source's own hub is
+    /// unwalled from its own body by construction, so the wave washing it
+    /// is near full strength whatever stands between that source and the
+    /// player — and the max then hands back that full strength, discarding
+    /// the muffle entirely.
+    ///
+    /// Hand-derived from `SOURCE_THROUGH = 0.3`: a source at volume 1.0
+    /// behind one wall must read 0.3 and behind two 0.09, whether or not
+    /// its own wave is washing it at the time.
+    #[test]
+    fn a_wall_dims_a_source_even_while_its_own_wave_washes_it() {
+        let one_wall = SourceImage {
+            volume: 1.0,
+            muffle: 0.3,
+        };
+        let two_walls = SourceImage {
+            volume: 1.0,
+            muffle: 0.09,
+        };
+        // silent: the ladder both the old and the new law agree on
+        assert!((source_image(0.0, one_wall) - 0.3).abs() < 1e-12);
+        assert!((source_image(0.0, two_walls) - 0.09).abs() < 1e-12);
+        // and sounding, at the full strength its own wave reaches its own
+        // body with — where the old law returned 1.0 for both
+        assert!(
+            (source_image(1.0, one_wall) - 0.3).abs() < 1e-12,
+            "one wall bought the source nothing: {}",
+            source_image(1.0, one_wall)
+        );
+        assert!(
+            (source_image(1.0, two_walls) - 0.09).abs() < 1e-12,
+            "two walls bought the source nothing: {}",
+            source_image(1.0, two_walls)
+        );
+    }
+
+    /// The ladder must keep DESCENDING as walls accumulate. Under the old
+    /// law it flattened from the first wall on, so a source three rooms
+    /// away was exactly as present as one next door — the perception
+    /// fiction's whole point, inverted.
+    #[test]
+    fn the_muffle_ladder_still_descends_wall_after_wall() {
+        let mut previous = f64::INFINITY;
+        let mut muffle = 1.0;
+        for wall in 0..4 {
+            let now = source_image(
+                1.0,
+                SourceImage {
+                    volume: 0.75,
+                    muffle,
+                },
+            );
+            assert!(
+                now < previous,
+                "wall {wall} changed nothing: {previous} -> {now}"
+            );
+            previous = now;
+            muffle *= crate::level_plan::SOURCE_THROUGH;
+        }
+    }
+
+    /// An unwalled source is untouched — the fix must not dim what the eye
+    /// can see plainly. With `muffle` at 1.0 the law is exactly the old
+    /// `max`, which is what makes this change invisible in the room the
+    /// player is standing in and decisive everywhere else.
+    #[test]
+    fn an_unwalled_source_reads_exactly_as_before() {
+        for wave in [0.0, 0.2, 0.5, 0.9, 1.0] {
+            for volume in [0.0, 0.4, 0.75, 1.0] {
+                let image = SourceImage {
+                    volume,
+                    muffle: 1.0,
+                };
+                assert!((source_image(wave, image) - wave.max(volume)).abs() < 1e-12);
+            }
+        }
+    }
+
+    /// Total over inputs the type admits and no shipped caller produces.
+    /// A NaN here reaches G unclamped and poisons every neighbouring tap
+    /// the hearing pass reads, so absence must answer darkness.
+    #[test]
+    fn a_degenerate_source_image_answers_darkness() {
+        let sane = SourceImage {
+            volume: 0.5,
+            muffle: 0.5,
+        };
+        assert_eq!(source_image(f64::NAN, sane), 0.0);
+        assert_eq!(
+            source_image(
+                1.0,
+                SourceImage {
+                    volume: f64::NAN,
+                    muffle: 0.5
+                }
+            ),
+            0.0
+        );
+        assert_eq!(
+            source_image(
+                1.0,
+                SourceImage {
+                    volume: 0.5,
+                    muffle: f64::NAN
+                }
+            ),
+            0.0
+        );
+        // negatives cannot darken below black, and an over-unity muffle
+        // cannot brighten a source past the channel
+        assert_eq!(source_image(-5.0, sane), 0.25);
+        assert_eq!(
+            source_image(
+                1.0,
+                SourceImage {
+                    volume: 1.0,
+                    muffle: 9.0
+                }
+            ),
+            1.0
+        );
     }
 
     /// The tail this module hands the renderer is the SAME number the pool

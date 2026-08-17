@@ -40,9 +40,19 @@ pub struct SourceObservation {
     pub next_emit: f64,
     /// Walls between the eye and this source's hub.
     pub walls_to_eye: u32,
-    /// The standing image floor after muffling — the `u_source_floor`
-    /// instance uniform this source is pushed.
-    pub source_floor: f64,
+    /// This source's standing loudness before any wall — the
+    /// `u_source_volume` instance uniform it is pushed. [`f64::NAN`] before
+    /// any frame has driven it, which is a different fact from a volume of
+    /// zero.
+    pub source_volume: f64,
+    /// What survives of that image across the walls between it and the eye
+    /// — the `u_source_muffle` instance uniform it is pushed.
+    ///
+    /// Reported apart from [`Self::source_volume`] because the renderer
+    /// consumes them apart: their product was once a single pushed number,
+    /// and reporting a product the shader no longer forms would be an
+    /// observable that agrees with nothing on screen.
+    pub source_muffle: f64,
     pub slot_pressure: f64,
 }
 

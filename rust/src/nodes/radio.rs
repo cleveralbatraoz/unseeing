@@ -325,7 +325,7 @@ impl SoundSource for SoundRadio {
         sound(pulses, &voice, hub, aim, at);
     }
 
-    fn set_image(&mut self, image: f64) {
+    fn set_image(&mut self, image: render::reveal::SourceImage) {
         self.rig.set_image(image);
     }
 

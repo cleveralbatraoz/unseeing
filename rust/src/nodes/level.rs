@@ -676,7 +676,14 @@ impl WaveLevel {
                 hub = voice.hub();
                 volume = voice.voice().volume.image();
             }
-            let image = volume * self.source_muffle(eye, hub);
+            // Delivered as two numbers, never as their product: see
+            // render::reveal::source_image for why the muffle must
+            // multiply the whole acoustic image rather than floor half of
+            // it.
+            let image = render::reveal::SourceImage {
+                volume,
+                muffle: self.source_muffle(eye, hub),
+            };
             source.dyn_bind_mut().set_image(image);
         }
     }

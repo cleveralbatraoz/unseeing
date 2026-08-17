@@ -81,7 +81,7 @@ func test_uninjected_explainers_refuse_too() -> void:
 ## refuses, while the eye-free explainers keep working.
 ##
 ## The REASON is held to being true, not merely present. A refusal that blamed
-## `source_floor` would send a reader looking for a quantity the eye has
+## the standing image would send a reader looking for a quantity the eye has
 ## nothing to do with: the standing image is read straight back off the
 ## source's own limbs, and would be reportable with no camera in the scene at
 ## all. A debugging layer that misnames its own limits teaches the wrong
@@ -94,7 +94,8 @@ func test_a_snapshot_without_an_eye_refuses_rather_than_guessing_one() -> void:
 	assert_int(snap.size()).is_equal(1)
 	var reason: String = snap["unavailable"]
 	assert_str(reason).contains("walls_to_eye")
-	assert_str(reason).not_contains("source_floor")
+	assert_str(reason).not_contains("source_volume")
+	assert_str(reason).not_contains("source_muffle")
 	assert_bool(obs.explain_oids().has("unavailable")).is_false()
 
 
@@ -268,9 +269,19 @@ func test_a_snapshot_names_what_it_could_not_observe() -> void:
 	obs.inject(level, _eye())
 	var snap: Dictionary = obs.snapshot(0.0)
 	assert_bool(snap.has("flick")).is_false()
-	assert_bool((snap["sources"][0] as Dictionary).has("source_floor")).is_false()
-	assert_array(snap["unknown"]).contains(
-		["flick", "sources[0].source_floor", "sources[1].source_floor"]
+	assert_bool((snap["sources"][0] as Dictionary).has("source_volume")).is_false()
+	assert_bool((snap["sources"][0] as Dictionary).has("source_muffle")).is_false()
+	(
+		assert_array(snap["unknown"])
+		. contains(
+			[
+				"flick",
+				"sources[0].source_volume",
+				"sources[0].source_muffle",
+				"sources[1].source_volume",
+				"sources[1].source_muffle",
+			]
+		)
 	)
 
 
@@ -323,11 +334,15 @@ func test_snapshot_describes_the_levels_sound_sources() -> void:
 	)
 	# The fixture hand-places exactly one wall. Do not derive the expectation
 	# through level.source_muffle(eye, hub): that
-	# would call the identical function tick_sources used to WRITE
-	# source_floor in the first place, with the identical eye and hub, and
+	# would call the identical function tick_sources used to WRITE the
+	# muffle in the first place, with the identical eye and hub, and
 	# so would mirror the code under test rather than check it
 	assert_int(entry["walls_to_eye"]).is_equal(1)
-	assert_float(entry["source_floor"]).is_equal_approx(SOURCE_THROUGH * fan.volume, 0.0001)
+	# the two halves are reported APART, because the renderer consumes them
+	# apart: the volume stands on its own and the muffle multiplies the
+	# whole image. Their product is no longer a number the shader forms.
+	assert_float(entry["source_volume"]).is_equal_approx(fan.volume, 0.0001)
+	assert_float(entry["source_muffle"]).is_equal_approx(SOURCE_THROUGH, 0.0001)
 	# the clockwork, not only the voice: "the fan has gone quiet" is a whole
 	# question class, and a snapshot that carried neither the interval nor the
 	# standing appointment could only answer it by waiting to see

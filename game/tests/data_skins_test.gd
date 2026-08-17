@@ -30,9 +30,9 @@ func _text(path: String) -> String:
 
 
 ## The x-ray skin: culled back faces (mandatory under an always-pass depth
-## test), the always-on-top depth write, and the standing acoustic image on
-## its own floor. That floor is an INSTANCE uniform, and the world now has
-## more than one source, so this is load-bearing rather than stylistic: a
+## test), the always-on-top depth write, and the standing acoustic image in
+## its two independent halves. Both are INSTANCE uniforms, and the world now
+## has more than one source, so this is load-bearing rather than stylistic: a
 ## material uniform would make the quiet fan and the loud radio — which
 ## share this one skin — brighten and dim as a single object.
 func test_xray_skin_carries_the_acoustic_image_contract() -> void:
@@ -40,8 +40,20 @@ func test_xray_skin_carries_the_acoustic_image_contract() -> void:
 	assert_str(src).contains("render_mode unshaded, cull_back")
 	assert_str(src).contains('#include "res://shaders/data_core.gdshaderinc"')
 	assert_str(src).contains("DEPTH = source_depth(length(v_world - CAMERA_POSITION_WORLD));")
-	assert_str(src).contains("instance uniform float u_source_floor = 0.0;")
-	assert_str(src).contains("max(reveal_at(v_world), u_source_floor)")
+	assert_str(src).contains("instance uniform float u_source_volume = 0.0;")
+	assert_str(src).contains("instance uniform float u_source_muffle = 1.0;")
+	# THE ORDER IS THE LAW. The muffle multiplies the WHOLE acoustic image,
+	# standing silhouette and washing wave alike, so a wall can take
+	# something away. Delivered pre-multiplied into one floor — which is
+	# what shipped — it could only compete with reveal_at through a max(),
+	# and always lost: a source's hub is unwalled from its own body by
+	# construction, so reveal_at reads near 1.0 there whatever stands
+	# between that source and the player, and the max handed back the 1.0.
+	assert_str(src).contains("return clamp(muffle * max(wave, volume), 0.0, 1.0);")
+	assert_str(src).contains(
+		"float reveal = source_image(reveal_at(v_world), u_source_volume, u_source_muffle);"
+	)
+	assert_bool(src.contains("u_source_floor")).is_false()
 
 
 ## The shared pulse-pool include carries the wall table every occluding

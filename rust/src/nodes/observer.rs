@@ -19,9 +19,9 @@
 //! answer of all. The eye-free explainers keep working.
 //!
 //! The standing image is NOT one of those quantities, and the refusal must
-//! not claim it is: `source_floor` is read straight back off a source's own
-//! limbs by [`standing_image`] and would be reportable with no camera in
-//! the scene at all. It is refused along with the rest only because a
+//! not claim it is: `source_volume`/`source_muffle` are read straight back
+//! off a source's own limbs by [`standing_image`] and would be reportable
+//! with no camera in the scene at all. It is refused along with the rest only because a
 //! snapshot is all-or-nothing by design.
 
 use godot::classes::{
@@ -67,7 +67,7 @@ const NO_LEVEL: &str = "observer was never injected a level";
 
 /// No camera: every eye-relative quantity in a snapshot would be a guess.
 /// The two that genuinely are eye-relative are named, and nothing else —
-/// a refusal that blamed `source_floor` (read back off the source's own
+/// a refusal that blamed the standing image (read back off the source's own
 /// limbs, camera or no camera) would send a reader hunting the wrong system.
 const NO_CAMERA: &str = "observer was never injected a camera — walls_to_eye and the camera group are measured \
      from the eye";
@@ -811,7 +811,8 @@ fn sources(level: &WaveLevel, eye: Vector3, rects: &[Vector4]) -> Vec<SourceObse
                 cadence: voice.cadence,
                 next_emit: bound.next_emit().unwrap_or(f64::NAN),
                 walls_to_eye: line.camera_crossings,
-                source_floor: standing_image(&node).unwrap_or(f64::NAN),
+                source_volume: standing_image(&node, source::VOLUME_PARAM).unwrap_or(f64::NAN),
+                source_muffle: standing_image(&node, source::MUFFLE_PARAM).unwrap_or(f64::NAN),
                 slot_pressure: voice.slot_pressure(),
             }
         })
@@ -858,22 +859,27 @@ fn capture_cats(level: &WaveLevel) -> Result<Vec<CatCapture>, String> {
         .collect()
 }
 
-/// The standing acoustic image a source's limbs are actually carrying —
-/// the `u_source_floor` instance uniform the level pushes each frame. Every
-/// limb of one source is pushed the same value, so the first that answers
-/// speaks for the source. `None` before any frame has driven it, which is a
-/// different fact from an image of zero (a source muffled to silence).
-fn standing_image(node: &Gd<Node>) -> Option<f64> {
+/// One half of the standing acoustic image a source's limbs are actually
+/// carrying — whichever instance uniform `param` names, read back off the
+/// mesh the level pushed it to. Every limb of one source is pushed the same
+/// value, so the first that answers speaks for the source. `None` before
+/// any frame has driven it, which is a different fact from a value of zero
+/// (a source muffled to silence).
+///
+/// Parameterised by name rather than split into two walkers because the two
+/// halves are pushed together, to the same limbs, by the same call: one
+/// missing and the other present would be a bug in `SourceRig::set_image`,
+/// and the snapshot reports each independently so that bug is visible
+/// rather than averaged away.
+fn standing_image(node: &Gd<Node>, param: &str) -> Option<f64> {
     if let Ok(limb) = node.clone().try_cast::<MeshInstance3D>()
-        && let Ok(image) = limb
-            .get_instance_shader_parameter(source::IMAGE_PARAM)
-            .try_to::<f64>()
+        && let Ok(value) = limb.get_instance_shader_parameter(param).try_to::<f64>()
     {
-        return Some(image);
+        return Some(value);
     }
     node.get_children()
         .iter_shared()
-        .find_map(|child| standing_image(&child))
+        .find_map(|child| standing_image(&child, param))
 }
 
 fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionary {
@@ -897,8 +903,11 @@ fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionar
     state.set("echoes", &echoes);
     let sources: Array<VarDictionary> = observation.sources.iter().map(source_dict).collect();
     for (index, source) in observation.sources.iter().enumerate() {
-        if source.source_floor.is_nan() {
-            unknown.push(&format!("sources[{index}].source_floor"));
+        if source.source_volume.is_nan() {
+            unknown.push(&format!("sources[{index}].source_volume"));
+        }
+        if source.source_muffle.is_nan() {
+            unknown.push(&format!("sources[{index}].source_muffle"));
         }
         if source.next_emit.is_nan() {
             unknown.push(&format!("sources[{index}].next_emit"));
@@ -968,7 +977,7 @@ fn source_dict(source: &SourceObservation) -> VarDictionary {
     entry.set("volume", source.volume);
     entry.set("reach", source.reach);
     entry.set("cadence", source.cadence);
-    // the same NaN-means-absent rule as source_floor below: a gate that
+    // the same NaN-means-absent rule as the standing image below: a gate that
     // cannot fire is holding an appointment it will never keep, and a date
     // that never arrives is worse than an admitted absence
     if !source.next_emit.is_nan() {
@@ -978,8 +987,11 @@ fn source_dict(source: &SourceObservation) -> VarDictionary {
     // NaN is the "never pushed" marker set by `standing_image`, and the one
     // value the uniform can never legitimately hold: the key is left out
     // and named in the snapshot's `unknown` instead of reported as a guess.
-    if !source.source_floor.is_nan() {
-        entry.set("source_floor", source.source_floor);
+    if !source.source_volume.is_nan() {
+        entry.set("source_volume", source.source_volume);
+    }
+    if !source.source_muffle.is_nan() {
+        entry.set("source_muffle", source.source_muffle);
     }
     entry.set("slot_pressure", source.slot_pressure);
     entry

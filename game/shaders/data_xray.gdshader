@@ -20,12 +20,12 @@ render_mode unshaded, cull_back, shadows_disabled, ambient_light_disabled, fog_d
 
 #include "res://shaders/data_core.gdshaderinc"
 
-// How strongly THIS source's standing image is felt right now: its own
-// volume, dimmed by SOURCE_THROUGH per wall between the camera and its hub.
-// The level computes it per source, per frame, on the CPU (WaveLevel's
-// tick_sources) and pushes it here.
+// THIS source's standing image, in its two independent halves: how loud its
+// silhouette stands on its own, and what survives of it across the walls
+// between it and the eye (SOURCE_THROUGH per crossing). The level computes
+// both per source, per frame, on the CPU (WaveLevel's tick_sources).
 //
-// It is an INSTANCE uniform, and both halves of that matter:
+// They are INSTANCE uniforms, and both halves of that matter:
 //   - per OBJECT rather than per fragment, so a source dims as a coherent
 //     whole instead of splitting bright/dim along a wall's screen edge,
 //     which is exactly how a per-fragment sight test would tear it;
@@ -34,17 +34,32 @@ render_mode unshaded, cull_back, shadows_disabled, ambient_light_disabled, fog_d
 //     fan and the loud radio brighten and dim as one object.
 // (The reveal from waves in flight is still per-fragment wall-occluded in
 // reveal_at, shared in the core.)
-instance uniform float u_source_floor = 0.0;
+instance uniform float u_source_volume = 0.0;
+instance uniform float u_source_muffle = 1.0;
 
 void vertex() {
 	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	v_label = CUSTOM0.x;
 }
 
+// rust/src/render/reveal.rs::source_image is the cargo-pinned reference.
+//
+// The ORDER is the law. The muffle multiplies the whole acoustic image —
+// the standing silhouette AND any wave currently washing this body — so a
+// wall can take something away. It used to arrive pre-multiplied into the
+// volume and enter as a floor under reveal_at, and a floor always lost: a
+// source's hub is unwalled from its own body by construction, so reveal_at
+// reads near 1.0 there however many walls stand between that source and the
+// player, and max() handed back the 1.0. The documented 0.30 / 0.09 / 0.027
+// ladder held only while the source happened to be silent.
+float source_image(float wave, float volume, float muffle) {
+	return clamp(muffle * max(wave, volume), 0.0, 1.0);
+}
+
 void fragment() {
 	// inside the acoustic-image band, ordered by TRUE distance: over every
 	// world fragment, but never over a nearer source than itself
 	DEPTH = source_depth(length(v_world - CAMERA_POSITION_WORLD));
-	float reveal = max(reveal_at(v_world), u_source_floor);
+	float reveal = source_image(reveal_at(v_world), u_source_volume, u_source_muffle);
 	ALBEDO = pack_data(reveal, v_world, CAMERA_POSITION_WORLD);
 }

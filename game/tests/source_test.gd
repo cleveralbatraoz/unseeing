@@ -77,18 +77,27 @@ func _assert_limb_winds_clockwise(limb: MeshInstance3D) -> int:
 	return witnessed
 
 
-## The standing acoustic image a source is currently carrying, read back
-## off its limbs — the value the x-ray skin will use as its reveal floor.
-## Fails the caller loudly if the limbs disagree, because a source that
-## dimmed unevenly would tear along its own seams.
+## The STANDING acoustic image a source is currently carrying, read back off
+## its limbs: what the x-ray skin draws for it while no wave is washing its
+## body, which is `u_source_muffle * u_source_volume` — the shader forms
+## `muffle * max(wave, volume)`, and with `wave` at zero that is this
+## product. The two uniforms are read separately and multiplied HERE rather
+## than by the level, because the level pushing a product is precisely the
+## bug this split exists to remove.
+##
+## Fails the caller loudly if the limbs disagree on either half, because a
+## source that dimmed unevenly would tear along its own seams.
 func _image_of(source: Node) -> float:
 	var limbs := _limbs(source, [] as Array[MeshInstance3D])
 	assert_bool(limbs.size() > 0).is_true()
-	var first: float = limbs[0].get_instance_shader_parameter("u_source_floor")
+	var volume: float = limbs[0].get_instance_shader_parameter("u_source_volume")
+	var muffle: float = limbs[0].get_instance_shader_parameter("u_source_muffle")
 	for limb: MeshInstance3D in limbs:
-		var value: float = limb.get_instance_shader_parameter("u_source_floor")
-		assert_float(value).is_equal_approx(first, 0.0001)
-	return first
+		var limb_volume: float = limb.get_instance_shader_parameter("u_source_volume")
+		var limb_muffle: float = limb.get_instance_shader_parameter("u_source_muffle")
+		assert_float(limb_volume).is_equal_approx(volume, 0.0001)
+		assert_float(limb_muffle).is_equal_approx(muffle, 0.0001)
+	return volume * muffle
 
 
 ## The level recognises a source by what it CAN DO. Two different classes,

@@ -203,7 +203,7 @@ impl INode3D for UnseeingGame {
         self.data_mat.set_render_priority(PRIORITY_WORLD);
         self.post_mat.set_shader(&post_shader);
         // the source image is LIVE: a source is always heard, its standing
-        // floor pushed per instance by the level (u_source_floor)
+        // image pushed per instance by the level (u_source_volume/u_source_muffle)
         self.source_mat.set_shader(&xray_shader);
         self.source_mat.set_render_priority(PRIORITY_SOURCES);
         // the hero's cane and body render at real depth like the world
