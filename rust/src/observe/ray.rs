@@ -9,7 +9,7 @@
 use godot::builtin::{Vector3, Vector4};
 
 use crate::level_plan::SOURCE_THROUGH;
-use crate::sight::{contains, crosses, crossings, crossings_from, reveal_visibility};
+use crate::sight::{blocked_from, contains, crosses, crossings, crossings_from, reveal_visibility};
 
 /// One wall's answer for one sight line.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,10 +76,14 @@ pub fn explain_ray(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32)
         walls,
         camera_crossings,
         source_crossings,
-        // sight::reveal_visibility is the law the GLSL source_reveal_vis
-        // transliterates; it reads off the SOURCE occluder, which skips
-        // the wall a source is born inside.
-        wave_transmission: reveal_visibility(source_crossings),
+        // The oracle asks the SAME predicate the shipped shader asks, not
+        // an equivalent restatement of it: `source_reveal_vis` in
+        // data_core.gdshaderinc is `wall_blocked_from(src, world) ? 0.0 :
+        // 1.0`, and this is its Rust twin composed the same way round.
+        // `source_crossings` above still reports the count, because a
+        // reader debugging a sight line wants to know how many walls stand
+        // there even though the law stops caring after the first.
+        wave_transmission: reveal_visibility(blocked_from(from, to, rects, wall_top)),
         // SOURCE_THROUGH is the source_muffle exponent base
         // (nodes/level.rs), which reads off sight::crossings — the CAMERA
         // occluder, every wall counted.

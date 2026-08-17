@@ -188,16 +188,20 @@ pub fn blocked_from(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32
 /// wall alike, and a parameter that cannot change the answer would be a
 /// lie about the domain.
 ///
-/// `source_crossings` comes from [`crossings_from`], which skips the wall
-/// a source is born inside, so a sound struck flush on a wall still
-/// lights that wall's own near face.
+/// `blocked` comes from [`blocked_from`], which skips the wall a source is
+/// born inside, so a sound struck flush on a wall still lights that wall's
+/// own near face. It takes the PREDICATE and not a crossing count on
+/// purpose: a count would imply the answer could depend on how many walls
+/// stood there, and it cannot — one is a barrier exactly as ten are, and a
+/// parameter that cannot change the answer is a lie about the domain.
 ///
 /// The GLSL `source_reveal_vis` in `game/shaders/data_core.gdshaderinc`
-/// transliterates this function; the two are held in step by
+/// transliterates this composition — `wall_blocked_from(src, world) ? 0.0 :
+/// 1.0` — and the two are held in step by
 /// `game/tests/shader_contract_test.gd`.
 #[must_use]
-pub const fn reveal_visibility(source_crossings: u32) -> f64 {
-    if source_crossings == 0 { 1.0 } else { 0.0 }
+pub const fn reveal_visibility(blocked: bool) -> f64 {
+    if blocked { 0.0 } else { 1.0 }
 }
 
 #[cfg(test)]
@@ -504,18 +508,53 @@ mod tests {
         );
     }
 
-    /// The reveal law is TOTAL and kind-free: a wave reveals fully when no
-    /// wall stands between its source and the lit point, and reveals
-    /// NOTHING once one does. Catches the break this branch exists to fix —
-    /// any per-kind transmission privilege reintroduced here (a hum
-    /// surviving at 0.55, say) makes the second assertion fail. The third
-    /// pins that more walls cannot resurrect a wave.
+    /// The reveal law is TOTAL and kind-free: a wave reveals fully on a
+    /// clear line and NOTHING once a wall stands in the way. Catches the
+    /// break this branch exists to fix — any per-kind transmission
+    /// privilege reintroduced here (a hum surviving at 0.55, say) makes one
+    /// of these fail, because there is no third answer to return.
     #[test]
     fn a_wall_extinguishes_a_wave_whatever_made_it() {
-        assert!((reveal_visibility(0) - 1.0).abs() < 1e-12);
-        assert!(reveal_visibility(1).abs() < 1e-12);
-        assert!(reveal_visibility(2).abs() < 1e-12);
-        assert!(reveal_visibility(u32::MAX).abs() < 1e-12);
+        assert!((reveal_visibility(false) - 1.0).abs() < 1e-12);
+        assert!(reveal_visibility(true).abs() < 1e-12);
+    }
+
+    /// ...and the composition the GLSL actually performs, over the real
+    /// geometry rather than over a bare bool: the same westward line is
+    /// full reveal through the divider's opening and none at all through
+    /// the wall beside it. This is the assertion that fails if
+    /// `reveal_visibility` is ever composed with the wrong predicate — with
+    /// the CAMERA occluder, say, which on the birth-wall geometry disagrees.
+    #[test]
+    fn the_reveal_law_composes_with_the_source_occluder() {
+        let rects = retired_map_rects();
+        let top = WALL_TOP;
+        let through = reveal_visibility(blocked_from(
+            Vector3::new(8.6, 0.9, 10.2),
+            Vector3::new(3.0, 0.9, 10.2),
+            &rects,
+            top,
+        ));
+        let beside = reveal_visibility(blocked_from(
+            Vector3::new(8.6, 0.9, 4.0),
+            Vector3::new(3.0, 0.9, 4.0),
+            &rects,
+            top,
+        ));
+        assert!((through - 1.0).abs() < 1e-12);
+        assert!(beside.abs() < 1e-12);
+        // and the birth wall stays skipped through the composition: a
+        // source standing on the divider's own centerline still lights east
+        assert!(
+            (reveal_visibility(blocked_from(
+                Vector3::new(6.4, 0.9, 4.0),
+                Vector3::new(10.0, 0.9, 4.0),
+                &rects,
+                top
+            )) - 1.0)
+                .abs()
+                < 1e-12
+        );
     }
 
     /// The three lines whose ANSWER the whole barrier law turns on, hand
@@ -576,26 +615,16 @@ mod tests {
             &rects,
             WALL_TOP
         ));
-        // and the reveal law agrees on both, since it reads the same count
-        assert!(
-            (reveal_visibility(crossings_from(
-                Vector3::new(8.6, 0.9, 10.2),
-                through,
-                &rects,
-                WALL_TOP
-            )) - 1.0)
-                .abs()
-                < 1e-12
+        // and the counter agrees with the predicate on both, so the two
+        // Rust forms of the source occluder cannot drift apart on the very
+        // geometry the law is stated over
+        assert_eq!(
+            crossings_from(Vector3::new(8.6, 0.9, 10.2), through, &rects, WALL_TOP),
+            0
         );
-        assert!(
-            reveal_visibility(crossings_from(
-                Vector3::new(8.6, 0.9, 4.0),
-                beside,
-                &rects,
-                WALL_TOP
-            ))
-            .abs()
-                < 1e-12
+        assert_eq!(
+            crossings_from(Vector3::new(8.6, 0.9, 4.0), beside, &rects, WALL_TOP),
+            1
         );
     }
 
