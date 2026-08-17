@@ -1,15 +1,16 @@
 //! The radio — a [`SoundSource`] with a body, and the proof that "sound
 //! source" is an abstraction rather than a word for "the fan". Every law it
-//! obeys it obeys through [`super::source`]: kind-3 waves that pass walls
-//! muffled, the always-on-top acoustic image, the volume ladder, the
-//! cadence gate. Not one of them is written twice.
+//! obeys it obeys through [`super::source`]: kind-3 waves that stop dead at
+//! a wall like any other sound, the always-on-top acoustic image felt
+//! muffled through one, the volume ladder, the cadence gate. Not one of
+//! them is written twice.
 //!
 //! What makes it a RADIO and not a fan is two things, and they are exactly
 //! the two the pure [`radio_wave`] module pins:
 //!
 //! - **It is the loudest thing in the world** (full volume against the
-//!   fan's three quarters), so by the volume law it reaches further and is
-//!   felt more strongly through a wall.
+//!   fan's three quarters), so by the volume law its waves reach further
+//!   and its silhouette is felt more strongly through a wall.
 //! - **It does not aim.** Nothing on a radio moves and nothing points: its
 //!   waves are an even sphere, so walking around it changes nothing, where
 //!   walking around a fan changes everything.

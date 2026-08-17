@@ -47,7 +47,9 @@ func test_priorities_stack_the_perceptual_ladder() -> void:
 
 ## The wall table reaches every skin that occludes by it — the world
 ## (reveal occlusion), the sources (per-object silhouette muffle) and the
-## hearing pass (player-shell cut). The cane keeps its own standing floor
+## hearing pass (the shell cut, which is every ring's and not just the
+## hero's, plus the x-rayed-source ring guard). The cane keeps its own
+## standing floor
 ## (u_base 0.85); the source skin has NO material-wide floor at all, because
 ## each source carries its own per instance.
 func test_wall_table_reaches_every_occluding_skin() -> void:

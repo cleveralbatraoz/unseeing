@@ -623,8 +623,8 @@ Narrative subject; body explains the documentation now matches the shipped law a
 - [ ] `cargo test` green at 463, `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean.
 - [ ] gdUnit4 green with suite and case counts recorded and not below baseline.
 - [ ] `./ci/pipeline.sh` green end to end.
-- [ ] `tools/probe_visibility.sh` run by hand, passing twice, with numbers recorded — **and** proven to fail against the old law.
-- [ ] `grep -rn "HUM_THROUGH"` returns nothing outside `docs/`.
+- [ ] `tools/probe_visibility.sh` run by hand, passing twice, with numbers recorded — **and** proven to fail against the old law. The failure must be attributable to the wall law: an absolute reading of a swept source can go dark for a phase of the sweep, and an uninvited tap can light the room, so a run that fails for either reason does not discharge this box.
+- [ ] `grep -rn "HUM_THROUGH"` returns nothing outside `docs/` **and** `game/tests/`, whose two absence assertions must name the identifier in order to forbid it (Task 3 Step 3 adds them). Note this grep is a tripwire, not the guard — see Task 3.
 - [ ] Mutation evidence recorded for every item in Task 1 Step 13 and Task 5 Step 2, including any mutation nothing catches.
 - [ ] Wiki rewritten to the shipped law.
 - [ ] Code review requested and its findings verified against the codebase before acceptance.

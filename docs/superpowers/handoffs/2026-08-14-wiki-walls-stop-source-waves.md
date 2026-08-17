@@ -47,15 +47,27 @@ through one wall and 30% through two, while a player's tap was cut to zero. In
 wall.
 
 `HUM_THROUGH` no longer exists in any Rust or shader file. There is no per-kind
-transmission constant to tune, and adding one back would fail
-`game/tests/data_skins_test.gd`, which asserts the identifier is absent from all
-three shader files.
+transmission constant to tune. `game/tests/data_skins_test.gd` asserts the
+identifier is absent, but do not read that as the guard: a grep for one name is
+satisfied by the same constant under any other, so the assertion that actually
+holds the law is that BOTH wave passes reach the wall table through one
+bool-valued predicate — there is no fraction left for a survival factor to
+live in. The absence check is a tripwire for a literal revert, no more — it
+covers all three shader files.
 
 ### Shells in the air
 
 The same rule governs the travelling ring, not just the surfaces it lights.
-`game/shaders/hearing_post.gdshader` cuts every shell at the world with a single
-kind-independent test. A source in another room is therefore silent.
+`game/shaders/hearing_post.gdshader` asks `wall_blocked_from` of the pulse's
+own origin before drawing a shell sample, exactly as the data core asks it of
+the surfaces that shell lights. A source in another room is therefore silent.
+
+**Corrected 2026-08-17.** This section originally claimed that silence on the
+strength of `if (t >= scene_d || seen_walled) { continue; }`, which does not
+deliver it: both terms are keyed to the CAMERA, and a source's sphere that has
+grown past a wall meets the view ray in FRONT of that wall, inside the hero's
+own air, where the depth test passes it. The ring kept crossing. The
+source-keyed test above is what makes the sentence true.
 
 Kind still changes how a shell *looks* once it is drawn — a hum has a diffuse
 body where a tap is a thin grazing ring — but never whether a wall stops it.
@@ -117,14 +129,27 @@ Two traps in that probe are worth knowing before trusting a green result:
 - `_peak_r` clamps an off-screen sample point to the image border, which is
   black. A mis-aimed check therefore passes while measuring nothing. Prove a new
   check can FAIL — against a deliberately broken law — before believing that it
-  passes.
-- The probe's source-reveal case is an *absolute* reading with no before/after
-  subtraction to cancel a stray wave, so the run must contain no sound the probe
-  did not itself queue. It seeds with `UNSEEING_SEED` for that reason and must
-  never be switched to `UNSEEING_DEMO`, which also arms an automatic tap every
-  four seconds (`rust/src/demo_tap.rs`).
+  passes. The doorway control added 2026-08-17 is the standing guard against
+  this: it asserts a reading that must be BRIGHT, which no mis-aim satisfies.
+- Every case is a before/after DELTA, and the source cases take theirs across
+  the fan's own `volume` knob rather than across a player tap. An absolute
+  darkness reading cannot work on a swept source: `data_core` gates on
+  `pulse_cone` before it consults the wall table, so the sample points leave
+  the fan's wash for part of every 11.42 s oscillation and read dark whatever
+  the wall law grants. `--fixed-fps` pins that phase across boots.
+- The run must still stay quiet, because an emitter that MOVES between the two
+  readings does not subtract out. It seeds with `UNSEEING_SEED` and must never
+  be switched to `UNSEEING_DEMO`, which arms an automatic tap every four
+  seconds (`rust/src/demo_tap.rs`); the probe frees the level's creatures for
+  the same reason, since `level_01`'s cat speaks kind-2 pulses inside the very
+  room the spawn cases measure.
 
-Recorded evidence for the current law, measured on Apple A18 Pro / OpenGL 4.1
-Metal / Godot 4.7.1: with the old muffling law restored the spawn-room check
-fails at a leak of 0.263 and 0.165 in two separate sessions; with the shipped
-law it reads 0.000, reproduced across a cold and a warm boot.
+Recorded evidence, measured on Apple A18 Pro / OpenGL 4.1 Metal / Godot 4.7.1:
+with the old muffling law restored the spawn-room check failed at a leak of
+0.263 and 0.165 in two separate sessions; with the shipped law it read 0.000,
+reproduced across a cold and a warm boot. Read those three numbers with care —
+they were taken as ABSOLUTE readings, before the delta form, and the 0.263 run
+predates the `UNSEEING_DEMO` removal, so it includes an uninvited tap. They
+substantiate the reveal only: every one of them was taken with the hearing quad
+hidden, so no measurement on any GPU had looked at the shell until the case
+added 2026-08-17.

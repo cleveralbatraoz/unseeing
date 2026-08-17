@@ -1,7 +1,8 @@
 # Walls stop every source wave
 
 Date: 2026-08-14
-Status: approved design, not yet implemented
+Status: implemented (reveal 2026-08-14; shell corrected 2026-08-17 — see
+"The shell")
 
 ## Problem
 
@@ -99,6 +100,33 @@ The intended shape is one rule for every kind, with `mute` deleted:
 ```glsl
 if (t >= scene_d || seen_walled) { continue; }
 ```
+
+**Revised 2026-08-17 — the shape above does not bar anything.** Both of its
+terms are keyed to the CAMERA: `scene_d` is the packed depth of the surface
+visible at this pixel, and `seen_walled` asks whether *that surface* lies
+behind a wall. Neither mentions the walls between the SOUND and the air it
+paints, so this rule does not stop a source's shell from crossing a wall —
+it only stops the eye from seeing air the world hides. The two coincide
+solely while the sound was made on the camera's side of the world, which is
+true of a tap, a footstep and their echoes and never of a world source in
+another room: once such a source's sphere has grown past the wall, the view
+ray meets it at a NEAR root in FRONT of that wall, inside the hero's own
+air, where the depth test passes it. The part of the shell this rule still
+draws is precisely the part that leaked through.
+
+The shipped shape therefore adds the wave's own law beside the camera's,
+asked of the pulse's origin through the same predicate the reveal asks:
+
+```glsl
+if (t >= scene_d || seen_walled) { continue; }
+...
+if (wall_blocked_from(u_ppos[i], hp)) { continue; }
+```
+
+placed after the cone rejection, because it is a per-fragment wall walk per
+live pulse per sphere root. `sight::blocked_from` and its GLSL twin answer
+the source occluder as a bool with an early exit, which is what pays for it;
+no reader needs a count once a wall is a barrier rather than a fade.
 
 `seen_walled` extends to source shells on purpose. It exists because the
 always-on-top source skins corrupt packed depth at their own pixels, so
