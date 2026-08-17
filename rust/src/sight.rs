@@ -153,6 +153,31 @@ pub fn crossings_from(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f
         .sum()
 }
 
+/// Does ANY wall stand between a sound's source and `to`? The SOURCE
+/// occluder as a predicate — [`crossings_from`]'s question without its
+/// arithmetic.
+///
+/// A wall is a barrier and not a fade, so no reader of the source occluder
+/// needs the count any more: one wall extinguishes a wave exactly as ten
+/// do. This returns on the FIRST wall it finds instead of testing all
+/// [`MAXW`] of them, which is what makes the law affordable in the hearing
+/// pass, where it is now paid per fragment per live pulse per sphere root
+/// rather than once per fragment.
+///
+/// The birth wall is skipped exactly as [`crossings_from`] skips it, so a
+/// tap struck flush on a wall still reaches that wall's own near face.
+///
+/// The GLSL `wall_blocked_from` in `game/shaders/pulse_pool.gdshaderinc`
+/// transliterates this function, and both of its readers —
+/// `source_reveal_vis` in `data_core.gdshaderinc` and the shell loop in
+/// `hearing_post.gdshader` — ask it rather than a count.
+#[must_use]
+pub fn blocked_from(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32) -> bool {
+    rects
+        .iter()
+        .any(|r| !contains(*r, from, wall_top) && crosses(from, to, *r, wall_top))
+}
+
 /// How much of a wave's REVEAL survives the walls between its source and
 /// the lit point.
 ///
@@ -491,5 +516,80 @@ mod tests {
         assert!(reveal_visibility(1).abs() < 1e-12);
         assert!(reveal_visibility(2).abs() < 1e-12);
         assert!(reveal_visibility(u32::MAX).abs() < 1e-12);
+    }
+
+    /// The three lines whose ANSWER the whole barrier law turns on, hand
+    /// derived against `retired_map_rects` rather than against the counter:
+    /// a line inside one room meets no wall, spawn-to-fan meets
+    /// DividerNorth, and a source standing on that same divider's
+    /// centerline reaches east past it because the birth wall is skipped.
+    /// A `blocked_from` that dropped the `contains` skip would report the
+    /// third as blocked; one that answered the complement would fail all
+    /// three.
+    #[test]
+    fn blocked_from_reads_the_source_occluder() {
+        let rects = retired_map_rects();
+        assert!(!blocked_from(
+            Vector3::new(3.0, 0.9, 4.0),
+            Vector3::new(5.0, 0.9, 6.0),
+            &rects,
+            WALL_TOP
+        ));
+        assert!(blocked_from(
+            Vector3::new(3.0, 0.9, 4.0),
+            Vector3::new(8.6, 1.15, 4.4),
+            &rects,
+            WALL_TOP
+        ));
+        assert!(!blocked_from(
+            Vector3::new(6.4, 0.9, 4.0),
+            Vector3::new(10.0, 0.9, 4.0),
+            &rects,
+            WALL_TOP
+        ));
+    }
+
+    /// `blocked_from` exists only to stop walking walls once the answer can
+    /// no longer change — the hearing pass now pays this walk per fragment
+    /// per pulse — so it must agree with `crossings_from(..) > 0` on EVERY
+    /// line, not merely on the three hand-derived above. Swept over a grid
+    /// that variously misses every wall, clips one, crosses two, grazes an
+    /// endpoint and starts inside a wall: an early return placed on the
+    /// wrong branch, a lost birth-wall skip, or a loop that stops before
+    /// the last rect all disagree somewhere in the sweep. The grid is
+    /// asserted to contain all three verdicts, so a fixture that drifted
+    /// into testing only one of them fails instead of passing vacuously.
+    #[test]
+    fn blocked_from_agrees_with_counting_on_every_line() {
+        let rects = retired_map_rects();
+        let mut blocked = 0;
+        let mut clear = 0;
+        let mut born_in_wall = 0;
+        for i in 0..24_u8 {
+            for j in 0..24_u8 {
+                let from = Vector3::new(0.5 + f32::from(i) * 0.85, 0.9, 0.5 + f32::from(j) * 0.85);
+                for k in 0..8_u8 {
+                    let a = f32::from(k) * std::f32::consts::FRAC_PI_4;
+                    let to = from + Vector3::new(a.cos() * 7.0, 0.0, a.sin() * 7.0);
+                    let counted = crossings_from(from, to, &rects, WALL_TOP) > 0;
+                    assert_eq!(
+                        blocked_from(from, to, &rects, WALL_TOP),
+                        counted,
+                        "{from:?} -> {to:?}"
+                    );
+                    if counted {
+                        blocked += 1;
+                    } else {
+                        clear += 1;
+                    }
+                    if rects.iter().any(|r| contains(*r, from, WALL_TOP)) {
+                        born_in_wall += 1;
+                    }
+                }
+            }
+        }
+        assert!(blocked > 100, "grid never crossed a wall: {blocked}");
+        assert!(clear > 100, "grid never had a clear line: {clear}");
+        assert!(born_in_wall > 0, "grid never started inside a wall");
     }
 }

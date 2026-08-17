@@ -60,7 +60,7 @@ func test_pool_carries_the_shared_wall_table() -> void:
 ## The GLSL slab test is a literal transliteration of sight.rs, pinned in
 ## the pulse-pool include: the same graze window (t strictly inside
 ## 0.001..0.999), the same axis-parallel degeneration, and the birth-wall
-## skip of the SOURCE occluder (crossings_from) — a "harmless" rewrite of
+## skip of the SOURCE occluder (blocked_from) — a "harmless" rewrite of
 ## either side trips the contract.
 func test_pool_slab_test_mirrors_the_rust_reference() -> void:
 	var src := _text(POOL_PATH)
@@ -79,8 +79,14 @@ func test_pool_slab_test_mirrors_the_rust_reference() -> void:
 
 ## The muffle vocabulary is gone outright: a wall stops a wave dead, whether
 ## the wave reveals geometry (data_core) or carries a shell through the air
-## (hearing_post's player rings and a standing source's hum alike). No file
-## may still speak HUM_THROUGH, the old "passes muffled" escape hatch.
+## (hearing_post's player rings and a standing source's hum alike).
+##
+## Absence of the identifier `HUM_THROUGH` is the WEAK half of this and is
+## kept only to catch a literal revert; on its own it is satisfied by the
+## same constant under any other name. The load-bearing half is that BOTH
+## wave readers reach the wall table through the one kind-free predicate,
+## and that neither multiplies its result by anything: a surviving fraction
+## has nowhere to live once the only wall answer is a bool.
 func test_no_shader_lets_a_wave_through_a_wall() -> void:
 	for path: String in [POOL_PATH, CORE_PATH, POST_PATH]:
 		(
@@ -90,15 +96,29 @@ func test_no_shader_lets_a_wave_through_a_wall() -> void:
 			)
 			. is_false()
 		)
+	# the wall answer is a BOOL in both languages, so there is no fraction
+	# to raise to a power and no exponent to tune
+	assert_str(_text(POOL_PATH)).contains("bool wall_blocked_from(vec3 from, vec3 to)")
+	assert_str(_text(CORE_PATH)).contains("wall_blocked_from(src, world) ? 0.0 : 1.0")
+	assert_str(_text(POST_PATH)).contains("if (wall_blocked_from(u_ppos[i], hp)) { continue; }")
 
 
-## The hearing pass never washes a player-made ring over an x-ray surface
-## seen through a wall: it tests once per pixel whether the visible surface
-## lies behind a wall (any always-on-top source) and drops player shells
-## there — depth alone can't, since a source corrupts it at its own pixels.
-## And a source's OUTLINE is gated by its OWN dim reveal on BOTH sides of
-## its silhouette (its pixels AND the wall pixels touching it), never by the
-## lit wall behind it — so tapping that wall can't flare its edge.
+## The CAMERA half of the hearing pass's occlusion — a different law from
+## the wall barrier, and this case covers only this half (the barrier is
+## test_no_shader_lets_a_wave_through_a_wall above, and
+## shader_contract_test.gd's shell case).
+##
+## No ring washes an x-ray surface seen through a wall: the pass tests once
+## per pixel whether the visible surface lies behind a wall (any
+## always-on-top source) and drops shells there — depth alone can't, since a
+## source corrupts it at its own pixels. And a source's OUTLINE is gated by
+## its OWN dim reveal on BOTH sides of its silhouette (its pixels AND the
+## wall pixels touching it), never by the lit wall behind it — so tapping
+## that wall can't flare its edge.
+##
+## NOTE the depth/seen_walled line below is byte-identical to what shipped
+## before the barrier law, so it discriminates nothing about that law; it
+## is here for the camera half only.
 func test_hearing_pass_never_washes_player_rings_on_an_xrayed_source() -> void:
 	var src := _text(POST_PATH)
 	assert_str(src).contains("bool seen_walled = wall_crossings(cam, seen_pt) > 0;")

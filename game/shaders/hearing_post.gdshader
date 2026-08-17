@@ -119,16 +119,39 @@ void fragment() {
 			float t = -b + (s == 0 ? -sq : sq);
 			if (t <= 0.05) { continue; }
 			vec3 hp = cam + rd * t;
-			// EVERY ring dies at the world, whatever made it, and none
-			// washes an x-rayed source seen through a wall. seen_walled is
-			// not redundant with the depth test: the always-on-top source
-			// skins corrupt packed depth at their own pixels, so scene_d
-			// alone cannot be trusted on a ray that reaches a source
-			// through a wall.
+			// Two DIFFERENT laws cut a ring, and both are needed.
+			//
+			// First the CAMERA's: the eye cannot see air the world stands
+			// in front of, and none of it washes an x-rayed source seen
+			// through a wall. seen_walled is not redundant with the depth
+			// test — the always-on-top source skins corrupt packed depth at
+			// their own pixels, so scene_d alone cannot be trusted on a ray
+			// that reaches a source through a wall.
 			if (t >= scene_d || seen_walled) { continue; }
 			vec3 sn = (hp - u_ppos[i]) / radius;
 			float cone = pulse_cone(cn, sn);
 			if (cone <= 0.0) { continue; }
+			// ...and then the WAVE's, which the depth test above cannot
+			// stand in for. A wall is a barrier no sound crosses, so this
+			// ring only exists here if the sound could REACH here from its
+			// own origin — the same wall_blocked_from, keyed to the same
+			// u_ppos[i], that data_core's source_reveal_vis asks of the
+			// surfaces this ring lights.
+			//
+			// The depth test agrees with it only while the sound was made
+			// on the camera's side of the world. It never is for a world
+			// source in another room: that sphere, once it has grown past
+			// the wall, meets the view ray at a NEAR root in front of the
+			// wall — inside the hero's own air, where t < scene_d — so the
+			// one part of the shell the depth test still draws is exactly
+			// the part that leaked through. Kind does not enter here any
+			// more than it does in the reveal.
+			//
+			// Paid LAST on purpose: this is a per-fragment wall walk per
+			// live pulse per sphere root, so it sits behind the disc, the
+			// t, the depth and the cone rejections, which are all arithmetic
+			// on values already in hand.
+			if (wall_blocked_from(u_ppos[i], hp)) { continue; }
 			float grz = 1.0 - abs(dot(rd, sn));
 			// a hum's shell has a diffuse body, not just a grazing ring — a
 			// constant source is a throb the whole room can feel

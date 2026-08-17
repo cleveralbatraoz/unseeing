@@ -87,22 +87,23 @@ func test_data_core_reads_the_per_vertex_label_into_g() -> void:
 		)
 
 
-## The data core counts the walls between a source and the lit point and
-## extinguishes the reveal once there is one, for every kind alike: a wall
-## is a barrier, not a muffle, and no kind buys a wave passage through it.
+## The data core asks the wall table whether a wave could REACH the lit
+## point from its own source, and extinguishes the reveal once a wall
+## stands there, for every kind alike: a wall is a barrier, not a muffle,
+## and no kind buys a wave passage through it.
+##
 ## Pins the shipped gate EXPRESSION — including its polarity — as source
-## text, so a silent inversion (`!= 0`, lighting only what sits BEHIND a
-## wall) cannot pass unnoticed. This does not execute the GLSL: it proves
-## only that the source text still says what it must, not that the shader
+## text, so a silent inversion (lighting only what sits BEHIND a wall)
+## cannot pass unnoticed. This does not execute the GLSL: it proves only
+## that the source text still says what it must, not that the shader
 ## behaves; behavioural proof is the rendered probe,
 ## game/tests/probe/occlusion_probe.gd. Cross-referenced against
-## rust/src/sight.rs::reveal_visibility, the cargo-pinned law this
-## transliterates.
+## rust/src/sight.rs::blocked_from and ::reveal_visibility, the
+## cargo-pinned laws this transliterates.
 func test_data_core_occludes_reveal_by_the_wall_table() -> void:
 	var core := _read(CORE_PATH)
 	assert_str(core).contains("float source_reveal_vis(vec3 src, vec3 world)")
-	assert_str(core).contains("wall_crossings_from(src, world)")
-	assert_str(core).contains("return wall_crossings_from(src, world) == 0 ? 1.0 : 0.0;")
+	assert_str(core).contains("return wall_blocked_from(src, world) ? 0.0 : 1.0;")
 	(
 		assert_bool(core.contains("HUM_THROUGH"))
 		. append_failure_message(
@@ -111,8 +112,56 @@ func test_data_core_occludes_reveal_by_the_wall_table() -> void:
 		. is_false()
 	)
 	var pool := _include_text()
-	assert_str(pool).contains("int wall_crossings_from(vec3 from, vec3 to)")
+	assert_str(pool).contains("bool wall_blocked_from(vec3 from, vec3 to)")
 	assert_str(pool).contains("bool wall_contains(vec4 rect, vec3 p, float top)")
+
+
+## THE SHELL OBEYS THE SAME LAW AS THE REVEAL, and this is the assertion
+## that says so. It is deliberately NOT a restatement of the depth test:
+## `if (t >= scene_d || seen_walled) { continue; }` is byte-identical to
+## what shipped before 2026-08-14 (`git show origin/main` proves it), and
+## `contains` is indentation-blind, so pinning that line alone is green on
+## a tree where a source's ring still crosses walls — it discriminates
+## nothing about this law.
+##
+## What must be pinned is the SOURCE-keyed cut: the ring is drawn only
+## where the sound could have reached, asked of `u_ppos[i]` — the pulse's
+## own origin — through the same predicate the reveal asks of it. A depth
+## test against the eye answers a different question and agrees only while
+## the sound was made on the camera's side of the world, which a world
+## source in another room never is.
+##
+## Pinned alongside it: the accumulation expression, so that no second
+## per-kind attenuation factor can be reintroduced there under any name
+## (the deleted privilege was exactly such a factor, `env * mute * cone`).
+func test_hearing_pass_cuts_every_shell_at_the_wall_that_made_it_unreachable() -> void:
+	var post := _read(HEARING_POST_PATH)
+	(
+		assert_bool(post.contains("if (wall_blocked_from(u_ppos[i], hp)) { continue; }"))
+		. append_failure_message(
+			(
+				"hearing_post draws a ring without asking whether the sound could reach it; "
+				+ "a source in another room would be heard through the wall"
+			)
+		)
+		. is_true()
+	)
+	# the ring's brightness, with nothing between `env` and `cone` to hold a
+	# resurrected per-wall survival fraction
+	assert_str(post).contains(
+		"col += vec3(env * cone * (body + (1.0 - body) * pow(max(grz, 0.0), 4.0))"
+	)
+	# and the source-keyed cut must be paid AFTER the cheap rejections, or
+	# it buys the per-fragment wall walk on fragments already thrown away
+	(
+		assert_bool(
+			(
+				post.find("if (cone <= 0.0) { continue; }")
+				< post.find("if (wall_blocked_from(u_ppos[i], hp))")
+			)
+		)
+		. is_true()
+	)
 
 
 ## The numeric value of `const <type> NAME = <number>;` in the include, or

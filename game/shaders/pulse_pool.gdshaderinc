@@ -23,12 +23,20 @@ uniform vec4 u_pdat[MAXP];
 uniform vec4 u_pdir[MAXP];
 
 // The level's walls as world XZ occluder rects (min_x, min_z, max_x,
-// max_z), swept y in [0, u_wall_top] — pushed by the level. TWO readers
-// share them: the data core occludes a source's REVEAL by them (a wall
-// stops a wave from lighting a surface), and the hearing pass cuts a
-// player sound's SHELL by them (the ring in the air does not pass a wall
-// — and because the always-on-top skins corrupt the packed depth at their
-// pixels, the shell must test the walls analytically, not lean on depth).
+// max_z), swept y in [0, u_wall_top] — pushed by the level. Both wave
+// passes read them through the SAME law, whatever kind made the wave: the
+// data core refuses a source's REVEAL past a wall (a wall stops a wave
+// from lighting a surface), and the hearing pass refuses its SHELL past
+// one (the ring in the air does not pass a wall either). Both ask
+// wall_blocked_from, keyed to the SOUND'S OWN ORIGIN — a depth test
+// against the eye is a different question and answers it correctly only
+// while the sound was made on the camera's side of the world.
+//
+// The CAMERA occluder (wall_crossings) is the separate law: it dims a
+// source's SILHOUETTE per wall and drops a ring over an x-rayed source,
+// and it must test the walls analytically rather than lean on depth,
+// because the always-on-top skins corrupt the packed depth at their own
+// pixels.
 // rust/src/sight.rs is the cargo-pinned reference this GLSL transliterates.
 const int MAXW = 32;
 uniform int u_wall_count = 0;
@@ -70,7 +78,7 @@ bool wall_crosses(vec3 from, vec3 to, vec4 rect, float top) {
 }
 
 // sight.rs::crossings — the CAMERA occluder: every wall the sight line
-// pierces (the source-silhouette muffle, and the player-shell cut).
+// pierces (the source-silhouette muffle, and the x-rayed-source ring cut).
 int wall_crossings(vec3 from, vec3 to) {
 	int n = 0;
 	for (int i = 0; i < MAXW; i++) {
@@ -86,17 +94,23 @@ bool wall_contains(vec4 rect, vec3 p, float top) {
 			&& p.y >= 0.0 && p.y <= top;
 }
 
-// sight.rs::crossings_from — the SOURCE occluder: every wall between the
-// source and the lit point EXCEPT the one the source is born inside (a
-// tap struck flush on a wall lights its own near face).
-int wall_crossings_from(vec3 from, vec3 to) {
-	int n = 0;
+// sight.rs::blocked_from — the SOURCE occluder, asked as the PREDICATE it
+// really is: does ANY wall stand between the source and the point, except
+// the one the source is born inside (a tap struck flush on a wall lights
+// its own near face)?
+//
+// A wall is a barrier and not a fade, so neither reader needs a count —
+// one wall extinguishes a wave exactly as ten do. Returning on the FIRST
+// wall found instead of walking all MAXW slots is what keeps the law
+// affordable in the hearing pass, which pays it per fragment per live
+// pulse per sphere root where the data core pays it once per fragment.
+bool wall_blocked_from(vec3 from, vec3 to) {
 	for (int i = 0; i < MAXW; i++) {
 		if (i >= u_wall_count) { break; }
 		if (wall_contains(u_walls[i], from, u_wall_top)) { continue; }
-		if (wall_crosses(from, to, u_walls[i], u_wall_top)) { n++; }
+		if (wall_crosses(from, to, u_walls[i], u_wall_top)) { return true; }
 	}
-	return n;
+	return false;
 }
 
 float pulse_type(vec4 d) {

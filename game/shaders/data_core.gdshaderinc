@@ -72,12 +72,15 @@ float source_depth(float dist) {
 // a reflection is stopped by a wall like any sound — the reflection ray
 // only decides where the echo is BORN, never that its reveal may pass
 // through a wall.
-// crossings_from skips the wall the source is born inside, so a tap or an
-// echo struck ON a wall still lights that wall's own near face.
+// wall_blocked_from skips the wall the source is born inside, so a tap or
+// an echo struck ON a wall still lights that wall's own near face.
 // rust/src/sight.rs::reveal_visibility is the cargo-pinned reference this
-// transliterates.
+// transliterates, over rust/src/sight.rs::blocked_from's verdict.
+// hearing_post.gdshader's shell loop asks the SAME predicate of the same
+// origin, so the ring in the air and the surfaces it lights stop at one
+// wall together.
 float source_reveal_vis(vec3 src, vec3 world) {
-	return wall_crossings_from(src, world) == 0 ? 1.0 : 0.0;
+	return wall_blocked_from(src, world) ? 0.0 : 1.0;
 }
 
 // How strongly the waves in flight reveal this world point: the struck
