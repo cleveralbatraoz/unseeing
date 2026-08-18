@@ -1,8 +1,19 @@
 //! The free shapes a designer fills a room with — everything that is not a
-//! wall. A prop carries no technical contract: it does not occlude the
-//! sight tests, it may be rotated to any angle, and the waves outline it
-//! from wherever they find it. All three reach the level through the one
-//! [`WaveSolid`] door, so the level never names them.
+//! wall. All three reach the level through the one [`WaveSolid`] door, so
+//! the level never names them, and any of them may be rotated to any angle.
+//!
+//! A prop's ONE technical contract is its geometry, and it is worth knowing
+//! before placing one. This module's doc used to say a prop "carries no
+//! technical contract: it does not occlude the sight tests"; that is no
+//! longer true and was never deliberate. Occlusion is decided by
+//! [`crate::level_plan::spans_the_corridor`] — floor to ceiling within
+//! `SPAN_EPS`, and at least `2 * WALL_T` across — and never by class. A
+//! pillar and a standpipe are the same node type and differ only in radius,
+//! and one of them stops every wave in the room while the other stops none.
+//! Each class therefore carries a read-only `stops_sound` and a
+//! `sound_verdict` sentence in the Inspector, derived from the same function
+//! the occluder table is built with, so the answer needs no programmer.
+//! Admission is not free: it spends one of `sight::MAXW` occluder slots.
 //!
 //! Three shapes, because in a contours-only world the SILHOUETTE is the
 //! whole of an object and three silhouettes is three vocabularies:
@@ -52,6 +63,7 @@ use super::solid::{
     self, BOX_ORDINALS, LIMBS, SignFold, Skin, WaveSolid, build_body, build_box, clear_limbs,
     warnings_from_level,
 };
+use crate::level_plan;
 use crate::prop_shape;
 use crate::render;
 
@@ -72,6 +84,23 @@ pub struct WaveProp {
     fold: SignFold,
     mesh: Option<Gd<ArrayMesh>>,
     shape: Option<Gd<BoxShape3D>>,
+    /// Whether waves STOP at this solid, or pass over it.
+    ///
+    /// NOT a knob — a read-out of the geometry above it, recomputed on every
+    /// read so a rotated or resized solid can never show a stale answer.
+    /// Occlusion is decided by `level_plan::spans_the_corridor`: a solid
+    /// stops sound when it stands floor to ceiling and is no thinner than a
+    /// wall. Anything else is decoration the waves go over, which still dims
+    /// a source standing behind it. Read [`Self::sound_verdict`] for the
+    /// reason and the number that decided it.
+    #[var(get = get_stops_sound, usage_flags = [EDITOR, READ_ONLY])]
+    #[init(val = false)]
+    stops_sound: bool,
+    /// Why, in one sentence — see [`Self::stops_sound`]. Backed by no state:
+    /// the getter derives it from this solid's own world shape.
+    #[var(get = get_sound_verdict, usage_flags = [EDITOR, READ_ONLY])]
+    #[init(val = GString::new())]
+    sound_verdict: GString,
     base: Base<StaticBody3D>,
 }
 
@@ -144,6 +173,23 @@ impl WaveProp {
     fn get_configuration_warnings(&self) -> PackedStringArray {
         IStaticBody3D::get_configuration_warnings(self)
     }
+
+    /// See the field: recomputed, never stored, so it cannot go stale.
+    #[func]
+    fn get_stops_sound(&self) -> bool {
+        matches!(
+            solid::barrier_of(&WaveSolid::world_shape(self)),
+            level_plan::Barrier::StopsSound
+        )
+    }
+
+    /// See the field.
+    #[func]
+    fn get_sound_verdict(&self) -> GString {
+        GString::from(
+            level_plan::barrier_sentence(solid::barrier_of(&WaveSolid::world_shape(self))).as_str(),
+        )
+    }
 }
 
 #[godot_dyn]
@@ -198,6 +244,23 @@ pub struct WaveColumn {
     mesh: Option<Gd<ArrayMesh>>,
     shape: Option<Gd<CylinderShape3D>>,
     collider: Option<Gd<CollisionShape3D>>,
+    /// Whether waves STOP at this solid, or pass over it.
+    ///
+    /// NOT a knob — a read-out of the geometry above it, recomputed on every
+    /// read so a rotated or resized solid can never show a stale answer.
+    /// Occlusion is decided by `level_plan::spans_the_corridor`: a solid
+    /// stops sound when it stands floor to ceiling and is no thinner than a
+    /// wall. Anything else is decoration the waves go over, which still dims
+    /// a source standing behind it. Read [`Self::sound_verdict`] for the
+    /// reason and the number that decided it.
+    #[var(get = get_stops_sound, usage_flags = [EDITOR, READ_ONLY])]
+    #[init(val = false)]
+    stops_sound: bool,
+    /// Why, in one sentence — see [`Self::stops_sound`]. Backed by no state:
+    /// the getter derives it from this solid's own world shape.
+    #[var(get = get_sound_verdict, usage_flags = [EDITOR, READ_ONLY])]
+    #[init(val = GString::new())]
+    sound_verdict: GString,
     base: Base<StaticBody3D>,
 }
 
@@ -340,6 +403,23 @@ impl WaveColumn {
         let lift = prop_shape::cylinder_lift(basis, self.radius as f32, self.height as f32);
         lift_limbs(self.skin.limb(), self.collider.as_mut(), lift);
     }
+
+    /// See the field: recomputed, never stored, so it cannot go stale.
+    #[func]
+    fn get_stops_sound(&self) -> bool {
+        matches!(
+            solid::barrier_of(&WaveSolid::world_shape(self)),
+            level_plan::Barrier::StopsSound
+        )
+    }
+
+    /// See the field.
+    #[func]
+    fn get_sound_verdict(&self) -> GString {
+        GString::from(
+            level_plan::barrier_sentence(solid::barrier_of(&WaveSolid::world_shape(self))).as_str(),
+        )
+    }
 }
 
 #[godot_dyn]
@@ -407,6 +487,23 @@ pub struct WaveWedge {
     mesh: Option<Gd<ArrayMesh>>,
     shape: Option<Gd<ConvexPolygonShape3D>>,
     collider: Option<Gd<CollisionShape3D>>,
+    /// Whether waves STOP at this solid, or pass over it.
+    ///
+    /// NOT a knob — a read-out of the geometry above it, recomputed on every
+    /// read so a rotated or resized solid can never show a stale answer.
+    /// Occlusion is decided by `level_plan::spans_the_corridor`: a solid
+    /// stops sound when it stands floor to ceiling and is no thinner than a
+    /// wall. Anything else is decoration the waves go over, which still dims
+    /// a source standing behind it. Read [`Self::sound_verdict`] for the
+    /// reason and the number that decided it.
+    #[var(get = get_stops_sound, usage_flags = [EDITOR, READ_ONLY])]
+    #[init(val = false)]
+    stops_sound: bool,
+    /// Why, in one sentence — see [`Self::stops_sound`]. Backed by no state:
+    /// the getter derives it from this solid's own world shape.
+    #[var(get = get_sound_verdict, usage_flags = [EDITOR, READ_ONLY])]
+    #[init(val = GString::new())]
+    sound_verdict: GString,
     base: Base<StaticBody3D>,
 }
 
@@ -520,6 +617,23 @@ impl WaveWedge {
         let basis = placement_basis(&self.base());
         let lift = prop_shape::wedge_lift(basis, self.size);
         lift_limbs(self.skin.limb(), self.collider.as_mut(), lift);
+    }
+
+    /// See the field: recomputed, never stored, so it cannot go stale.
+    #[func]
+    fn get_stops_sound(&self) -> bool {
+        matches!(
+            solid::barrier_of(&WaveSolid::world_shape(self)),
+            level_plan::Barrier::StopsSound
+        )
+    }
+
+    /// See the field.
+    #[func]
+    fn get_sound_verdict(&self) -> GString {
+        GString::from(
+            level_plan::barrier_sentence(solid::barrier_of(&WaveSolid::world_shape(self))).as_str(),
+        )
     }
 }
 

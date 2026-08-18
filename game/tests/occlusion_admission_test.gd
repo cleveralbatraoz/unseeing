@@ -213,3 +213,47 @@ func test_a_pillar_dims_a_source_as_a_wall_does_not_as_a_prop() -> void:
 	# admitted as a wave occluder, so it dims by the FULL wall factor
 	var through: float = level.source_muffle(Vector3(0.0, 1.6, 0.0), Vector3(6.0, 1.6, 0.0))
 	assert_float(through).is_equal_approx(0.3, 1e-6)
+
+
+## THE BREAK: the Inspector's answer drifting from the occluder table, or
+## becoming authorable, or going stale after a knob moves.
+##
+## The geometric admission rule made `radius` and `height` silently decide
+## barrier-versus-decoration: a standpipe nudged from 2.90 to 2.95 becomes an
+## invisible sound-proof wall, and a pillar lowered six centimetres deletes a
+## barrier the level depended on. Neither produces a warning or a visible
+## change, and a designer had to ask a programmer to read
+## `level_plan::spans_the_corridor`. This pins that the read-out exists, is
+## read-only, and recomputes.
+func test_a_solid_declares_in_the_inspector_whether_it_stops_sound() -> void:
+	var col: WaveColumn = auto_free(WaveColumn.new())
+	add_child(col)
+
+	# a pillar: floor to ceiling, half a metre across
+	col.radius = 0.25
+	col.height = 3.0
+	assert_bool(col.stops_sound).is_true()
+	assert_str(col.sound_verdict).contains("Stops sound")
+
+	# a standpipe: reaches, but far too thin — and the sentence must name
+	# the criterion a designer can act on, not the other one
+	col.radius = 0.07
+	assert_bool(col.stops_sound).is_false()
+	assert_str(col.sound_verdict).contains("too thin")
+	assert_str(col.sound_verdict).contains("14 cm")
+
+	# a crate-height column: wide enough, but sound goes over it
+	col.radius = 0.25
+	col.height = 0.9
+	assert_bool(col.stops_sound).is_false()
+	assert_str(col.sound_verdict).contains("go over it")
+	assert_str(col.sound_verdict).contains("90 cm")
+
+	# and it is a READ-OUT, not a knob
+	var found := false
+	for prop: Dictionary in ClassDB.class_get_property_list("WaveColumn", true):
+		if prop["name"] == "stops_sound":
+			found = true
+			var usage: int = prop["usage"]
+			assert_int(usage & PROPERTY_USAGE_READ_ONLY).is_greater(0)
+	assert_bool(found).append_failure_message("no stops_sound property").is_true()

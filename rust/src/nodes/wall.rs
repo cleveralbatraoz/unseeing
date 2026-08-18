@@ -110,6 +110,24 @@ pub struct WaveWall {
     transform_warning: Option<String>,
     body_contract_warning: Option<String>,
     length_warning: Option<String>,
+    /// Whether waves STOP at this solid — always true for a wall, and true
+    /// by CONTRACT rather than by measurement.
+    ///
+    /// Every other solid earns its place in the occluder table by geometry
+    /// ([`crate::level_plan::spans_the_corridor`]). A wall does not: it is
+    /// authored as a centerline and admitted unconditionally, inflated to
+    /// its own thickness. Measuring a wall the way a prop is measured would
+    /// in fact REFUSE it — `WALL_T` is 0.15 m against a required 0.30 — so
+    /// the two answers come from different places, and this one is stated
+    /// rather than derived. Carried so a designer comparing a wall with a
+    /// pillar in the Inspector sees the same question answered for both.
+    #[var(get = get_stops_sound, usage_flags = [EDITOR, READ_ONLY])]
+    #[init(val = true)]
+    stops_sound: bool,
+    /// Why — see [`Self::stops_sound`].
+    #[var(get = get_sound_verdict, usage_flags = [EDITOR, READ_ONLY])]
+    #[init(val = GString::new())]
+    sound_verdict: GString,
     base: Base<Node3D>,
 }
 
@@ -713,6 +731,22 @@ impl WaveWall {
             let detail = warning.strip_prefix("WaveWall: ").unwrap_or(warning);
             godot_warn!("WaveWall '{}': {}", self.base().get_name(), detail);
         }
+    }
+
+    /// See the field: a wall is admitted by contract, so this is constant.
+    #[func]
+    fn get_stops_sound(&self) -> bool {
+        true
+    }
+
+    /// See the field.
+    #[func]
+    fn get_sound_verdict(&self) -> GString {
+        GString::from(
+            "Stops sound. A wall is admitted by contract rather than by measurement: it is \
+             authored as a centerline and inflated to its own thickness, so unlike a prop it \
+             does not have to prove its geometry. It spends one of the level's occluder slots.",
+        )
     }
 }
 

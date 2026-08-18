@@ -131,6 +131,104 @@ pub fn source_muffle(walls: u32, props: u32) -> f64 {
     through.clamp(0.0, 1.0)
 }
 
+/// Why a solid does or does not stop sound — the admission decision with
+/// its reason attached.
+///
+/// [`spans_the_corridor`] answers yes or no, which is all the occluder table
+/// needs and less than a designer needs. The geometric rule made a solid's
+/// own `radius`, `height` and `size` decide barrier-versus-decoration
+/// silently: nudging a standpipe from 2.90 to 2.95 builds an invisible
+/// sound-proof wall, and lowering a pillar by six centimetres deletes a
+/// barrier the level design depended on. Neither produces a warning, a fault
+/// or a visible change. This carries the reason out to the Inspector so the
+/// answer is legible without reading Rust.
+///
+/// Which criterion is reported when BOTH fail is deliberate: thinness wins,
+/// because it is the one a designer can act on without moving the ceiling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Barrier {
+    /// Floor to ceiling and no thinner than a wall: waves and sight lines
+    /// both end here, and it spends one of `sight::MAXW` occluder slots.
+    StopsSound,
+    /// Sound goes over it. Carries the top it reached.
+    PassesOver { top_cm: i64 },
+    /// It reaches, but a rect this thin would cast a shadow far wider than
+    /// the solid itself. Carries the narrowest side.
+    TooThin { extent_cm: i64 },
+    /// It floats: sound passes underneath. Carries the underside.
+    PassesUnder { bottom_cm: i64 },
+    /// Non-finite geometry — nothing can be said about it.
+    Unmeasurable,
+}
+
+/// The admission decision and its reason, from a solid's world AABB.
+///
+/// [`spans_the_corridor`] is this, with the reason discarded. Total over
+/// every f64: non-finite input answers [`Barrier::Unmeasurable`].
+///
+/// Reported in whole centimetres rather than metres so the Inspector string
+/// and this decision cannot round differently — the number a designer reads
+/// is the number that decided.
+#[must_use]
+pub fn barrier(bottom: f64, top: f64, min_horizontal_extent: f64) -> Barrier {
+    if !bottom.is_finite() || !top.is_finite() || !min_horizontal_extent.is_finite() {
+        return Barrier::Unmeasurable;
+    }
+    let cm = |m: f64| (m * 100.0).round() as i64;
+    // thinness first: when both criteria fail it is the actionable one
+    if min_horizontal_extent < 2.0 * WALL_T {
+        return Barrier::TooThin {
+            extent_cm: cm(min_horizontal_extent),
+        };
+    }
+    if bottom > SLAB_T + SPAN_EPS {
+        return Barrier::PassesUnder {
+            bottom_cm: cm(bottom),
+        };
+    }
+    if top < WALL_H - SPAN_EPS {
+        return Barrier::PassesOver { top_cm: cm(top) };
+    }
+    Barrier::StopsSound
+}
+
+/// One sentence a designer can act on, from a [`Barrier`].
+///
+/// Owned here, beside the rule it describes, so the Inspector text and the
+/// occluder table cannot drift: both come from `barrier`. Names the number
+/// that decided AND the number it would have to reach, because "does not
+/// stop sound" without a target is a fact a designer cannot use.
+#[must_use]
+pub fn barrier_sentence(verdict: Barrier) -> String {
+    let need_top = ((WALL_H - SPAN_EPS) * 100.0).round() as i64;
+    let need_bottom = ((SLAB_T + SPAN_EPS) * 100.0).round() as i64;
+    let need_across = (2.0 * WALL_T * 100.0).round() as i64;
+    match verdict {
+        Barrier::StopsSound => format!(
+            "Stops sound. It stands floor to ceiling and is at least {need_across} cm across, \
+             so waves and sight lines both end here. It spends one of the level's occluder \
+             slots."
+        ),
+        Barrier::PassesOver { top_cm } => format!(
+            "Does not stop sound — waves go over it. It tops out at {top_cm} cm and would have \
+             to reach {need_top} cm. It still dims a sound source standing behind it."
+        ),
+        Barrier::TooThin { extent_cm } => format!(
+            "Does not stop sound — it is too thin. Its narrowest side is {extent_cm} cm and a \
+             barrier must be at least {need_across} cm, or its shadow would be far wider than \
+             the solid itself. It still dims a sound source standing behind it."
+        ),
+        Barrier::PassesUnder { bottom_cm } => format!(
+            "Does not stop sound — it floats. Its underside is at {bottom_cm} cm and would have \
+             to be at or below {need_bottom} cm; sound passes underneath. It still dims a sound \
+             source standing behind it."
+        ),
+        Barrier::Unmeasurable => "Cannot be measured: this solid's geometry is not a \
+             describable box, so it enters no table at all."
+            .to_string(),
+    }
+}
+
 /// Does this solid actually stand in the way of sound?
 ///
 /// # Why geometry decides, and not the node's class
@@ -175,7 +273,10 @@ pub fn spans_the_corridor(bottom: f64, top: f64, min_horizontal_extent: f64) -> 
     if !bottom.is_finite() || !top.is_finite() || !min_horizontal_extent.is_finite() {
         return false;
     }
-    bottom <= SLAB_T + SPAN_EPS && top >= WALL_H - SPAN_EPS && min_horizontal_extent >= 2.0 * WALL_T
+    matches!(
+        barrier(bottom, top, min_horizontal_extent),
+        Barrier::StopsSound
+    )
 }
 
 /// The hero's capsule center over the floor a spawn datum stands on.
@@ -4009,6 +4110,52 @@ mod tests {
             SPAN_EPS < pillar_top - pipe_top,
             "SPAN_EPS {SPAN_EPS} has grown to reach the pipes"
         );
+    }
+
+    /// THE BREAK: the reason drifting from the decision, so the Inspector
+    /// explains one law while the occluder table applies another. Every case
+    /// is a shipped dimension read off `game/scenes/level_01.tscn`.
+    ///
+    /// Thinness is reported when BOTH criteria fail, and that is the choice
+    /// under test: a standpipe at 2.90 m and 0.14 m across misses the span
+    /// by 0.05 and the thickness by 0.16, and only the second is something a
+    /// designer can act on without moving the ceiling.
+    #[test]
+    fn a_solid_says_which_criterion_decided_it() {
+        // the seven pillars: floor to ceiling, 0.44-0.50 across
+        assert_eq!(barrier(0.0, 3.00, 0.44), Barrier::StopsSound);
+        // the seven standpipes: both criteria fail, thinness is reported
+        assert_eq!(barrier(0.0, 2.90, 0.14), Barrier::TooThin { extent_cm: 14 });
+        // a crate: wide enough, but sound goes over it
+        assert_eq!(barrier(0.0, 0.80, 0.62), Barrier::PassesOver { top_cm: 80 });
+        // the cistern, the closest single-criterion miss in the level
+        assert_eq!(
+            barrier(0.0, 1.80, 0.62),
+            Barrier::PassesOver { top_cm: 180 }
+        );
+        // a shelf mounted clear of the floor: sound passes underneath
+        assert_eq!(
+            barrier(0.60, 3.00, 0.50),
+            Barrier::PassesUnder { bottom_cm: 60 }
+        );
+        // and nothing describable
+        assert_eq!(barrier(f64::NAN, 3.0, 0.5), Barrier::Unmeasurable);
+        assert_eq!(barrier(0.0, f64::INFINITY, 0.5), Barrier::Unmeasurable);
+
+        // the two halves cannot disagree: the predicate IS this, with the
+        // reason discarded
+        for (b, t, w) in [
+            (0.0, 3.00, 0.44),
+            (0.0, 2.90, 0.14),
+            (0.0, 0.80, 0.62),
+            (0.60, 3.00, 0.50),
+            (f64::NAN, 3.0, 0.5),
+        ] {
+            assert_eq!(
+                spans_the_corridor(b, t, w),
+                barrier(b, t, w) == Barrier::StopsSound
+            );
+        }
     }
 
     /// THE BREAK: the two admission criteria being believed to hold the
