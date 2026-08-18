@@ -4,8 +4,16 @@
 //   R — reveal: how recently/strongly a wave swept this point
 //   G — per-vertex face or semantic-role label: crease edge detection
 //   B — camera distance / DIST_PACK_RANGE (silhouette edges + wave occlusion)
-// Distance is packed here on purpose: the depth texture is unreliable on
-// WebGL2/Compatibility, and the web build is a first-class target.
+// Distance is packed here on purpose, and the reason is now half measured
+// and half still assumed. The depth texture IS live in desktop
+// Compatibility — game/tests/probe/depth_texture_probe.gd reads real
+// reversed-Z depth out of it, 0.0158 at three metres against an analytic
+// 0.01585 — so the old blanket claim that it is unreliable here was wrong
+// about the desktop. It remains unmeasured on WebGL2, which is a
+// first-class target, and B carries distance for that reason plus one the
+// depth texture could never serve: the outline pass needs distance in a
+// channel it can take a Laplacian of across five taps, not a value it must
+// unproject per sample.
 //
 // Skins differ only in render_mode, in their rasterized depth (the world
 // keeps true depth; the acoustic image rides always_on_top) and in the
