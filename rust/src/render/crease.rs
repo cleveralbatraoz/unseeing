@@ -63,30 +63,47 @@ impl CreaseKnee {
     /// matters — two f64s 1e-9 apart are strictly ordered until they land
     /// in the same f32 lane, and then they are not.
     #[must_use]
-    pub fn new(lo: f64, hi: f64) -> Option<Self> {
+    pub const fn new(lo: f64, hi: f64) -> Option<Self> {
         let (lo, hi) = (lo as f32, hi as f32);
-        (lo.is_finite() && hi.is_finite() && lo < hi).then_some(Self { lo, hi })
+        if lo.is_finite() && hi.is_finite() && lo < hi {
+            Some(Self { lo, hi })
+        } else {
+            None
+        }
     }
 
     /// The shipped derivation: a seam draws at full strength once two
     /// labels are `min_sep` apart, and fades to nothing at
     /// [`LOW_KNEE_RATIO`] of that.
     #[must_use]
-    pub fn from_min_sep(min_sep: f64) -> Option<Self> {
+    pub const fn from_min_sep(min_sep: f64) -> Option<Self> {
         Self::new(min_sep * LOW_KNEE_RATIO, min_sep)
     }
 
     /// The knee the game renders with, derived from the one `MIN_SEP` the
     /// colouring allocates against.
     ///
-    /// Infallible by construction rather than by assertion: `MIN_SEP` is a
-    /// positive finite constant, so the derivation cannot fail — but the
-    /// fallback is still a valid knee rather than a panic, because a boundary
-    /// that cannot draw a seam is a worse failure than one that draws the
-    /// wrong one, and this crate does not panic.
+    /// A `const` item rather than a function with a fallback. The derivation
+    /// is discharged by the COMPILER, so a `MIN_SEP` that cannot fade is a
+    /// build failure naming this line — and there is no unreachable arm left
+    /// holding a second, hand-copied definition of today's answer. That arm
+    /// used to read `unwrap_or(Self { lo: 0.04, hi: 0.08 })`, which no input
+    /// could reach and no mutation could kill: replacing it with nonsense
+    /// left all 540 tests green, which is this repository's own definition of
+    /// code that should not exist.
+    ///
+    /// The `panic!` never runs. `const` initialisers are evaluated at compile
+    /// time, so an unsatisfiable derivation stops the build instead of
+    /// reaching a player.
+    pub const SHIPPED: Self = match Self::from_min_sep(labels::MIN_SEP) {
+        Some(knee) => knee,
+        None => panic!("MIN_SEP does not derive a crease knee GLSL can fade"),
+    };
+
+    /// The knee the game renders with — see [`Self::SHIPPED`].
     #[must_use]
-    pub fn shipped() -> Self {
-        Self::from_min_sep(labels::MIN_SEP).unwrap_or(Self { lo: 0.04, hi: 0.08 })
+    pub const fn shipped() -> Self {
+        Self::SHIPPED
     }
 
     /// Where the fade begins.

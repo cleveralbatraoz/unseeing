@@ -87,29 +87,43 @@ impl DetailKnee {
     /// ordered right up until they land in the same f32 lane, and the GPU
     /// only ever sees the f32.
     #[must_use]
-    pub fn new(lo: f64, hi: f64) -> Option<Self> {
+    pub const fn new(lo: f64, hi: f64) -> Option<Self> {
         let (lo, hi) = (lo as f32, hi as f32);
-        (lo.is_finite() && hi.is_finite() && lo < hi).then_some(Self { lo, hi })
+        if lo.is_finite() && hi.is_finite() && lo < hi {
+            Some(Self { lo, hi })
+        } else {
+            None
+        }
     }
 
     /// The derivation: detail begins to fade exactly at the reveal a source
     /// one wall away is capped to, and reaches full strength at
     /// [`LOW_KNEE_RATIO`] above it.
     #[must_use]
-    pub fn from_muffle(muffle: f64) -> Option<Self> {
+    pub const fn from_muffle(muffle: f64) -> Option<Self> {
         Self::new(muffle, muffle / LOW_KNEE_RATIO)
     }
 
     /// The knee the game renders with.
     ///
-    /// Infallible by construction — `SOURCE_THROUGH` is a positive finite
-    /// constant well under 1 — with a valid fallback rather than a panic,
-    /// on the same reasoning as its peer: a boundary that draws the wrong
-    /// detail beats one that cannot draw at all, and this crate does not
-    /// panic.
+    /// A `const` item, on the same reasoning as [`crease::CreaseKnee::SHIPPED`]:
+    /// the derivation from `SOURCE_THROUGH` is discharged at compile time, so
+    /// a muffle that cannot derive a knee stops the build rather than falling
+    /// back to a hand-copy of today's `(0.30, 0.60)` that no input could
+    /// reach. The theorem this module rests on — a walled source cannot draw
+    /// a crease — is a statement about THIS pair, and a fallback holding a
+    /// different pair would have quietly falsified it.
+    ///
+    /// The `panic!` never runs: an unsatisfiable derivation is a build error.
+    pub const SHIPPED: Self = match Self::from_muffle(SOURCE_THROUGH) {
+        Some(knee) => knee,
+        None => panic!("SOURCE_THROUGH does not derive a detail knee GLSL can fade"),
+    };
+
+    /// The knee the game renders with — see [`Self::SHIPPED`].
     #[must_use]
-    pub fn shipped() -> Self {
-        Self::from_muffle(SOURCE_THROUGH).unwrap_or(Self { lo: 0.3, hi: 0.6 })
+    pub const fn shipped() -> Self {
+        Self::SHIPPED
     }
 
     /// Where detail begins to fade — and, by the theorem above, the ceiling
