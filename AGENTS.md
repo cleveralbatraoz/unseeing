@@ -4,17 +4,41 @@
 
 Unseeing is a mystic/horror game about a blind hero. Act as a principal game
 developer. The technical bar is ideal: prove decisions with code, tests, and
-traces. Physics and sound-wave propagation must be exact.
+traces.
+
+The laws we model must be exact, pure and cargo-pinned. Every stylisation
+must be named, quantified in its own units, and recorded in the wiki — and
+no constant may be justified by an acoustic derivation this engine cannot
+represent. That last clause is not pedantry: it is written from a campaign
+in which five acoustics claims were each refuted by three independent
+reviewers, every one of them for the same reason. There is no frequency
+axis anywhere in this codebase; wavefronts travel at 4.0–5.5 m/s against
+343 in air; reveal composes by `max`, not by sum, so there is no energy
+quantity to attenuate; and occlusion is a `{0,1}` gate. Reasoning from real
+acoustics into this engine produces confident, wrong numbers.
+
+So: propagation is exact. Perception is authored, and says so.
 
 - Render black and white, with thin outlines only: no textures, fills,
   materials, or visual noise. The world is revealed only by sound, touch, and
-  wind waves.
+  wind waves — and, faintly, by having been revealed: `render::memory`
+  holds a coarse floor plan of where the hero has already been, ceiled at
+  half the detail knee's floor so a remembered place can never draw a
+  crease, and never written by anything that moves. Memory can say
+  something stood there. It can never say what, and it can never be trusted
+  about anything alive.
 - Draw one silhouette per object. Where two solids overlap, outline them
   together: faces that are same-facing and coplanar merge into one superface
   and share one per-vertex label bit-for-bit, so the seam melts by
   construction. Bends and steps still draw — a room corner, a shelf edge, a
   crate's pierce line. Seams between *separate* touching solids draw too, and
-  need labels at least `MIN_SEP` = 0.08 apart. Creatures and sound sources
+  need labels at least `MIN_SEP` = 0.08 apart. Shape and detail are two laws,
+  not one: the silhouette (a Laplacian of packed distance) carries a wave's
+  full reach and full tail, while the crease (a difference of labels) resolves
+  only near the hand and dies far sooner — `render::detail::DetailKnee`, whose
+  floor is derived as `SOURCE_THROUGH` so that a source behind a wall can
+  never draw a crease for any wave or any volume. You always know a source is
+  sounding in there. You stop knowing it is a radio. Creatures and sound sources
   never geometrically merge with the world; source semantic roles still join
   the separation graph so touching source copies cannot melt. Labels live in
   the sRGB-safe band `[0.15, 0.96]`, with one grandfathered standalone-preview
@@ -24,6 +48,22 @@ traces. Physics and sound-wave propagation must be exact.
   colouring and role table in `rust/src/render/labels.rs` (`MIN_SEP`); never
   assign labels by cycling a list. Get the merge predicate wrong and either a
   real corner melts invisible or two flush surfaces z-fight in G.
+- A per-fragment cut of the ring loop must be a **distance, never a
+  boolean**. Everything that ends the eye's view of air — the visible
+  surface, the nearest wall the ray enters, any future prop verdict — folds
+  in with `min()`. A flag ORed into that compare is fragment-constant and
+  kills every root at the pixel, including rings nearer than the thing that
+  raised it; that shipped, and because an x-rayed source's skin takes the
+  pixel from the wall behind it, a source seen through a wall punched a
+  source-shaped hole through every ring sweeping past it. `sight::visible_air`
+  owns the composed law.
+- Waves are stopped by **geometry, never by node class**. A solid occludes
+  iff it spans floor to ceiling within `SPAN_EPS` AND its minimum horizontal
+  extent is at least `2 * WALL_T` (`level_plan::spans_the_corridor`). Props
+  that fail that test still take clarity from a source's silhouette
+  (`level_plan::prop_through`, two props costing exactly one wall) on a
+  CPU-only walk that never enters a uniform. Do not restore a rule that
+  answers this question by asking what a node is called.
 - Keep UI and UX simple and minimal.
 - `game/` is the sole Godot 4.7 project and source of truth. Export that same
   project to web, macOS, and Windows; never make platform implementations.
