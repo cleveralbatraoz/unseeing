@@ -39,11 +39,13 @@ const float TEN_BIT = 1.0 / 1023.0;
 // meant a single drifted entry mislabelled which step survived, silently,
 // and that verdict is the sole source of render::channel::WORST_STEP_CODES.
 //
-// The default is all zeros and is deliberately unusable: an unpushed ladder
-// collapses every band to no step at all, which is the probe's own
-// documented "all black means it measured nothing" failure, rather than a
-// plausible ladder nobody chose.
-uniform float u_steps[9] = float[9](0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+// No initialiser, and none is possible — Godot refuses "Setting default
+// values to uniform arrays". That is the outcome this probe wanted anyway:
+// an unpushed uniform array reads as all zeros, so a ladder nobody pushed
+// collapses every band to no step at all and trips the probe's own
+// documented "all black means it measured nothing" control. A plausible
+// default would have been the dangerous thing here.
+uniform float u_steps[9];
 const float BASE_LO = 0.05;
 const float BASE_HI = 0.95;
 
