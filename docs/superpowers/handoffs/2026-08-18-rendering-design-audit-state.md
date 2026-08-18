@@ -16,22 +16,23 @@ the user's direction: *"fix all gaps until the implementation is ideal /
 your goal is to compose a technically perfect rendering engine, not ad-hoc
 fixes application."*
 
-The barrier-law work (PR 47 plus its repairs) is the first 18 commits. The
-nine after it are the design audit — five fixes, then three more repairing
-what an adversarial re-review found in them, then this record — and are what
-this document is mainly about.
+The barrier-law work (PR 47 plus its repairs) is the first 18 commits.
+Everything after is the design audit, in three passes: five structural fixes,
+three commits repairing what an adversarial re-review found in THOSE, and
+four more closing the gaps that pass had carried rather than fixed. This
+document covers all three.
 
 ## Verification state of the tree
 
-Reproduced at commit `45f0536`:
+Reproduced at commit `1d23953`:
 
 | gate | result |
 |---|---|
-| `cargo test` | 496 passed |
+| `cargo test` | 508 passed |
 | `cargo fmt --check`, `clippy -D warnings` | clean |
-| gdUnit4 | 333 cases / 31 suites, 0 failures |
+| gdUnit4 | 336 cases / 31 suites, 0 failures |
 | headless boot | no script/shader/engine errors |
-| `tools/probe_visibility.sh` | PASS, 10 checks, reproduced across a cold and a warm boot |
+| `tools/probe_visibility.sh` | PASS on all THREE scenes, reproduced across a cold and a warm boot |
 | `gdformat --check`, `gdlint` | clean |
 | `test/repo_hygiene.sh`, `ci/check_gdscript_policy.sh` | pass |
 
@@ -225,6 +226,13 @@ case green while the seams rendered weaker.
   `DEPTH_CODES`, `CAM_NEAR`, `CAM_FAR`, `MIN_SOURCE_LIMB_GAP`,
   `window_depth`, `deepest_world_fragment_in_band`, `source_depth`,
   `band_resolution`.
+- `rust/src/render/channel.rs` — `CHANNEL_LEVELS` (measured), `quantum`,
+  `recon_eps`, `max_safe_range`, `reconstruction_budget`. What one data
+  channel holds, and the geometric tolerance that turns on it.
+- `rust/src/render/crease.rs` — `CreaseKnee`, `LOW_KNEE_RATIO`. The rendered
+  response to a label difference, derived from `MIN_SEP`.
+- `rust/src/sight.rs` — gains `Occluder`, which carries a wall's rect and its
+  world Y span together; `wall_top` leaves five signatures.
 - `rust/src/render/labels.rs` — gains `LADDER_BASE`/`LADDER_STEP`/
   `LADDER_RUNGS`, `ladder_rung`, `WORLD_PALETTE`, `coexisting_labels`.
 - `WaveCore` gains, for the suites to read rather than transcribe:
@@ -301,65 +309,122 @@ written down and tested as the unreachable edges they currently are.
 **Two of the five fixes survived refutation intact**: the label ladder and
 the face-scoped anchor drew only minor findings, both of which are fixed.
 
-## Gaps identified and NOT yet fixed
+## The four carried gaps, now closed
 
-Ranked by my own assessment, not the audit's severity labels (which were
-uniformly "critical" and are not trustworthy as a ranking).
+All four were eliminated in a second pass. Two of them were blocked on
+"unverified platform facts", and the first thing that pass did was stop
+deferring them and measure.
 
-1. **The wall occluder lives in a different coordinate frame than the wall.**
-   `sight::crosses` hard-codes `lo = [rect.x, 0.0, rect.y]`
-   (`rust/src/sight.rs:91`), mirrored at
-   `game/shaders/pulse_pool.gdshaderinc:62`, with one global `u_wall_top`.
-   Nothing constrains a wall's Y: `level_plan::plan_wall_transform`
-   normalises the **basis** but leaves `origin.y` entirely free. Lift a
-   `WaveWall` a metre and the drawn box spans [1, 4] while the occluder
-   spans [0, 3] — a phantom barrier beneath it and an unoccluded strip over
-   it. Lift the level root and the barrier law **fails open across the whole
-   map, silently**. Verified by reading; the fix was not started.
-2. **The crease knee is a bare GLSL literal.** `MIN_SEP` governs
-   allocation in Rust; `smoothstep(0.04, 0.08, nrm)` in
-   `hearing_post.gdshader` governs the rendered response, and nothing
-   compares them. `labels.rs`'s own doc comment says it "cannot be
-   single-sourced from Rust", which the shipped code refutes —
-   `nodes/game.rs` already pushes `u_base`/`u_breath`/`u_grain_t` into the
-   post material. `(MIN_SEP/2, MIN_SEP)` reproduces 0.04/0.08 exactly, so
-   the change is behaviour-preserving.
-3. **`RECT_SHRINK` and the B-channel quantum guard the same boundary and do
-   not know each other exist.** `hearing_post` reconstructs a world point
-   from B and asks the wall table about it; the only thing keeping a real
-   surface's reconstructed point outside its own wall is that
-   `RECT_SHRINK = 0.02 m` exceeds B's half-LSB. `pack_range_budget`
-   explicitly advises raising `DIST_PACK_RANGE` while listing three
-   consequences of which this is not one. **The channel depth is
-   UNVERIFIED** — the brief says 8-bit LDR, one audit probe measured
-   `1/1023` (RGB10_A2). At 8 bits the half-LSB is 78 mm and this is a live
-   bug; at 10 bits it is 19.55 mm and the shipped build is correct by
-   0.45 mm. Settle the channel depth first.
-4. **The x-ray layer is inferred, not written.** `seen_walled` reconstructs
-   a point from B and asks the **wall** table — but `WaveProp`,
-   `WaveColumn` and `WaveWedge` are in no occluder table anywhere, so a
-   source hidden behind a prop is misclassified and both corrections fail
-   open. The natural fix is for `data_xray` to write a layer sentinel into
-   the unclaimed A lane; **whether writing `ALPHA` in a Godot 4.7
-   Compatibility spatial shader moves the material into the transparent pass
-   is UNVERIFIED and must be settled before designing around it** — if it
-   does, it would destroy the always-on-top depth trick.
-5. **Larger, deliberately not attempted**: the label allocator's adjacency
-   is a physical-contact relation (`TOUCH_EPS = 0.01`) while the image needs
-   a screen-adjacency one, and the B Laplacian is identically zero below a
-   0.48 m depth step — so contact-free props 0.4 m apart can share a label
-   and melt. Fixing this properly means moving the silhouette test to a
-   scale-relative predicate **and** growing the adjacency relation together;
-   neither works alone. Related: there is no executable oracle for the
-   renderer's arithmetic — `docs/superpowers/specs/2026-08-11-pixel-oracle-gate-design.md`
-   designed one and `rust/src/observe/oracle.rs` was never built.
+### 1. `9c35cc1` — a wall occludes where it draws
 
-A running workflow (`w3cuaz725`, run `wf_0baad7f2-f50`) was launched to
-adversarially refute the five landed fixes and to design items 1–4. **Its
-results are not yet folded into this document.** Read its transcript at
-`.claude/projects/.../subagents/workflows/wf_0baad7f2-f50/journal.jsonl`
-before acting on items 1–4, and verify anything it claims against the
-codebase before accepting it.
+`sight::crosses` hard-coded the occluder's vertical span as `[0, WALL_H]`,
+with one global `u_wall_top`. Nothing constrains a wall's Y:
+`plan_wall_transform` normalises the BASIS and carries `origin.y` through
+untouched, `wall_segment` then discards the height, and `sunken` stays quiet
+for anything resting on or standing clear above the floor. A lifted wall left
+a phantom barrier beneath it and an unoccluded strip over it; a lifted level
+ROOT put every occluder below the map and failed the barrier law open
+everywhere, silently.
+
+The design review found it worse than reported: **`contains` shared the bug
+and failed in the dangerous direction.** A source in open air under a lifted
+wall was judged born *inside* it, so the birth-wall skip disabled that wall
+for that source in every direction at once.
+
+`sight::Occluder` now carries rect and span together, because a table of
+rects beside a table of heights is two things that can disagree. `wall_top`
+leaves five signatures and one uniform. `is_empty` is a CHECKED guard, not an
+emergent property — the slab arithmetic accepts an inverted interval — and is
+written `!(a <= b)` so a NaN lane reads as empty rather than as ordered.
+
+**Pixel-identical on the shipped map**, which was the acceptance criterion.
+
+### 2. `6de2eb6` — the knee that draws a seam is the separation that allocated it
+
+`MIN_SEP` governed allocation in Rust; `smoothstep(0.04, 0.08, nrm)` governed
+the rendered response in GLSL; nothing compared them, and `labels.rs` said so
+in its own doc comment while shipping anyway. Lowering `MIN_SEP` to fit a
+starved band kept every `separated()` test green while the shader faded over
+a knee it no longer matched.
+
+`render::crease::CreaseKnee` is a validated type, not a pair of floats: GLSL's
+`smoothstep` divides by `hi - lo`, so an equal pair divides by zero and an
+inverted one fades a bright seam dark. Ordering is judged after narrowing to
+f32. `(MIN_SEP/2, MIN_SEP)` reproduces `0.04 / 0.08` exactly, so no pixel
+moved; the shader default is deliberately `(0.0, 1.0)`, loudly wrong.
+
+### 3. `212f07d` — the channel stops being a story
+
+**Measured: 1024 levels per channel (RGB10_A2).** The brief said 8-bit LDR
+and an earlier probe claimed RGB10_A2; at 8 bits the B-channel reconstruction
+guard is broken four times over.
+
+The measurement took two attempts and the first was wrong in an instructive
+way: a single test base sits at one arbitrary place on the quantisation grid,
+and that alone moves the answer a full bit. `0.5 x 1023 = 511.5` lies exactly
+between two codes so half a code still crosses a boundary there, while
+`0.25 x 1023 = 255.75` does not — the same buffer reported 2^-11 at 0.5 and
+2^-10 at 0.25, which I briefly read as float16. Swept across seventeen bases
+and demanding every one separate, it is 1024.
+
+`render::channel` derives what that implies: one B code is `40/1023 = 0.0391`
+m, the worst reconstruction error is half of it, and `RECT_SHRINK` clears
+that by **0.45 mm** — a 2.3% margin on a tolerance chosen for an unrelated
+reason. `reconstruction_budget` refuses the range at which they cross,
+**40.92 m**, which `pack_range_budget` actively walks designers toward.
+
+### 4. `e67166f` — the hearing pass asks which layer a pixel is
+
+Two designs were refuted before the third worked, and both refutations are
+worth keeping.
+
+**The ALPHA-lane sentinel is closed by documentation.** `ALPHA`, if read from
+or written to, moves a material to the transparent pipeline, and transparent
+materials cannot appear in `hint_screen_texture` — which IS this pass, so
+every source would vanish from the only buffer that builds the image.
+
+**The depth texture is NOT closed**, though `data_core` had claimed so since
+before this suite existed, and two of my own early measurements agreed with
+the claim. Both were wrong: one probe sampled off its geometry, and one
+conflated a shader edit with an unrelated revert. Measured properly, the
+depth texture is live in Compatibility and carries real reversed-Z depth —
+0.0158 at three metres against an analytic 0.01585 — an always-on-top
+fragment reads back at 1.0000 against a band floor of 0.9990, and declaring
+it beside `hint_screen_texture` costs the screen read nothing.
+
+So a source is identifiable by one exact comparison. It is **ORed** with the
+old wall-table inference rather than replacing it: the measurement is desktop
+GL, WebGL2 is unmeasured, and where the depth texture is dead the term is
+false everywhere and the pass degrades to precisely its former behaviour.
+Better where measured, never worse anywhere.
+
+`depth_texture_probe` keeps all four facts as a rendered gate — including one
+assertion that had to be rewritten because it was weak: at the 60x gain a
+world fragment needs to be visible at all, everything above 1/60 saturates,
+so the layer separation is read at unit gain where a dead depth texture would
+fail the band assertion rather than pass it.
+
+## What remains, and it is no longer a list of gaps
+
+Two structural items were identified early and deliberately not attempted;
+neither is a defect in shipped behaviour.
+
+1. **The label allocator's adjacency is a physical-contact relation**
+   (`TOUCH_EPS = 0.01`) while the image needs a screen-adjacency one, and the
+   B Laplacian is identically zero below a 0.48 m depth step. Contact-free
+   props 0.4 m apart can therefore share a label and melt on screen. Fixing
+   it properly means moving the silhouette test to a scale-relative predicate
+   AND growing the adjacency relation together — neither works alone, and the
+   pair is a re-encoding of G, the largest change the audit identified.
+2. **The renderer still has no executable oracle.**
+   `docs/superpowers/specs/2026-08-11-pixel-oracle-gate-design.md` designed
+   one; `rust/src/observe/oracle.rs` was never built. Five rendered-probe
+   checks and three platform measurements now stand where there was none, but
+   they are hand-run and outside `ci/pipeline.sh`.
+
+**Unmeasured, and now measurable:** the WEB target's channel depth and depth
+texture. Both probes exist and would answer it; running them under the web
+export needs export templates and the emscripten toolchain.
 
 ## Documentation state
 
@@ -385,13 +450,13 @@ codebase before accepting it.
 
 ## Where to pick up
 
-1. Read the workflow result; verify its claims against the code.
-2. Repair anything the refutation pass genuinely found in the five landed
-   fixes.
-3. Settle the two UNVERIFIED platform facts (screen-texture channel depth;
-   `ALPHA` in the Compatibility opaque pass), because items 3 and 4 above
-   cannot be designed correctly without them.
-4. Then items 1 and 2, which are self-contained and need no platform fact.
-5. Rewrite the wiki pages listed above.
-6. Present the finish-branch choice. Do not merge, push or deploy without
+1. Read the second audit's result (`wf_57d27f59-a2a`) and verify its claims
+   against the code before accepting any of them. The first audit was right
+   about three fixes and wrong about none; the refutation pass was right
+   about three and wrong about two. Neither is authoritative.
+2. The two structural items under "What remains" — the screen-adjacency
+   label relation, and the executable oracle. Both are large and neither is
+   a defect in shipped behaviour.
+3. Measure the WEB target with the two probes that now exist.
+4. Present the finish-branch choice. Do not merge, push or deploy without
    the user's explicit selection.
