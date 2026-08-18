@@ -19,8 +19,8 @@ extends Node
 ## the depth texture and a control. A screenshot — taken by the harness on
 ## the desktop, or by Chrome's DevTools on the web — is the whole result.
 ##
-## LAYOUT, which the decoder in tools/platform_probe.py depends on:
-##   x in [0.00, 0.70)  nine bands, bit depths 8..16 left to right; white
+## LAYOUT:
+##   x in [0.00, 0.70)  nine bands, ascending step sizes left to right; white
 ##                      means that step survived at that base (y)
 ##   x in [0.70, 0.85)  the depth texture at a known surface, x60
 ##   x in [0.85, 1.00]  the control: the screen texture read straight back,
@@ -32,10 +32,20 @@ extends Node
 const READ_SHADER := preload("res://shaders/probe_platform_read.gdshader")
 const WRITE_SHADER := preload("res://shaders/probe_platform_write.gdshader")
 
-## Bit depths the ladder tests, left to right — must match NBANDS in both
-## shaders.
+## Step sizes the ladder tests, left to right, as multiples of one 10-bit
+## step — must match STEPS in shaders/probe_platform_write.gdshader, and
+## NBANDS in both shaders.
+##
+## Not powers of two. The channel's worst-case QUANTUM is what the B-channel
+## reconstruction guard clears, and a power-of-two ladder rounds that quantum
+## to the next whole bit: an AMD desktop GPU resolves 1/1023 at 647 of 649
+## bases and the old ladder called that 512 levels, halving the number the
+## guard is checked against. 0.50 and 2.00 bracket the answer and are the
+## probe's own sanity checks — on a 10-bit buffer the first must fail and the
+## last must survive.
+const STEPS: Array[float] = [0.50, 0.90, 1.00, 1.02, 1.05, 1.10, 1.25, 1.50, 2.00]
 const BANDS := 9
-const FIRST_BITS := 8
+const TEN_BIT := 1.0 / 1023.0
 ## Where the write pass puts the control value, and what it must read back.
 const CONTROL := 0.5
 ## The world quad stands this far from the eye; with near 0.05 and far 60
@@ -84,6 +94,27 @@ func _build() -> void:
 	camera.add_child(reader)
 
 
+## The rows the ladder is scanned across. The write pass sweeps its base
+## over the full height, but the extreme rows sit under whatever the
+## platform does at the very edge of the frame, so the sweep is read across
+## the middle 90% exactly as the desktop probe's base list is.
+func _first_row(h: int) -> int:
+	return int(0.05 * float(h))
+
+
+func _last_row(h: int) -> int:
+	return mini(int(0.95 * float(h)), h - 1)
+
+
+## The base the write pass put at image row `y`. A fragment's SCREEN_UV.y is
+## its pixel CENTRE, `(y + 0.5) / h`, and Godot's viewport image and
+## SCREEN_UV share their top-down orientation. Diagnostic only: no verdict
+## turns on it, so a flipped platform would misname a base, not miscount a
+## level.
+func _base_at(y: int, h: int) -> float:
+	return lerpf(0.05, 0.95, (float(y) + 0.5) / float(h))
+
+
 ## The same verdicts the PNG carries, printed — so a desktop run needs no
 ## decoder, and so a web run leaves them in the browser console too.
 func _report() -> void:
@@ -94,29 +125,82 @@ func _report() -> void:
 	var w := img.get_width()
 	var h := img.get_height()
 
-	var levels := 0
+	# EVERY ROW, not a sample of seventeen. The write pass sweeps the base
+	# with y and the whole point of that sweep is the WORST base, so any
+	# subsample can only report a level the buffer does not really hold.
+	# Seventeen rows also made the verdict depend on the window size, since
+	# `int(fraction * h)` picks different bases at 600 rows than at 720:
+	# the same export on the same Apple GPU answered 1024 at one size and
+	# 512 at another. A dense scan costs one image read either way.
+	print(
+		"# viewport: %d x %d (%d bases swept per band)" % [w, h, _last_row(h) - _first_row(h) + 1]
+	)
+	# The verdict: the SMALLEST step that survived at every base. Reading
+	# upward and stopping at the first clean band would be wrong if the
+	# ladder is not monotone, so every band is scanned and the smallest
+	# clean one wins.
+	var quantum := 0.0
+	var dirtiest_clean := 0.0
 	for band: int in BANDS:
-		var bits := FIRST_BITS + band
+		var mult := STEPS[band]
 		var x := int((float(band) + 0.5) / float(BANDS) * 0.70 * float(w))
-		var survives_everywhere := true
-		for row: int in 17:
-			var y := int((0.05 + 0.9 * float(row) / 16.0) * float(h))
-			if img.get_pixel(x, clampi(y, 0, h - 1)).r < 0.5:
-				survives_everywhere = false
-				break
-		print("#   %d-bit step survives at every base: %s" % [bits, str(survives_everywhere)])
-		if survives_everywhere:
-			levels = int(pow(2.0, float(bits)))
+		var collapsed_at := -1
+		var collapsed_last := -1
+		var collapsed := 0
+		for y: int in range(_first_row(h), _last_row(h) + 1):
+			if img.get_pixel(x, y).r < 0.5:
+				collapsed += 1
+				collapsed_last = y
+				if collapsed_at < 0:
+					collapsed_at = y
+		if collapsed_at < 0:
+			print("#   step %.2f x 1/1023 survives at every base" % mult)
+			if quantum == 0.0:
+				quantum = mult * TEN_BIT
 		else:
-			break
+			# Where it broke is the diagnosis: a collapse only at bright
+			# bases is a transfer curve, a handful scattered is the
+			# quantisation grid one code coarser than the step, and one at
+			# every base is a narrower buffer.
+			dirtiest_clean = maxf(dirtiest_clean, mult)
+			print(
+				(
+					"#   step %.2f x 1/1023 collapses at %d of %d bases, %.5f..%.5f"
+					% [
+						mult,
+						collapsed,
+						_last_row(h) - _first_row(h) + 1,
+						_base_at(collapsed_at, h),
+						_base_at(collapsed_last, h),
+					]
+				)
+			)
+	if quantum > 0.0 and dirtiest_clean > quantum / TEN_BIT:
+		# A larger step failing where a smaller one passed cannot happen in
+		# a quantiser. It means the ladder is measuring something else.
+		print("# WARNING: the ladder is not monotone; a larger step failed where a smaller passed")
 
 	var depth := img.get_pixel(int(0.775 * float(w)), h / 2).r
 	var control := img.get_pixel(int(0.925 * float(w)), h / 2).r
 	var expect := (NEAR / (FAR - NEAR)) * (FAR / WORLD_DIST - 1.0) * DEPTH_GAIN
+	# levels is reported for continuity with the older ladder, but the
+	# quantum is the number the reconstruction guard clears: half of it,
+	# scaled by DIST_PACK_RANGE, is how far a reconstructed point can sit
+	# from the surface that packed it.
 	print(
 		(
-			"# platform: levels %d ; depth %.4f (reversed-Z predicts %.4f) ; control %.4f"
-			% [levels, depth, expect, control]
+			(
+				"# platform: quantum %.8f (1/%.1f) ; levels %d ; depth %.4f"
+				+ " (reversed-Z predicts %.4f) ; control %.4f"
+			)
+			% [
+				quantum,
+				1.0 / quantum if quantum > 0.0 else 0.0,
+				int(1.0 / quantum) + 1 if quantum > 0.0 else 0,
+				depth,
+				expect,
+				control,
+			]
 		)
 	)
 	print("# CONTROL must read %.2f — anything else voids every verdict above" % CONTROL)
