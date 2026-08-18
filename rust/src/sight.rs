@@ -1296,28 +1296,92 @@ mod tests {
         assert!(entry(nan_y, src, wall).is_none_or(|t| t.is_finite()));
     }
 
-    /// THE BREAK: `entry` and `crosses` drifting apart, after which the
-    /// shader would cut air at a wall the wave law does not think is there,
-    /// or vice versa. They must be ONE arithmetic with two readings.
+    /// THE BREAK: [`entry`] reporting a fraction that is not where the
+    /// segment meets the box — a scaled, offset or stale `t0`, a `min`/`max`
+    /// swapped in the slab fold, or the axis loop narrowed so one slab stops
+    /// clipping. [`crosses`] cannot catch any of them, because `crosses` IS
+    /// `entry(..).is_some()`: the predicate and the value are one function,
+    /// and only the VALUE carries the distance [`visible_air`] cuts every
+    /// ring against.
+    ///
+    /// The property is geometric, not a restatement of the arithmetic: for a
+    /// segment that begins outside the box, the point at `t` lies ON the
+    /// box's boundary, and the point a hair before `t` is outside it. That
+    /// is what "entry" means, and nothing weaker distinguishes `t` from
+    /// `2 * t`.
     #[test]
-    fn the_entry_and_the_predicate_are_one_arithmetic() {
+    fn the_reported_entry_is_where_the_segment_meets_the_box() {
+        // built the way the shipped table builds walls: from a centerline,
+        // inflated by WALL_T and shrunk by RECT_SHRINK. The box is read back
+        // off the occluder rather than restated here — the property under
+        // test is where `entry` lands, not what the constructor built.
         let wall = Occluder::new(Vector4::new(3.0, -5.0, 3.0, 5.0), 0.0, 3.0).unwrap();
-        let mut agreed = 0;
+        let (rect, span) = (wall.rect(), wall.span());
+        let lo = [rect.x, span.x, rect.y];
+        let hi = [rect.z, span.y, rect.w];
+        // world-unit slack. f32 over coordinates of order 10 carries about
+        // 1e-6, and the step back below moves 0.02 m along x, so 1e-3
+        // separates "on the face" from "through it" by two orders of
+        // magnitude at both ends.
+        let skin = 1.0e-3_f32;
+        let on_boundary = |p: [f32; 3]| {
+            let within = (0..3).all(|k| p[k] >= lo[k] - skin && p[k] <= hi[k] + skin);
+            let touching =
+                (0..3).any(|k| (p[k] - lo[k]).abs() < skin || (p[k] - hi[k]).abs() < skin);
+            within && touching
+        };
+
+        let mut entered = 0;
         for i in 0..40 {
-            let a = f32::from(i as i16) * 0.25 - 2.0;
+            let z_from = f32::from(i as i16) * 0.3 - 6.0;
             for j in 0..40 {
-                let b = f32::from(j as i16) * 0.4 - 2.0;
-                let from = Vector3::new(a, 1.5, b);
-                let to = Vector3::new(b + 6.0, 1.5, a);
-                assert_eq!(
-                    entry(from, to, wall).is_some(),
-                    crosses(from, to, wall),
-                    "entry and crosses disagreed at {from:?} -> {to:?}"
+                // y and z both sweep, so lines leave through the vertical
+                // slab as well as the horizontal ones and every axis of the
+                // fold is exercised
+                let z_to = f32::from(j as i16) * 0.3 - 6.0;
+                let y_to = f32::from(j as i16) * 0.2 - 1.0;
+                let from = Vector3::new(-2.0, 1.5, z_from);
+                let to = Vector3::new(8.0, y_to, z_to);
+                // a segment born inside reports the GRAZE_EPS clamp rather
+                // than a boundary — a different law, owned by the birth-wall
+                // cases
+                if contains(wall, from) {
+                    continue;
+                }
+                let Some(t) = entry(from, to, wall) else {
+                    continue;
+                };
+                assert!(
+                    t.is_finite() && (0.0..=1.0).contains(&t),
+                    "t left the segment: {t}"
                 );
-                agreed += 1;
+                let at = |s: f32| {
+                    [
+                        from.x + s * (to.x - from.x),
+                        from.y + s * (to.y - from.y),
+                        from.z + s * (to.z - from.z),
+                    ]
+                };
+                assert!(
+                    on_boundary(at(t)),
+                    "t = {t} is not on the wall's surface: {:?} for {from:?} -> {to:?}",
+                    at(t)
+                );
+                let back = at(t - 2.0e-3);
+                assert!(
+                    !contains(wall, Vector3::new(back[0], back[1], back[2])),
+                    "the segment was already inside before t = {t}: {back:?}"
+                );
+                entered += 1;
             }
         }
-        assert_eq!(agreed, 1600);
+        // a sweep that entered nothing would pass vacuously. This is a floor
+        // on coverage, not a count of the loop: it does not move when the
+        // loop bounds do.
+        assert!(
+            entered > 200,
+            "only {entered} of the sampled lines entered the wall"
+        );
     }
 
     /// THE BREAK: an unwalled sight line reporting anything other than its
