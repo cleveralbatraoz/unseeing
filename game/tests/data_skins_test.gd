@@ -131,7 +131,13 @@ func test_pool_carries_the_shared_wall_table() -> void:
 	assert_str(src).contains("const int MAXW = 32;")
 	assert_str(src).contains("uniform int u_wall_count = 0;")
 	assert_str(src).contains("uniform vec4 u_walls[MAXW];")
-	assert_str(src).contains("uniform float u_wall_top = 3.0;")
+	# each wall's OWN sweep, defaulted to a ZERO-HEIGHT span rather than the
+	# shipped (0, 3): a material nobody pushed must lose the barrier law
+	# loudly, where a default that happened to be right on this map would
+	# ship the bug invisibly
+	assert_str(src).contains("uniform vec2 u_wall_y[MAXW];")
+	# the UNIFORM is gone; the comment explaining why it went still names it
+	assert_bool(src.contains("uniform float u_wall_top")).is_false()
 
 
 ## The GLSL slab test is a literal transliteration of sight.rs, pinned in
@@ -146,7 +152,12 @@ func test_pool_slab_test_mirrors_the_rust_reference() -> void:
 	assert_str(src).contains("abs(d[k]) < 1e-6")
 	assert_str(src).contains("t0 = max(t0, min(ta, tb));")
 	assert_str(src).contains("t1 = min(t1, max(ta, tb));")
-	assert_str(src).contains("wall_contains(u_walls[i], from, u_wall_top)")
+	assert_str(src).contains("wall_contains(u_walls[i], from, u_wall_y[i])")
+	# an occluder describing no volume stops nothing, and the guard is
+	# written !(a <= b) so a NaN lane reads as EMPTY — `a > b` would read it
+	# as ordered and hand it to a slab test where t0 > t1 is also false
+	assert_str(src).contains("bool wall_empty(vec4 rect, vec2 yspan)")
+	assert_str(src).contains("return !(rect.x <= rect.z) || !(rect.y <= rect.w)")
 	# ...including the exact cheap refusal in front of it (sight.rs::near),
 	# which is what keeps the per-fragment sight loop affordable now that
 	# the map holds nineteen walls instead of ten

@@ -6,16 +6,23 @@
 //! crossing and the shader drew none", which localises the bug to the
 //! shader without a single pixel being inspected.
 
-use godot::builtin::{Vector3, Vector4};
+use godot::builtin::{Vector2, Vector3, Vector4};
 
 use crate::level_plan::SOURCE_THROUGH;
-use crate::sight::{blocked_from, contains, crosses, crossings, crossings_from, reveal_visibility};
+use crate::sight::{
+    Occluder, blocked_from, contains, crosses, crossings, crossings_from, reveal_visibility,
+};
 
 /// One wall's answer for one sight line.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WallVerdict {
     pub index: usize,
     pub rect: Vector4,
+    /// This wall's own world Y sweep, `(bottom, top)`. Reported per wall
+    /// because there is no longer any single answer: an occluder carries
+    /// the span of the box it stands for, so a lifted wall and a
+    /// floor-standing one differ here and a reader needs to see which.
+    pub span: Vector2,
     /// Does the segment pierce this wall's box?
     pub crossed: bool,
     /// Does this wall contain the origin? Such a wall is skipped by the
@@ -28,7 +35,6 @@ pub struct WallVerdict {
 pub struct RayExplanation {
     pub from: Vector3,
     pub to: Vector3,
-    pub wall_top: f32,
     /// Every wall considered, in table order — including the ones that
     /// refused. An empty verdict list and a clear line are different facts.
     pub walls: Vec<WallVerdict>,
@@ -56,23 +62,23 @@ pub struct RayExplanation {
 /// between the two would surface as a failing test here rather than as a
 /// plausible-looking wrong answer in the field.
 #[must_use]
-pub fn explain_ray(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32) -> RayExplanation {
-    let walls = rects
+pub fn explain_ray(from: Vector3, to: Vector3, occluders: &[Occluder]) -> RayExplanation {
+    let walls = occluders
         .iter()
         .enumerate()
-        .map(|(index, rect)| WallVerdict {
+        .map(|(index, occ)| WallVerdict {
             index,
-            rect: *rect,
-            crossed: crosses(from, to, *rect, wall_top),
-            contains_origin: contains(*rect, from, wall_top),
+            rect: occ.rect(),
+            span: occ.span(),
+            crossed: crosses(from, to, *occ),
+            contains_origin: contains(*occ, from),
         })
         .collect();
-    let camera_crossings = crossings(from, to, rects, wall_top);
-    let source_crossings = crossings_from(from, to, rects, wall_top);
+    let camera_crossings = crossings(from, to, occluders);
+    let source_crossings = crossings_from(from, to, occluders);
     RayExplanation {
         from,
         to,
-        wall_top,
         walls,
         camera_crossings,
         source_crossings,
@@ -83,7 +89,7 @@ pub fn explain_ray(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32)
         // `source_crossings` above still reports the count, because a
         // reader debugging a sight line wants to know how many walls stand
         // there even though the law stops caring after the first.
-        wave_transmission: reveal_visibility(blocked_from(from, to, rects, wall_top)),
+        wave_transmission: reveal_visibility(blocked_from(from, to, occluders)),
         // SOURCE_THROUGH is the source_muffle exponent base
         // (nodes/level.rs), which reads off sight::crossings — the CAMERA
         // occluder, every wall counted.
@@ -95,10 +101,9 @@ pub fn explain_ray(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32)
 mod tests {
     use super::*;
     use crate::level_plan;
-    use crate::sight::wall_rect;
     use godot::builtin::{Vector3, Vector4};
 
-    const WALL_TOP: f32 = level_plan::WALL_H as f32;
+    const WALL_TOP: f64 = level_plan::WALL_H;
 
     /// A RETIRED 20×20/10-wall map, not the shipped 28×28/19-wall scene —
     /// see `sight::tests::retired_map_rects` for why it remains a valid
@@ -107,7 +112,7 @@ mod tests {
     /// fixture would let one edit move both sides of the oracle at once,
     /// and this contract exists to catch exactly that drift between
     /// `sight.rs` and `observe`.
-    fn retired_map_rects() -> Vec<Vector4> {
+    fn retired_map_rects() -> Vec<Occluder> {
         [
             Vector4::new(0.6, 0.6, 19.4, 0.6),
             Vector4::new(19.4, 0.6, 19.4, 19.4),
@@ -121,7 +126,7 @@ mod tests {
             Vector4::new(0.6, 13.0, 4.0, 13.0),
         ]
         .iter()
-        .map(|s| wall_rect(*s))
+        .map(|s| Occluder::new(*s, 0.0, WALL_TOP).expect("a floor-standing wall is describable"))
         .collect()
     }
 
@@ -136,7 +141,6 @@ mod tests {
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(8.6, 1.15, 4.4),
             &retired_map_rects(),
-            WALL_TOP,
         );
         assert_eq!(e.camera_crossings, 1);
         let crossed: Vec<usize> = e
@@ -163,7 +167,6 @@ mod tests {
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 10.0),
             &retired_map_rects(),
-            WALL_TOP,
         );
         assert_eq!(e.camera_crossings, 2);
         assert!(
@@ -187,7 +190,6 @@ mod tests {
             Vector3::new(8.0, 1.0, 4.0),
             Vector3::new(12.0, 1.5, 6.0),
             &retired_map_rects(),
-            WALL_TOP,
         );
         assert_eq!(e.camera_crossings, 0);
         assert_eq!(e.walls.len(), 10);
@@ -206,7 +208,6 @@ mod tests {
             Vector3::new(6.4, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 4.0),
             &retired_map_rects(),
-            WALL_TOP,
         );
         assert_eq!(e.camera_crossings, 1);
         assert_eq!(e.source_crossings, 0);
@@ -235,7 +236,6 @@ mod tests {
             Vector3::new(6.4, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 4.0),
             &retired_map_rects(),
-            WALL_TOP,
         );
         assert!(
             (e.wave_transmission - 1.0).abs() < 1e-9,

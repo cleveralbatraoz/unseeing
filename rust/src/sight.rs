@@ -15,7 +15,7 @@
 //! [`GRAZE_EPS`] so neither the camera nor the shaded fragment counts a
 //! surface it merely touches.
 
-use godot::builtin::{Vector3, Vector4};
+use godot::builtin::{Vector2, Vector3, Vector4};
 
 use crate::level_plan;
 
@@ -58,6 +58,115 @@ pub fn wall_rect(segment: Vector4) -> Vector4 {
     )
 }
 
+/// One wall's occluder: the world XZ rect its centerline inflates into
+/// ([`wall_rect`]), swept through the world Y span of the SAME box the
+/// paint pass draws.
+///
+/// The span travels INSIDE the value, and that is the whole point. It used
+/// to be one global `wall_top` pushed as [`level_plan::WALL_H`], with every
+/// occluder swept `[0, WALL_H]` regardless of where its wall actually
+/// stood — and nothing constrains a wall's Y.
+/// `level_plan::plan_wall_transform` normalises a wall's BASIS and carries
+/// `origin.y` through untouched; `level_plan::wall_segment` then writes
+/// `(x1, z1, x2, z2)` and discards the height at the one point it could
+/// have been noticed. So a wall lifted with the gizmo left a phantom
+/// barrier in the open air beneath it and an unoccluded strip across its
+/// raised top, and a level root lifted bodily put every occluder below the
+/// map — `blocked_from` answering false everywhere, the barrier law failing
+/// open across the whole level in silence.
+///
+/// A table of rects beside a table of tops is two things that can disagree.
+/// This is one thing that cannot.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Occluder {
+    rect: Vector4,
+    span: Vector2,
+}
+
+impl Occluder {
+    /// The occluder a wall stands for: its centerline `segment` inflated by
+    /// [`wall_rect`], swept from `bottom` to `top` — the Y lanes of the
+    /// same world box the paint pass reads.
+    ///
+    /// The span is ordered here, so a caller that hands the lanes over
+    /// backwards still gets the box it meant. `None` when a lane has no
+    /// finite f32 representation: absence is a domain result, never a
+    /// silent zero, because a zero-height occluder and an undescribable one
+    /// are different facts and only one of them is a bug.
+    #[must_use]
+    pub fn new(segment: Vector4, bottom: f64, top: f64) -> Option<Self> {
+        let (bottom, top) = (bottom as f32, top as f32);
+        (bottom.is_finite() && top.is_finite()).then(|| Self {
+            rect: wall_rect(segment),
+            span: Vector2::new(bottom.min(top), bottom.max(top)),
+        })
+    }
+
+    /// An occluder built from an already-inflated rect and a raw span,
+    /// ordering nothing and checking nothing — for tests that need to
+    /// reach the degenerate shapes [`Self::new`] refuses to build.
+    #[must_use]
+    pub const fn from_parts(rect: Vector4, bottom: f32, top: f32) -> Self {
+        Self {
+            rect,
+            span: Vector2::new(bottom, top),
+        }
+    }
+
+    /// The slot a wall whose world box cannot be described takes: an
+    /// occluder no point is inside and no segment crosses.
+    ///
+    /// A refused wall keeps its SLOT rather than being dropped, because
+    /// `WaveLevel::wall_names()[i]` names `occluders[i]` — a hole slides
+    /// every later name onto the wrong wall, and a diagnostic that blames
+    /// the wrong wall is worse than none.
+    pub const NOWHERE: Self = Self::from_parts(Vector4::new(1.0, 1.0, -1.0, -1.0), 1.0, -1.0);
+
+    /// The world XZ rect, `(min_x, min_z, max_x, max_z)` — the `u_walls`
+    /// lane.
+    #[must_use]
+    pub const fn rect(self) -> Vector4 {
+        self.rect
+    }
+
+    /// The world Y sweep, `(bottom, top)` — the `u_wall_y` lane.
+    #[must_use]
+    pub const fn span(self) -> Vector2 {
+        self.span
+    }
+
+    /// Empty on some axis, or non-finite — an occluder that describes no
+    /// volume and must therefore stop nothing.
+    ///
+    /// CHECKED, not left to the slab arithmetic, because that arithmetic
+    /// accepts an inverted interval: with `lo = 1`, `hi = -1` a segment
+    /// from `x = -5` to `x = +5` gives `ta = 1`, `tb = -1`, so `t0` stays
+    /// 0.001 and `t1` stays 0.999 and no axis rejects. `near` does not save
+    /// it either — that segment's own bounding box overlaps the inverted
+    /// rect.
+    ///
+    /// Written `!(a <= b)` and not `a > b` on purpose: every comparison
+    /// against NaN is false, so the `>` form would read a NaN lane as
+    /// ORDERED and hand it to a slab test where `t0 > t1` is also false —
+    /// an occluder that swallows the level.
+    #[must_use]
+    #[expect(
+        clippy::neg_cmp_op_on_partial_ord,
+        reason = "the negated form is the point: every comparison against \
+                  NaN is false, so `!(a <= b)` reads a NaN lane as EMPTY \
+                  while the `a > b` clippy suggests reads it as ordered and \
+                  hands it to a slab test where `t0 > t1` is also false — an \
+                  occluder that swallows the level. The GLSL transliteration \
+                  in pulse_pool.gdshaderinc is written the same way and for \
+                  the same reason."
+    )]
+    fn is_empty(self) -> bool {
+        !(self.rect.x <= self.rect.z)
+            || !(self.rect.y <= self.rect.w)
+            || !(self.span.x <= self.span.y)
+    }
+}
+
 /// Could the segment `from -> to` possibly reach `rect` at all? An EXACT
 /// pre-rejection, not a heuristic: a segment that crosses the rect has a
 /// point inside it, so the segment's own XZ bounding box must overlap the
@@ -82,14 +191,19 @@ pub fn near(from: Vector3, to: Vector3, rect: Vector4) -> bool {
 /// Total on any input: a zero direction component degenerates to a
 /// point-in-slab check.
 #[must_use]
-pub fn crosses(from: Vector3, to: Vector3, rect: Vector4, wall_top: f32) -> bool {
+pub fn crosses(from: Vector3, to: Vector3, occ: Occluder) -> bool {
+    if occ.is_empty() {
+        return false;
+    }
+    let rect = occ.rect();
+    let span = occ.span();
     if !near(from, to, rect) {
         return false;
     }
     let a = [from.x, from.y, from.z];
     let d = [to.x - from.x, to.y - from.y, to.z - from.z];
-    let lo = [rect.x, 0.0, rect.y];
-    let hi = [rect.z, wall_top, rect.w];
+    let lo = [rect.x, span.x, rect.y];
+    let hi = [rect.z, span.y, rect.w];
     let mut t0 = GRAZE_EPS as f32;
     let mut t1 = (1.0 - GRAZE_EPS) as f32;
     for k in 0..3 {
@@ -115,10 +229,10 @@ pub fn crosses(from: Vector3, to: Vector3, rect: Vector4, wall_top: f32) -> bool
 /// predicate (n > 0) of the acoustic-image shaders. This is the CAMERA
 /// occluder (eye -> shaded point): every wall the line pierces counts.
 #[must_use]
-pub fn crossings(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32) -> u32 {
-    rects
+pub fn crossings(from: Vector3, to: Vector3, occluders: &[Occluder]) -> u32 {
+    occluders
         .iter()
-        .map(|r| u32::from(crosses(from, to, *r, wall_top)))
+        .map(|occ| u32::from(crosses(from, to, *occ)))
         .sum()
 }
 
@@ -127,13 +241,18 @@ pub fn crossings(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32) -
 /// input. The wall a sound is born inside cannot block that sound's own
 /// reveal, so [`crossings_from`] skips whatever this reports.
 #[must_use]
-pub fn contains(rect: Vector4, p: Vector3, wall_top: f32) -> bool {
+pub fn contains(occ: Occluder, p: Vector3) -> bool {
+    if occ.is_empty() {
+        return false;
+    }
+    let rect = occ.rect();
+    let span = occ.span();
     p.x >= rect.x
         && p.x <= rect.z
         && p.z >= rect.y
         && p.z <= rect.w
-        && p.y >= 0.0
-        && p.y <= wall_top
+        && p.y >= span.x
+        && p.y <= span.y
 }
 
 /// How many wall rects the sight line `from -> to` crosses, IGNORING any
@@ -145,11 +264,11 @@ pub fn contains(rect: Vector4, p: Vector3, wall_top: f32) -> bool {
 /// a source reaches its OWN wall's near face, but the eye behind that
 /// wall still cannot.
 #[must_use]
-pub fn crossings_from(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32) -> u32 {
-    rects
+pub fn crossings_from(from: Vector3, to: Vector3, occluders: &[Occluder]) -> u32 {
+    occluders
         .iter()
-        .filter(|r| !contains(**r, from, wall_top))
-        .map(|r| u32::from(crosses(from, to, *r, wall_top)))
+        .filter(|occ| !contains(**occ, from))
+        .map(|occ| u32::from(crosses(from, to, *occ)))
         .sum()
 }
 
@@ -172,10 +291,10 @@ pub fn crossings_from(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f
 /// `source_reveal_vis` in `data_core.gdshaderinc` and the shell loop in
 /// `hearing_post.gdshader` — ask it rather than a count.
 #[must_use]
-pub fn blocked_from(from: Vector3, to: Vector3, rects: &[Vector4], wall_top: f32) -> bool {
-    rects
+pub fn blocked_from(from: Vector3, to: Vector3, occluders: &[Occluder]) -> bool {
+    occluders
         .iter()
-        .any(|r| !contains(*r, from, wall_top) && crosses(from, to, *r, wall_top))
+        .any(|occ| !contains(*occ, from) && crosses(from, to, *occ))
 }
 
 /// How much of a wave's REVEAL survives the walls between its source and
@@ -208,16 +327,25 @@ pub const fn reveal_visibility(blocked: bool) -> f64 {
 mod tests {
     use super::*;
 
-    const WALL_TOP: f32 = level_plan::WALL_H as f32;
+    const WALL_TOP: f64 = level_plan::WALL_H;
+
+    /// The occluder a floor-standing wall stands for — the shipped shape,
+    /// swept 0 to WALL_H. Every count pinned in this module predates
+    /// per-wall spans and must survive them unchanged, so the fixtures say
+    /// so explicitly rather than by omission.
+    fn standing(segment: Vector4) -> Occluder {
+        Occluder::new(segment, 0.0, WALL_TOP).expect("a floor-standing wall is describable")
+    }
 
     /// The three-slab test with NO [`near`] gate in front of it — the
     /// reference the fast path is held against, kept deliberately as a
     /// duplicate so a change to one is caught by the other.
-    fn crosses_slabs_only(from: Vector3, to: Vector3, rect: Vector4, wall_top: f32) -> bool {
+    fn crosses_slabs_only(from: Vector3, to: Vector3, occ: Occluder) -> bool {
+        let (rect, span) = (occ.rect(), occ.span());
         let a = [from.x, from.y, from.z];
         let d = [to.x - from.x, to.y - from.y, to.z - from.z];
-        let lo = [rect.x, 0.0, rect.y];
-        let hi = [rect.z, wall_top, rect.w];
+        let lo = [rect.x, span.x, rect.y];
+        let hi = [rect.z, span.y, rect.w];
         let mut t0 = GRAZE_EPS as f32;
         let mut t1 = (1.0 - GRAZE_EPS) as f32;
         for k in 0..3 {
@@ -246,9 +374,23 @@ mod tests {
     /// where nothing can be stepped through with a debugger.
     #[test]
     fn the_cheap_refusal_never_changes_an_answer() {
-        let rects = retired_map_rects();
+        // A vertically NON-UNIFORM table, not the shipped flat one: `near`
+        // is an XZ-only refusal and its exactness argument has to survive
+        // walls that sweep different heights, which is the whole point of
+        // the occluder carrying its own span. Every third wall is lifted
+        // clear of the floor and every fifth is a low kerb.
+        let occluders: Vec<Occluder> = retired_map_occluders()
+            .iter()
+            .enumerate()
+            .map(|(i, occ)| match i % 5 {
+                0 => Occluder::from_parts(occ.rect(), 1.0, 4.0),
+                3 => Occluder::from_parts(occ.rect(), 0.0, 0.6),
+                _ => *occ,
+            })
+            .collect();
         let mut agreed = 0_u64;
         let mut ever_crossed = false;
+        let mut ever_refused = false;
         let step = 1.7_f32;
         for i in 0..12 {
             for j in 0..12 {
@@ -256,19 +398,22 @@ mod tests {
                 for k in 0..12 {
                     for l in 0..12 {
                         let to = Vector3::new(k as f32 * step, 2.4, l as f32 * step);
-                        for rect in &rects {
-                            let fast = crosses(from, to, *rect, WALL_TOP);
-                            let slow = crosses_slabs_only(from, to, *rect, WALL_TOP);
-                            assert_eq!(fast, slow, "{from} -> {to} against {rect}");
+                        for occ in &occluders {
+                            let fast = crosses(from, to, *occ);
+                            let slow = crosses_slabs_only(from, to, *occ);
+                            assert_eq!(fast, slow, "{from} -> {to} against {occ:?}");
                             ever_crossed |= slow;
+                            ever_refused |= !near(from, to, occ.rect());
                             agreed += 1;
                         }
                     }
                 }
             }
         }
-        // a sweep that never crossed anything would agree vacuously
+        // a sweep that never crossed anything, or never refused anything,
+        // would agree vacuously
         assert!(ever_crossed);
+        assert!(ever_refused);
         assert!(agreed > 100_000);
     }
 
@@ -277,13 +422,13 @@ mod tests {
     /// fixture has plenty of such pairs — that is where the saving is.
     #[test]
     fn a_far_wall_is_refused_without_the_slab_test() {
-        let rects = retired_map_rects();
+        let rects = retired_map_occluders();
         let from = Vector3::new(1.0, 0.9, 1.0);
         let to = Vector3::new(2.0, 0.9, 2.0);
-        let refused = rects.iter().filter(|r| !near(from, to, **r)).count();
+        let refused = rects.iter().filter(|r| !near(from, to, r.rect())).count();
         assert!(refused > 0, "no wall was cheaply refused");
-        for rect in rects.iter().filter(|r| !near(from, to, **r)) {
-            assert!(!crosses(from, to, *rect, WALL_TOP));
+        for occ in rects.iter().filter(|r| !near(from, to, r.rect())) {
+            assert!(!crosses(from, to, *occ));
         }
     }
 
@@ -298,7 +443,7 @@ mod tests {
     /// `game/tests/data_skins_test.gd`'s
     /// `test_explain_ray_matches_the_pinned_crossing_counts` runs these same
     /// lines against the REAL scene, through `WaveObserver`.
-    fn retired_map_rects() -> Vec<Vector4> {
+    fn retired_map_occluders() -> Vec<Occluder> {
         [
             Vector4::new(0.6, 0.6, 19.4, 0.6),
             Vector4::new(19.4, 0.6, 19.4, 19.4),
@@ -312,12 +457,169 @@ mod tests {
             Vector4::new(0.6, 13.0, 4.0, 13.0),
         ]
         .iter()
-        .map(|s| wall_rect(*s))
+        .map(|s| standing(*s))
         .collect()
     }
 
     /// The inflation is a half-thickness pad shrunk by the contact
     /// epsilon, and reversed segments normalize into min/max order.
+    /// THE break this catches: an occluder swept `[0, WALL_H]` no matter
+    /// where its wall actually stands. Nothing constrains a wall's Y —
+    /// `level_plan::plan_wall_transform` normalises the BASIS and carries
+    /// `origin.y` through untouched, and `wall_segment` then discards it —
+    /// so a wall lifted with the gizmo leaves a phantom barrier in the open
+    /// air beneath it and an unoccluded strip across its raised top.
+    ///
+    /// Hand-derived from the retired DividerNorth centerline
+    /// `(6.4, 0.6) -> (6.4, 8.0)` lifted one metre: pad is
+    /// `WALL_T - RECT_SHRINK = 0.15 - 0.02 = 0.13`, so the rect is
+    /// `(6.27, 0.47, 6.53, 8.13)` swept `y in [1, 4]`. Three lines from
+    /// x = 3 to x = 10 at z = 4 — under it, through its raised top half,
+    /// and a control through the middle that must not move.
+    #[test]
+    fn a_lifted_wall_occludes_where_it_stands_and_nowhere_else() {
+        let lifted = Occluder::new(Vector4::new(6.4, 0.6, 6.4, 8.0), 1.0, 4.0)
+            .expect("a finite span is describable");
+        let rect = lifted.rect();
+        assert!((rect.x - 6.27).abs() < 1e-4 && (rect.y - 0.47).abs() < 1e-4);
+        assert!((rect.z - 6.53).abs() < 1e-4 && (rect.w - 8.13).abs() < 1e-4);
+        assert_eq!(lifted.span(), Vector2::new(1.0, 4.0));
+        let table = [lifted];
+        let across = |y: f32| {
+            crossings(
+                Vector3::new(3.0, y, 4.0),
+                Vector3::new(10.0, y, 4.0),
+                &table,
+            )
+        };
+        assert_eq!(
+            across(0.5),
+            0,
+            "a phantom barrier in the air under the wall"
+        );
+        assert_eq!(across(3.5), 1, "an unoccluded strip across the raised top");
+        assert_eq!(
+            across(2.0),
+            1,
+            "the control moved: this is an inversion, not a fix"
+        );
+
+        // ...and the birth-wall skip, which fails in the DANGEROUS
+        // direction. A source on the floor at (6.4, 0.5, 4.0) stands in
+        // open air UNDER the lifted wall, so it is not born inside it and
+        // the wall must still occlude that source in every direction.
+        // Judged "inside" — as a `[0, WALL_H]` sweep judges it — the skip
+        // silently disables this wall for this source entirely.
+        let under = Vector3::new(6.4, 0.5, 4.0);
+        assert!(
+            !contains(lifted, under),
+            "open air under a wall is not inside it"
+        );
+        assert_eq!(
+            crossings_from(under, Vector3::new(7.0, 3.5, 4.0), &table),
+            1
+        );
+    }
+
+    /// A floor-standing wall sweeps EXACTLY zero to the wall height — no
+    /// epsilon, no dust. This is the pixel-identity criterion for the whole
+    /// per-wall-span change stated as a test: every count pinned in this
+    /// module, and every reading the rendered probe takes, predates it and
+    /// must survive it unchanged.
+    ///
+    /// Built the way `WaveWall::world_shape` builds it — the wall's origin
+    /// lifted by `(0, WALL_H/2, 0)`, sized by `level_plan::wall_box` — and
+    /// taken through `render::faces::bounds`, which is the same path the
+    /// level uses. It fails if the span is ever derived from a mesh AABB,
+    /// or shrunk by `RECT_SHRINK` along with the rect.
+    #[test]
+    fn a_floor_standing_wall_sweeps_exactly_zero_to_the_wall_height() {
+        assert_eq!(level_plan::WALL_H, 3.0, "the derivation below assumes it");
+        let size = level_plan::wall_box(4.0);
+        for basis in [
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+        ] {
+            let shape = crate::render::Shape::Box3d {
+                center: [5.0, level_plan::WALL_H / 2.0, 5.0],
+                size: [size.x as f64, size.y as f64, size.z as f64],
+                basis,
+            };
+            let box3 = crate::render::faces::bounds(&shape).expect("a finite wall box");
+            let occ = Occluder::new(Vector4::new(3.0, 5.0, 7.0, 5.0), box3.min[1], box3.max[1])
+                .expect("describable");
+            assert_eq!(
+                occ.span(),
+                Vector2::new(0.0, 3.0),
+                "a floor-standing wall must sweep exactly 0..WALL_H"
+            );
+        }
+    }
+
+    /// An occluder that describes nothing must be crossed by nothing — and
+    /// the slab arithmetic alone does NOT deliver that, which is why
+    /// `is_empty` is a checked guard rather than an emergent property.
+    ///
+    /// The counterexample: an inverted interval still yields a valid
+    /// parametric window. With `lo = 1`, `hi = -1`, a segment from x = -5
+    /// to x = +5 gives `ta = 1`, `tb = -1`, so `t0` stays 0.001 and `t1`
+    /// stays 0.999 and no axis rejects — the function answers CROSSED.
+    /// `near` does not save it either: that segment's own bounding box
+    /// overlaps the inverted rect. A NaN lane is worse, since every
+    /// comparison against it is false.
+    #[test]
+    fn an_empty_occluder_is_crossed_by_nothing_the_slab_test_would_accept() {
+        let from = Vector3::new(-5.0, 0.0, 0.0);
+        let to = Vector3::new(5.0, 0.0, 0.0);
+        assert!(!crosses(from, to, Occluder::NOWHERE));
+        assert!(!contains(Occluder::NOWHERE, Vector3::ZERO));
+        // an inverted span specifically, built past the ordering `new` does
+        let inverted = Occluder::from_parts(Vector4::new(-1.0, -1.0, 1.0, 1.0), 1.0, -1.0);
+        assert!(!crosses(from, to, inverted));
+        assert!(!contains(inverted, Vector3::ZERO));
+        // and a non-finite one: `!(a <= b)` reads NaN as empty, where
+        // `a > b` would read it as ordered and let it swallow the level
+        let nan = Occluder::from_parts(Vector4::new(-1.0, -1.0, 1.0, 1.0), f32::NAN, 1.0);
+        assert!(!crosses(from, to, nan));
+        assert!(!contains(nan, Vector3::ZERO));
+        assert_eq!(
+            Occluder::new(Vector4::new(0.0, 0.0, 1.0, 1.0), f64::NAN, 3.0),
+            None
+        );
+        assert_eq!(
+            Occluder::new(Vector4::new(0.0, 0.0, 1.0, 1.0), 0.0, f64::INFINITY),
+            None
+        );
+    }
+
+    /// Two walls at different heights occlude independently — the property
+    /// a single global `wall_top` cannot express at all, and the reason the
+    /// span travels inside the occluder rather than beside it.
+    #[test]
+    fn two_walls_at_different_heights_occlude_independently() {
+        let standing = Occluder::new(Vector4::new(6.4, 0.6, 6.4, 8.0), 0.0, 3.0).expect("finite");
+        let raised = Occluder::new(Vector4::new(12.0, 0.6, 12.0, 8.0), 1.0, 4.0).expect("finite");
+        let table = [standing, raised];
+        let low = (Vector3::new(3.0, 0.5, 4.0), Vector3::new(16.0, 0.5, 4.0));
+        let high = (Vector3::new(3.0, 3.5, 4.0), Vector3::new(16.0, 3.5, 4.0));
+        assert_eq!(
+            crossings(low.0, low.1, &table),
+            1,
+            "only the floor-standing wall"
+        );
+        assert_eq!(crossings(high.0, high.1, &table), 1, "only the raised wall");
+        // the predicate agrees with the count on both
+        assert!(blocked_from(low.0, low.1, &table));
+        assert!(blocked_from(high.0, high.1, &table));
+        // and a line that clears both: above the standing wall, below the raised
+        let clear = crossings(
+            Vector3::new(3.0, 0.5, 20.0),
+            Vector3::new(16.0, 0.5, 20.0),
+            &table,
+        );
+        assert_eq!(clear, 0, "a line past both walls in z crosses neither");
+    }
+
     #[test]
     fn wall_rect_inflates_and_normalizes() {
         let divider = wall_rect(Vector4::new(6.4, 0.6, 6.4, 8.0));
@@ -328,6 +630,9 @@ mod tests {
         let reversed = wall_rect(Vector4::new(19.4, 19.4, 0.6, 19.4));
         assert!((reversed.x - 0.47).abs() < 1e-4);
         assert!((reversed.z - 19.53).abs() < 1e-4);
+        // ...and an Occluder inflates through the very same function, so
+        // the rect law has one home whatever sweep is wrapped around it
+        assert_eq!(standing(Vector4::new(6.4, 0.6, 6.4, 8.0)).rect(), divider);
     }
 
     /// Spawn to fan head: exactly one wall (DividerNorth) stands between
@@ -338,8 +643,7 @@ mod tests {
         let n = crossings(
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(8.6, 1.15, 4.4),
-            &retired_map_rects(),
-            WALL_TOP,
+            &retired_map_occluders(),
         );
         assert_eq!(n, 1);
     }
@@ -351,8 +655,7 @@ mod tests {
         let n = crossings(
             Vector3::new(8.0, 1.0, 4.0),
             Vector3::new(12.0, 1.5, 6.0),
-            &retired_map_rects(),
-            WALL_TOP,
+            &retired_map_occluders(),
         );
         assert_eq!(n, 0);
     }
@@ -365,8 +668,7 @@ mod tests {
         let n = crossings(
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 10.0),
-            &retired_map_rects(),
-            WALL_TOP,
+            &retired_map_occluders(),
         );
         assert_eq!(n, 2);
     }
@@ -380,9 +682,9 @@ mod tests {
         // 5 mm inside the wall's REAL east face at x = 6.55 — where world
         // reconstruction dust can land a fragment of a flush prop
         let grazed = Vector3::new(6.545, 1.2, 4.0);
-        assert_eq!(crossings(eye, grazed, &retired_map_rects(), WALL_TOP), 0);
-        let unshrunk = Vector4::new(6.25, 0.45, 6.55, 8.15);
-        assert!(crosses(eye, grazed, unshrunk, WALL_TOP));
+        assert_eq!(crossings(eye, grazed, &retired_map_occluders()), 0);
+        let unshrunk = Occluder::from_parts(Vector4::new(6.25, 0.45, 6.55, 8.15), 0.0, 3.0);
+        assert!(crosses(eye, grazed, unshrunk));
     }
 
     /// A wall BEHIND the shaded point never blocks it: the divider lies
@@ -392,8 +694,7 @@ mod tests {
         let n = crossings(
             Vector3::new(8.0, 1.0, 4.0),
             Vector3::new(7.0, 1.0, 4.4),
-            &retired_map_rects(),
-            WALL_TOP,
+            &retired_map_occluders(),
         );
         assert_eq!(n, 0);
     }
@@ -403,32 +704,21 @@ mod tests {
     /// stays unblocked — the GRAZE_EPS window at work.
     #[test]
     fn endpoint_grazes_are_not_crossings() {
-        let divider = wall_rect(Vector4::new(6.4, 0.6, 6.4, 8.0));
+        let divider = standing(Vector4::new(6.4, 0.6, 6.4, 8.0));
         let on_face = Vector3::new(6.27, 0.9, 4.0);
-        assert!(!crosses(
-            Vector3::new(3.0, 0.9, 4.0),
-            on_face,
-            divider,
-            WALL_TOP
-        ));
-        assert!(!crosses(
-            on_face,
-            Vector3::new(3.0, 0.9, 4.0),
-            divider,
-            WALL_TOP
-        ));
+        assert!(!crosses(Vector3::new(3.0, 0.9, 4.0), on_face, divider));
+        assert!(!crosses(on_face, Vector3::new(3.0, 0.9, 4.0), divider));
     }
 
     /// A sight line OVER the walls is clear: the slab test is 3D, and a
     /// wall stops at the ceiling.
     #[test]
     fn sight_over_the_wall_top_is_clear() {
-        let divider = wall_rect(Vector4::new(6.4, 0.6, 6.4, 8.0));
+        let divider = standing(Vector4::new(6.4, 0.6, 6.4, 8.0));
         assert!(!crosses(
             Vector3::new(3.0, 3.2, 4.0),
             Vector3::new(8.6, 3.4, 4.4),
-            divider,
-            WALL_TOP,
+            divider
         ));
     }
 
@@ -437,10 +727,10 @@ mod tests {
     /// spawn is outside; a point above the wall top is outside.
     #[test]
     fn contains_reads_the_padded_box() {
-        let divider = wall_rect(Vector4::new(6.4, 0.6, 6.4, 8.0));
-        assert!(contains(divider, Vector3::new(6.4, 0.9, 4.0), WALL_TOP));
-        assert!(!contains(divider, Vector3::new(3.0, 0.9, 4.0), WALL_TOP));
-        assert!(!contains(divider, Vector3::new(6.4, 3.2, 4.0), WALL_TOP));
+        let divider = standing(Vector4::new(6.4, 0.6, 6.4, 8.0));
+        assert!(contains(divider, Vector3::new(6.4, 0.9, 4.0)));
+        assert!(!contains(divider, Vector3::new(3.0, 0.9, 4.0)));
+        assert!(!contains(divider, Vector3::new(6.4, 3.2, 4.0)));
     }
 
     /// The birth-wall skip: a source standing ON the divider centerline
@@ -453,21 +743,11 @@ mod tests {
         let born_in_divider = Vector3::new(6.4, 0.9, 4.0);
         let open_fan_room = Vector3::new(10.0, 0.9, 4.0);
         assert_eq!(
-            crossings_from(
-                born_in_divider,
-                open_fan_room,
-                &retired_map_rects(),
-                WALL_TOP
-            ),
+            crossings_from(born_in_divider, open_fan_room, &retired_map_occluders()),
             0,
         );
         assert_eq!(
-            crossings(
-                born_in_divider,
-                open_fan_room,
-                &retired_map_rects(),
-                WALL_TOP
-            ),
+            crossings(born_in_divider, open_fan_room, &retired_map_occluders()),
             1,
         );
     }
@@ -481,12 +761,7 @@ mod tests {
         let born_in_divider = Vector3::new(6.4, 0.9, 4.0);
         let far_corridor = Vector3::new(10.0, 0.9, 10.0);
         assert_eq!(
-            crossings_from(
-                born_in_divider,
-                far_corridor,
-                &retired_map_rects(),
-                WALL_TOP
-            ),
+            crossings_from(born_in_divider, far_corridor, &retired_map_occluders()),
             1,
         );
     }
@@ -499,13 +774,10 @@ mod tests {
         let spawn = Vector3::new(3.0, 0.9, 4.0);
         let fan = Vector3::new(8.6, 1.15, 4.4);
         assert_eq!(
-            crossings_from(spawn, fan, &retired_map_rects(), WALL_TOP),
-            crossings(spawn, fan, &retired_map_rects(), WALL_TOP),
+            crossings_from(spawn, fan, &retired_map_occluders()),
+            crossings(spawn, fan, &retired_map_occluders()),
         );
-        assert_eq!(
-            crossings_from(spawn, fan, &retired_map_rects(), WALL_TOP),
-            1
-        );
+        assert_eq!(crossings_from(spawn, fan, &retired_map_occluders()), 1);
     }
 
     /// The reveal law is TOTAL and kind-free: a wave reveals fully on a
@@ -527,19 +799,16 @@ mod tests {
     /// the CAMERA occluder, say, which on the birth-wall geometry disagrees.
     #[test]
     fn the_reveal_law_composes_with_the_source_occluder() {
-        let rects = retired_map_rects();
-        let top = WALL_TOP;
+        let rects = retired_map_occluders();
         let through = reveal_visibility(blocked_from(
             Vector3::new(8.6, 0.9, 10.2),
             Vector3::new(3.0, 0.9, 10.2),
             &rects,
-            top,
         ));
         let beside = reveal_visibility(blocked_from(
             Vector3::new(8.6, 0.9, 4.0),
             Vector3::new(3.0, 0.9, 4.0),
             &rects,
-            top,
         ));
         assert!((through - 1.0).abs() < 1e-12);
         assert!(beside.abs() < 1e-12);
@@ -549,8 +818,7 @@ mod tests {
             (reveal_visibility(blocked_from(
                 Vector3::new(6.4, 0.9, 4.0),
                 Vector3::new(10.0, 0.9, 4.0),
-                &rects,
-                top
+                &rects
             )) - 1.0)
                 .abs()
                 < 1e-12
@@ -567,24 +835,21 @@ mod tests {
     /// three.
     #[test]
     fn blocked_from_reads_the_source_occluder() {
-        let rects = retired_map_rects();
+        let rects = retired_map_occluders();
         assert!(!blocked_from(
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(5.0, 0.9, 6.0),
-            &rects,
-            WALL_TOP
+            &rects
         ));
         assert!(blocked_from(
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(8.6, 1.15, 4.4),
-            &rects,
-            WALL_TOP
+            &rects
         ));
         assert!(!blocked_from(
             Vector3::new(6.4, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 4.0),
-            &rects,
-            WALL_TOP
+            &rects
         ));
     }
 
@@ -602,28 +867,23 @@ mod tests {
     /// their residues, or if `crosses` stopped honouring the gap.
     #[test]
     fn a_doorway_admits_the_wave_the_wall_beside_it_stops() {
-        let rects = retired_map_rects();
+        let rects = retired_map_occluders();
         let through = Vector3::new(3.0, 0.9, 10.2);
         let beside = Vector3::new(3.0, 0.9, 4.0);
         assert!(
-            !blocked_from(Vector3::new(8.6, 0.9, 10.2), through, &rects, WALL_TOP),
+            !blocked_from(Vector3::new(8.6, 0.9, 10.2), through, &rects),
             "the divider's opening spans z 8.13..12.27; a line at z = 10.2 crosses no rect"
         );
-        assert!(blocked_from(
-            Vector3::new(8.6, 0.9, 4.0),
-            beside,
-            &rects,
-            WALL_TOP
-        ));
+        assert!(blocked_from(Vector3::new(8.6, 0.9, 4.0), beside, &rects));
         // and the counter agrees with the predicate on both, so the two
         // Rust forms of the source occluder cannot drift apart on the very
         // geometry the law is stated over
         assert_eq!(
-            crossings_from(Vector3::new(8.6, 0.9, 10.2), through, &rects, WALL_TOP),
+            crossings_from(Vector3::new(8.6, 0.9, 10.2), through, &rects),
             0
         );
         assert_eq!(
-            crossings_from(Vector3::new(8.6, 0.9, 4.0), beside, &rects, WALL_TOP),
+            crossings_from(Vector3::new(8.6, 0.9, 4.0), beside, &rects),
             1
         );
     }
@@ -640,7 +900,7 @@ mod tests {
     /// into testing only one of them fails instead of passing vacuously.
     #[test]
     fn blocked_from_agrees_with_counting_on_every_line() {
-        let rects = retired_map_rects();
+        let rects = retired_map_occluders();
         let mut blocked = 0;
         let mut clear = 0;
         let mut born_in_wall = 0;
@@ -650,9 +910,9 @@ mod tests {
                 for k in 0..8_u8 {
                     let a = f32::from(k) * std::f32::consts::FRAC_PI_4;
                     let to = from + Vector3::new(a.cos() * 7.0, 0.0, a.sin() * 7.0);
-                    let counted = crossings_from(from, to, &rects, WALL_TOP) > 0;
+                    let counted = crossings_from(from, to, &rects) > 0;
                     assert_eq!(
-                        blocked_from(from, to, &rects, WALL_TOP),
+                        blocked_from(from, to, &rects),
                         counted,
                         "{from:?} -> {to:?}"
                     );
@@ -661,7 +921,7 @@ mod tests {
                     } else {
                         clear += 1;
                     }
-                    if rects.iter().any(|r| contains(*r, from, WALL_TOP)) {
+                    if rects.iter().any(|r| contains(*r, from)) {
                         born_in_wall += 1;
                     }
                 }

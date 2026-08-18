@@ -1306,6 +1306,24 @@ pub fn unfloored(floor: Box3, solids: &[PlacedSolid]) -> Vec<PlacementFault> {
     complaints
 }
 
+/// The complaint a wall earns when its own world box cannot be turned into
+/// an occluder — a non-finite transform, a size that is not a number.
+///
+/// It is a NAMED sentence rather than a silent fallback because the wall
+/// still occupies its slot in the table (`sight::Occluder::NOWHERE`):
+/// it draws, and it stops nothing. Without a word, a level would look whole
+/// while sound walked through one of its walls.
+#[must_use]
+pub fn unoccludable_wall(path: &str) -> PlacementFault {
+    PlacementFault {
+        path: path.to_string(),
+        text: format!(
+            "WaveLevel: '{path}' has no describable world box, so it occludes nothing — it will \
+             draw, and sound will pass straight through it. Give it a finite transform and size."
+        ),
+    }
+}
+
 /// Every solid that crosses or hides under the floor plane, said out loud
 /// — one line per node, in the order the level walk found them. The plane
 /// is the floor slab's TOP where it actually stands, never the world's
@@ -2999,17 +3017,16 @@ mod tests {
             Vector3::new(8.6, 0.0, 4.4),
         )
         .expect("tap derives");
-        let rects: Vec<Vector4> = retired_map_walls()
+        let occluders: Vec<crate::sight::Occluder> = retired_map_walls()
             .iter()
-            .map(|s| crate::sight::wall_rect(*s))
+            .map(|s| crate::sight::Occluder::new(*s, 0.0, WALL_H).expect("a floor-standing wall"))
             .collect();
-        let top = WALL_H as f32;
         assert_eq!(
-            crate::sight::crossings_from(plan.point, Vector3::new(4.0, 0.8, 4.0), &rects, top),
+            crate::sight::crossings_from(plan.point, Vector3::new(4.0, 0.8, 4.0), &occluders),
             0,
         );
         assert_eq!(
-            crate::sight::crossings_from(plan.point, Vector3::new(8.0, 0.8, 4.0), &rects, top),
+            crate::sight::crossings_from(plan.point, Vector3::new(8.0, 0.8, 4.0), &occluders),
             1,
         );
     }

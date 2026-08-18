@@ -704,8 +704,77 @@ func test_wall_table_reaches_the_occluding_skins() -> void:
 			. is_empty()
 		)
 		assert_int(m.get_shader_parameter("u_wall_count")).is_equal(segs.size())
-		assert_float(m.get_shader_parameter("u_wall_top")).is_equal(3.0)
+		var spans: PackedVector2Array = m.get_shader_parameter("u_wall_y")
+		assert_int(spans.size()).is_equal(segs.size())
 	assert_int(level.wall_rects().size()).is_equal(segs.size())
+
+
+## A WALL OCCLUDES WHERE IT DRAWS, and this is the boundary half of that law
+## — that `WaveLevel` derives each occluder's sweep from the very world box
+## the paint pass reads, rather than from a global height.
+##
+## Nothing constrains a wall's Y. `level_plan::plan_wall_transform`
+## normalises a wall's BASIS and carries `origin.y` through untouched, and
+## `wall_segment` then writes (x1, z1, x2, z2) and discards the height at the
+## one point it could have been noticed. Under one global `u_wall_top` a
+## lifted wall left a phantom barrier in the open air beneath it and an
+## unoccluded strip across its raised top; a lifted level ROOT put every
+## occluder below the map, and the barrier law failed open everywhere in
+## silence, with no warning anywhere.
+##
+## SOURCE_THROUGH (0.3) is written out rather than read back: deriving the
+## expectation through `level.source_muffle` would call the function under
+## test with the same arguments and mirror it.
+func test_a_wall_occludes_where_it_draws_not_where_the_level_guesses() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var wall := WaveWall.new()
+	wall.length = 6.0
+	wall.position = Vector3(6, 1, 4)  # lifted a metre off the floor
+	level.add_child(wall)
+	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+
+	var spans: PackedVector2Array = level.wall_spans()
+	assert_int(spans.size()).is_equal(1)
+	assert_float(spans[0].x).is_equal_approx(1.0, 0.0001)
+	assert_float(spans[0].y).is_equal_approx(4.0, 0.0001)
+
+	# a sight line UNDER the lifted wall meets nothing...
+	var under := level.source_muffle(Vector3(3, 0.5, 4), Vector3(10, 0.5, 4))
+	assert_float(under).is_equal_approx(1.0, 0.0001)
+	# ...one through its body is muffled once...
+	var through := level.source_muffle(Vector3(3, 2.0, 4), Vector3(10, 2.0, 4))
+	assert_float(through).is_equal_approx(0.3, 0.0001)
+	# ...and one OVER its raised top meets nothing again
+	var over := level.source_muffle(Vector3(3, 3.9, 4), Vector3(10, 3.9, 4))
+	assert_float(over).is_equal_approx(0.3, 0.0001)
+	var above := level.source_muffle(Vector3(3, 4.5, 4), Vector3(10, 4.5, 4))
+	assert_float(above).is_equal_approx(1.0, 0.0001)
+
+
+## The catastrophic case, and the one nothing warned about: a level ROOT
+## lifted bodily. Floor, ceiling and walls all rise together, every placement
+## law stays quiet because they measure against the risen floor — and under a
+## global sweep every occluder stayed at world [0, 3], entirely below the map.
+func test_a_lifted_level_root_carries_its_walls_occluders_with_it() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.position = Vector3(0, 5, 0)
+	var wall := WaveWall.new()
+	wall.length = 6.0
+	wall.position = Vector3(6, 0, 4)  # standing on ITS level's floor
+	level.add_child(wall)
+	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+
+	var spans: PackedVector2Array = level.wall_spans()
+	assert_int(spans.size()).is_equal(1)
+	assert_float(spans[0].x).is_equal_approx(5.0, 0.0001)
+	assert_float(spans[0].y).is_equal_approx(8.0, 0.0001)
+	# and the barrier law still works at the height the world now sits at
+	var risen := level.source_muffle(Vector3(3, 6.0, 4), Vector3(10, 6.0, 4))
+	assert_float(risen).is_equal_approx(0.3, 0.0001)
 
 
 ## A level that outgrows the sight shaders' slots is REPORTED, not indexed

@@ -193,7 +193,7 @@ pub struct WaveLevel {
     pulses: Option<Gd<RefCounted>>,
     slabs: Vec<Slab>,
     segments: Vec<Vector4>,
-    occluders: Vec<Vector4>,
+    occluders: Vec<sight::Occluder>,
     spawn_at: Vector3,
     spawn_heading: f64,
     tap_point: Vector3,
@@ -504,7 +504,28 @@ impl WaveLevel {
     /// the hearing pass too, which cuts player-sound shells by these walls.
     #[func]
     pub(super) fn wall_rects(&self) -> PackedVector4Array {
-        PackedVector4Array::from(&self.occluders[..])
+        self.occluders.iter().map(|occ| occ.rect()).collect()
+    }
+
+    /// Each occluder's world Y sweep, `(bottom, top)` — the `u_wall_y`
+    /// lane, in the same slot order as [`Self::wall_rects`].
+    ///
+    /// Two arrays only because the uniform layout forces two; they are
+    /// projections of ONE `Vec<Occluder>`, so they cannot desync in length,
+    /// in order, or under truncation. A wall's height used to be a single
+    /// global `u_wall_top`, which is why a wall lifted with the gizmo
+    /// occluded a strip of empty air beneath itself and nothing at all
+    /// across its raised top.
+    #[func]
+    pub(super) fn wall_spans(&self) -> PackedVector2Array {
+        self.occluders.iter().map(|occ| occ.span()).collect()
+    }
+
+    /// The occluder table itself, for the debug observer — which must
+    /// describe the walls the shaders were actually handed, spans included,
+    /// rather than rebuild them from a projection.
+    pub(super) fn occluders(&self) -> &[sight::Occluder] {
+        &self.occluders
     }
 
     /// Every fault the last derivation pinned to `node` specifically — an
@@ -688,7 +709,7 @@ impl WaveLevel {
     /// not the fan alone; exposed so the suites can hold the law directly.
     #[func]
     fn source_muffle(&self, from: Vector3, to: Vector3) -> f64 {
-        let crossings = sight::crossings(from, to, &self.occluders, level_plan::WALL_H as f32);
+        let crossings = sight::crossings(from, to, &self.occluders);
         level_plan::SOURCE_THROUGH.powi(crossings as i32)
     }
 
@@ -835,8 +856,39 @@ impl WaveLevel {
         for wall in &mut census.walls {
             wall.bind_mut().prepare_for_derive();
         }
-        self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
-        self.push_wall_table(editor);
+        // One loop, one bind per wall, both tables: a wall's centerline and
+        // the world Y span of the very box the paint pass draws. Built
+        // together on purpose — a table of rects beside a table of heights
+        // is two things that can disagree, and the disagreement is exactly
+        // the bug this replaced.
+        self.segments.clear();
+        let mut occluders: Vec<sight::Occluder> = Vec::with_capacity(census.walls.len());
+        let root = self.base().clone().upcast::<Node>();
+        let mut unoccludable: Vec<String> = Vec::new();
+        for wall in &census.walls {
+            let (segment, shape) = {
+                let bound = wall.bind();
+                (bound.segment(), bound.world_shape())
+            };
+            let occluder = render::faces::bounds(&shape)
+                .and_then(|box3| sight::Occluder::new(segment, box3.min[1], box3.max[1]));
+            if occluder.is_none() {
+                unoccludable.push(root.get_path_to(wall).to_string());
+            }
+            self.segments.push(segment);
+            // A refused wall keeps its SLOT rather than vanishing:
+            // `wall_names()[i]` names `occluders[i]`, and a hole slides
+            // every later name onto the wrong wall.
+            occluders.push(occluder.unwrap_or(sight::Occluder::NOWHERE));
+        }
+        for path in unoccludable {
+            let fault = level_plan::unoccludable_wall(&path);
+            if !editor {
+                godot_error!("{}", fault.text);
+            }
+            self.node_faults.push(fault);
+        }
+        self.push_wall_table(occluders, editor);
         self.report_pack_range(editor);
         self.paint_labels(&census, editor);
         self.report_placement(&census, editor);
@@ -1284,18 +1336,18 @@ impl WaveLevel {
     /// about to. Only the truncation stays here, because it is the act the
     /// message describes — the words themselves are a decision over two
     /// numbers, and live in the pure plan where cargo can hold them.
-    fn push_wall_table(&mut self, editor: bool) {
-        let mut rects: Vec<Vector4> = self.segments.iter().map(|s| sight::wall_rect(*s)).collect();
-        let budget = level_plan::wall_budget(rects.len(), sight::MAXW);
+    fn push_wall_table(&mut self, mut occluders: Vec<sight::Occluder>, editor: bool) {
+        let budget = level_plan::wall_budget(occluders.len(), sight::MAXW);
         self.say(editor, budget);
-        rects.truncate(sight::MAXW); // a no-op below the ceiling
+        occluders.truncate(sight::MAXW); // a no-op below the ceiling
         // kept for the per-object source muffle: the walls a camera→source
         // sight line is counted against, once per frame on the CPU
-        self.occluders = rects.clone();
-        let table = PackedVector4Array::from(&rects[..]);
-        let count = rects.len() as i64;
-        self.push_table_to(self.data_mat.clone(), &table, count);
-        self.push_table_to(self.source_mat.clone(), &table, count);
+        self.occluders = occluders;
+        let rects = self.wall_rects();
+        let spans = self.wall_spans();
+        let count = self.occluders.len() as i64;
+        self.push_table_to(self.data_mat.clone(), &rects, &spans, count);
+        self.push_table_to(self.source_mat.clone(), &rects, &spans, count);
     }
 
     /// Loud when the authored map has outgrown the range the sight shaders
@@ -1326,15 +1378,21 @@ impl WaveLevel {
 
     /// Push the wall table onto one data-writing material — loud when it is
     /// no ShaderMaterial (legal in tests, blind in the game).
-    fn push_table_to(&self, mat: Option<Gd<Material>>, table: &PackedVector4Array, count: i64) {
+    fn push_table_to(
+        &self,
+        mat: Option<Gd<Material>>,
+        rects: &PackedVector4Array,
+        spans: &PackedVector2Array,
+        count: i64,
+    ) {
         let Some(mat) = mat else {
             return; // uninjected: ready() already said so loudly
         };
         match mat.try_cast::<ShaderMaterial>() {
             Ok(mut shader_mat) => {
-                shader_mat.set_shader_parameter("u_walls", &table.to_variant());
+                shader_mat.set_shader_parameter("u_walls", &rects.to_variant());
+                shader_mat.set_shader_parameter("u_wall_y", &spans.to_variant());
                 shader_mat.set_shader_parameter("u_wall_count", &count.to_variant());
-                shader_mat.set_shader_parameter("u_wall_top", &level_plan::WALL_H.to_variant());
             }
             Err(other) => {
                 godot_warn!(

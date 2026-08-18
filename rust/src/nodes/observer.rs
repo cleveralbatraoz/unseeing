@@ -38,7 +38,6 @@ use crate::cat_brain::{BrainCapture, BrainState, RoamRect};
 use crate::cat_gait::{GaitCapture, LEGS};
 use crate::echo_queue::PendingEcho;
 use crate::ffi::{WaveCore, cast_reflection_fan};
-use crate::level_plan;
 use crate::observe::evict::{EvictionPlan, EvictionRule, explain_eviction};
 use crate::observe::oids::{
     LabelFault, OidExplanation, coplanar_label_faults, explain_oids_checked,
@@ -258,7 +257,7 @@ impl WaveObserver {
             // mistaken for a world rendered at flicker zero.
             flick.unwrap_or(f64::NAN),
             SceneObservation {
-                sources: sources(&level, eye, &rects),
+                sources: sources(&level, eye, level.occluders()),
                 wall_rects: rects,
                 eye: EyeObservation {
                     position: eye,
@@ -397,8 +396,9 @@ impl WaveObserver {
             Err(reason) => return unavailable(reason),
         };
         let level = level.bind();
-        let rects: Vec<Vector4> = level.wall_rects().as_slice().to_vec();
-        let explanation = ray::explain_ray(from, to, &rects, level_plan::WALL_H as f32);
+        // the occluders themselves, spans included — not rebuilt from the
+        // rect projection, which no longer carries a wall's height
+        let explanation = ray::explain_ray(from, to, level.occluders());
         ray_dict(&explanation, &level.wall_names())
     }
 
@@ -792,7 +792,11 @@ fn shader_flick(material: Option<Gd<Material>>) -> Option<f64> {
 /// added to one of them — while the observer went on confidently
 /// reporting a number no shader was holding. Unobserved is reported as
 /// [`f64::NAN`] and lands in the snapshot's `unknown`, never as a guess.
-fn sources(level: &WaveLevel, eye: Vector3, rects: &[Vector4]) -> Vec<SourceObservation> {
+fn sources(
+    level: &WaveLevel,
+    eye: Vector3,
+    occluders: &[crate::sight::Occluder],
+) -> Vec<SourceObservation> {
     level
         .source_handles()
         .iter()
@@ -802,7 +806,7 @@ fn sources(level: &WaveLevel, eye: Vector3, rects: &[Vector4]) -> Vec<SourceObse
             let bound = source.dyn_bind();
             let voice = bound.voice();
             let position = bound.hub();
-            let line = ray::explain_ray(eye, position, rects, level_plan::WALL_H as f32);
+            let line = ray::explain_ray(eye, position, occluders);
             SourceObservation {
                 name,
                 position,
@@ -1055,6 +1059,7 @@ fn ray_dict(explanation: &RayExplanation, names: &[String]) -> VarDictionary {
             entry.set("index", wall.index as i64);
             entry.set("name", wall_name(names, wall.index).as_str());
             entry.set("rect", wall.rect);
+            entry.set("span", wall.span);
             entry.set("crossed", wall.crossed);
             entry.set("contains_origin", wall.contains_origin);
             entry
@@ -1063,7 +1068,6 @@ fn ray_dict(explanation: &RayExplanation, names: &[String]) -> VarDictionary {
     let mut entry = VarDictionary::new();
     entry.set("from", explanation.from);
     entry.set("to", explanation.to);
-    entry.set("wall_top", f64::from(explanation.wall_top));
     entry.set("camera_crossings", i64::from(explanation.camera_crossings));
     entry.set("source_crossings", i64::from(explanation.source_crossings));
     entry.set("wave_transmission", explanation.wave_transmission);

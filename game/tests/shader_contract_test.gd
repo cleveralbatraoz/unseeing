@@ -117,7 +117,7 @@ func test_data_core_occludes_reveal_by_the_wall_table() -> void:
 	)
 	var pool := _include_text()
 	assert_str(pool).contains("bool wall_blocked_from(vec3 from, vec3 to)")
-	assert_str(pool).contains("bool wall_contains(vec4 rect, vec3 p, float top)")
+	assert_str(pool).contains("bool wall_contains(vec4 rect, vec3 p, vec2 yspan)")
 
 
 ## THE SHELL OBEYS THE SAME LAW AS THE REVEAL, and this is the assertion

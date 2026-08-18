@@ -78,7 +78,14 @@ func test_wall_table_reaches_every_occluding_skin() -> void:
 		var rects: PackedVector4Array = m.get_shader_parameter("u_walls")
 		assert_int(rects.size()).is_equal(walls)
 		assert_int(m.get_shader_parameter("u_wall_count")).is_equal(walls)
-		assert_float(m.get_shader_parameter("u_wall_top")).is_equal(3.0)
+		# each wall's own sweep, in the SAME slot order — both are
+		# projections of one Vec<Occluder>, so a length that disagrees means
+		# the two tables were built separately again
+		var spans: PackedVector2Array = m.get_shader_parameter("u_wall_y")
+		assert_int(spans.size()).is_equal(walls)
+		for span: Vector2 in spans:
+			assert_float(span.x).is_equal(0.0)
+			assert_float(span.y).is_equal(3.0)
 
 
 ## Skin identities: the level hands EVERY sound source the source material,

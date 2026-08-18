@@ -62,7 +62,6 @@ use super::settings::SettingsMenu;
 use crate::demo_tap::DemoTap;
 use crate::ffi::WaveCore;
 use crate::flicker::{Flicker, FlickerState};
-use crate::level_plan;
 use crate::temporal::{advance_clock, valid_time_or_zero};
 
 /// The perceptual ladder's world layer — real depth, everything but the
@@ -275,11 +274,13 @@ impl INode3D for UnseeingGame {
         let rects = level.bind().wall_rects();
         let wall_count = (rects.len() as i64).to_variant();
         let walls = rects.to_variant();
-        let wall_top = level_plan::WALL_H.to_variant();
+        // each wall's own y sweep, in the same slot order — two projections
+        // of one Vec<Occluder>, never two independently built tables
+        let spans = level.bind().wall_spans().to_variant();
         for mat in [&mut self.post_mat, &mut self.cane_mat, &mut self.body_mat] {
             mat.set_shader_parameter("u_walls", &walls);
+            mat.set_shader_parameter("u_wall_y", &spans);
             mat.set_shader_parameter("u_wall_count", &wall_count);
-            mat.set_shader_parameter("u_wall_top", &wall_top);
         }
 
         // the level's companion creatures — a later process() drives each

@@ -23,7 +23,8 @@ uniform vec4 u_pdat[MAXP];
 uniform vec4 u_pdir[MAXP];
 
 // The level's walls as world XZ occluder rects (min_x, min_z, max_x,
-// max_z), swept y in [0, u_wall_top] — pushed by the level. Both wave
+// max_z), each swept through its own y span (u_wall_y) — pushed by the
+// level. Both wave
 // passes read them through the SAME law, whatever kind made the wave: the
 // data core refuses a source's REVEAL past a wall (a wall stops a wave
 // from lighting a surface), and the hearing pass refuses its SHELL past
@@ -41,7 +42,21 @@ uniform vec4 u_pdir[MAXP];
 const int MAXW = 32;
 uniform int u_wall_count = 0;
 uniform vec4 u_walls[MAXW];  // world XZ occluder rects (min_x, min_z, max_x, max_z)
-uniform float u_wall_top = 3.0;
+// Each wall's OWN world y sweep, (bottom, top) — sight.rs::Occluder::span.
+//
+// Two arrays because std140 forces two, but they are projections of one
+// Vec<Occluder> on the Rust side and cannot desync in order or length. This
+// used to be a single `u_wall_top` float, with every occluder swept
+// [0, WALL_H] wherever its wall actually stood — so a wall lifted with the
+// gizmo left a phantom barrier in the air beneath it and an unoccluded strip
+// across its raised top, and a level root lifted bodily put every occluder
+// below the map, failing the barrier law open everywhere in silence.
+//
+// The default is deliberately a ZERO-HEIGHT span at y = 0, not the shipped
+// (0, 3): a material nobody pushed must lose the barrier law LOUDLY. A
+// default that happened to be right on the shipped map would ship the bug
+// invisibly.
+uniform vec2 u_wall_y[MAXW];
 
 // sight.rs::near — the EXACT cheap refusal in front of the slab test: a
 // segment that crosses the rect has a point inside it, so its own XZ
@@ -53,14 +68,28 @@ bool wall_near(vec3 from, vec3 to, vec4 rect) {
 			&& min(from.z, to.z) <= rect.w && max(from.z, to.z) >= rect.y;
 }
 
-// sight.rs::crosses — the three-slab segment-vs-AABB test over
-// y in [0, top], total on axis-parallel directions, both parametric
-// endpoints ignored inside the graze window.
-bool wall_crosses(vec3 from, vec3 to, vec4 rect, float top) {
+// sight.rs::Occluder::is_empty — an occluder describing no volume must stop
+// nothing, and the slab arithmetic alone does NOT deliver that: an inverted
+// interval still yields a valid parametric window (lo = 1, hi = -1 against a
+// segment from -5 to +5 gives ta = 1, tb = -1, so t0 stays 0.001 and t1
+// stays 0.999 and no axis rejects).
+//
+// Written !(a <= b) and never a > b. Every GLSL comparison against NaN is
+// false, so the `>` form reads a NaN lane as ORDERED and hands it to a slab
+// test where t0 > t1 is also false — an occluder that swallows the level.
+bool wall_empty(vec4 rect, vec2 yspan) {
+	return !(rect.x <= rect.z) || !(rect.y <= rect.w) || !(yspan.x <= yspan.y);
+}
+
+// sight.rs::crosses — the three-slab segment-vs-AABB test over the wall's
+// OWN y sweep, total on axis-parallel directions, both parametric endpoints
+// ignored inside the graze window.
+bool wall_crosses(vec3 from, vec3 to, vec4 rect, vec2 yspan) {
+	if (wall_empty(rect, yspan)) { return false; }
 	if (!wall_near(from, to, rect)) { return false; }
 	vec3 d = to - from;
-	vec3 lo = vec3(rect.x, 0.0, rect.y);
-	vec3 hi = vec3(rect.z, top, rect.w);
+	vec3 lo = vec3(rect.x, yspan.x, rect.y);
+	vec3 hi = vec3(rect.z, yspan.y, rect.w);
 	float t0 = 0.001;
 	float t1 = 0.999;
 	for (int k = 0; k < 3; k++) {
@@ -83,15 +112,20 @@ int wall_crossings(vec3 from, vec3 to) {
 	int n = 0;
 	for (int i = 0; i < MAXW; i++) {
 		if (i >= u_wall_count) { break; }
-		if (wall_crosses(from, to, u_walls[i], u_wall_top)) { n++; }
+		if (wall_crosses(from, to, u_walls[i], u_wall_y[i])) { n++; }
 	}
 	return n;
 }
 
-// sight.rs::contains — the point lies inside the wall box, floor to ceiling.
-bool wall_contains(vec4 rect, vec3 p, float top) {
+// sight.rs::contains — the point lies inside the wall box, over that wall's
+// OWN sweep. This half failed in the DANGEROUS direction under one global
+// top: a source standing in open air UNDER a lifted wall was judged born
+// inside it, so the birth-wall skip disabled that wall for that source in
+// every direction at once.
+bool wall_contains(vec4 rect, vec3 p, vec2 yspan) {
+	if (wall_empty(rect, yspan)) { return false; }
 	return p.x >= rect.x && p.x <= rect.z && p.z >= rect.y && p.z <= rect.w
-			&& p.y >= 0.0 && p.y <= top;
+			&& p.y >= yspan.x && p.y <= yspan.y;
 }
 
 // sight.rs::blocked_from — the SOURCE occluder, asked as the PREDICATE it
@@ -107,8 +141,8 @@ bool wall_contains(vec4 rect, vec3 p, float top) {
 bool wall_blocked_from(vec3 from, vec3 to) {
 	for (int i = 0; i < MAXW; i++) {
 		if (i >= u_wall_count) { break; }
-		if (wall_contains(u_walls[i], from, u_wall_top)) { continue; }
-		if (wall_crosses(from, to, u_walls[i], u_wall_top)) { return true; }
+		if (wall_contains(u_walls[i], from, u_wall_y[i])) { continue; }
+		if (wall_crosses(from, to, u_walls[i], u_wall_y[i])) { return true; }
 	}
 	return false;
 }
