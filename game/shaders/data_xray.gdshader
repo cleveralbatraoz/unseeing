@@ -42,7 +42,17 @@ render_mode unshaded, cull_back, shadows_disabled, ambient_light_disabled, fog_d
 uniform float u_presence = 0.0;
 
 instance uniform float u_source_volume = 0.0;
-instance uniform float u_source_muffle = 1.0;
+// BOTH default to 0.0, and the muffle's direction is the load-bearing half.
+// It multiplies the whole acoustic image, so an unpushed instance — an
+// editor preview, a source added at runtime before the level's first
+// tick_sources, a source whose level never ticks — renders at exactly
+// u_presence: still visible, as settled law 1 requires, but visibly wrong
+// rather than accidentally right. Defaulted to 1.0 it rendered the
+// PRE-BRANCH picture exactly, a source three walls away as bright as one in
+// the room, and it silently voided the DetailKnee theorem for that
+// instance, whose whole precondition is muffle <= SOURCE_THROUGH. Every
+// other uniform on this pass fails dim for the same reason.
+instance uniform float u_source_muffle = 0.0;
 
 void vertex() {
 	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;

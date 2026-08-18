@@ -50,7 +50,11 @@ func test_xray_skin_carries_the_acoustic_image_contract() -> void:
 	assert_str(src).contains('#include "res://shaders/data_core.gdshaderinc"')
 	assert_str(src).contains("DEPTH = source_depth(length(v_world - CAMERA_POSITION_WORLD));")
 	assert_str(src).contains("instance uniform float u_source_volume = 0.0;")
-	assert_str(src).contains("instance uniform float u_source_muffle = 1.0;")
+	# 0.0, not 1.0: the muffle multiplies the whole acoustic image, so an
+	# unpushed instance must fall to the presence floor rather than render
+	# the pre-branch picture. THE BREAK this pins is the default drifting
+	# back to a value that flatters an unwired source.
+	assert_str(src).contains("instance uniform float u_source_muffle = 0.0;")
 	# THE ORDER IS THE LAW. The muffle multiplies the WHOLE acoustic image,
 	# standing silhouette and washing wave alike, so a wall can take
 	# something away. Delivered pre-multiplied into one floor — which is
