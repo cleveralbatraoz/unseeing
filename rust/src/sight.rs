@@ -173,7 +173,7 @@ impl Occluder {
         }
         // per axis, and never more than a quarter of the extent: a plank
         // 0.04 m thick has no 0.03 m to give away twice over
-        let hair = |lo: f32, hi: f32| shrink.min((hi - lo) * 0.25).max(0.0);
+        let hair = |lo: f32, hi: f32| shrink.min((hi - lo) * 0.25);
         let (hx, hz) = (hair(min_x, max_x), hair(min_z, max_z));
         let rect = Vector4::new(min_x + hx, min_z + hz, max_x - hx, max_z - hz);
         let occluder = Self {
