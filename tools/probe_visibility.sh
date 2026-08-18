@@ -99,7 +99,9 @@ run_scene() {
   UNSEEING_SEED=1 $KEEP_AWAKE "$GODOT" --path "$DIR/game" "$@"
 }
 
-for scene in res://tests/probe/channel_probe.tscn res://tests/probe/occlusion_probe.tscn; do
+for scene in res://tests/probe/channel_probe.tscn \
+  res://tests/probe/depth_texture_probe.tscn \
+  res://tests/probe/occlusion_probe.tscn; do
   echo "probe: $scene — run 1 (cold cache legal; only agreement counts)"
   run_scene "$scene"
   echo "probe: $scene — run 2 (warm boot, the trusted one)"

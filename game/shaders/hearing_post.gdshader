@@ -15,6 +15,12 @@ render_mode unshaded, cull_disabled, depth_draw_never, depth_test_disabled, fog_
 #include "res://shaders/pulse_pool.gdshaderinc"
 
 uniform sampler2D screen_tex : hint_screen_texture, filter_nearest;
+// The depth buffer, read to answer one question exactly that the wall table
+// could only guess at: is the surface at this pixel an acoustic image drawn
+// over the world, or a real surface? See depth_is_acoustic_image in the
+// pool include for the measurement behind it, and for why it is ORed with
+// the old inference rather than replacing it.
+uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
 uniform float u_breath = 1.0;
 // The crease knee: a label difference of u_crease_knee.y draws a seam at
 // full strength, and one below u_crease_knee.x draws none.
@@ -77,8 +83,23 @@ void fragment() {
 	// source) — no player-made ring may wash it. A real-depth surface is
 	// never behind a wall (the wall would hide it), so this fires only on
 	// the x-rayed sources.
+	// TWO tests, ORed, and the pair is deliberate.
+	//
+	// The depth read is EXACT: a fragment in the always-on-top band is a
+	// source, full stop. The wall-table inference underneath it is not —
+	// it rebuilds a world point from B and asks which walls stand there,
+	// and WaveProp, WaveColumn and WaveWedge are in no occluder table
+	// anywhere, so a source hidden behind a pillar was simply missed: its
+	// rings were never cut and its outline borrowed the pillar's
+	// brightness. The depth test covers exactly that case.
+	//
+	// The inference stays because the depth texture is measured on desktop
+	// GL and unmeasured on WebGL2. If it is dead there, the first term is
+	// false everywhere and this pass behaves precisely as it did before —
+	// which is why the OR is the safe shape and a replacement would not be.
 	vec3 seen_pt = cam + rd * scene_d;
-	bool seen_walled = wall_crossings(cam, seen_pt) > 0;
+	bool seen_walled = depth_is_acoustic_image(texture(depth_tex, uv).r)
+			|| wall_crossings(cam, seen_pt) > 0;
 
 	// thin white outlines: silhouettes (Laplacian of the packed distance in B)
 	// + creases (label differences in G — the per-vertex CUSTOM0 label:
@@ -102,10 +123,16 @@ void fragment() {
 	if (edge > 0.0) {
 		float src_r = -1.0;
 		if (seen_walled) { src_r = c_c.r; }
-		if (wall_crossings(cam, cam + rd * (c_l.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_l.r); }
-		if (wall_crossings(cam, cam + rd * (c_r.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_r.r); }
-		if (wall_crossings(cam, cam + rd * (c_u.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_u.r); }
-		if (wall_crossings(cam, cam + rd * (c_d.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_d.r); }
+		// the same pair at each neighbour: the exact depth test first, the
+		// wall-table inference as the platform fallback behind it
+		if (depth_is_acoustic_image(texture(depth_tex, uv - vec2(px.x, 0.0)).r)
+				|| wall_crossings(cam, cam + rd * (c_l.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_l.r); }
+		if (depth_is_acoustic_image(texture(depth_tex, uv + vec2(px.x, 0.0)).r)
+				|| wall_crossings(cam, cam + rd * (c_r.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_r.r); }
+		if (depth_is_acoustic_image(texture(depth_tex, uv + vec2(0.0, px.y)).r)
+				|| wall_crossings(cam, cam + rd * (c_u.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_u.r); }
+		if (depth_is_acoustic_image(texture(depth_tex, uv - vec2(0.0, px.y)).r)
+				|| wall_crossings(cam, cam + rd * (c_d.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_d.r); }
 		if (src_r >= 0.0) { reveal = min(reveal, src_r); }
 	}
 	vec3 col = vec3(edge * reveal);

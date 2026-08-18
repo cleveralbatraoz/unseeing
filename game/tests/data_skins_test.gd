@@ -209,7 +209,18 @@ func test_no_shader_lets_a_wave_through_a_wall() -> void:
 ## is here for the camera half only.
 func test_hearing_pass_never_washes_player_rings_on_an_xrayed_source() -> void:
 	var src := _text(POST_PATH)
-	assert_str(src).contains("bool seen_walled = wall_crossings(cam, seen_pt) > 0;")
+	# TWO tests, ORed. The depth read is exact — a fragment in the
+	# always-on-top band IS a source — and finally covers a source hidden
+	# behind a PROP, which is in no occluder table anywhere. The wall-table
+	# inference stays behind it because the depth texture is measured on
+	# desktop GL and unmeasured on WebGL2: if it is dead there the first
+	# term is false everywhere and the pass degrades to exactly its former
+	# behaviour, never to worse.
+	assert_str(src).contains("uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;")
+	assert_str(src).contains("bool seen_walled = depth_is_acoustic_image(texture(depth_tex, uv).r)")
+	assert_str(src).contains("|| wall_crossings(cam, seen_pt) > 0;")
+	assert_str(_text(POOL_PATH)).contains("bool depth_is_acoustic_image(float depth)")
+	assert_str(_text(POOL_PATH)).contains("return depth >= ALWAYS_ON_TOP - SOURCE_BAND;")
 	assert_str(src).contains("if (t >= scene_d || seen_walled) { continue; }")
 	assert_str(src).contains("if (seen_walled) { src_r = c_c.r; }")
 	assert_str(src).contains("if (src_r >= 0.0) { reveal = min(reveal, src_r); }")
@@ -221,7 +232,10 @@ func test_hearing_pass_never_washes_player_rings_on_an_xrayed_source() -> void:
 ## override — that would defeat near-plane clipping, and geometry crossing
 ## the camera plane would rasterize as full-screen projective sheets.
 func test_core_defines_the_depth_hack_once_as_fragment_depth() -> void:
-	assert_str(_text(CORE_PATH)).contains("const float ALWAYS_ON_TOP = 0.999999;")
+	# the band constants live in the POOL include now: data_xray writes the
+	# always-on-top depth and hearing_post reads it back to identify a
+	# source, so it is a protocol two shaders share
+	assert_str(_text(POOL_PATH)).contains("const float ALWAYS_ON_TOP = 0.999999;")
 	for path: String in [DATA_PASS_PATH, XRAY_PATH]:
 		assert_bool(_text(path).contains("0.999999")).is_false()
 		assert_bool(_text(path).contains("POSITION =")).is_false()
@@ -267,7 +281,9 @@ func test_reveal_loop_bounds_a_pulse_before_walking_the_walls() -> void:
 ## true distance.
 func test_the_acoustic_image_layer_is_a_band_ordered_by_distance() -> void:
 	var core := _text(CORE_PATH)
-	assert_str(core).contains("const float SOURCE_BAND = 1.0e-3;")
+	# the band moved into the POOL include, which is where a protocol two
+	# shaders share belongs: data_xray writes it and hearing_post reads it
+	assert_str(_text(POOL_PATH)).contains("const float SOURCE_BAND = 1.0e-3;")
 	assert_str(core).contains(
 		"return ALWAYS_ON_TOP - SOURCE_BAND * clamp(dist / DIST_PACK_RANGE, 0.0, 1.0);"
 	)
@@ -278,7 +294,7 @@ func test_the_acoustic_image_layer_is_a_band_ordered_by_distance() -> void:
 	# passed while the band was a hundred times too narrow to order a fan's
 	# own blades against its own housing.
 	var band: WaveCore = auto_free(WaveCore.new())
-	assert_float(_shader_float(core, "SOURCE_BAND")).is_equal(band.source_band())
+	assert_float(_shader_float(_text(POOL_PATH), "SOURCE_BAND")).is_equal(band.source_band())
 	# and both bounds the derivation rests on, read back from Rust:
 	# coarse enough to resolve the tightest gap a shipped source has
 	assert_float(band.source_band_resolution()).is_less(band.min_source_limb_gap())

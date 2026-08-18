@@ -31,46 +31,6 @@ varying float v_label;
 
 varying vec3 v_world;
 
-// The viewmodel depth hack, written from the FRAGMENT: DEPTH takes the
-// window depth of the near plane (~1.0 under Godot's reversed-Z), so
-// every fragment passes the GEQUAL depth test and opaque draw order
-// alone decides the pixel — the perceptual layering, as render_priority.
-// It must NOT be a vertex POSITION.z override: faking clip z defeats
-// near-plane clipping, and geometry crossing the camera plane (a source
-// walked up to) rasterizes as projective full-screen sheets, stamping
-// garbage data over the whole buffer.
-const float ALWAYS_ON_TOP = 0.999999;
-
-// ...but a CONSTANT depth only works while the world holds one source. Two
-// acoustic images writing the same value resolve against each other by
-// opaque draw order alone, and Godot sorts opaque surfaces near-to-far —
-// so the NEARER source draws first and the FARTHER one, passing GEQUAL on
-// an equal value, overwrites it. A dim, distant ghost would punch a hole
-// through a near, loud one.
-//
-// So the layer gets a BAND instead of a point: a source's depth is the
-// always-on-top value minus a hair proportional to its true distance, so
-// sources — and a single source's own overlapping limbs — resolve by
-// distance like everything else.
-//
-// THE WIDTH IS DERIVED, not chosen. rust/src/render/depth.rs states both
-// bounds as functions and cargo-tests them against the shipped camera and
-// the shipped fan:
-//   - wide enough to ORDER. The band is quantised by the 24-bit depth
-//     buffer and, identically, by f32's own 2^-24 ULP near 1.0, so it
-//     carries only band * 2^24 distinct values across DIST_PACK_RANGE. The
-//     old 1.0e-5 carried 168 of them over 40 m — one code every 0.238 m,
-//     coarser than a fan is big, so its housing, guard and blades all wrote
-//     the SAME depth and resolved by opaque draw order. Since a blade's
-//     sort key moves as it spins, the crease pattern on the fan head
-//     reshuffled instead of rotating. 1.0e-3 resolves 2.4 mm, comfortably
-//     under the 12 mm between that guard and those blades;
-//   - narrow enough to stay UNREACHABLE. Under reversed-Z with near 0.05
-//     and far 60, a world surface must stand within 0.05005 m of the eye to
-//     reach a 1.0e-3 band — 0.05 mm past a near plane that already clips
-//     everything closer.
-const float SOURCE_BAND = 1.0e-3;
-
 // Where in the acoustic-image band a source fragment `dist` metres from the
 // eye writes its depth.
 float source_depth(float dist) {

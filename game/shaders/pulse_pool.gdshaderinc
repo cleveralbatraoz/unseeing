@@ -58,6 +58,72 @@ uniform vec4 u_walls[MAXW];  // world XZ occluder rects (min_x, min_z, max_x, ma
 // invisibly.
 uniform vec2 u_wall_y[MAXW];
 
+// The viewmodel depth hack, written from the FRAGMENT: DEPTH takes the
+// window depth of the near plane (~1.0 under Godot's reversed-Z), so
+// every fragment passes the GEQUAL depth test and opaque draw order
+// alone decides the pixel — the perceptual layering, as render_priority.
+// It must NOT be a vertex POSITION.z override: faking clip z defeats
+// near-plane clipping, and geometry crossing the camera plane (a source
+// walked up to) rasterizes as projective full-screen sheets, stamping
+// garbage data over the whole buffer.
+const float ALWAYS_ON_TOP = 0.999999;
+
+// ...but a CONSTANT depth only works while the world holds one source. Two
+// acoustic images writing the same value resolve against each other by
+// opaque draw order alone, and Godot sorts opaque surfaces near-to-far —
+// so the NEARER source draws first and the FARTHER one, passing GEQUAL on
+// an equal value, overwrites it. A dim, distant ghost would punch a hole
+// through a near, loud one.
+//
+// So the layer gets a BAND instead of a point: a source's depth is the
+// always-on-top value minus a hair proportional to its true distance, so
+// sources — and a single source's own overlapping limbs — resolve by
+// distance like everything else.
+//
+// THE WIDTH IS DERIVED, not chosen. rust/src/render/depth.rs states both
+// bounds as functions and cargo-tests them against the shipped camera and
+// the shipped fan:
+//   - wide enough to ORDER. The band is quantised by the 24-bit depth
+//     buffer and, identically, by f32's own 2^-24 ULP near 1.0, so it
+//     carries only band * 2^24 distinct values across DIST_PACK_RANGE. The
+//     old 1.0e-5 carried 168 of them over 40 m — one code every 0.238 m,
+//     coarser than a fan is big, so its housing, guard and blades all wrote
+//     the SAME depth and resolved by opaque draw order. Since a blade's
+//     sort key moves as it spins, the crease pattern on the fan head
+//     reshuffled instead of rotating. 1.0e-3 resolves 2.4 mm, comfortably
+//     under the 12 mm between that guard and those blades;
+//   - narrow enough to stay UNREACHABLE. Under reversed-Z with near 0.05
+//     and far 60, a world surface must stand within 0.05005 m of the eye to
+//     reach a 1.0e-3 band — 0.05 mm past a near plane that already clips
+//     everything closer.
+const float SOURCE_BAND = 1.0e-3;
+
+
+// Is the fragment at `depth` an ACOUSTIC IMAGE rather than a real surface?
+//
+// One comparison, and it is exact. The source skin is opaque and writes its
+// DEPTH inside the always-on-top band above, so any fragment whose depth
+// lands in that band IS a source — no table, no reconstruction, no
+// inference. Measured on desktop GL by
+// game/tests/probe/depth_texture_probe.gd: an always-on-top fragment reads
+// back at 1.0000 against a band floor of 0.9990, while a world surface 3 m
+// from the eye reads 0.0158 — the analytic reversed-Z value to four
+// decimals.
+//
+// WHY IT IS NOT THE ONLY TEST. This is a DESKTOP measurement and the web is
+// a first-class target; data_core carried the claim that the depth texture
+// is unreliable on WebGL2 long before anyone measured it here, and nobody
+// has measured it there. hearing_post therefore ORs this against the older
+// wall-table inference rather than replacing it: where the depth texture
+// lives, the layer test is exact and finally covers a source hidden behind
+// a PROP, which is in no occluder table anywhere; where it is dead, this
+// returns false everywhere and the pass degrades to precisely its former
+// behaviour. Never worse on any platform, better on the one that was
+// measured.
+bool depth_is_acoustic_image(float depth) {
+	return depth >= ALWAYS_ON_TOP - SOURCE_BAND;
+}
+
 // sight.rs::near — the EXACT cheap refusal in front of the slab test: a
 // segment that crosses the rect has a point inside it, so its own XZ
 // bounding box must overlap the rect. Four comparisons throw out a wall
