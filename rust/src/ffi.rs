@@ -400,6 +400,19 @@ impl WaveCore {
     fn min_label_separation(&self) -> f64 {
         render::labels::MIN_SEP
     }
+
+    /// The widest gap the data channel was measured to leave, as a fraction
+    /// of full scale — `WORST_STEP_CODES` over the nominal step count.
+    ///
+    /// Exposed for `game/tests/probe/channel_probe.gd`, which writes a pair
+    /// of values exactly this far apart and demands the screen texture keep
+    /// them distinct. The probe is a PLATFORM gate, so it has to hold the
+    /// hardware against the number the renderer derives its tolerance from,
+    /// not against a second copy of it that can drift.
+    #[func]
+    fn channel_worst_step(&self) -> f64 {
+        render::channel::WORST_STEP_CODES / f64::from(render::channel::CHANNEL_LEVELS - 1)
+    }
 }
 
 impl WaveCore {

@@ -127,6 +127,14 @@ impl Occluder {
     /// [`RECT_SHRINK`], the same hair `wall_rect` leaves, so a crate shoved
     /// flush against a pillar is not swallowed by it.
     ///
+    /// The shrink is taken off BOTH sides of each axis, so a footprint
+    /// thinner than twice it would invert and the solid would stop
+    /// occluding — silently, since a refused occluder is simply absent from
+    /// the table. The shipped shelf is exactly that thin. So the hair is
+    /// capped per axis at a quarter of what the solid has: anything wide
+    /// enough pays the full [`RECT_SHRINK`], and anything thinner keeps a
+    /// proportionally thinner rect rather than losing its volume.
+    ///
     /// Refuses anything that describes no volume: an inverted or degenerate
     /// footprint, or a non-finite corner. A refused solid simply does not
     /// occlude, which is what it did yesterday — the failure direction that
@@ -153,12 +161,21 @@ impl Occluder {
         {
             return None;
         }
-        let rect = Vector4::new(
-            min_x + shrink,
-            min_z + shrink,
-            max_x - shrink,
-            max_z - shrink,
-        );
+        // The volume test now has to be its own step. It used to fall out
+        // of the shrink — a footprint with nothing in it inverted and
+        // `is_empty` caught the inversion — but a shrink that yields to a
+        // thin solid cannot invert anything, so a zero-width footprint
+        // would sail through as a rect of no width.
+        // plain comparisons, not negated ones: every corner is already
+        // known finite four lines up, so nothing here is incomparable
+        if max_x <= min_x || max_z <= min_z {
+            return None;
+        }
+        // per axis, and never more than a quarter of the extent: a plank
+        // 0.04 m thick has no 0.03 m to give away twice over
+        let hair = |lo: f32, hi: f32| shrink.min((hi - lo) * 0.25).max(0.0);
+        let (hx, hz) = (hair(min_x, max_x), hair(min_z, max_z));
+        let rect = Vector4::new(min_x + hx, min_z + hz, max_x - hx, max_z - hz);
         let occluder = Self {
             rect,
             span: Vector2::new(bottom.min(top), bottom.max(top)),
@@ -862,7 +879,9 @@ mod tests {
     #[test]
     fn endpoint_grazes_are_not_crossings() {
         let divider = standing(Vector4::new(6.4, 0.6, 6.4, 8.0));
-        let on_face = Vector3::new(6.28, 0.9, 4.0);
+        // 6.4 - 0.12, written as the subtraction because the literal is a
+        // hair under TAU and clippy reads it as a mistyped constant
+        let on_face = Vector3::new(6.4 - 0.12, 0.9, 4.0);
         assert!(!crosses(Vector3::new(3.0, 0.9, 4.0), on_face, divider));
         assert!(!crosses(on_face, Vector3::new(3.0, 0.9, 4.0), divider));
     }
@@ -1089,6 +1108,54 @@ mod tests {
         assert!(born_in_wall > 0, "grid never started inside a wall");
     }
 
+    /// THE BREAK: raising [`RECT_SHRINK`] quietly deleting the thin props
+    /// already standing in the shipped map.
+    ///
+    /// `from_bounds` takes the shrink off BOTH sides, so a footprint
+    /// thinner than twice it inverts and the solid stops occluding —
+    /// silently, because a refused occluder simply is not in the table. The
+    /// shipped shelf is exactly there: `ShelfBack` is 0.04 m thick in x and
+    /// `ShelfSideA/B` are 0.06 m in z (game/scenes/level_01.tscn). At a
+    /// 0.02 shrink the back survived as a zero-width rect and the sides sat
+    /// one ULP from the same fate; at 0.03 the back inverts outright and a
+    /// source seen through it stops paying `prop_through()`.
+    ///
+    /// So the shrink is per-axis and capped at a quarter of what the solid
+    /// has. A thin solid keeps a proportionally thinner rect instead of
+    /// losing its volume, and nothing wide enough to afford the full hair
+    /// is touched.
+    #[test]
+    fn a_prop_thinner_than_twice_the_shrink_still_occludes() {
+        // ShelfBack: 0.04 m thick, centred at x = 0.92
+        let back = Occluder::from_bounds(0.90, 2.0, 0.94, 3.4, 0.0, 1.8)
+            .expect("a 4 cm shelf back is still a volume");
+        let r = back.rect();
+        assert!(r.z > r.x, "the back inverted: {} .. {}", r.x, r.z);
+        // a quarter off each side leaves half the plank
+        assert!(
+            (f64::from(r.z - r.x) - 0.02).abs() < 1.0e-6,
+            "width {}",
+            r.z - r.x
+        );
+
+        // ShelfSideA: 0.06 m deep, which used to survive as exactly zero
+        let side = Occluder::from_bounds(0.90, 1.97, 1.40, 2.03, 0.0, 1.8)
+            .expect("a 6 cm shelf side is still a volume");
+        let s = side.rect();
+        assert!(s.w > s.y, "the side collapsed: {} .. {}", s.y, s.w);
+
+        // ...and a solid wide enough to afford the full hair still pays it:
+        // a 0.5 m pillar keeps 0.5 - 2 * 0.03 = 0.44
+        let pillar = Occluder::from_bounds(1.75, 2.75, 2.25, 3.25, 0.0, 3.0)
+            .expect("a half-metre pillar describes a volume");
+        let p = pillar.rect();
+        assert!(
+            (f64::from(p.z - p.x) - 0.44).abs() < 1.0e-6,
+            "width {}",
+            p.z - p.x
+        );
+    }
+
     /// THE BREAK: a solid's footprint being inflated like a wall's
     /// centerline, doubling every pillar's shadow — or shrunk the wrong
     /// way, so a pillar stops occluding the moment anything leans on it.
@@ -1126,8 +1193,12 @@ mod tests {
     /// `false` for — a wall that silently stops occluding.
     #[test]
     fn a_footprint_describing_no_volume_is_refused() {
-        // thinner than twice RECT_SHRINK: shrinking inverts it
-        assert_eq!(Occluder::from_bounds(0.0, 0.0, 0.03, 1.0, 0.0, 3.0), None);
+        // NO VOLUME is the criterion, not "thin": a footprint with zero
+        // width describes nothing to occlude...
+        assert_eq!(Occluder::from_bounds(0.0, 0.0, 0.0, 1.0, 0.0, 3.0), None);
+        // ...and one that is merely thinner than twice the shrink is a real
+        // volume, kept, because the shrink yields to it
+        assert!(Occluder::from_bounds(0.0, 0.0, 0.03, 1.0, 0.0, 3.0).is_some());
         assert_eq!(Occluder::from_bounds(1.0, 0.0, 0.0, 1.0, 0.0, 3.0), None);
         assert_eq!(
             Occluder::from_bounds(f64::NAN, 0.0, 1.0, 1.0, 0.0, 3.0),
