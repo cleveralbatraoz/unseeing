@@ -67,3 +67,25 @@ gdscript_resource_policy_violations() {
     printf '%s\n' "$PROJECT_FILE"
   fi
 }
+
+# A shader is a shipped resource. game/export_presets.cfg exports
+# "all_resources" and its exclude filter names only tests/, addons/ and
+# reports/, so every .gdshader under res:// that those do not cover is packed
+# into the web, macOS and Windows builds whether or not the game references
+# it. Nine probe-only shaders shipped to players that way, each one carrying
+# a header saying it was never referenced by the game.
+#
+# This is a CONTENT test rather than a name test: it catches a shader that
+# declares itself probe-only under any filename, and renaming cannot defeat
+# it. Probe shaders belong under game/tests/, beside the scenes that preload
+# them, where one exclusion rule already covers the whole corpus and where
+# tools/measure_web_platform.sh's single sed still lifts it for the web
+# measurement.
+shader_placement_violations() {
+  find "$1/game" \
+    \( -path "$1/game/addons" -o -path "$1/game/.godot" \
+       -o -path "$1/game/build" -o -path "$1/game/reports" \
+       -o -path "$1/game/tests" \) \
+    -prune -o \( -name '*.gdshader' -o -name '*.gdshaderinc' \) \
+    -exec grep -Il -e 'PROBE ONLY' {} \;
+}

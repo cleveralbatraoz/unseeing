@@ -22,8 +22,8 @@ extends Node
 ## bases: 0.25 and 0.5 are the two the platform ladder found a nominal step
 ## collapsing at.
 
-const READ_SHADER := preload("res://shaders/probe_tap_error_read.gdshader")
-const WRITE_SHADER := preload("res://shaders/probe_channel_write.gdshader")
+const READ_SHADER := preload("res://tests/probe/shaders/probe_tap_error_read.gdshader")
+const WRITE_SHADER := preload("res://tests/probe/shaders/probe_channel_write.gdshader")
 
 ## Nominal codes represented either side of zero. A reading that clips is
 ## reported as clipped rather than as its clipped value.

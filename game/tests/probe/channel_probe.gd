@@ -36,8 +36,8 @@ extends Node
 ## probe is uniquely shaped for, plus a gate on the one step the renderer's
 ## tolerance is actually derived against.
 
-const READ_SHADER := preload("res://shaders/probe_channel_read.gdshader")
-const WRITE_SHADER := preload("res://shaders/probe_channel_write.gdshader")
+const READ_SHADER := preload("res://tests/probe/shaders/probe_channel_read.gdshader")
+const WRITE_SHADER := preload("res://tests/probe/shaders/probe_channel_write.gdshader")
 
 var _failures := 0
 var _write_mat: ShaderMaterial

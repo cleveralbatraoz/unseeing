@@ -34,11 +34,11 @@ extends Node
 ## exact; where it is dead the pass degrades to exactly its former
 ## behaviour, and never to worse.
 
-const DEPTH_SHADER := preload("res://shaders/probe_depth_read.gdshader")
-const COMBINED_SHADER := preload("res://shaders/probe_depth_combined.gdshader")
-const SCREEN_ONLY_SHADER := preload("res://shaders/probe_screen_read.gdshader")
-const WRITE_SHADER := preload("res://shaders/probe_channel_write.gdshader")
-const XRAY_WRITE_SHADER := preload("res://shaders/probe_depth_xray.gdshader")
+const DEPTH_SHADER := preload("res://tests/probe/shaders/probe_depth_read.gdshader")
+const COMBINED_SHADER := preload("res://tests/probe/shaders/probe_depth_combined.gdshader")
+const SCREEN_ONLY_SHADER := preload("res://tests/probe/shaders/probe_screen_read.gdshader")
+const WRITE_SHADER := preload("res://tests/probe/shaders/probe_channel_write.gdshader")
+const XRAY_WRITE_SHADER := preload("res://tests/probe/shaders/probe_depth_xray.gdshader")
 
 ## The camera the analytic expectation below is derived against.
 const NEAR := 0.05

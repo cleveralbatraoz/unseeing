@@ -29,8 +29,8 @@ extends Node
 ## On the desktop it also prints the same verdicts, so a human running it
 ## by hand does not have to decode a PNG.
 
-const READ_SHADER := preload("res://shaders/probe_platform_read.gdshader")
-const WRITE_SHADER := preload("res://shaders/probe_platform_write.gdshader")
+const READ_SHADER := preload("res://tests/probe/shaders/probe_platform_read.gdshader")
+const WRITE_SHADER := preload("res://tests/probe/shaders/probe_platform_write.gdshader")
 
 ## Step sizes the ladder tests, left to right, as multiples of one 10-bit
 ## step — must match STEPS in shaders/probe_platform_write.gdshader, and
