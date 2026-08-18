@@ -131,12 +131,19 @@ while time.monotonic() < deadline:
         text = " ".join(str(a.get("value", "")) for a in parts)
     elif method == "Log.entryAdded":
         text = msg["params"].get("entry", {}).get("text", "")
-    if text and text.strip().startswith("#"):
+    # The probe emits two kinds of line: '#' commentary carrying the
+    # measurement, and its OWN verdict ('ok -', 'not ok -', and a terminal
+    # 'platform-probe:'). Both are wanted. Reading only the first kind and
+    # stopping at the control line left the probe's own gate off the web
+    # entirely -- including the one call it makes across the FFI, so a
+    # browser where that call failed would have looked identical to one
+    # where it passed.
+    if text and text.strip().startswith(("#", "ok -", "not ok", "platform-probe")):
         line = text.strip()
         if line not in lines:
             lines.append(line)
             print(line)
-        if line.startswith("# CONTROL"):
+        if line.startswith("platform-probe"):
             break
 
 if not lines:
@@ -147,6 +154,12 @@ verdict = next((line for line in lines if line.startswith("# platform:")), None)
 if verdict is None:
     print("platform-web: FAILED the probe never reported a verdict line")
     sys.exit(1)
+
+# The probe's own gate, which runs inside the browser and can fail for
+# reasons the parse below cannot see -- a readback that did not work, or an
+# extension that does not expose the step the renderer assumes.
+probe_failed = [line for line in lines if line.startswith(("not ok", "platform-probe: FAIL"))]
+probe_gated = any(line.startswith("platform-probe:") for line in lines)
 
 # "# platform: worst step 1.020 nominal codes (0.00099707 of full scale)
 #  ; depth 0.9490 (...) ; control 0.5020"
@@ -162,6 +175,17 @@ control = float(fields[-1])
 ASSUMED_WORST_STEP = 1.25
 
 ok = True
+if probe_failed:
+    for line in probe_failed:
+        print("platform-web: the probe failed its own gate: %s" % line)
+    ok = False
+elif not probe_gated:
+    print(
+        "platform-web: FAILED the probe never reached its own verdict — it "
+        "printed its measurement and then stopped, which is what a scene that "
+        "errored partway through looks like"
+    )
+    ok = False
 if abs(control - 0.5) > 0.02:
     print(
         "platform-web: FAILED the control read %.4f, not 0.5 — Godot's in-game "
