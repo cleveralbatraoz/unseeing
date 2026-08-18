@@ -23,8 +23,23 @@
 //! crease knee drifted apart while every test stayed green.
 
 /// Peak-to-peak swing of the film grain, `u_grain_amp` in
-/// `hearing_post.gdshader`. Owned here, pushed from the composition root,
-/// read back out of the GLSL text by `shader_contract_test.gd`.
+/// `hearing_post.gdshader`.
+///
+/// Owned here and pushed from the composition root, which is the direction
+/// that matters: [`super::reveal::PRESENCE`] is derived FROM this number,
+/// and settled law 1 — a sound source is always visible — is that
+/// derivation. This sentence was false for the life of the constant. Nothing
+/// pushed it, the live value was the shader's own uniform default, and a
+/// maintainer who changed it here got an unchanged picture and a red test
+/// with no hint that the push had never existed.
+///
+/// Two independent things now hold the pair together, and they fail in
+/// different places: `wiring_test.gd` reads the pushed uniform back off the
+/// post material, and `shader_contract_test.gd` parses the GLSL default out
+/// of the source. The default is kept equal to this rather than made
+/// deliberately wrong — unlike `u_presence`, which defaults to 0.0 — because
+/// an unpushed post material is a probe's material, and a probe should see
+/// the shipped grain rather than a broken one.
 pub const GRAIN_AMP: f64 = 0.034;
 
 /// The dimmest the breathing vignette multiplies a pixel by:

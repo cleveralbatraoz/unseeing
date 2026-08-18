@@ -182,6 +182,30 @@ func test_the_crease_knee_reaches_the_post_pass_from_the_one_separation() -> voi
 	assert_bool(src.contains("smoothstep(0.04, 0.08")).is_false()
 
 
+## THE BREAK: `render::grain::GRAIN_AMP` and the shader's `u_grain_amp`
+## drifting apart. The Rust doc claimed the constant was "owned here, pushed
+## from the composition root" — it was not pushed at all, and the live value
+## was the GLSL default, so a maintainer changing GRAIN_AMP in Rust got an
+## unchanged picture. `reveal::PRESENCE` is derived FROM this constant, and
+## settled law 1 (a sound source is always visible) rests on that derivation,
+## so the ownership direction is load-bearing rather than cosmetic.
+func test_the_film_grain_amplitude_reaches_the_post_pass_from_rust() -> void:
+	var main := _main()
+	var pushed: float = main.post_mat.get_shader_parameter("u_grain_amp")
+	var owned: float = WaveLevel.grain_amp()
+	(
+		assert_float(pushed)
+		. append_failure_message(
+			"the post pass holds %f, but render::grain::GRAIN_AMP is %f" % [pushed, owned]
+		)
+		. is_equal_approx(owned, 0.000001)
+	)
+	# NOT asserted here: that PRESENCE is twice this. `reveal::PRESENCE` is
+	# DEFINED as 2 * GRAIN_AMP in Rust, so restating it in GDScript would be
+	# a mirror that no edit can break. What this case can honestly catch is
+	# a push that is missing or points at the wrong constant, and it does.
+
+
 ## Skin identities: the level hands EVERY sound source the source material,
 ## and the source image is LIVE — a source wears the XRAY skin (always
 ## heard, muffled through walls); the world, the props, the cat and the

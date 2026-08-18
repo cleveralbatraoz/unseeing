@@ -250,6 +250,19 @@ impl INode3D for UnseeingGame {
             &Vector2::new(detail.lo() as f32, detail.hi() as f32).to_variant(),
         );
 
+        // The grain's own amplitude, and the reason it is pushed rather than
+        // mirrored: `reveal::PRESENCE` is DERIVED from it, and settled law 1
+        // — a sound source is always visible — is that derivation. The
+        // constant used to live only as the shader's uniform default while
+        // `render::grain`'s doc claimed the composition root pushed it, so
+        // Rust was the mirror and the GLSL was the original, in the one
+        // place the ordering matters. Now the push makes the doc true and
+        // the shader's default is only what an unpushed material shows.
+        self.post_mat.set_shader_parameter(
+            "u_grain_amp",
+            &(crate::render::grain::GRAIN_AMP as f32).to_variant(),
+        );
+
         let core = WaveCore::new_gd();
         self.wave_core = Some(core.clone());
 
