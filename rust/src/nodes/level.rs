@@ -677,10 +677,6 @@ impl WaveLevel {
         render::reveal::PRESENCE
     }
 
-    /// The detail knee ([`render::detail::DetailKnee::shipped`]) as
-    /// `(lo, hi)`, served so `game/tests/shader_contract_test.gd` can hold
-    /// what the composition root pushes against what Rust derived — the
-    /// same drift the crease knee's own mirror exists to catch.
     /// What one wall leaves of a source's silhouette
     /// ([`level_plan::SOURCE_THROUGH`]), served so the contract suite can
     /// check the detail knee opens at exactly that ceiling — the
@@ -691,6 +687,10 @@ impl WaveLevel {
         level_plan::SOURCE_THROUGH
     }
 
+    /// The detail knee ([`render::detail::DetailKnee::shipped`]) as
+    /// `(lo, hi)`, served so `game/tests/shader_contract_test.gd` can hold
+    /// what the composition root pushes against what Rust derived — the
+    /// same drift the crease knee's own mirror exists to catch.
     #[func]
     fn detail_knee() -> Vector2 {
         let knee = render::detail::DetailKnee::shipped();
