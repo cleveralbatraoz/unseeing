@@ -20,6 +20,18 @@ desktop**, with the depth texture live there too (0.9490 against an analytic
 rather than a ceiling — and a driver giving FEWER levels is the direction that
 would break things, which is what the measurement rules out.
 
+> **Corrected 2026-08-18.** The last sentence is exactly inverted, and the
+> paragraph counts the wrong thing. A power-of-two ladder read at seventeen
+> bases cannot see a channel that resolves a nominal code at 99.7% of bases
+> and not the rest — which is what densifying it found. The web needs **1.02
+> nominal codes** to separate (SwiftShader and ANGLE/Apple Metal agree, so
+> the SwiftShader caveat is retired); Mesa/AMD desktop GL needs **1.25**.
+> The DESKTOP is the worse target, the driver giving fewer usable levels is
+> the one already in the room, and it broke the reconstruction guard by
+> 4.4 mm at the shipped range — `sight::RECT_SHRINK` is 0.03 m for that
+> reason. The depth-texture half of the paragraph stands, and has since been
+> confirmed on a GPU-backed browser.
+
 This matters most for Gap 2 below, whose whole design turns on the band
 holding hundreds of distinguishable codes rather than eleven.
 
@@ -68,6 +80,14 @@ Each B tap carries up to half a code of error, so the Laplacian carries up to
 ~0.24 m, and no further. The four worst pairs (0.036–0.17 m) are inside the
 noise band. The information is not in B and no predicate over B can recover
 it.
+
+> **Re-derived 2026-08-18, and the conclusion holds harder.** A tap carries
+> up to half of the WORST gap, 0.625 nominal codes, not half of a nominal
+> one — so the five-tap Laplacian carries up to 5 codes, **0.196 m** of
+> noise rather than 0.156. Everything this paragraph concludes gets worse,
+> not better: the knee has less room and the worst pairs sit further inside
+> the noise band.
+
 
 ### Decision — re-encode G as an identity
 

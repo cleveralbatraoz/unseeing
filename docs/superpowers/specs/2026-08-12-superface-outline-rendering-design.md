@@ -86,10 +86,13 @@ wedge 5, a column 3 (two rims and the curved side as one face), a slab 6.
 > asserts a bit depth or a transfer function for the screen texture predates
 > its measurement. `rust/src/render/channel.rs` owns that fact now
 > (`CHANNEL_LEVELS = 1024`, RGB10_A2, gated by
-> `game/tests/probe/channel_probe.gd` on desktop GL and unmeasured on
-> WebGL2), and the derivations that turn on it — the B-channel
-> reconstruction error and the range at which it stops clearing
-> `sight::RECT_SHRINK` — live there rather than here.
+> `game/tests/probe/channel_probe.gd`), and the derivations that turn on it
+> — the B-channel reconstruction error and the range at which it stops
+> clearing `sight::RECT_SHRINK` — live there rather than here. The format is
+> only half of it: `WORST_STEP_CODES` records how many nominal codes the
+> pipeline actually needs to keep two values apart, measured at every base
+> of a swept column by `game/tests/probe/platform_probe.tscn` on desktop GL
+> and on two WebGL2 drivers.
 >
 > One correction to the design itself, same date: an anchor is a property
 > of a FACE, not of a solid. Written onto every class a slab owned, it
@@ -169,9 +172,12 @@ bilinear tap at unlucky phase halves a diff onto the dead floor).
 
 ## Platform facts this design stands on (research, 2026-08-12)
 
-- The screen texture is **RGB10_A2** (10-bit per channel), identical on
-  desktop GL and WebGL2; the 3D backbuffer is blitted bit-exact and
-  sampled nearest by allocation.
+- The screen texture is **RGB10_A2** (10-bit per channel) on desktop GL and
+  WebGL2 alike; the 3D backbuffer is blitted bit-exact and sampled nearest
+  by allocation. *(Corrected 2026-08-18: the FORMAT is identical, what it
+  delivers is not. Swept densely, Mesa/AMD desktop GL needs 1.25 nominal
+  codes to keep two values apart where SwiftShader and ANGLE/Metal need
+  1.02 — a 23% difference in worst-case quantum between the two targets.)*
 - The engine's sRGB round trip is deterministic: identical inputs store
   identically (the melt guarantee); id-band deltas survive (worst pair
   stretches to 0.0845); values below ≈0.027 crush to zero — labels stay

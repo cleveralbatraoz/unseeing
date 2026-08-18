@@ -26,7 +26,7 @@ Every task's requirements implicitly include these.
 - **Attribution ban.** Never add `Co-Authored-By`, `Generated with`, or any assistant attribution in commits, code, comments, docs or PRs.
 - **Never commit build output** — no exports, `.pck`, `.wasm`, `target/`, rendered frames or reports. Commit Godot `.import` and `.uid` sidecars.
 - **Autonomy ends at integration.** Present the finish-branch choice; never merge, push or deploy without the user's choice.
-- **Measured platform facts** (do not re-derive from memory): one data channel holds **1024 levels** on desktop GL *and* under the browser; `DIST_PACK_RANGE = 40.0`; one B quantum is `40/1023 = 39.1 mm`; the silhouette knee `smoothstep(0.012, 0.03, lap)` fires at a `0.012 × 40 = 0.48 m` depth step.
+- **Measured platform facts** (do not re-derive from memory): one data channel is **RGB10_A2, 1024 codes**, but does not hand back a clean code everywhere — `render::channel::WORST_STEP_CODES` records the widest gap measured, **1.25 nominal codes** on Mesa/AMD desktop GL against 1.02 on SwiftShader and ANGLE/Apple Metal. `DIST_PACK_RANGE = 40.0`; one NOMINAL B code is `40/1023 = 39.1 mm` and the worst real gap is `40 × 1.25/1023 = 48.9 mm`; the silhouette knee `smoothstep(0.012, 0.03, lap)` fires at a `0.012 × 40 = 0.48 m` depth step. **Corrected 2026-08-18** — the plan below was written against 1024 clean levels and every label-spacing figure in it is optimistic by 1.25×.
 
 ---
 
@@ -87,9 +87,12 @@ In `rust/src/render/crease.rs`'s `mod tests`:
     fn a_crease_answers_identity_not_distance() {
         let eps = label_epsilon();
         assert!((eps - 0.000_489).abs() < 1.0e-6, "epsilon moved: {eps}");
-        // two labels one code apart are DIFFERENT and must draw
-        let one_code = 1.0 / f64::from(channel::CHANNEL_LEVELS - 1);
-        assert!(draws_a_crease(0.15, 0.15 + one_code));
+        // two labels one RELIABLE gap apart are DIFFERENT and must draw.
+        // NOT one nominal code: the channel collapses a nominal step to a
+        // single code at some bases, so a palette spaced that way melts
+        // exactly where the ladder says it would.
+        let one_gap = channel::WORST_STEP_CODES / f64::from(channel::CHANNEL_LEVELS - 1);
+        assert!(draws_a_crease(0.15, 0.15 + one_gap));
         // the same label, bit-for-bit, never draws — this is the merge law
         assert!(!draws_a_crease(0.15, 0.15));
         // ...and the old ladder spacing still draws, so nothing regresses
@@ -266,7 +269,9 @@ pub const PALETTE_SIZE: usize = 64;
 
 #[must_use]
 pub fn world_palette() -> Vec<f64> {
-    let step = 2.0 / f64::from(channel::CHANNEL_LEVELS - 1);
+    // two RELIABLE gaps, not two nominal codes: at 1.25 codes per gap this
+    // is 2.5 nominal codes per slot, and 64 slots still fit the band
+    let step = 2.0 * channel::WORST_STEP_CODES / f64::from(channel::CHANNEL_LEVELS - 1);
     (0..PALETTE_SIZE)
         .map(|slot| LADDER_BASE + step * slot as f64)
         .collect()

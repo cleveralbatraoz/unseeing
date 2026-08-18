@@ -1853,7 +1853,7 @@ Add a case asserting that for a set of sight lines spanning the shipped map, `Wa
 
 - [ ] **Step 3: Run to verify it fails**
 
-Temporarily change `RECT_SHRINK` in `rust/src/sight.rs` from `0.02` to `0.2`, rebuild, and confirm the new case fails. Revert. **This is the point of the task** — a contract test that cannot fail when the two sides drift is decoration.
+Temporarily change `RECT_SHRINK` in `rust/src/sight.rs` from `0.03` to `0.2`, rebuild, and confirm the new case fails. Revert. **This is the point of the task** — a contract test that cannot fail when the two sides drift is decoration.
 
 - [ ] **Step 4: Implement and confirm green**
 
