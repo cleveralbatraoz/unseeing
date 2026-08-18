@@ -34,6 +34,13 @@ render_mode unshaded, cull_back, shadows_disabled, ambient_light_disabled, fog_d
 //     fan and the loud radio brighten and dim as one object.
 // (The reveal from waves in flight is still per-fragment wall-occluded in
 // reveal_at, shared in the core.)
+// The floor under this source's packed reveal. A MATERIAL uniform, not an
+// instance one: it is a property of the mood layer every source is drawn
+// through, not of any one source. Deliberately defaults to 0.0 so an
+// unpushed material is visibly wrong — the law simply does not hold — the
+// same failure direction u_crease_knee's default takes.
+uniform float u_presence = 0.0;
+
 instance uniform float u_source_volume = 0.0;
 instance uniform float u_source_muffle = 1.0;
 
@@ -62,4 +69,20 @@ void fragment() {
 	DEPTH = source_depth(length(v_world - CAMERA_POSITION_WORLD));
 	float reveal = source_image(reveal_at(v_world), u_source_volume, u_source_muffle);
 	ALBEDO = pack_data(reveal, v_world, CAMERA_POSITION_WORLD);
+	// SETTLED LAW 1, made arithmetically true: a sound source is always
+	// visible, as itself. It was not. The documented muffle ladder puts a
+	// three-wall source at 0.027, the breathing vignette can take 55% of
+	// that at the screen edge, and the film grain swings 0.017 either way —
+	// so the source was quieter than the noise it was drawn in, and had
+	// been in every shipped frame.
+	//
+	// AFTER pack_data, never inside it. pack_data multiplies by
+	// exp(-0.05 * vd), a CAMERA-distance haze that has nothing to do with
+	// hearing; flooring before it would let range eat the floor again at
+	// exactly the distances where the law was already failing.
+	//
+	// rust/src/render/reveal.rs::present is the cargo-pinned reference and
+	// owns PRESENCE = 2 * GRAIN_AMP; the theorem that it clears the grain
+	// is a_source_behind_three_walls_outreads_the_film_grain.
+	ALBEDO.r = max(ALBEDO.r, u_presence);
 }

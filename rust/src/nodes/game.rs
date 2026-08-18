@@ -228,6 +228,17 @@ impl INode3D for UnseeingGame {
             &Vector2::new(knee.lo() as f32, knee.hi() as f32).to_variant(),
         );
 
+        // Settled law 1's floor, pushed to the acoustic-image skin the way
+        // the crease knee is pushed to the post pass, and for the identical
+        // reason: it is DERIVED from the film grain's amplitude, and a
+        // derivation whose two ends live in different languages is exactly
+        // how MIN_SEP and the crease knee drifted apart while every cargo
+        // test stayed green.
+        self.source_mat.set_shader_parameter(
+            "u_presence",
+            &(crate::render::reveal::PRESENCE as f32).to_variant(),
+        );
+
         let core = WaveCore::new_gd();
         self.wave_core = Some(core.clone());
 

@@ -422,6 +422,55 @@ func test_decode_expressions_are_literal() -> void:
 	assert_str(src).contains("mod(d.w, 10.0) / 9.0")
 
 
+## THE BREAK: settled law 1 — a sound source is always visible, as itself —
+## silently ceasing to hold because the two halves of its arithmetic live in
+## different languages.
+##
+## PRESENCE is derived in Rust as twice the film grain's amplitude, but the
+## grain itself is a GLSL mood knob that any artist may reasonably retune.
+## Raise u_grain_amp alone and the floor stops clearing the noise; the law
+## fails in every frame and not one cargo test notices, because Rust is
+## still comparing against the number it remembers. This is the same drift
+## that put MIN_SEP and the crease knee out of step while the suite stayed
+## green.
+##
+## The literals here are hand-derived and deliberately NOT read back from
+## the code under test: 0.034 peak-to-peak swings +/- 0.017, the vignette
+## keeps 0.45 at the screen edge, and 2 * 0.034 = 0.068 leaves 0.0306 —
+## 1.8x the noise.
+func test_the_presence_floor_still_clears_the_film_grain() -> void:
+	var post := _read(HEARING_POST_PATH)
+	var m := RegEx.create_from_string("uniform float u_grain_amp = ([0-9.]+);").search(post)
+	assert_object(m).is_not_null()
+	var glsl_grain := float(m.get_string(1)) if m != null else -1.0
+	assert_float(glsl_grain).is_equal(WaveLevel.grain_amp())
+
+	var half_swing := glsl_grain * 0.5
+	assert_float(half_swing).is_equal_approx(0.017, 1e-6)
+
+	# the vignette's own floor, mix(0.45, 1.0, vig), read as source text so
+	# a retuned vignette cannot quietly re-sink the source
+	assert_str(post).contains("mix(0.45, 1.0, vig)")
+	var dimmest := WaveLevel.source_presence() * 0.45
+	assert_float(dimmest).is_greater(half_swing * 1.5)
+
+
+## THE BREAK: the composition root pushing nothing into u_presence, or
+## pushing a stale number. The shader's own default is deliberately 0.0 —
+## the law simply does not hold — so an unpushed material is visibly wrong
+## rather than accidentally right, exactly as u_crease_knee's default is.
+func test_the_xray_skin_declares_a_presence_floor_that_defaults_wrong() -> void:
+	var xray := _read("res://shaders/data_xray.gdshader")
+	assert_str(xray).contains("uniform float u_presence = 0.0;")
+	assert_str(xray).contains("ALBEDO.r = max(ALBEDO.r, u_presence);")
+	# and it must be floored AFTER pack_data, or the camera-distance haze
+	# inside pack_data eats the floor at exactly the range where the law
+	# was already failing
+	assert_int(xray.find("ALBEDO = pack_data(")).is_less(
+		xray.find("ALBEDO.r = max(ALBEDO.r, u_presence);")
+	)
+
+
 ## DIST_PACK_RANGE lives in the include, which is the copy that renders, and
 ## now also in rust/src/level_plan.rs, because WaveLevel measures the map it
 ## derived against it and says so out loud. A drift between the two would

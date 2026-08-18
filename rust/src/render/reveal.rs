@@ -46,6 +46,8 @@
 //! at the tail. The whole change is confined to the last quarter of a
 //! wave's life, where it is a wave ending rather than a wave dimmed.
 
+use super::grain;
+
 use crate::pulse_pool::fade_tail;
 
 /// Weight and time constant of the strike flash: the bright, fast half of
@@ -58,6 +60,36 @@ const FAST_TIME: f64 = 0.25;
 /// un-shifted envelope immortal.
 const SLOW_WEIGHT: f64 = 0.5;
 const SLOW_TIME: f64 = 3.0;
+
+/// The floor under a sound source's packed reveal, so that settled law 1 —
+/// a source is always visible, as itself — is arithmetically true and not
+/// merely intended.
+///
+/// Twice [`grain::GRAIN_AMP`], which is four times the grain's own
+/// [`half_swing`](grain::half_swing). Chosen against the noise it has to
+/// clear rather than picked: at the vignette's floor a source still reads
+/// 0.0306 against a 0.0170 swing, a factor of 1.8, while staying far below
+/// anything that would light the room.
+///
+/// It is applied AFTER `pack_data`, never inside it. `pack_data` multiplies
+/// by `exp(-0.05 * vd)` — a camera-distance haze that has nothing to do
+/// with hearing and would otherwise eat the floor at range, which is
+/// exactly where the law was already failing.
+pub const PRESENCE: f64 = 2.0 * grain::GRAIN_AMP;
+
+/// Lift a source's already-packed reveal to [`PRESENCE`] if the dimming
+/// chain has taken it below.
+///
+/// Total over every f64: a non-finite packed value answers [`PRESENCE`]
+/// rather than propagating NaN through `max`, which in IEEE terms would
+/// quietly return the NaN and blank the source entirely.
+#[must_use]
+pub fn present(packed: f64) -> f64 {
+    if !packed.is_finite() {
+        return PRESENCE;
+    }
+    packed.max(PRESENCE)
+}
 
 /// The fraction of a kind's tail spent closing the envelope out. Before it
 /// the decay is the shipped shape untouched; across it a smooth window
@@ -494,5 +526,60 @@ mod tests {
                 "kind {stranger} fell through to something other than the tap's tail"
             );
         }
+    }
+
+    /// THE BREAK: the documented muffle ladder sinking a source below the
+    /// film grain it is drawn in, so that "a source is always visible"
+    /// stops being true without any test noticing.
+    ///
+    /// Both halves are hand-derived from shipped constants, not read back
+    /// from the code under test. `SOURCE_THROUGH` is 0.3, so three walls
+    /// give 0.3^3 = 0.027; the grain swings +/- 0.034/2 = 0.017; the
+    /// vignette keeps 0.45 of a pixel at the screen edge.
+    #[test]
+    fn a_source_behind_three_walls_outreads_the_film_grain() {
+        let three_walls = 0.3_f64 * 0.3 * 0.3;
+        assert!(
+            (three_walls - 0.027).abs() < 1e-12,
+            "the ladder moved: expected 0.027 from SOURCE_THROUGH^3, got {three_walls}"
+        );
+        let noise = grain::half_swing();
+        assert!(
+            (noise - 0.017).abs() < 1e-12,
+            "the grain moved: expected a 0.017 half-swing, got {noise}"
+        );
+
+        // The defect, stated as an assertion so it can never come back:
+        // unfloored, the third rung is DIMMER than the noise around it.
+        let unfloored = grain::dimmest(three_walls);
+        assert!(
+            unfloored < noise,
+            "expected the raw third rung ({unfloored}) to sink under the \
+             grain ({noise}) - if it no longer does, PRESENCE is being \
+             tested against a defect that no longer exists and this test \
+             has stopped meaning anything"
+        );
+
+        // ...and floored, it clears the noise by a margin you can see.
+        let floored = grain::dimmest(present(three_walls));
+        assert!(
+            floored > noise * 1.5,
+            "a three-wall source reads {floored} against a {noise} grain \
+             swing - settled law 1 says it is visible, and at this level it \
+             is not"
+        );
+    }
+
+    /// THE BREAK: `present` handing back a NaN because IEEE `max` prefers
+    /// the number, not the NaN - which would blank a source entirely
+    /// rather than floor it.
+    #[test]
+    fn present_is_total_over_every_f64() {
+        assert_eq!(present(f64::NAN), PRESENCE);
+        assert_eq!(present(f64::NEG_INFINITY), PRESENCE);
+        assert_eq!(present(f64::INFINITY), PRESENCE);
+        assert_eq!(present(-1.0), PRESENCE);
+        assert_eq!(present(1.0), 1.0);
+        assert_eq!(grain::dimmest(f64::NAN), 0.0);
     }
 }

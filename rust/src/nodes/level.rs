@@ -629,6 +629,30 @@ impl WaveLevel {
         level_plan::DIST_PACK_RANGE
     }
 
+    /// The film grain's peak-to-peak swing ([`render::grain::GRAIN_AMP`]),
+    /// served so `game/tests/shader_contract_test.gd` can hold it against
+    /// `hearing_post.gdshader`'s own `u_grain_amp` default.
+    ///
+    /// The grain is a mood knob and would normally have no business in
+    /// Rust — except that [`render::reveal::PRESENCE`] is DERIVED from it,
+    /// and settled law 1 rests on that derivation. If the two drifted, a
+    /// source could sink back under the noise with every cargo test still
+    /// green, which is precisely the failure this pair exists to make
+    /// impossible.
+    #[func]
+    fn grain_amp() -> f64 {
+        render::grain::GRAIN_AMP
+    }
+
+    /// The floor under a sound source's packed reveal
+    /// ([`render::reveal::PRESENCE`]), served so the contract suite can
+    /// check that what the composition root pushes into `u_presence` is
+    /// what Rust derived.
+    #[func]
+    fn source_presence() -> f64 {
+        render::reveal::PRESENCE
+    }
+
     /// Debug-facing shim, served the same way [`Self::wall_height`] is: not
     /// a designer knob, only a door for `game/tests/mesh_label_test.gd` to
     /// reach [`render::paint::labelled_box`] — the spike proving `CUSTOM0`
