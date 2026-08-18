@@ -9,12 +9,20 @@
 //! wall it stands against, or the pass decides a lit wall is an x-rayed
 //! source seen through one.
 //!
-//! The only thing keeping it outside is [`sight::RECT_SHRINK`]: the
-//! occluder rect stops 0.02 m short of the wall's real face. That tolerance
-//! was chosen for something else entirely — so a prop standing flush
-//! against a wall is not self-shadowed by contact grazing — and it has to
-//! exceed the reconstruction error, which is half a B-channel quantum.
-//! Neither number knew the other existed.
+//! The tolerance that has to cover that error is [`sight::RECT_SHRINK`]:
+//! the occluder rect stops 0.02 m short of the wall's real face. It was
+//! chosen for something else entirely — so a prop standing flush against a
+//! wall is not self-shadowed by contact grazing — and it has to exceed the
+//! reconstruction error, which is half a B-channel quantum. Neither number
+//! knew the other existed.
+//!
+//! It is not quite the only tolerance in play: [`sight::GRAZE_EPS`] also
+//! ignores a thousandth of the sight line at each end, which for an
+//! eye-to-surface ray of length L forgives a further `L / 1000` — 4 cm at
+//! 40 m, and nothing at all at close range. It is not counted below,
+//! deliberately: it shrinks toward zero exactly where the reconstruction
+//! error does not, so leaning on it would make the guard weakest where the
+//! geometry is nearest and the pixels largest.
 //!
 //! # The measurement
 //!

@@ -8,7 +8,8 @@
 //! — the total-functions doctrine applied to shader math.
 //!
 //! Geometry: a wall's occluder is its centerline segment inflated into a
-//! world XZ rect ([`wall_rect`]), swept floor to ceiling. The rect is
+//! world XZ rect ([`wall_rect`]), swept through the world Y span of the box
+//! the paint pass draws ([`Occluder`]) — never a global wall height. The rect is
 //! SHRUNK by [`RECT_SHRINK`] relative to the wall's real box so a prop
 //! standing flush against a wall face is never self-shadowed by contact
 //! grazing, and both parametric ends of the sight line are ignored by
@@ -24,9 +25,12 @@ use crate::level_plan;
 ///
 /// Raising it is nearly free and the map has outgrown the old 16: the GLSL
 /// loops `break` at `u_wall_count`, so the only cost of an unused slot is
-/// its 16 bytes in the material's uniform buffer (32 slots = 512 B, against
-/// the 3.4 KB the pulse lanes already occupy and a 16 KB floor on the
-/// smallest WebGL2 block). What is NOT free is a wall a level actually
+/// its slots in the materials' uniform buffers. A wall now costs TWO array
+/// elements — its `vec4` rect and its `vec2` span — and std140 rounds every
+/// array element's stride up to a `vec4`, so that is 32 B per wall and 1 KB
+/// at 32 slots, not the 512 B this note claimed while the span was still a
+/// single global. Against the 3.4 KB the pulse lanes already occupy and a
+/// 16 KB floor on the smallest WebGL2 block, still cheap. What is NOT free is a wall a level actually
 /// holds: every one of them is another rect in the per-fragment sight loop,
 /// which is why [`near`] exists.
 pub const MAXW: usize = 32;
@@ -185,8 +189,8 @@ pub fn near(from: Vector3, to: Vector3, rect: Vector4) -> bool {
         && from.z.max(to.z) >= rect.y
 }
 
-/// Whether the segment `from -> to` crosses the wall box `rect` swept
-/// y ∈ [0, `wall_top`] — the classic three-slab test, clamped to the
+/// Whether the segment `from -> to` crosses `occ` — its XZ rect swept
+/// through its OWN y span — by the classic three-slab test, clamped to the
 /// graze-free parametric window, behind [`near`]'s exact cheap refusal.
 /// Total on any input: a zero direction component degenerates to a
 /// point-in-slab check.
@@ -236,9 +240,8 @@ pub fn crossings(from: Vector3, to: Vector3, occluders: &[Occluder]) -> u32 {
         .sum()
 }
 
-/// Whether the point `p` lies inside the wall box `rect` swept
-/// y ∈ [0, `wall_top`] — the XZ rect AND the vertical span. Total on any
-/// input. The wall a sound is born inside cannot block that sound's own
+/// Whether the point `p` lies inside `occ` — its XZ rect AND its own
+/// vertical span. Total on any input. The wall a sound is born inside cannot block that sound's own
 /// reveal, so [`crossings_from`] skips whatever this reports.
 #[must_use]
 pub fn contains(occ: Occluder, p: Vector3) -> bool {

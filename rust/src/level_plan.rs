@@ -3289,6 +3289,25 @@ mod tests {
     /// `None` for an empty table: a level with no walls contributes no wall
     /// footprint, and a caller must not read that as a real box at the
     /// origin.
+    /// The sentence a wall earns when its own world box cannot be turned
+    /// into an occluder — pinned, because its direct sibling
+    /// `source_paint_fault_text` is pinned byte-for-byte and this one was
+    /// not: deleting the word "occludes" from it failed nothing.
+    ///
+    /// It has to say three things, because a designer reading it in the
+    /// Scene dock has to act: WHICH node, that the wall still DRAWS, and
+    /// that sound passes THROUGH it. A wall that silently stopped occluding
+    /// looks exactly like a wall that works.
+    #[test]
+    fn an_unoccludable_wall_says_which_node_and_what_it_costs() {
+        let fault = unoccludable_wall("Rooms/North/CrookedWall");
+        assert_eq!(fault.path, "Rooms/North/CrookedWall");
+        assert!(fault.text.contains("Rooms/North/CrookedWall"));
+        assert!(fault.text.contains("occludes nothing"));
+        assert!(fault.text.contains("draw"));
+        assert!(fault.text.contains("pass straight through"));
+    }
+
     #[test]
     fn wall_footprint_is_none_for_an_empty_table() {
         assert_eq!(wall_footprint(&[], (0.0, WALL_H)), None);

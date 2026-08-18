@@ -1337,7 +1337,7 @@ impl WaveLevel {
 
     /// Tell the occluding skins where the walls stand: the derived
     /// centerlines inflated into shrunk occluder rects ([`sight::wall_rect`]),
-    /// pushed as `u_walls`/`u_wall_count`/`u_wall_top` onto the world and
+    /// pushed as `u_walls`/`u_wall_y`/`u_wall_count` onto the world and
     /// source skins — the wall table their analytic sight test runs
     /// against.
     ///

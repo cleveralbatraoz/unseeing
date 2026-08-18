@@ -82,6 +82,15 @@ wedge 5, a column 3 (two rims and the curved side as one face), a slab 6.
 > over the superface graph, anchored slabs, exempt creatures — is
 > unchanged; only the arithmetic moved.
 >
+> **Also superseded, 2026-08-18 — the channel.** Anything on this page that
+> asserts a bit depth or a transfer function for the screen texture predates
+> its measurement. `rust/src/render/channel.rs` owns that fact now
+> (`CHANNEL_LEVELS = 1024`, RGB10_A2, gated by
+> `game/tests/probe/channel_probe.gd` on desktop GL and unmeasured on
+> WebGL2), and the derivations that turn on it — the B-channel
+> reconstruction error and the range at which it stops clearing
+> `sight::RECT_SHRINK` — live there rather than here.
+>
 > One correction to the design itself, same date: an anchor is a property
 > of a FACE, not of a solid. Written onto every class a slab owned, it
 > conflicted with itself the moment anything coplanar-merged with that slab
