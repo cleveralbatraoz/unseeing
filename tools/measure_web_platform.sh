@@ -51,9 +51,18 @@ cp "$PROJECT" "$STASH/project.godot"
 cp "$PRESETS" "$STASH/export_presets.cfg"
 
 # the probe becomes the main scene, and the test exclusion is lifted so the
-# scene is actually in the pack
-sed -i 's|^run/main_scene=.*|run/main_scene="res://tests/probe/platform_probe.tscn"|' "$PROJECT"
-sed -i 's|^exclude_filter="tests/\*,|exclude_filter="|' "$PRESETS"
+# scene is actually in the pack.
+#
+# Written through a temporary file rather than `sed -i`: BSD sed wants an
+# argument after -i and GNU sed refuses one, so the in-place form works on
+# exactly one of the two hosts that have a GPU worth measuring. This script
+# failed on macOS for that reason alone.
+edit_in_place() {
+  sed "$1" "$2" > "$2.probe-tmp" && mv "$2.probe-tmp" "$2"
+}
+edit_in_place 's|^run/main_scene=.*|run/main_scene="res://tests/probe/platform_probe.tscn"|' \
+  "$PROJECT"
+edit_in_place 's|^exclude_filter="tests/\*,|exclude_filter="|' "$PRESETS"
 grep -q 'platform_probe.tscn' "$PROJECT" || {
   echo "platform-web: FAILED could not point the project at the probe scene"
   exit 1

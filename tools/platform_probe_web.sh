@@ -20,7 +20,8 @@
 # tools/probe_platform_web_export.sh does that and puts project.godot back.
 #
 # Usage: tools/platform_probe_web.sh <build-dir>
-# Env knobs: CHROME (browser binary), PROBE_PORT (pin the HTTP port).
+# Env knobs: CHROME (browser binary), PROBE_PORT (pin the HTTP port),
+# PROBE_GPU=1 (let the machine's real driver answer instead of SwiftShader).
 set -eu
 BUILD="${1:?usage: platform_probe_web.sh <build-dir>}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -39,6 +40,11 @@ if [ -z "$CHROME" ]; then
   for c in chromium chromium-browser google-chrome google-chrome-stable; do
     command -v "$c" >/dev/null 2>&1 && { CHROME="$c"; break; }
   done
+  # macOS ships the browser as a bundle, not on PATH, and macOS is the only
+  # host here with a GPU worth asking. Without this the GPU run needs an
+  # env var nobody remembers.
+  MAC_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  [ -n "$CHROME" ] || [ ! -x "$MAC_CHROME" ] || CHROME="$MAC_CHROME"
 fi
 [ -n "$CHROME" ] || {
   echo "platform-web: FAILED no Chrome/Chromium found; set CHROME=/path/to/browser"
@@ -72,12 +78,25 @@ python3 "$DIR/tools/wait_for_url.py" "http://127.0.0.1:$PORT/index.html" 30 || {
   exit 1
 }
 
-# --enable-unsafe-swiftshader matches test/web_smoke.sh: a software
-# rasteriser that executes the real GLSL. That is a caveat the Python half
-# prints rather than hides.
-"$CHROME" --headless=new --disable-gpu --enable-unsafe-swiftshader \
+# WHICH DRIVER EXECUTES THE GLSL. The default is --enable-unsafe-swiftshader,
+# matching test/web_smoke.sh: a software rasteriser that runs the real GLSL
+# and exists on any CI box. PROBE_GPU=1 drops those flags so the machine's
+# own driver answers instead -- that is the only difference between the two
+# runs, and it is how the "measured under SwiftShader" caveat was retired.
+# The Python half asks the page which driver actually replied, so the
+# provenance printed with the numbers is measured, never assumed here.
+if [ "${PROBE_GPU:-0}" = "1" ]; then
+  DRIVER_FLAGS="--ignore-gpu-blocklist"
+else
+  DRIVER_FLAGS="--disable-gpu --enable-unsafe-swiftshader"
+fi
+# Deliberately unquoted: sh word-splitting is how one or two flags reach the
+# browser from a single variable.
+# shellcheck disable=SC2086
+"$CHROME" --headless=new $DRIVER_FLAGS \
   --window-size=1280,720 --remote-debugging-port="$DBG" \
-  --no-sandbox --user-data-dir="$PROFILE" \
+  --no-sandbox --no-first-run --no-default-browser-check \
+  --user-data-dir="$PROFILE" \
   "http://127.0.0.1:$PORT/index.html" >/dev/null 2>&1 &
 CHR=$!
 

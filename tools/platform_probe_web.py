@@ -171,10 +171,48 @@ else:
         else "note - the web depth texture reads %.4f: DEAD here" % depth
     )
 
-print(
-    "# NOTE: measured under SwiftShader, the same software rasteriser "
-    "test/web_smoke.sh uses. It executes the real GLSL but is not a real "
-    "WebGL2 driver; treat these as the floor a browser guarantees, not as "
-    "what a GPU-backed browser gives."
+# WHICH DRIVER ACTUALLY ANSWERED. This used to be a hardcoded sentence
+# asserting SwiftShader, which was true of how the script is usually
+# invoked and false of the run that finally retired the caveat. A note
+# that cannot be wrong is a note that is not evidence, so ask the page.
+send(
+    {
+        "id": 3,
+        "method": "Runtime.evaluate",
+        "params": {
+            "expression": (
+                '(()=>{const c=document.createElement("canvas");'
+                'const g=c.getContext("webgl2");if(!g)return "no webgl2";'
+                'const d=g.getExtension("WEBGL_debug_renderer_info");'
+                "return d?g.getParameter(d.UNMASKED_RENDERER_WEBGL)"
+                ":g.getParameter(g.RENDERER);})()"
+            ),
+            "returnByValue": True,
+        },
+    }
 )
+renderer = "unknown"
+until = time.monotonic() + 15
+while time.monotonic() < until:
+    try:
+        reply = json.loads(recv_msg())
+    except (OSError, ValueError):
+        continue
+    if reply.get("id") == 3:
+        renderer = reply.get("result", {}).get("result", {}).get("value", "unknown")
+        break
+print("# renderer: %s" % renderer)
+if "SwiftShader" in renderer or "llvmpipe" in renderer.lower():
+    print(
+        "# NOTE: a SOFTWARE rasteriser answered. It executes the real GLSL "
+        "but is not a GPU driver; treat these as the floor a browser "
+        "guarantees, not as what a GPU-backed browser gives."
+    )
+elif renderer == "unknown":
+    print("# NOTE: the renderer could not be identified; provenance unknown.")
+else:
+    print(
+        "# NOTE: a GPU-backed driver answered, so these are real-hardware "
+        "readings rather than a software floor."
+    )
 sys.exit(0 if ok else 1)
