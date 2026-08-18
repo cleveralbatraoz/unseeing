@@ -113,23 +113,26 @@ void fragment() {
 	// every source fragment is an acoustic image by definition.
 	//
 	// The outline cap needs the SECOND, and that is where the depth read
-	// earns its place: the wall table misses a source hidden behind a
-	// PROP — WaveProp, WaveColumn and WaveWedge are in no occluder table
-	// anywhere — so its outline borrowed the pillar's brightness. ORed, not
-	// substituted, because three measured drivers are not every driver:
-	// where the depth texture is dead the term is false everywhere and the
-	// cap degrades to precisely its former behaviour.
+	// earns its place: the wall table misses a source hidden behind a solid
+	// the admission rule REFUSED — a crate, a barrel, a knee-high wedge — so
+	// its outline borrowed that solid's brightness. ORed, not substituted,
+	// because three measured drivers are not every driver: where the depth
+	// texture is dead the term is false everywhere and the cap degrades to
+	// precisely its former behaviour.
 	//
 	// WHAT IS STILL NOT FIXED, stated so nobody has to rediscover it: the
 	// prop gap is closed for the outline cap and OPEN for the ring cut. A
-	// player's ring still washes over a source hidden behind a pillar,
-	// because that needs to know something stands in FRONT of the source
-	// and neither the depth buffer nor the wall table can say so — the
-	// depth buffer holds the source's own faked value there, and props are
-	// in no occluder table. Closing it means giving the CAMERA occluder a
-	// table that includes props, which is a different law from the wave
-	// occluder (props are transparent to waves, deliberately) and a
-	// per-fragment cost on the hottest path in the game.
+	// player's ring still washes over a source hidden behind a NON-SPANNING
+	// solid, because that needs to know something stands in FRONT of the
+	// source and neither surface can say so — the depth buffer holds the
+	// source's own faked value there, and only spanning solids reach
+	// `u_walls`. It is a smaller gap than it was: a source behind a PILLAR
+	// is already covered, because level_plan::spans_the_corridor admits
+	// pillars and `wall_first_entry` below finds them. Closing the rest
+	// means giving the CAMERA occluder a table that includes the refused
+	// solids — a different law from the wave occluder, which admits by
+	// geometry rather than by class — and a per-fragment cost on the
+	// hottest path in the game.
 	vec3 seen_pt = cam + rd * scene_d;
 	// sight.rs::visible_air — HOW FAR the eye can see air along this ray:
 	// the whole way to the surface, or only as far as the nearest wall it

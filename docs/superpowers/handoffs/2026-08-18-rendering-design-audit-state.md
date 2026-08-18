@@ -458,13 +458,17 @@ Three items, none of them a defect in shipped behaviour, and the first is a
 deliberate partial.
 
 1. **The prop gap is closed for the outline cap and OPEN for the ring cut.**
-   A player's ring still washes over a source hidden behind a pillar. That
-   needs to know something stands in FRONT of the source, and neither the
-   depth buffer nor the wall table can say so — the depth buffer holds the
-   source's own faked value there, and props are in no occluder table.
-   Closing it means giving the CAMERA occluder a table that includes props,
-   which is a different law from the wave occluder (props are transparent to
-   waves, deliberately) and a per-fragment cost on the hottest path. It also
+   CORRECTED 2026-08-19: this item overstated what remains, and it did so by
+   repeating a retired claim. A player's ring does NOT still wash over a
+   source hidden behind a pillar — `level_plan::spans_the_corridor` admits
+   the seven spanning pillars into `u_walls`, and `wall_first_entry` finds
+   them, so that case closed with the geometric admission rule. What remains
+   is a source hidden behind a NON-SPANNING solid: a crate, a barrel, a
+   knee-high wedge. Nor are props "transparent to waves, deliberately" —
+   nothing about the old behaviour was deliberate. Closing the rest means
+   giving the CAMERA occluder a table that includes the refused solids,
+   which is a different law from the wave occluder and a per-fragment cost
+   on the hottest path. It also
    trades one artifact for another: a column's circular footprint
    over-approximated by a rect produces false positives at its corners,
    which notch rings near pillars. That trade wants a playtest, not a

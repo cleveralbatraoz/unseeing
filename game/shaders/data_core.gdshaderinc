@@ -45,8 +45,15 @@ float source_depth(float dist) {
 	return ALWAYS_ON_TOP - SOURCE_BAND * clamp(dist / DIST_PACK_RANGE, 0.0, 1.0);
 }
 
-// How much a wave still reveals `world`, given the WALLS between it and
-// its source (props are transparent to waves — only walls obstruct). A
+// How much a wave still reveals `world`, given the OCCLUDERS between it and
+// its source. Which solids those are is decided by GEOMETRY, never by node
+// class: `level_plan::spans_the_corridor` admits anything standing floor to
+// ceiling within SPAN_EPS and at least `2 * WALL_T` across, so seven of
+// level_01's pillars are in this table and its standpipes are not. This
+// comment used to say "props are transparent to waves — only walls
+// obstruct", and three separate places called that deliberate; it was never
+// a decision, only the shape of a census that had only ever walked the
+// walls. See `level_plan.rs` for the derivation. A
 // wall is a BARRIER, not a muffle: the wave flows through openings and
 // lights the next room through a doorway, and stops dead at a wall. Kind
 // does not enter — a cane tap, its echoes, a footstep and a world
