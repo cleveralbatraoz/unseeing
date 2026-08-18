@@ -24,15 +24,15 @@ document covers all three.
 
 ## Verification state of the tree
 
-Reproduced at commit `1d23953`:
+Reproduced at commit `71e9345`:
 
 | gate | result |
 |---|---|
-| `cargo test` | 508 passed |
+| `cargo test` | 510 passed |
 | `cargo fmt --check`, `clippy -D warnings` | clean |
-| gdUnit4 | 336 cases / 31 suites, 0 failures |
+| gdUnit4 | 338 cases / 31 suites, 0 failures |
 | headless boot | no script/shader/engine errors |
-| `tools/probe_visibility.sh` | PASS on all THREE scenes, reproduced across a cold and a warm boot |
+| `tools/probe_visibility.sh` | PASS on all THREE scenes (11 occlusion checks), reproduced across a cold and a warm boot |
 | `gdformat --check`, `gdlint` | clean |
 | `test/repo_hygiene.sh`, `ci/check_gdscript_policy.sh` | pass |
 
@@ -404,19 +404,65 @@ world fragment needs to be visible at all, everything above 1/60 saturates,
 so the layer separation is read at unit gain where a dead depth texture would
 fail the band assertion rather than pass it.
 
+## The second audit, and the regression it caught
+
+A second adversarial pass ran over the four gap closures. It found one real
+behaviour regression, three unfailable checks, and a scatter of drifted
+comments — all fixed (`a4b7e4b`, `ca6b4ff`, `71e9345`).
+
+**The regression was mine and one commit old.** `hearing_post` asks two
+different questions — "is something between the eye and this surface" and
+"is this surface an acoustic image" — and I had fed the first the answer to
+the second. Every source fragment is an acoustic image by definition, so the
+ring cut began dropping player rings over EVERY source pixel in the game,
+including a fan standing in the open. They are separate predicates now, and
+the split is what the suite pins.
+
+**Three checks could not fail.** The depth probe compared `c` against
+`min(c + d, c)` — an algebraic identity. The occlusion probe's outline ratio
+had no non-vacuity guard while a comment promised one "for both ratios".
+And `reveal`'s tail test asserted `reveal_tail == fade_tail`, a one-line
+delegation compared against itself.
+
+**A fourth was found while writing its own fix**: the re-derive test
+scribbled a ONE-entry wrong table onto every skin, and the fixture level
+holds exactly one wall — so it compared 1 against 1 and passed against a
+deliberately broken build. That is now the fourth time in this campaign that
+a check which passed turned out to be unable to fail, and the reason the
+mutation step is not optional.
+
+Two other real findings: `wall_footprint` still stamped a global
+`[0, WALL_H]` — the last global wall-height read in the crate — which made
+the pack-range budget raise an Error against a level lifted 2.557 m whose
+true diagonal had not moved; and the wall table had two owners across five
+skins, refreshed by one derive only because a runtime level happens to
+derive exactly once before the composition root pushes. Both fixed.
+
 ## What remains, and it is no longer a list of gaps
 
-Two structural items were identified early and deliberately not attempted;
-neither is a defect in shipped behaviour.
+Three items, none of them a defect in shipped behaviour, and the first is a
+deliberate partial.
 
-1. **The label allocator's adjacency is a physical-contact relation**
+1. **The prop gap is closed for the outline cap and OPEN for the ring cut.**
+   A player's ring still washes over a source hidden behind a pillar. That
+   needs to know something stands in FRONT of the source, and neither the
+   depth buffer nor the wall table can say so — the depth buffer holds the
+   source's own faked value there, and props are in no occluder table.
+   Closing it means giving the CAMERA occluder a table that includes props,
+   which is a different law from the wave occluder (props are transparent to
+   waves, deliberately) and a per-fragment cost on the hottest path. It also
+   trades one artifact for another: a column's circular footprint
+   over-approximated by a rect produces false positives at its corners,
+   which notch rings near pillars. That trade wants a playtest, not a
+   unilateral call.
+2. **The label allocator's adjacency is a physical-contact relation**
    (`TOUCH_EPS = 0.01`) while the image needs a screen-adjacency one, and the
    B Laplacian is identically zero below a 0.48 m depth step. Contact-free
    props 0.4 m apart can therefore share a label and melt on screen. Fixing
    it properly means moving the silhouette test to a scale-relative predicate
    AND growing the adjacency relation together — neither works alone, and the
    pair is a re-encoding of G, the largest change the audit identified.
-2. **The renderer still has no executable oracle.**
+3. **The renderer still has no executable oracle.**
    `docs/superpowers/specs/2026-08-11-pixel-oracle-gate-design.md` designed
    one; `rust/src/observe/oracle.rs` was never built. Five rendered-probe
    checks and three platform measurements now stand where there was none, but
@@ -450,13 +496,16 @@ export needs export templates and the emscripten toolchain.
 
 ## Where to pick up
 
-1. Read the second audit's result (`wf_57d27f59-a2a`) and verify its claims
-   against the code before accepting any of them. The first audit was right
-   about three fixes and wrong about none; the refutation pass was right
-   about three and wrong about two. Neither is authoritative.
-2. The two structural items under "What remains" — the screen-adjacency
-   label relation, and the executable oracle. Both are large and neither is
-   a defect in shipped behaviour.
-3. Measure the WEB target with the two probes that now exist.
+1. The three items under "What remains", in that order. The first is a
+   design trade that wants a playtest rather than a unilateral call.
+2. Measure the WEB target with the two probes that now exist — it is the
+   last unmeasured platform fact either audit named, and two derivations
+   (`CHANNEL_LEVELS`, the depth-texture layer test) are desktop-only.
+3. Both audits' journals survive under
+   `~/.claude/projects/-home-albatraoz-unseeing/<session>/subagents/workflows/`.
+   Verify anything either claims against the code before accepting it:
+   between them they were wrong about a refuted platform fact that turned
+   out true, and right about four checks that passed while being unable to
+   fail.
 4. Present the finish-branch choice. Do not merge, push or deploy without
    the user's explicit selection.

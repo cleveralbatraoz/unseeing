@@ -110,6 +110,17 @@ void fragment() {
 	// substituted, because the depth texture is measured on desktop GL and
 	// unmeasured on WebGL2: where it is dead the term is false everywhere
 	// and the cap degrades to precisely its former behaviour.
+	//
+	// WHAT IS STILL NOT FIXED, stated so nobody has to rediscover it: the
+	// prop gap is closed for the outline cap and OPEN for the ring cut. A
+	// player's ring still washes over a source hidden behind a pillar,
+	// because that needs to know something stands in FRONT of the source
+	// and neither the depth buffer nor the wall table can say so — the
+	// depth buffer holds the source's own faked value there, and props are
+	// in no occluder table. Closing it means giving the CAMERA occluder a
+	// table that includes props, which is a different law from the wave
+	// occluder (props are transparent to waves, deliberately) and a
+	// per-fragment cost on the hottest path in the game.
 	vec3 seen_pt = cam + rd * scene_d;
 	bool seen_walled = wall_crossings(cam, seen_pt) > 0;
 	bool seen_image = depth_is_acoustic_image(texture(depth_tex, uv).r) || seen_walled;
