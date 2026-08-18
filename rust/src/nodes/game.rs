@@ -239,6 +239,17 @@ impl INode3D for UnseeingGame {
             &(crate::render::reveal::PRESENCE as f32).to_variant(),
         );
 
+        // The second knee: SHAPE and DETAIL are two laws now, and this is
+        // the one that decides how much a swept surface tells you. Same
+        // validated-before-the-GPU contract as the crease knee — DetailKnee
+        // refuses an equal or inverted pair, so this push cannot deliver a
+        // division by zero or an inverted fade.
+        let detail = crate::render::detail::DetailKnee::shipped();
+        self.post_mat.set_shader_parameter(
+            "u_detail_knee",
+            &Vector2::new(detail.lo() as f32, detail.hi() as f32).to_variant(),
+        );
+
         let core = WaveCore::new_gd();
         self.wave_core = Some(core.clone());
 

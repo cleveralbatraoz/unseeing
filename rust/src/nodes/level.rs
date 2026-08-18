@@ -653,6 +653,26 @@ impl WaveLevel {
         render::reveal::PRESENCE
     }
 
+    /// The detail knee ([`render::detail::DetailKnee::shipped`]) as
+    /// `(lo, hi)`, served so `game/tests/shader_contract_test.gd` can hold
+    /// what the composition root pushes against what Rust derived — the
+    /// same drift the crease knee's own mirror exists to catch.
+    /// What one wall leaves of a source's silhouette
+    /// ([`level_plan::SOURCE_THROUGH`]), served so the contract suite can
+    /// check the detail knee opens at exactly that ceiling — the
+    /// precondition the "a walled source cannot name itself" theorem rests
+    /// on, and the one number that would silently break it.
+    #[func]
+    fn source_through() -> f64 {
+        level_plan::SOURCE_THROUGH
+    }
+
+    #[func]
+    fn detail_knee() -> Vector2 {
+        let knee = render::detail::DetailKnee::shipped();
+        Vector2::new(knee.lo() as f32, knee.hi() as f32)
+    }
+
     /// Debug-facing shim, served the same way [`Self::wall_height`] is: not
     /// a designer knob, only a door for `game/tests/mesh_label_test.gd` to
     /// reach [`render::paint::labelled_box`] — the spike proving `CUSTOM0`

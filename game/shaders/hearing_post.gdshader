@@ -41,6 +41,15 @@ uniform float u_breath = 1.0;
 // comment claimed the opposite — every seam at full strength — which is not
 // what the arithmetic does.
 uniform vec2 u_crease_knee = vec2(0.0, 1.0);
+// Where a swept surface stops telling you WHAT it is while still telling
+// you THAT it is there. Derived in Rust from the wall factor
+// (render::detail::DetailKnee::shipped) and pushed by the composition
+// root. Defaults to (0.0, 1.0) — a fade that runs the whole range and so
+// dims every crease in the game — because an unpushed post material must
+// be visibly wrong rather than accidentally right, exactly as
+// u_crease_knee's default is.
+uniform vec2 u_detail_knee = vec2(0.0, 1.0);
+
 uniform float u_grain_amp = 0.034;
 uniform float u_grain_t = 0.0;
 
@@ -136,7 +145,15 @@ void fragment() {
 	// smoothstep below demands.
 	float lap = abs(c_l.b + c_r.b + c_u.b + c_d.b - 4.0 * c_c.b);
 	float nrm = abs(c_l.g - c_r.g) + abs(c_u.g - c_d.g);
-	float edge = max(smoothstep(0.012, 0.03, lap), smoothstep(u_crease_knee.x, u_crease_knee.y, nrm));
+	// SHAPE and DETAIL are two different facts and get two different laws.
+	// They were fused here — one max(), one shared reveal — and the whole
+	// perception model was inside the distinction that fusing threw away.
+	// rust/src/render/detail.rs carries the derivation and the theorem.
+	float sil = smoothstep(0.012, 0.03, lap);
+	float crease = smoothstep(u_crease_knee.x, u_crease_knee.y, nrm);
+	// the cap below must still fire on EXACTLY the pixels it fired on
+	// before the split, so it keeps asking the fused question
+	float edge = max(sil, crease);
 	float reveal = max(c_c.r, max(max(c_l.r, c_r.r), max(c_u.r, c_d.r)));
 	// an x-rayed source's OUTLINE must never borrow the lit wall behind it.
 	// Its silhouette is a distance edge shared with that wall, so BOTH
@@ -159,7 +176,22 @@ void fragment() {
 				|| wall_crossings(cam, cam + rd * (c_d.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_d.r); }
 		if (src_r >= 0.0) { reveal = min(reveal, src_r); }
 	}
-	vec3 col = vec3(edge * reveal);
+	// DETAIL is gated on the FINAL reveal, after the x-ray cap above has
+	// had its say. The ordering is the whole point and it is easy to get
+	// backwards: `reveal` is rewritten inside that block, so computing
+	// `detail` any earlier would gate identity on a number the cap is about
+	// to lower — a source's creases would survive precisely because it is
+	// being dimmed for standing behind a wall.
+	//
+	// The knee opens at SOURCE_THROUGH, which is the ceiling on a
+	// once-walled source's reveal, so the composition below is a theorem
+	// rather than a tuning: a source behind a wall CANNOT draw a crease.
+	// You always know it is sounding in there; you stop knowing it is a
+	// radio. rust/src/render/detail.rs::the_first_wall_takes_a_sources_identity.
+	float detail = smoothstep(u_detail_knee.x, u_detail_knee.y, reveal);
+	// With detail == 1 this is max(sil, crease) * reveal — bit-for-bit the
+	// fused line it replaces. Nothing changes until the knee bites.
+	vec3 col = vec3(max(sil * reveal, crease * detail * reveal));
 
 	// the waves themselves: rings in the air, cut where the world stands
 

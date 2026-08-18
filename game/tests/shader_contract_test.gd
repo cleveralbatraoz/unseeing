@@ -422,6 +422,50 @@ func test_decode_expressions_are_literal() -> void:
 	assert_str(src).contains("mod(d.w, 10.0) / 9.0")
 
 
+## THE BREAK: the perception model quietly collapsing back into the one it
+## replaced, by SHAPE and DETAIL being fused into a single edge term again.
+##
+## The two are physically different facts — a Laplacian of packed distance
+## finds where a surface stops, a difference of labels finds what it is —
+## and the whole model lives in giving them different laws. A well-meaning
+## simplification back to `max(...)  * reveal` would restore the old picture
+## with every cargo test still green, because the Rust side would go on
+## deriving a knee nothing reads.
+func test_shape_and_detail_are_drawn_under_separate_laws() -> void:
+	var post := _read(HEARING_POST_PATH)
+	assert_str(post).contains("float sil = smoothstep(0.012, 0.03, lap);")
+	assert_str(post).contains(
+		"float crease = smoothstep(u_crease_knee.x, u_crease_knee.y, nrm);"
+	)
+	assert_str(post).contains("vec3 col = vec3(max(sil * reveal, crease * detail * reveal));")
+	# and DETAIL must be gated on the reveal the x-ray cap has already
+	# lowered, not the one before it — otherwise a source keeps its creases
+	# BECAUSE it is being dimmed for standing behind a wall
+	assert_int(post.find("reveal = min(reveal, src_r);")).is_less(
+		post.find("float detail = smoothstep(u_detail_knee.x, u_detail_knee.y, reveal);")
+	)
+
+
+## THE BREAK: the knee the shader fades over drifting from the one Rust
+## derives from SOURCE_THROUGH — after which "a source behind a wall cannot
+## draw a crease" stops being a theorem and becomes a coincidence.
+##
+## The default is deliberately WRONG in the dim direction, vec2(0.0, 1.0),
+## so an unpushed post material fades every crease in the game rather than
+## looking correct by accident. Same failure direction as u_crease_knee's.
+func test_the_detail_knee_is_the_one_rust_derived() -> void:
+	var post := _read(HEARING_POST_PATH)
+	assert_str(post).contains("uniform vec2 u_detail_knee = vec2(0.0, 1.0);")
+	var knee := WaveLevel.detail_knee()
+	# hand-derived: SOURCE_THROUGH 0.3, LOW_KNEE_RATIO 0.5 -> (0.3, 0.6)
+	assert_float(knee.x).is_equal_approx(0.3, 1e-6)
+	assert_float(knee.y).is_equal_approx(0.6, 1e-6)
+	# the theorem's own precondition: the knee must OPEN at exactly the
+	# ceiling a once-walled source is capped to, or a walled source can
+	# still name itself
+	assert_float(knee.x).is_equal_approx(WaveLevel.source_through(), 1e-6)
+
+
 ## THE BREAK: settled law 1 — a sound source is always visible, as itself —
 ## silently ceasing to hold because the two halves of its arithmetic live in
 ## different languages.

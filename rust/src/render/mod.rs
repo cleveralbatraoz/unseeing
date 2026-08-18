@@ -41,6 +41,7 @@
 pub mod channel;
 pub mod crease;
 pub mod depth;
+pub mod detail;
 pub mod faces;
 pub mod grain;
 pub mod labels;
