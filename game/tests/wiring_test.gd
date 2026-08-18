@@ -88,6 +88,58 @@ func test_wall_table_reaches_every_occluding_skin() -> void:
 			assert_float(span.y).is_equal(3.0)
 
 
+## A RE-DERIVE REACHES ALL FIVE SKINS, which is the property that used to be
+## supplied by luck rather than by design.
+##
+## The level rebuilds its wall table on every `derive()`, but three of the
+## five occluding skins are owned by the composition root, which pushed the
+## table to them ONCE — correct only because a runtime level happens to
+## derive exactly once, before that push. `WaveLevel::rederive` is a `#[func]`
+## and anything may call it; afterwards the hearing pass and the hero's own
+## cane and body would have been carrying the previous derivation's walls
+## while the level's own two carried the current one's.
+##
+## The break this catches is a return to that shape: the three root-owned
+## skins are REGISTERED with the level now, so one owner refreshes all five.
+func test_a_rederive_refreshes_every_occluding_skin_not_only_the_levels_own() -> void:
+	var main := _main()
+	var walls := main.level.wall_segments().size()
+	assert_int(walls).is_greater(0)
+	var skins: Array[ShaderMaterial] = [
+		main.data_mat, main.source_mat, main.post_mat, main.cane_mat, main.body_mat
+	]
+	# Scribble a table that cannot coincide with the right answer. Size
+	# alone is not enough: this fixture holds ONE wall, so a one-entry
+	# scribble compares 1 against 1 and passes whether or not the re-derive
+	# ever reached the skin — which is exactly how the first version of this
+	# test passed against a deliberately broken build.
+	var scribble := PackedVector4Array(
+		[Vector4(9, 9, 9, 9), Vector4(9, 9, 9, 9), Vector4(9, 9, 9, 9)]
+	)
+	for m: ShaderMaterial in skins:
+		m.set_shader_parameter("u_walls", scribble)
+		m.set_shader_parameter("u_wall_y", PackedVector2Array([Vector2(9, 9)]))
+		m.set_shader_parameter("u_wall_count", 99)
+
+	main.level.rederive()
+
+	var truth: PackedVector4Array = main.level.wall_rects()
+	for i: int in skins.size():
+		var m: ShaderMaterial = skins[i]
+		var rects: PackedVector4Array = m.get_shader_parameter("u_walls")
+		var spans: PackedVector2Array = m.get_shader_parameter("u_wall_y")
+		(
+			assert_int(rects.size())
+			. append_failure_message("skin %d kept a stale wall table across a re-derive" % i)
+			. is_equal(walls)
+		)
+		# ...and the VALUES, so a table of the right length but the wrong
+		# contents cannot pass either
+		assert_vector(rects[0]).is_equal(truth[0])
+		assert_int(spans.size()).is_equal(walls)
+		assert_int(m.get_shader_parameter("u_wall_count")).is_equal(walls)
+
+
 ## THE ALLOCATOR AND THE RENDERER ARE ONE LAW, and this is where the two
 ## ends meet on the engine side.
 ##

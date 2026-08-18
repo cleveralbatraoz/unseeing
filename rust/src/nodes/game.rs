@@ -288,16 +288,16 @@ impl INode3D for UnseeingGame {
         // hero's own body through the wall. Held by
         // `game/tests/wiring_test.gd::test_wall_table_reaches_every_occluding_skin`,
         // which reads the count back off all five materials.
-        let rects = level.bind().wall_rects();
-        let wall_count = (rects.len() as i64).to_variant();
-        let walls = rects.to_variant();
-        // each wall's own y sweep, in the same slot order — two projections
-        // of one Vec<Occluder>, never two independently built tables
-        let spans = level.bind().wall_spans().to_variant();
-        for mat in [&mut self.post_mat, &mut self.cane_mat, &mut self.body_mat] {
-            mat.set_shader_parameter("u_walls", &walls);
-            mat.set_shader_parameter("u_wall_y", &spans);
-            mat.set_shader_parameter("u_wall_count", &wall_count);
+        // REGISTERED, not pushed. The level owns its wall table and rebuilds
+        // it on every derive; a push from out here would be correct only
+        // because a runtime level happens to derive exactly once, before
+        // this line runs. `WaveLevel::rederive` is a #[func] and anything
+        // may call it, after which these three would be carrying last
+        // derivation's walls while the level's own two carried this one's.
+        for mat in [&self.post_mat, &self.cane_mat, &self.body_mat] {
+            level
+                .bind_mut()
+                .add_occluding_skin(mat.clone().upcast::<Material>());
         }
 
         // the level's companion creatures — a later process() drives each

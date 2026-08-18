@@ -194,6 +194,17 @@ pub struct WaveLevel {
     slabs: Vec<Slab>,
     segments: Vec<Vector4>,
     occluders: Vec<sight::Occluder>,
+    /// Skins that occlude by the wall table but are owned by the
+    /// composition root rather than by the level — the hearing pass, and
+    /// the hero's own cane and body.
+    ///
+    /// They are REGISTERED rather than pushed to once, because the table is
+    /// rebuilt by every `derive()` and a push that happens once, after the
+    /// only derive a runtime level performs, is correct solely because of
+    /// that ordering. `rederive` is a `#[func]`: anything may call it, and
+    /// then two of the five occluding skins would be carrying last
+    /// derivation's walls. One owner, every skin, every derive.
+    extra_skins: Vec<Gd<Material>>,
     spawn_at: Vector3,
     spawn_heading: f64,
     tap_point: Vector3,
@@ -1348,6 +1359,23 @@ impl WaveLevel {
         let count = self.occluders.len() as i64;
         self.push_table_to(self.data_mat.clone(), &rects, &spans, count);
         self.push_table_to(self.source_mat.clone(), &rects, &spans, count);
+        for skin in self.extra_skins.clone() {
+            self.push_table_to(Some(skin), &rects, &spans, count);
+        }
+    }
+
+    /// Register a skin the composition root owns that occludes by this
+    /// level's wall table, and hand it the table as it stands.
+    ///
+    /// Every later `derive()` refreshes it along with the level's own two.
+    /// Registering is the point: pushing once, from outside, is correct
+    /// only while nothing re-derives, and `rederive` is callable by anyone.
+    pub(super) fn add_occluding_skin(&mut self, skin: Gd<Material>) {
+        self.extra_skins.push(skin.clone());
+        let rects = self.wall_rects();
+        let spans = self.wall_spans();
+        let count = self.occluders.len() as i64;
+        self.push_table_to(Some(skin), &rects, &spans, count);
     }
 
     /// Loud when the authored map has outgrown the range the sight shaders
