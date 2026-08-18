@@ -1025,10 +1025,13 @@ impl WaveLevel {
                             } else {
                                 render::Role::Floor
                             }),
-                            facing: if lid {
-                                [0.0, -1.0, 0.0]
-                            } else {
-                                [0.0, 1.0, 0.0]
+                            // off the slab's OWN basis, not a world-up
+                            // literal: a level tipped by its node transform
+                            // would otherwise anchor the role onto whichever
+                            // flank happened to face world up
+                            facing: {
+                                let up = render::paint_plan::shape_up(&entry.shape);
+                                if lid { [-up[0], -up[1], -up[2]] } else { up }
                             },
                         }),
                         _ => None,

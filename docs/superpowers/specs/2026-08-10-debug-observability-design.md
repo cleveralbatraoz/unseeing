@@ -95,7 +95,7 @@ references.
 |---|---|
 | pool | per slot: index, kind, origin, birth, `max_r`, speed, gain, beam dir + `cos_half`, current ring radius, age, remaining life, live/expired, rank in the eviction order |
 | echoes | each pending appointment: `at_t`, `pos`, `gain`, seconds until it fires |
-| sources | per source: position, volume, reach, cadence, next emit time, walls between camera and hub, resulting `u_source_floor`, `Voice::slot_pressure()` |
+| sources | per source: position, volume, reach, cadence, next emit time, walls between camera and hub, the `u_source_volume` and `u_source_muffle` it is pushed, `Voice::slot_pressure()` |
 | level | wall rects with the truncation flag if over 32, oid per solid, spawn pos and yaw |
 | view | camera transform, fov; the globals `now`, `flick`, `breath` |
 
@@ -245,7 +245,7 @@ code under test.
 4. **The acceptance criterion — inject a known bug, confirm the observable
    catches it.** Give a solid a colliding oid and `explain_oids()` must
    report the violation. Put the fan behind a wall and the snapshot's
-   `u_source_floor` must be `SOURCE_THROUGH¹`. An observable never shown to
+   `u_source_muffle` must be `SOURCE_THROUGH¹` and its `u_source_volume` the source's own `Volume::image()`. An observable never shown to
    detect a real fault has not been shown to work; this is the same
    discipline as watching a test fail for the right reason first.
 
@@ -296,3 +296,25 @@ Debugging and Observability** page covering the four verbs, the three
 transports, the godot-mcp loop, and the determinism requirements — plus an
 update to **Engineering — Build, Test, Deploy** for the new gate entries and
 the gitignored addon.
+
+---
+
+## Amendment, 2026-08-18 — the standing image is two numbers
+
+`u_source_floor` no longer exists. It carried `volume * muffle`
+pre-multiplied, which reached `data_xray` as a floor under the source's own
+wave reveal and so could never dim anything: a source's hub is unwalled from
+its own body, so that wave reads near full strength however many walls stand
+between the source and the player, and the `max()` handed it back. The two
+halves are now delivered and reported apart — `u_source_volume` and
+`u_source_muffle` — and composed by `render::reveal::source_image` as
+`muffle * max(wave, volume)`.
+
+The snapshot reports them separately for the same reason the shader consumes
+them separately: their product is no longer a quantity anything on screen
+forms, and an observable that agrees with nothing on screen is worse than
+none. Both keep the NaN-means-never-pushed rule the table above describes.
+
+The `HUM_THROUGH^n` half of the GLSL-oracle note at line 113 is also gone: a
+wall is a barrier no wave of any kind crosses, so there is no per-kind
+transmission left to report.

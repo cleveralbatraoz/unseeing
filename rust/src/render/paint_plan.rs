@@ -231,6 +231,17 @@ pub fn update_role_labels(previous: &[Option<f64>], supplied: &[f64]) -> Vec<Opt
 /// `Floor` or `Ceiling` names the SURFACE a room meets, not the six sides
 /// of the slab that carries it; the slab's buried flanks have no role and
 /// are free to take palette labels like any other geometry.
+///
+/// TWO LIMITS, both currently out of reach and both stated rather than
+/// discovered later. A [`Shape::Column`]'s curved flank is not a planar
+/// face and so has no entry to name — a lateral direction on a column
+/// resolves to whichever cap answers it best. And two DIFFERENT entries
+/// whose anchored classes must separate but carry the same label are a
+/// contradiction the planner still refuses outright
+/// ([`PaintPlanError::AnchorSeparationConflict`]). Only slabs are anchored
+/// today, a level builds exactly one floor and one ceiling, and their
+/// labels sit 0.72 apart, so neither limit is reachable from the shipped
+/// vocabulary.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FaceAnchor {
     /// The label that face must take.
@@ -409,6 +420,36 @@ fn validate_request_size(request: &PaintRequest) -> Result<(), PaintPlanError> {
 
 fn valid_label(label: f64) -> bool {
     label.is_finite() && (LABEL_MIN..=LABEL_MAX).contains(&label)
+}
+
+/// Which way a shape's own local +Y points in world space — the direction a
+/// floor slab presents to the room, and the negation of the one a ceiling
+/// does.
+///
+/// Read off the shape rather than assumed to be world up. The anchor
+/// direction used to be the literal `[0, 1, 0]`, which is only the same
+/// thing while the level sits unrotated; a level tipped by its own node
+/// transform would have anchored `Role::Floor` onto whichever flank
+/// happened to face world up and left the surface underfoot taking a
+/// palette label. (A tipped level breaks the wall occluder independently —
+/// `sight::wall_rect` inflates world-axis XZ rects — so this is
+/// belt-and-braces rather than support for a rotated world.)
+///
+/// Total on any input: a shape whose basis is degenerate or non-finite
+/// answers world up, which is the shipped orientation and a direction
+/// [`finite_direction`] accepts, rather than a zero vector that would make
+/// the anchor invalid and take the level's whole paint with it.
+#[must_use]
+pub fn shape_up(shape: &Shape) -> [f64; 3] {
+    let up = match shape {
+        Shape::Box3d { basis, .. } => basis[1],
+        _ => [0.0, 1.0, 0.0],
+    };
+    if finite_direction(up) {
+        up
+    } else {
+        [0.0, 1.0, 0.0]
+    }
 }
 
 /// A usable anchor direction: finite, and actually pointing somewhere. The
@@ -1251,6 +1292,43 @@ mod tests {
         assert_ne!(face_label(1.0), Some(f64::from(0.90_f32)));
     }
 
+    /// A slab's anchor direction comes off its own basis, so a level that
+    /// is tipped still anchors the face the room meets. The break this
+    /// catches is the world-up literal that stood here: rotate the shape a
+    /// quarter turn about Z and its local +Y is world -X, where a fixed
+    /// `[0, 1, 0]` would name a flank instead.
+    #[test]
+    fn a_tipped_shape_still_knows_which_way_is_up() {
+        let upright = Shape::Box3d {
+            center: [0.0; 3],
+            size: [4.0, 0.1, 4.0],
+            basis: IDENTITY,
+        };
+        assert_eq!(shape_up(&upright), [0.0, 1.0, 0.0]);
+        // a quarter turn about Z carries local +Y onto world -X
+        let tipped = Shape::Box3d {
+            center: [0.0; 3],
+            size: [4.0, 0.1, 4.0],
+            basis: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        assert_eq!(shape_up(&tipped), [-1.0, 0.0, 0.0]);
+        // and a degenerate basis answers world up rather than a zero
+        // vector, which would be refused as an invalid anchor and cost the
+        // level every label it has
+        let broken = Shape::Box3d {
+            center: [0.0; 3],
+            size: [4.0, 0.1, 4.0],
+            basis: [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        assert_eq!(shape_up(&broken), [0.0, 1.0, 0.0]);
+        let nonfinite = Shape::Box3d {
+            center: [0.0; 3],
+            size: [4.0, 0.1, 4.0],
+            basis: [[1.0, 0.0, 0.0], [0.0, f64::NAN, 0.0], [0.0, 0.0, 1.0]],
+        };
+        assert_eq!(shape_up(&nonfinite), [0.0, 1.0, 0.0]);
+    }
+
     /// A direction that two faces answer equally well must resolve the
     /// same way on every machine, because the wasm build and the desktop
     /// build have to colour one level identically or neither is
@@ -1336,6 +1414,37 @@ mod tests {
                 "rung {rung} ({label}) is not a valid label"
             );
         }
+    }
+
+    /// Two DIFFERENT entries pinned to the SAME label, whose classes must
+    /// draw a seam between them, is a contradiction rather than an
+    /// agreement: the seam cannot be drawn at any label, so the planner
+    /// refuses instead of painting a join the merge law never sanctioned.
+    ///
+    /// Recorded because it is the one anchor failure that still costs the
+    /// whole request, and because it is UNREACHABLE from the shipped
+    /// vocabulary — only slabs carry anchors, a level builds exactly one
+    /// floor and one ceiling, and Floor 0.15 against Ceiling 0.87 clears
+    /// MIN_SEP nine times over. A second anchored role, or a second floor,
+    /// would put it back in play, and this is the test that would then
+    /// start describing real behaviour rather than a guarded edge.
+    #[test]
+    fn two_entries_pinned_to_one_label_across_a_seam_are_refused() {
+        let mut first = box_entry([0.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
+        first.anchor = Some(up_anchor(0.15));
+        let mut second = box_entry([2.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
+        second.anchor = Some(up_anchor(0.15));
+        assert!(matches!(
+            plan(request(vec![first, second])),
+            Err(PaintPlanError::AnchorSeparationConflict { .. })
+        ));
+        // ...while the shipped pair, a floor and a ceiling, is fine even
+        // when their classes separate: 0.87 - 0.15 clears MIN_SEP
+        let mut floor = box_entry([0.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
+        floor.anchor = Some(up_anchor(labels::role_label(labels::Role::Floor)));
+        let mut ceiling = box_entry([2.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
+        ceiling.anchor = Some(up_anchor(labels::role_label(labels::Role::Ceiling)));
+        assert!(plan(request(vec![floor, ceiling])).is_ok());
     }
 
     /// Touching is derived from the shape itself, so two geometrically
