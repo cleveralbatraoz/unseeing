@@ -198,7 +198,8 @@ impl PulsePool {
     ///
     /// # Errors
     ///
-    /// [`EmitRefused`] when `speed <= 0` or `max_r <= 0`; the pool is left
+    /// [`EmitRefused`] when `speed` or `max_r` is non-finite or non-positive;
+    /// the pool is left
     /// untouched — no slot is taken, nothing immortal is created.
     #[expect(
         clippy::too_many_arguments,
@@ -217,7 +218,22 @@ impl PulsePool {
         beam_dir: Vector3,
         cos_half: f64,
     ) -> Result<(), EmitRefused> {
-        if speed <= 0.0 || max_r <= 0.0 {
+        // Finiteness FIRST, and not folded into the comparisons: `NaN <=
+        // 0.0` is false, so the plain test waves a NaN straight through
+        // into `end = now + max_r / speed` and, from there, into every
+        // fragment the pulse reaches as `age - dist / speed`. Both arrive
+        // from designer `#[export]`s on a WaveFan or WaveRadio, so this is
+        // the untrusted-value boundary AGENTS.md requires be validated. An
+        // infinity is refused for the neighbouring reason: it buys an
+        // immortal slot. The ORIGIN is checked here too — it is the other
+        // road to the same NaN, since the fragment law measures `dist` from
+        // it — and a pulse with no describable position is no sound.
+        if !speed.is_finite()
+            || !max_r.is_finite()
+            || speed <= 0.0
+            || max_r <= 0.0
+            || !at.is_finite()
+        {
             return Err(EmitRefused);
         }
         let gain = gain.clamp(0.0, 1.0);
@@ -275,7 +291,7 @@ impl PulsePool {
     ///
     /// # Errors
     ///
-    /// [`EmitRefused`] when `speed <= 0` or `max_r <= 0`.
+    /// [`EmitRefused`] when `speed` or `max_r` is non-finite or non-positive.
     pub fn emit_omni(
         &mut self,
         kind: i32,
@@ -415,6 +431,43 @@ mod tests {
         );
         assert_eq!(p.live_count(0.1), 0);
         assert_eq!(p.live_count(1.0e9), 0); // nothing immortal left behind
+    }
+
+    /// THE BREAK: a NaN reaching the pool, and through it the G-buffer.
+    /// `speed <= 0.0` is FALSE for NaN, so the plain comparison waves it
+    /// through — and `speed` arrives from a designer `#[export]` on a
+    /// `WaveFan` or `WaveRadio`, which is exactly the untrusted-Godot-value
+    /// boundary AGENTS.md says to validate. Downstream, `since_front =
+    /// age - dist / speed` is then NaN for every fragment the pulse
+    /// reaches, and GLSL leaves `exp(NaN)` and `clamp(NaN, 0, 1)`
+    /// undefined, so the whole silhouette it touches is undefined output.
+    /// `max_r` has the same hole for the same reason.
+    #[test]
+    fn a_non_finite_speed_or_radius_is_refused_as_a_non_positive_one_is() {
+        let mut p = PulsePool::new();
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                p.emit_omni(0, Vector3::ZERO, 6.0, bad, 1.0, 0.0),
+                Err(EmitRefused),
+                "speed {bad} took a slot"
+            );
+            assert_eq!(
+                p.emit_omni(0, Vector3::ZERO, bad, 5.5, 1.0, 0.0),
+                Err(EmitRefused),
+                "radius {bad} took a slot"
+            );
+            // and the ORIGIN, which is the other road into the same NaN:
+            // the fragment law is `age - dist / speed`, and `dist` is
+            // measured from this point
+            let bad_at = Vector3::new(bad as f32, 0.0, 0.0);
+            assert_eq!(
+                p.emit_omni(0, bad_at, 6.0, 5.5, 1.0, 0.0),
+                Err(EmitRefused),
+                "origin {bad} took a slot"
+            );
+        }
+        assert_eq!(p.live_count(0.1), 0);
+        assert_eq!(p.live_count(1.0e9), 0);
     }
 
     /// Slot reuse prefers the dead: with an expired footstep in slot 0 and

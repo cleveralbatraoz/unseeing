@@ -116,6 +116,10 @@ fn raw(since_front: f64) -> f64 {
 /// rendered value are the same number.
 #[must_use]
 pub fn flare(since_front: f64, tail: f64) -> f64 {
+    // Totality over the DECLARED domain, which is every f64 — not defence
+    // against anything the pool can deliver. `PulsePool::emit` refuses a
+    // non-finite origin, radius or speed, so the GLSL twin deliberately
+    // carries no matching arm; the asymmetry is recorded at both ends.
     if !since_front.is_finite() || !tail.is_finite() || tail <= 0.0 {
         return 0.0;
     }

@@ -89,6 +89,17 @@ float source_reveal_vis(vec3 src, vec3 world) {
 // zero at the tail.
 const float CLOSE_FRACTION = 0.25;
 
+// WHY THIS CARRIES NO NON-FINITE ARM, when its cargo-pinned reference
+// `render::reveal::flare` opens with one. `flare` is a pure function whose
+// declared domain is every f64, so totality obliges it. These arguments are
+// not open: `since_front` is `age - dist / d.z`, and every term comes from
+// the pulse pool, which refuses a non-finite origin, radius or speed at
+// `PulsePool::emit` — the boundary where a designer's `#[export]` actually
+// enters. Nothing here can manufacture a NaN either, unlike `wall_entry`,
+// whose min/max fold genuinely can and which therefore does carry a guard.
+// An arm no input can reach is the dead defence this renderer has been
+// removing, so the divergence is deliberate and recorded rather than an
+// oversight in the transliteration.
 float pulse_flare(float since_front, float tail) {
 	if (since_front < 0.0 || since_front >= tail) { return 0.0; }
 	float shape = 1.3 * exp(-since_front / 0.25) + 0.5 * exp(-since_front / 3.0);
