@@ -27,7 +27,13 @@ const WRITE_SHADER := preload("res://tests/probe/shaders/probe_channel_write.gds
 
 ## Nominal codes represented either side of zero. A reading that clips is
 ## reported as clipped rather than as its clipped value.
-const SPAN := 4.0
+const SPAN := 32.0
+## Tolerances the SAFE FLOOR is reported against, ascending. The floor for a
+## tolerance is the highest written value that still misses it by more —
+## everything above is inside. This is the number the packing law needs: the
+## channel is only usable above it, so distance must be mapped into
+## `[floor, 1]` rather than into `[0, 1]`.
+const TOLS: Array[float] = [0.50, 1.00, 1.25, 1.50, 2.00, 3.00]
 const SWEEP := 97
 
 var _failures := 0
@@ -88,13 +94,19 @@ func _error_at(value: float) -> float:
 
 
 func _measure() -> void:
+	# The WHOLE channel, not the top two thirds. The earlier sweep started
+	# at 0.30 and so could not see the part that matters most: measured on
+	# the shipped data pass, a wall 1 m from the eye reads back as 0 m,
+	# because everything below about 28 nominal codes comes back as exactly
+	# zero. Distance is packed as `vd / 40`, so 1 m IS 0.025.
 	var values: PackedFloat64Array = PackedFloat64Array()
 	for i: int in SWEEP:
-		values.append(0.30 + 0.65 * float(i) / float(SWEEP - 1))
-	# and the exactly-representable values, which a grid aligned to 1/1023
-	# would return untouched
-	for k: int in [256, 400, 512, 700, 900]:
+		values.append(0.005 + 0.99 * float(i) / float(SWEEP - 1))
+	# the exactly-representable values, which a grid aligned to 1/1023 would
+	# return untouched
+	for k: int in [8, 24, 32, 64, 256, 400, 512, 700, 900]:
 		values.append(float(k) / 1023.0)
+	values.sort()
 
 	var worst := 0.0
 	var worst_at := 0.0
@@ -102,6 +114,9 @@ func _measure() -> void:
 	var i := 0
 	var clipped := 0
 	var sum := 0.0
+	var floor_at: Array[float] = []
+	for tol: float in TOLS:
+		floor_at.append(-1.0)
 	for value: float in values:
 		var codes: float = await _error_at(value)
 		if absf(codes) >= SPAN - 0.02:
@@ -110,9 +125,18 @@ func _measure() -> void:
 		if absf(codes) > absf(worst):
 			worst = codes
 			worst_at = value
+		for t: int in TOLS.size():
+			if absf(codes) > TOLS[t]:
+				floor_at[t] = value
 		if i % 12 == 0:
 			shape.append("%.3f:%+.2f" % [value, codes])
 		i += 1
+	var floors: PackedStringArray = PackedStringArray()
+	for t: int in TOLS.size():
+		floors.append(
+			"%.2f above %s" % [TOLS[t], "everywhere" if floor_at[t] < 0.0 else "%.4f" % floor_at[t]]
+		)
+	print("# SAFE FLOOR by tolerance (nominal codes): %s" % " ; ".join(floors))
 	print(
 		(
 			"# tap error over %d values: worst %+.3f codes at base %.4f ; mean %+.3f ; %d clipped"

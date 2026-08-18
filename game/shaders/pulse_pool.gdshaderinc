@@ -33,7 +33,7 @@ uniform vec4 u_pdir[MAXP];
 // against the eye is a different question and answers it correctly only
 // while the sound was made on the camera's side of the world.
 //
-// The CAMERA occluder (wall_crossings) is the separate law: it dims a
+// The CAMERA occluder (wall_any_crossing) is the separate law: it dims a
 // source's SILHOUETTE per wall and drops a ring over an x-rayed source,
 // and it must test the walls analytically rather than lean on depth,
 // because the always-on-top skins corrupt the packed depth at their own
@@ -215,15 +215,27 @@ float wall_first_entry(vec3 from, vec3 to) {
 	return first;
 }
 
-// sight.rs::crossings — the CAMERA occluder: every wall the sight line
-// pierces (the source-silhouette muffle, and the x-rayed-source ring cut).
-int wall_crossings(vec3 from, vec3 to) {
-	int n = 0;
+// Does ANY wall stand on this sight line? The CAMERA occluder asked as the
+// question its callers actually have.
+//
+// This was `wall_crossings`, returning a COUNT, and all four of its call
+// sites compared it `> 0` and threw the count away — so every outline pixel
+// in the game paid `4 * u_wall_count` full slab tests, 104 at the shipped
+// 26 walls, to answer four booleans the first crossing already settles.
+// Returning on the first hit is the shape `wall_blocked_from` below already
+// uses, for the reason its own comment gives.
+//
+// NO birth-wall skip: that is `wall_blocked_from`'s separate law — a sound
+// born flush on a wall lights its own near face — and inheriting it here
+// would quietly change which walls cut a ring. Rust's `sight::crossings`
+// still counts, because the muffle ladder on the CPU genuinely needs the
+// number; nothing in GLSL does.
+bool wall_any_crossing(vec3 from, vec3 to) {
 	for (int i = 0; i < MAXW; i++) {
 		if (i >= u_wall_count) { break; }
-		if (wall_crosses(from, to, u_walls[i], u_wall_y[i])) { n++; }
+		if (wall_crosses(from, to, u_walls[i], u_wall_y[i])) { return true; }
 	}
-	return n;
+	return false;
 }
 
 // sight.rs::contains — the point lies inside the wall box, over that wall's

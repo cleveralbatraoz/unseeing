@@ -134,35 +134,52 @@ func _measure() -> void:
 		absf(world_depth - expected) < 0.02
 	)
 
-	# 2 — the two layers are separable by ONE comparison, read at UNIT gain.
+	# 2 — the two layers are separable by the SHIPPED comparison, asked
+	# where the precision still exists.
 	#
-	# The gain above exists to make a world fragment's 0.016 visible in an
-	# 8-bit frame, and it must be dropped here: at any gain above 1 every
-	# value over 1/gain saturates, so an always-on-top fragment and a world
-	# fragment 3 m away would both read 1.0 and the check would prove
-	# nothing. At unit gain the world reads ~0.016 (8-bit code 4) and a
-	# source reads ~1.0 (code 255).
-	_read_mat.set_shader_parameter("u_gain", 1.0)
-	var world_unit := await _read()
+	# This used to read a LEVEL back at unit gain and compare it here. That
+	# could not work: the band is 1e-3 wide and an 8-bit screenshot resolves
+	# 1/255 = 3.9e-3, nearly four times wider, so only code 255 could ever
+	# satisfy the test and every true depth from 0.998039 upward read back
+	# as exactly 1.0. A driver answering 0.9985 for an always-on-top
+	# fragment PASSED, while `depth_is_acoustic_image` returned false for it
+	# at every pixel — the depth half of the outline cap silently gone, and
+	# invisibly, because the term is ORed with the wall table.
+	#
+	# So the shader now makes the comparison and screenshots only its
+	# verdict: 1.0 or 0.0, two values no readback transfer can blur into
+	# each other. Mode 2 reports the signed margin either side of the band
+	# floor, which is a diagnosis rather than a gate.
+	_read_mat.set_shader_parameter("u_mode", 1)
+	var world_verdict := await _read()
+	_read_mat.set_shader_parameter("u_mode", 2)
+	var world_margin := await _read()
 	_add_quad(XRAY_WRITE_SHADER, Vector3(0, 0, 1.0), 8.0)
-	var source_unit := await _read()
+	_read_mat.set_shader_parameter("u_mode", 1)
+	var source_verdict := await _read()
+	_read_mat.set_shader_parameter("u_mode", 2)
+	var source_margin := await _read()
 	var band_floor := ALWAYS_ON_TOP - SOURCE_BAND
 	print(
 		(
-			"# at unit gain: world %.4f, acoustic image %.4f, band floor %.4f"
-			% [world_unit, source_unit, band_floor]
+			"# shipped predicate: world %.0f, acoustic image %.0f (band floor %.6f)"
+			% [world_verdict, source_verdict, band_floor]
 		)
 	)
-	_check(
+	print(
 		(
-			"an acoustic-image fragment reads INSIDE the always-on-top band (%.4f >= %.4f)"
-			% [source_unit, band_floor]
-		),
-		source_unit >= band_floor
+			"# margin either side of the floor (0.5 == exactly on it): world %.4f, image %.4f"
+			% [world_margin, source_margin]
+		)
 	)
+	_check("an acoustic-image fragment satisfies depth_is_acoustic_image", source_verdict > 0.5)
+	_check("...and a world fragment does not", world_verdict < 0.5)
+	# the margin must also be off the floor, not merely on the right side of
+	# it: a driver sitting exactly on the boundary is one rounding away from
+	# the term vanishing
 	_check(
-		"...and a world fragment reads nowhere near it (%.4f < %.4f)" % [world_unit, band_floor],
-		world_unit < band_floor * 0.5
+		"the acoustic image clears the band floor with room (%.4f > 0.5)" % source_margin,
+		source_margin > 0.5
 	)
 
 	# 3 — and the pass that must use it can. hearing_post IS the screen

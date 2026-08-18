@@ -182,13 +182,13 @@ void fragment() {
 		// the same pair at each neighbour: the exact depth test first, the
 		// wall-table inference as the platform fallback behind it
 		if (depth_is_acoustic_image(texture(depth_tex, uv - vec2(px.x, 0.0)).r)
-				|| wall_crossings(cam, cam + rd * (c_l.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_l.r); }
+				|| wall_any_crossing(cam, cam + rd * (c_l.b * DIST_PACK_RANGE))) { src_r = max(src_r, c_l.r); }
 		if (depth_is_acoustic_image(texture(depth_tex, uv + vec2(px.x, 0.0)).r)
-				|| wall_crossings(cam, cam + rd * (c_r.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_r.r); }
+				|| wall_any_crossing(cam, cam + rd * (c_r.b * DIST_PACK_RANGE))) { src_r = max(src_r, c_r.r); }
 		if (depth_is_acoustic_image(texture(depth_tex, uv + vec2(0.0, px.y)).r)
-				|| wall_crossings(cam, cam + rd * (c_u.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_u.r); }
+				|| wall_any_crossing(cam, cam + rd * (c_u.b * DIST_PACK_RANGE))) { src_r = max(src_r, c_u.r); }
 		if (depth_is_acoustic_image(texture(depth_tex, uv - vec2(0.0, px.y)).r)
-				|| wall_crossings(cam, cam + rd * (c_d.b * DIST_PACK_RANGE)) > 0) { src_r = max(src_r, c_d.r); }
+				|| wall_any_crossing(cam, cam + rd * (c_d.b * DIST_PACK_RANGE))) { src_r = max(src_r, c_d.r); }
 		if (src_r >= 0.0) { reveal = min(reveal, src_r); }
 	}
 	// DETAIL is gated on the FINAL reveal, after the x-ray cap above has

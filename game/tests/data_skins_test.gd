@@ -202,6 +202,20 @@ func test_no_shader_lets_a_wave_through_a_wall() -> void:
 	assert_str(_text(POOL_PATH)).contains("bool wall_blocked_from(vec3 from, vec3 to)")
 	assert_str(_text(CORE_PATH)).contains("wall_blocked_from(src, world) ? 0.0 : 1.0")
 	assert_str(_text(POST_PATH)).contains("if (wall_blocked_from(u_ppos[i], hp)) { continue; }")
+	# THE BREAK: the four-tap source-reveal borrow going back to counting.
+	# All four call sites ask a BOOLEAN, and the count form walked every one
+	# of u_wall_count's slots to answer it — 104 slab tests per outline pixel
+	# at the shipped 26 walls. The early-out form must stay, and the count
+	# form must not come back: nothing in GLSL needs a wall count, while
+	# Rust's sight::crossings still does for the muffle ladder.
+	assert_str(_text(POOL_PATH)).contains("bool wall_any_crossing(vec3 from, vec3 to)")
+	assert_bool(_text(POOL_PATH).contains("int wall_crossings(")).is_false()
+	assert_bool(_text(POST_PATH).contains("wall_crossings(")).is_false()
+	# and the nearest-entry fold, which is the whole ring cut in one line:
+	# `min` reduced to `max` and `first` never leaves WALL_MISS, so
+	# seen_walled is false at every pixel and air_d collapses to scene_d —
+	# the pre-2026-08-14 behaviour, with rings drawn through walls again.
+	assert_str(_text(POOL_PATH)).contains("first = min(first, wall_entry(")
 
 
 ## The CAMERA half of the hearing pass's occlusion — a different law from

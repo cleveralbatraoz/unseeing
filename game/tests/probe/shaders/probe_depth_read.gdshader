@@ -31,11 +31,39 @@ void vertex() {
 	POSITION = vec4(VERTEX.xy * 2.0, 1.0, 1.0);
 }
 
+// The acoustic-image band, hand-transcribed from data_core.gdshaderinc so
+// the probe does not read its expectation out of the file under test.
+const float ALWAYS_ON_TOP = 0.999999;
+const float SOURCE_BAND = 1.0e-3;
+
+// 0 — amplified raw depth (is the texture alive at all?)
+// 1 — the SHIPPED predicate, as 1.0 or 0.0
+// 2 — signed margin against the band floor, 1e-3 either side mapped onto
+//     [0,1], so a near miss is legible instead of saturating
+uniform int u_mode = 0;
+
+void vertex() {
+	POSITION = vec4(VERTEX.xy * 2.0, 1.0, 1.0);
+}
+
 void fragment() {
+	float d = texture(depth_tex, vec2(0.5, 0.5)).r;
 	// Sampled where geometry certainly stands. Under Godot's reversed-Z
 	// with near 0.05 and far 60, a surface 3 m from the eye writes 0.0159 —
 	// small, but emphatically not zero. A working depth texture cannot read
 	// 0.0 here; a dead one reads nothing anywhere. Amplified so an 8-bit
 	// screenshot can see a value that small.
-	ALBEDO = vec3(clamp(texture(depth_tex, vec2(0.5, 0.5)).r * u_gain, 0.0, 1.0));
+	float raw = clamp(d * u_gain, 0.0, 1.0);
+	// WHY THE BAND IS NOT READ AS A LEVEL. The band is 1e-3 wide and an
+	// 8-bit screenshot resolves 1/255 = 3.9e-3, so a readback at unit gain
+	// cannot see it AT ALL: only code 255 could ever satisfy the test, and
+	// every true depth from 0.998039 up reads back as exactly 1.0 — a
+	// driver answering 0.9985 for an always-on-top fragment would PASS
+	// here while the shipped predicate returned false for it at every
+	// pixel, silently dropping the depth term of the outline cap. So the
+	// comparison is made HERE, where the precision still exists, and only
+	// its verdict is screenshotted.
+	float verdict = d >= ALWAYS_ON_TOP - SOURCE_BAND ? 1.0 : 0.0;
+	float margin = clamp((d - (ALWAYS_ON_TOP - SOURCE_BAND)) * 500.0 + 0.5, 0.0, 1.0);
+	ALBEDO = vec3(u_mode == 0 ? raw : (u_mode == 1 ? verdict : margin));
 }
