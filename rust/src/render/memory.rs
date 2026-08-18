@@ -186,6 +186,65 @@ impl Memory {
         (ceil() * (-age / HALF_LIFE).exp2()).clamp(0.0, ceil())
     }
 
+    /// Record everywhere a wavefront newly reached between two frames.
+    ///
+    /// Only the ANNULUS is walked — cells the front crossed since the last
+    /// frame, `prev_r < d <= r` — never the whole disc. A cell is crossed
+    /// once per pulse, so re-stamping the interior every frame would cost
+    /// `pulses x cells` forever and would also re-freshen a room merely
+    /// because an old wave is still expanding somewhere far away.
+    ///
+    /// `reaches` is the occlusion question, INJECTED rather than known here.
+    /// This module must not learn what a wall is: that keeps the memory law
+    /// testable without building a level, and it is what stops memory from
+    /// relitigating settled law 3 — a cell is remembered only where the
+    /// sweep that lit it could actually arrive.
+    ///
+    /// Total over every input: a non-finite origin, radius or time stamps
+    /// nothing, and a radius pair that runs backwards is treated as no
+    /// annulus at all rather than as one that wraps.
+    pub fn sweep(
+        &mut self,
+        origin_x: f64,
+        origin_z: f64,
+        prev_r: f64,
+        r: f64,
+        now: f64,
+        reaches: &mut dyn FnMut(f64, f64) -> bool,
+    ) {
+        if !origin_x.is_finite() || !origin_z.is_finite() || !now.is_finite() {
+            return;
+        }
+        // `r <= prev_r` is an EARLY-OUT, not a correctness guard, and is
+        // labelled as one because a mutation test will not catch it: the
+        // annulus condition below is already false everywhere for a
+        // backwards or empty pair. It exists to skip the 196-cell walk for
+        // the many pulses that have not advanced this frame.
+        if !prev_r.is_finite() || !r.is_finite() || r <= prev_r {
+            return;
+        }
+        for cell in 0..GRID * GRID {
+            let (cx, cz) = self.centre_of(cell);
+            let dx = cx - origin_x;
+            let dz = cz - origin_z;
+            let d = dx.hypot(dz);
+            if d > prev_r && d <= r && reaches(cx, cz) {
+                self.stamped[cell] = Some(now);
+            }
+        }
+    }
+
+    /// The world XZ centre of a cell — the one point that stands for it.
+    #[must_use]
+    fn centre_of(&self, cell: usize) -> (f64, f64) {
+        let col = (cell % GRID) as f64;
+        let row = (cell / GRID) as f64;
+        (
+            self.origin_x + (col + 0.5) * CELL,
+            self.origin_z + (row + 0.5) * CELL,
+        )
+    }
+
     /// Every cell's current strength, row-major, for the GPU upload and for
     /// the observer.
     #[must_use]
@@ -333,5 +392,74 @@ mod tests {
         m.stamp(0.0, 0.0, 0.0);
         assert!(m.trace_at(0.5, 0.5, 0.0) > 0.0);
         assert_eq!(m.trace_at(-5.0, -5.0, 0.0), 0.0);
+    }
+
+    /// THE BREAK: the sweep walking the whole disc instead of the annulus,
+    /// which re-freshens a room every frame an old wave is still expanding
+    /// somewhere else — memory that never decays because something distant
+    /// is still ringing.
+    #[test]
+    fn only_the_places_a_front_newly_reached_are_stamped() {
+        let mut m = Memory::new(0.0, 0.0);
+        let mut all = |_: f64, _: f64| true;
+        // cell centres sit at 1, 3, 5, ... so a front from 0 to 2 reaches
+        // exactly the cell centred at (1, 1) — distance 1.414
+        m.sweep(0.0, 0.0, 0.0, 2.0, 10.0, &mut all);
+        assert_eq!(m.felt_cells(10.0), 1);
+        assert!(m.trace_at(1.0, 1.0, 10.0) > 0.0);
+
+        // the front moves ON, as a real one does: the NEXT annulus starts
+        // where this one ended, and must not touch the cell already passed
+        m.sweep(0.0, 0.0, 2.0, 4.0, 20.0, &mut all);
+        assert!(
+            m.trace_at(1.0, 1.0, 20.0) < ceil(),
+            "the passed cell was re-stamped by a later annulus — the sweep \
+             is walking the disc, not the ring, and a room will never decay \
+             while anything is still expanding anywhere"
+        );
+        // ...while the cells the new annulus DID cross are fresh
+        assert!(m.felt_cells(20.0) > 1);
+        assert!((m.trace_at(3.0, 1.0, 20.0) - ceil()).abs() < 1e-12);
+
+        // a backwards or empty annulus stamps nothing
+        let before = m.felt_cells(20.0);
+        m.sweep(0.0, 0.0, 5.0, 2.0, 20.0, &mut all);
+        m.sweep(0.0, 0.0, 2.0, 2.0, 20.0, &mut all);
+        assert_eq!(m.felt_cells(20.0), before);
+    }
+
+    /// THE BREAK: memory relitigating the wall law — remembering a room the
+    /// wave could not reach, which is exactly the see-through-walls failure
+    /// that sank the one shipped game that tried persistence.
+    #[test]
+    fn a_place_the_wave_could_not_reach_is_never_remembered() {
+        let mut m = Memory::new(0.0, 0.0);
+        // occlusion injected: nothing past x = 6 is reachable
+        let mut blocked_beyond = |x: f64, _z: f64| x < 6.0;
+        m.sweep(0.0, 0.0, 0.0, 100.0, 5.0, &mut blocked_beyond);
+        assert!(m.trace_at(1.0, 1.0, 5.0) > 0.0, "the near room went unfelt");
+        assert_eq!(
+            m.trace_at(9.0, 1.0, 5.0),
+            0.0,
+            "a place behind the barrier was remembered"
+        );
+        // and the total count matches the reachable columns only: cell
+        // centres at x = 1, 3, 5 pass; 7, 9, ... do not
+        let reachable_cols = 3;
+        assert_eq!(m.felt_cells(5.0), reachable_cols * GRID);
+    }
+
+    /// THE BREAK: a malformed pulse — a NaN origin from a freed node, an
+    /// infinite radius from a divide — stamping the whole plan.
+    #[test]
+    fn a_malformed_sweep_stamps_nothing() {
+        let mut m = Memory::new(0.0, 0.0);
+        let mut all = |_: f64, _: f64| true;
+        m.sweep(f64::NAN, 0.0, 0.0, 100.0, 1.0, &mut all);
+        m.sweep(0.0, f64::NAN, 0.0, 100.0, 1.0, &mut all);
+        m.sweep(0.0, 0.0, f64::NAN, 100.0, 1.0, &mut all);
+        m.sweep(0.0, 0.0, 0.0, f64::INFINITY, 1.0, &mut all);
+        m.sweep(0.0, 0.0, 0.0, 100.0, f64::NAN, &mut all);
+        assert_eq!(m.felt_cells(1.0), 0);
     }
 }
