@@ -121,25 +121,4 @@ fn main() {
             }),
         ));
     });
-
-    // The memory sweep walks an annulus of the floor plan every frame for
-    // every live front, and its cost is set by the GRID, not by the level.
-    let mut memory = render::memory::Memory::new(0.0, 0.0);
-    let mut radius = 0.0_f64;
-    bench("render::memory::sweep, one front", 200_000, || {
-        let prev = radius;
-        radius += 0.05;
-        if radius > 20.0 {
-            radius = 0.0;
-            memory.reset();
-        }
-        memory.sweep(
-            black_box(6.0),
-            black_box(6.0),
-            black_box(prev),
-            black_box(radius),
-            black_box(1.0),
-            &mut |_x, _z| true,
-        );
-    });
 }

@@ -90,6 +90,61 @@ Acceptance gate, falsifiable: with every cell stamped at `TRACE_CEIL`, mean
 linear luminance of a `level_01` frame must rise by **< 0.01**. If it rises
 more, the trace is lighting the level rather than remembering it.
 
+### Errata, 2026-08-19 — this section is DESIGNED, NOT SHIPPED
+
+`render::memory` was written, tested and never wired: no node owned a
+`Memory`, no uniform carried the grid, and `hearing_post` composed
+`max(sil * reveal, crease * detail * reveal)` with no trace term in it. The
+module and the `AGENTS.md` clause that stated it as shipped perception law
+were removed on 2026-08-19. The design stays here because a spec freezes
+what was decided; what follows is why it cannot be built as written.
+
+**1. The composition ghosts every mover, including the hero.** `sil` is a
+Laplacian of the packed camera distance and reads no label, and the cat
+wears the *world* data skin (`nodes/cat.rs` sets the same `data_mat` the
+walls wear). So `sil * max(reveal, trace)` draws a silent cat's full
+silhouette at `TRACE_CEIL` from a floor plan. Worse, the hero's own body is
+wave-lit only and stands by definition in the freshest-stamped cell, so it
+would draw at 0.15 in every frame of the game, permanently. That inverts
+this section's own decision.
+
+**2. The escape hatch does not exist.** "Falls out of the world-static/
+creature partition `render::labels` already draws" is false: the ladder
+interleaves. `Ceiling` sits at 0.87, between `Cat` at 0.69 and `HeroCane` at
+0.96, so no threshold on G separates movers from statics. The clause also
+defends the wrong flank — `Memory::sweep` took a pulse origin and could not
+be written by a mover anyway. The hazard was always on the READ side.
+
+**3. `TRACE_CEIL` outranks a live source.** It was derived against the
+detail knee and never compared to the other perception floor derived on the
+same branch. `reveal::PRESENCE = 2 * GRAIN_AMP = 0.068`, and
+`TRACE_CEIL = 0.15` is **2.21×** that. A wall remembered from 45 s ago would
+draw more than twice as brightly as a radio sounding three walls away right
+now, which inverts the muffle ladder this same spec was written to protect.
+
+**4. The acceptance gate cannot see the failure.** Outlines are thin: a
+whole-plan stamp raises mean frame luminance by roughly 0.002, so the gate
+passes. A silent cat's ghost is a few hundred pixels — order 1e-5 of the
+mean. The gate measures "is the trace lighting the level" and is
+structurally blind to "is the trace naming a mover", which is the claim it
+exists to protect. A gate that cannot fail on the thing it guards is not a
+gate.
+
+**What a future attempt should carry.** Two changes make the mechanic
+landable, and neither is in the design above. First, derive the ceiling from
+`PRESENCE` rather than from the detail knee — `TRACE_CEIL = PRESENCE / 2 =
+0.034` sits below a live three-wall source, stays far below the detail
+knee's floor so the "can never name a thing" theorem survives untouched,
+and incidentally makes the `TAIL` justification true for the first time (the
+residue at the cut falls to 0.0085, genuinely under `grain::half_swing()` of
+0.017, where at 0.15 it was 2.2× it everywhere but the screen's extreme
+edge). Second, exclude movers by MATERIAL rather than by label: put the
+trace in the data pass behind a material uniform that is 1.0 on the world
+skin and 0.0 on the cat's and the hero's, which needs no ladder change, no
+rebaking, and excludes sources for free because `data_xray` is a different
+shader. And gate it on something that can fail: a silent creature in a
+fully-stamped, wave-free room must contribute zero non-grain pixels.
+
 ## A live defect this uncovered
 
 The documented muffle ladder is 0.30 / 0.09 / 0.027. `u_grain_amp` is

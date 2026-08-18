@@ -45,7 +45,6 @@ pub mod detail;
 pub mod faces;
 pub mod grain;
 pub mod labels;
-pub mod memory;
 pub mod paint;
 pub mod paint_plan;
 pub mod reveal;

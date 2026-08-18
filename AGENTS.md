@@ -21,12 +21,7 @@ So: propagation is exact. Perception is authored, and says so.
 
 - Render black and white, with thin outlines only: no textures, fills,
   materials, or visual noise. The world is revealed only by sound, touch, and
-  wind waves — and, faintly, by having been revealed: `render::memory`
-  holds a coarse floor plan of where the hero has already been, ceiled at
-  half the detail knee's floor so a remembered place can never draw a
-  crease, and never written by anything that moves. Memory can say
-  something stood there. It can never say what, and it can never be trusted
-  about anything alive.
+  wind waves.
 - Draw one silhouette per object. Where two solids overlap, outline them
   together: faces that are same-facing and coplanar merge into one superface
   and share one per-vertex label bit-for-bit, so the seam melts by
