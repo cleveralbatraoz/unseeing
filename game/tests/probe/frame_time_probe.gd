@@ -26,11 +26,20 @@ extends Node
 ##
 ## READ THE ARBITER BEFORE QUOTING ANY NUMBER HERE. The last line of the
 ## report is wall clock per frame, and it must agree with the engine's own
-## delta. On a machine busy with other work they diverge hard — measured
-## here at 1001 ms of wall clock against an engine delta of 134.6 ms, with
-## the GPU timer switched off, so it is frame PACING and not the renderer.
-## A run whose two clocks disagree has measured its own conditions, and
-## every number in it is void. Quiesce the machine and run it again.
+## delta. On one measured host they diverge hard: 1001 ms of wall clock —
+## almost exactly one second, every frame — against an engine delta of
+## 134.6 ms, with the GPU timer switched off, and Godot accumulating 11 s of
+## CPU over 12 minutes at 1.4%. So the process is BLOCKED, not busy, and it
+## is frame presentation rather than the renderer. It reproduced with the
+## machine otherwise idle (load average 0.11), so it is a property of the
+## display environment — a window that is never presented, most likely —
+## and not of other work competing for the GPU.
+##
+## Two consequences, both worth knowing before running any rendered probe
+## here: no frame-time number from such a host means anything, and every
+## other rendered probe runs about thirty times slower than it should, which
+## reads as a hang and is not one. A run whose two clocks disagree has
+## measured its own conditions. Fix the display, then run it again.
 ##
 ## Measured on AMD Radeon (radeonsi, raphael_mendocino) / Mesa 25.0.7 /
 ## GL Compatibility, 240 frames after 90 settling:
