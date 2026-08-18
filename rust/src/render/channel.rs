@@ -26,44 +26,51 @@
 //!
 //! # The measurement
 //!
-//! [`CHANNEL_LEVELS`] is not a guess and not a platform assumption. It is
-//! measured by `game/tests/probe/channel_probe.gd`, which writes two values
-//! one candidate step apart into the data channels, reads both back through
+//! Neither [`CHANNEL_LEVELS`] nor [`WORST_STEP_CODES`] is a guess or a
+//! platform assumption. The format is measured by
+//! `game/tests/probe/channel_probe.gd`, which writes two values one
+//! candidate step apart into the data channels, reads both back through
 //! `hint_screen_texture`, and amplifies the difference inside the shader —
 //! where the precision still exists — so that an 8-bit screenshot can
-//! report a deeper buffer.
+//! report a deeper buffer. It is RGB10_A2, which settles a question the
+//! project had two stories about: the brief said 8-bit LDR. At 8 bits the
+//! guard below would already be broken by a factor of four.
 //!
-//! Measured as a WORST CASE across the channel, which matters: a single
-//! base sits at one arbitrary place on the quantisation grid and that alone
-//! moves the answer by a full bit. `0.5 * 1023 = 511.5` lies exactly
-//! between two 10-bit codes, so half a code still crosses a boundary there,
-//! while `0.25 * 1023 = 255.75` does not. Measured at fixed bases this
-//! channel reported 2^-11 at 0.5 and 2^-10 at 0.25 — one buffer, two
-//! answers. Swept across seventeen bases and demanding every one separate,
-//! it holds exactly 1024 levels.
+//! # What the format promises and what the pipeline delivers
 //!
-//! That settles a question the project had two stories about: the brief
-//! said 8-bit LDR and one earlier probe claimed RGB10_A2. It is RGB10_A2.
-//! At 8 bits the guard below would already be broken by a factor of four.
+//! Those are not the same number, and believing they were is what put the
+//! guard below in the red for months.
 //!
-//! # The web target, measured
+//! `game/tests/probe/platform_probe.tscn` lays a whole ladder out across
+//! one frame: each band writes a base on the left and base + step on the
+//! right, the base sweeps down the column, and a pixel is white where the
+//! two survived as distinct codes. Read across EVERY row rather than a
+//! sample of seventeen, and laddered in multiples of a nominal 10-bit step
+//! rather than in whole bits, it says:
 //!
-//! It agrees. `tools/measure_web_platform.sh` builds a throwaway export with
-//! `game/tests/probe/platform_probe.tscn` as its main scene and reads the
-//! verdict back out of the browser: **1024 levels**, the same as the
-//! desktop, with the probe's own control confirming Godot's in-game
-//! readback works there. So the guard below holds on both shipped targets
-//! rather than on one and a hope.
+//! | driver | smallest step that survives at every base |
+//! |---|---|
+//! | Mesa 25.0 / AMD Radeon, desktop GL | **1.25** nominal codes |
+//! | SwiftShader, WebGL2 | 1.02 |
+//! | ANGLE / Apple Metal (A18 Pro), WebGL2 | 1.02 |
 //!
-//! Read under SwiftShader — the software rasteriser `test/web_smoke.sh`
-//! already uses — which executes the real GLSL but is not a GPU-backed
-//! WebGL2 driver. Treat 1024 as the floor a browser guarantees, not as a
-//! ceiling. A driver that gave FEWER levels would break the guard, and that
-//! is the direction this measurement rules out.
+//! So the channel is a 1024-code buffer whose worst local gap is wider than
+//! one code. The rest of the ladder says the probe is reading a real
+//! quantiser and not noise: a uniform 1/1023 grid must collapse half its
+//! bases at a half step and a tenth at nine tenths, and the same run
+//! measured 49.2% and 8.8%.
 //!
-//! It stays a derived predicate rather than a hardcoded conclusion, because
-//! [`reconstruction_budget`] has to keep answering for ranges and
-//! tolerances nobody has measured yet.
+//! The old seventeen-base sweep missed this because the collapse is rare —
+//! two bases in 649 on the AMD part — and a power-of-two ladder could only
+//! ever answer 512 or 1024 anyway. It reported 1024, the guard cleared its
+//! quantum by 0.45 mm, and the real gap was 25% wider than the one being
+//! cleared.
+//!
+//! 1.25 is the widest gap MEASURED, on three drivers, not a proven ceiling
+//! for every driver that will ever run this. That is why the tolerance
+//! carries visible margin over it rather than sitting against it, and why
+//! [`reconstruction_budget`] stays a derived predicate rather than a
+//! hardcoded conclusion.
 
 use crate::level_plan;
 use crate::sight;
@@ -74,6 +81,22 @@ use crate::sight;
 /// 1024 — RGB10_A2. The channel therefore has `CHANNEL_LEVELS - 1` steps
 /// between 0.0 and 1.0, which is the divisor every quantum below uses.
 pub const CHANNEL_LEVELS: u32 = 1024;
+
+/// The widest gap the channel actually showed, in units of one nominal
+/// code, measured by `game/tests/probe/platform_probe.tscn` across every
+/// base in a swept column.
+///
+/// 1.25 on Mesa/AMD desktop GL; 1.02 on SwiftShader and on ANGLE/Apple
+/// Metal in a browser. The largest is the one every derivation below uses,
+/// because a guard that holds on the friendliest driver holds nowhere.
+///
+/// This is separate from [`CHANNEL_LEVELS`] on purpose. That one is the
+/// format — RGB10_A2, a fact about the buffer. This one is what the whole
+/// path from `ALBEDO` through the back-buffer copy and back out of
+/// `hint_screen_texture` delivers, which is the thing the hearing pass
+/// actually suffers. Folding them into one "effective levels" number would
+/// bury a measurement inside a format.
+pub const WORST_STEP_CODES: f64 = 1.25;
 
 /// Metres of camera distance per distinguishable B-channel code, at a given
 /// packing range.
@@ -86,7 +109,7 @@ pub fn quantum(range: f64) -> f64 {
     if !range.is_finite() || range <= 0.0 {
         return f64::INFINITY;
     }
-    range / f64::from(CHANNEL_LEVELS - 1)
+    range * WORST_STEP_CODES / f64::from(CHANNEL_LEVELS - 1)
 }
 
 /// The worst error in a world point reconstructed from B — half a quantum,
@@ -113,7 +136,7 @@ pub fn max_safe_range(shrink: f64) -> f64 {
     if !shrink.is_finite() || shrink <= 0.0 {
         return 0.0;
     }
-    shrink * 2.0 * f64::from(CHANNEL_LEVELS - 1)
+    shrink * 2.0 * f64::from(CHANNEL_LEVELS - 1) / WORST_STEP_CODES
 }
 
 /// The complaint a packing range earns when the hearing pass could no
@@ -155,43 +178,82 @@ mod tests {
     /// THE guard, and the two numbers that had never been compared: the
     /// occluder's geometric tolerance and the channel's own quantum.
     ///
-    /// Hand-derived at the shipped settings. 1024 levels give 1023 steps
-    /// across the range, so one B code is 40 / 1023 = 0.03910 m and the
-    /// worst reconstruction error is half of that, 0.01955 m. RECT_SHRINK
-    /// is 0.02 m. The guard holds by 0.45 mm — a margin of 2.3%, on a
-    /// tolerance chosen for an unrelated reason.
+    /// Hand-derived at the shipped settings. 1024 codes give 1023 nominal
+    /// steps across the range, so one nominal B code is 40 / 1023 =
+    /// 0.03910 m; the widest gap a driver actually showed is 1.25 of those,
+    /// 0.04888 m, and the worst reconstruction error is half of that,
+    /// 0.02444 m. RECT_SHRINK is 0.03 m, so the guard holds by 5.56 mm.
     #[test]
     fn a_reconstructed_point_lands_outside_the_wall_it_stands_against() {
         let eps = recon_eps(level_plan::DIST_PACK_RANGE);
         assert!(
-            (eps - 0.019_550).abs() < 1.0e-5,
+            (eps - 0.024_438).abs() < 1.0e-5,
             "the derivation moved: {eps}"
         );
         assert!(
             sight::RECT_SHRINK > eps,
-            "RECT_SHRINK ({}) no longer clears the B channel's half-quantum ({eps}): a lit wall \
+            "RECT_SHRINK ({}) no longer clears the B channel's half-gap ({eps}): a lit wall \
              will start reading as a source seen through one",
             sight::RECT_SHRINK
         );
-        // ...and the margin is thin enough to be worth saying out loud
-        assert!(sight::RECT_SHRINK - eps < 0.001);
+        // and with margin this time, rather than the 0.45 mm the nominal
+        // derivation left
+        assert!(sight::RECT_SHRINK - eps > 0.005);
     }
 
-    /// The range that breaks it, stated rather than discovered. 40.92 m,
-    /// against a shipped 40.0 and a map diagonal of 39.73 — under one metre
-    /// of headroom on a number the pack-range budget tells designers to
-    /// raise when the map grows.
+    /// THE BREAK: reading the format's promise as the pipeline's delivery.
+    ///
+    /// A nominal 10-bit code is 1/1023 of the range. What the ladder in
+    /// `game/tests/probe/platform_probe.tscn` measures, at every base of a
+    /// swept column rather than seventeen of them, is that a step that size
+    /// collapses to ONE code at a few bases on Mesa/AMD — the smallest step
+    /// that always survived there was 1.25 nominal codes.
+    ///
+    /// So the quantum must be wider than the nominal one, and by exactly
+    /// that factor. Setting [`WORST_STEP_CODES`] back to 1.0 restores the
+    /// old fiction: the guard above would then clear its quantum by 0.45 mm
+    /// while the gap it is really covering is 25% larger than the one it
+    /// checked, which is a guard that passes its own test and fails on a
+    /// screen.
+    #[test]
+    fn the_quantum_is_the_gap_measured_not_the_code_promised() {
+        let range = level_plan::DIST_PACK_RANGE;
+        let nominal = range / f64::from(CHANNEL_LEVELS - 1);
+        assert!(
+            (nominal - 0.039_100).abs() < 1.0e-5,
+            "nominal moved: {nominal}"
+        );
+        assert!(
+            quantum(range) > nominal,
+            "the quantum stopped accounting for the measured gap"
+        );
+        assert!((quantum(range) / nominal - 1.25).abs() < 1.0e-9);
+        // the fiction, stated so it cannot come back unnoticed: at a
+        // nominal code the half-quantum is 19.55 mm, which the RETIRED
+        // 0.02 m tolerance cleared by 0.45 mm and the real gap does not
+        assert!(nominal * 0.5 < 0.02);
+        assert!(quantum(range) * 0.5 > 0.02);
+    }
+
+    /// The range that breaks it, stated rather than discovered. 49.10 m —
+    /// `0.03 * 2 * 1023 / 1.25` — against a shipped 40.0 and a map diagonal
+    /// of 39.73. The wider tolerance bought headroom on a number the
+    /// pack-range budget tells designers to raise when the map grows: it
+    /// was under one metre at the old shrink and nominal code.
     #[test]
     fn the_budget_refuses_a_range_the_channel_cannot_reconstruct() {
         let ceiling = max_safe_range(sight::RECT_SHRINK);
-        assert!((ceiling - 40.92).abs() < 1.0e-9, "ceiling moved: {ceiling}");
+        assert!(
+            (ceiling - 49.104).abs() < 1.0e-9,
+            "ceiling moved: {ceiling}"
+        );
         assert!(reconstruction_budget(level_plan::DIST_PACK_RANGE).is_none());
-        assert!(reconstruction_budget(40.9).is_none());
-        assert!(reconstruction_budget(41.0).is_some());
-        assert!(reconstruction_budget(45.0).is_some());
-        let complaint = reconstruction_budget(45.0).expect("45 m is past the ceiling");
+        assert!(reconstruction_budget(49.0).is_none());
+        assert!(reconstruction_budget(49.2).is_some());
+        assert!(reconstruction_budget(55.0).is_some());
+        let complaint = reconstruction_budget(55.0).expect("55 m is past the ceiling");
         assert_eq!(complaint.severity, level_plan::Severity::Error);
-        assert!(complaint.text.contains("40.92"));
+        assert!(complaint.text.contains("49.10"));
     }
 
     /// Total on the degenerate ranges the type admits: absence answers "no
@@ -217,6 +279,7 @@ mod tests {
     fn at_eight_bits_the_shipped_tolerance_would_not_clear_the_quantum() {
         let eight_bit_eps = level_plan::DIST_PACK_RANGE / f64::from(255_u32) * 0.5;
         assert!((eight_bit_eps - 0.078_431).abs() < 1.0e-5);
+        // still a counter-example at the wider tolerance, and by 2.6x
         assert!(
             sight::RECT_SHRINK < eight_bit_eps,
             "the counter-example stopped being one"

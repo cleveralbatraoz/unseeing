@@ -37,7 +37,18 @@ pub const MAXW: usize = 32;
 
 /// Meters the occluder rect stops short of the wall's real face, so a
 /// prop flush against the wall keeps an unblocked sight line.
-pub const RECT_SHRINK: f64 = 0.02;
+///
+/// It answers to a second, unrelated caller, and that one sets its floor.
+/// `hearing_post` reconstructs a world point from the B channel and asks
+/// this table whether a wall stands there; the reconstruction is only as
+/// good as the channel's worst quantisation gap, so this tolerance has to
+/// exceed half of it or a lit wall reads as an x-rayed source seen through
+/// one. Measured across every base of a swept column, that half-gap is
+/// 24.4 mm at the shipped packing range — see
+/// [`crate::render::channel::WORST_STEP_CODES`] — which is why this is
+/// 0.03 and not the 0.02 it sat at while the channel was believed to
+/// deliver a clean 10-bit code.
+pub const RECT_SHRINK: f64 = 0.03;
 
 /// Parametric fraction ignored at each end of the sight line: a crossing
 /// counts only with t strictly inside (GRAZE_EPS, 1 - GRAZE_EPS).
@@ -608,8 +619,8 @@ mod tests {
     ///
     /// Hand-derived from the retired DividerNorth centerline
     /// `(6.4, 0.6) -> (6.4, 8.0)` lifted one metre: pad is
-    /// `WALL_T - RECT_SHRINK = 0.15 - 0.02 = 0.13`, so the rect is
-    /// `(6.27, 0.47, 6.53, 8.13)` swept `y in [1, 4]`. Three lines from
+    /// `WALL_T - RECT_SHRINK = 0.15 - 0.03 = 0.12`, so the rect is
+    /// `(6.28, 0.48, 6.52, 8.12)` swept `y in [1, 4]`. Three lines from
     /// x = 3 to x = 10 at z = 4 — under it, through its raised top half,
     /// and a control through the middle that must not move.
     #[test]
@@ -617,8 +628,11 @@ mod tests {
         let lifted = Occluder::new(Vector4::new(6.4, 0.6, 6.4, 8.0), 1.0, 4.0)
             .expect("a finite span is describable");
         let rect = lifted.rect();
-        assert!((rect.x - 6.27).abs() < 1e-4 && (rect.y - 0.47).abs() < 1e-4);
-        assert!((rect.z - 6.53).abs() < 1e-4 && (rect.w - 8.13).abs() < 1e-4);
+        // written as centre minus pad, not as 6.28: the literal is a
+        // hair under TAU and clippy reads it as a mistyped constant
+        let pad = 0.12_f32;
+        assert!((rect.x - (6.4 - pad)).abs() < 1e-4 && (rect.y - (0.6 - pad)).abs() < 1e-4);
+        assert!((rect.z - (6.4 + pad)).abs() < 1e-4 && (rect.w - (8.0 + pad)).abs() < 1e-4);
         assert_eq!(lifted.span(), Vector2::new(1.0, 4.0));
         let table = [lifted];
         let across = |y: f32| {
@@ -759,13 +773,14 @@ mod tests {
     #[test]
     fn wall_rect_inflates_and_normalizes() {
         let divider = wall_rect(Vector4::new(6.4, 0.6, 6.4, 8.0));
-        assert!((divider.x - 6.27).abs() < 1e-4);
-        assert!((divider.y - 0.47).abs() < 1e-4);
-        assert!((divider.z - 6.53).abs() < 1e-4);
-        assert!((divider.w - 8.13).abs() < 1e-4);
+        let pad = 0.12_f32;
+        assert!((divider.x - (6.4 - pad)).abs() < 1e-4);
+        assert!((divider.y - (0.6 - pad)).abs() < 1e-4);
+        assert!((divider.z - (6.4 + pad)).abs() < 1e-4);
+        assert!((divider.w - (8.0 + pad)).abs() < 1e-4);
         let reversed = wall_rect(Vector4::new(19.4, 19.4, 0.6, 19.4));
-        assert!((reversed.x - 0.47).abs() < 1e-4);
-        assert!((reversed.z - 19.53).abs() < 1e-4);
+        assert!((reversed.x - 0.48).abs() < 1e-4);
+        assert!((reversed.z - 19.52).abs() < 1e-4);
         // ...and an Occluder inflates through the very same function, so
         // the rect law has one home whatever sweep is wrapped around it
         assert_eq!(standing(Vector4::new(6.4, 0.6, 6.4, 8.0)).rect(), divider);
@@ -810,7 +825,7 @@ mod tests {
     }
 
     /// A prop flush against a wall face is NOT self-blocked: the shrunk
-    /// rect leaves its surface a clear 0.02 m outside — while the same
+    /// rect leaves its surface a clear 0.03 m outside — while the same
     /// point against the UNSHRUNK wall box would already count as inside.
     #[test]
     fn flush_prop_is_not_self_blocked_by_the_shrink() {
@@ -1073,16 +1088,16 @@ mod tests {
     /// way, so a pillar stops occluding the moment anything leans on it.
     ///
     /// Hand-derived: a 0.5 m pillar centred at (2, 3) occupies
-    /// [1.75, 2.25] x [2.75, 3.25]; RECT_SHRINK takes 0.02 off each side.
+    /// [1.75, 2.25] x [2.75, 3.25]; RECT_SHRINK takes 0.03 off each side.
     #[test]
     fn a_solids_footprint_is_taken_as_given_and_not_inflated() {
         let occ = Occluder::from_bounds(1.75, 2.75, 2.25, 3.25, 0.0, 3.0)
             .expect("a half-metre pillar describes a volume");
         let r = occ.rect();
-        assert!((f64::from(r.x) - 1.77).abs() < 1e-6, "min_x was {}", r.x);
-        assert!((f64::from(r.y) - 2.77).abs() < 1e-6, "min_z was {}", r.y);
-        assert!((f64::from(r.z) - 2.23).abs() < 1e-6, "max_x was {}", r.z);
-        assert!((f64::from(r.w) - 3.23).abs() < 1e-6, "max_z was {}", r.w);
+        assert!((f64::from(r.x) - 1.78).abs() < 1e-6, "min_x was {}", r.x);
+        assert!((f64::from(r.y) - 2.78).abs() < 1e-6, "min_z was {}", r.y);
+        assert!((f64::from(r.z) - 2.22).abs() < 1e-6, "max_x was {}", r.z);
+        assert!((f64::from(r.w) - 3.22).abs() < 1e-6, "max_z was {}", r.w);
         assert!((f64::from(occ.span().x) - 0.0).abs() < 1e-6);
         assert!((f64::from(occ.span().y) - 3.0).abs() < 1e-6);
         // The property that matters, stated directly: a FOOTPRINT shrinks
@@ -1126,10 +1141,10 @@ mod tests {
     /// the wall. A source-shaped hole, punched in air the eye can see.
     ///
     /// Hand-derived: `Occluder::new` inflates a centerline by
-    /// `WALL_T - RECT_SHRINK` = 0.15 - 0.02 = 0.13, so a wall centred at
-    /// x = 3 spans x in [2.87, 3.13]. From the eye at the origin to a
-    /// source 6 m along +x, the entry fraction is 2.87/6 = 0.4783..., and
-    /// the air the eye can see is exactly 2.87 m.
+    /// `WALL_T - RECT_SHRINK` = 0.15 - 0.03 = 0.12, so a wall centred at
+    /// x = 3 spans x in [2.88, 3.12]. From the eye at the origin to a
+    /// source 6 m along +x, the entry fraction is 2.88/6 = 0.48, and the
+    /// air the eye can see is exactly 2.88 m.
     #[test]
     fn a_ring_nearer_than_the_wall_survives_a_source_seen_through_it() {
         let wall = Occluder::new(Vector4::new(3.0, -5.0, 3.0, 5.0), 0.0, 3.0)
@@ -1143,12 +1158,12 @@ mod tests {
         );
         let air = visible_air(eye, src, &[wall]);
         assert!(
-            (air - 2.87).abs() < 1e-4,
-            "the eye can see {air} m of air, not the 2.87 m up to the wall"
+            (air - 2.88).abs() < 1e-4,
+            "the eye can see {air} m of air, not the 2.88 m up to the wall"
         );
         // the whole point: a ring at 1.5 m is NEARER than the wall and must
         // still be drawn, where the old boolean discarded it
-        assert!(1.5 < air, "a ring 1.5 m out was cut by a wall at 2.87 m");
+        assert!(1.5 < air, "a ring 1.5 m out was cut by a wall at 2.88 m");
         // ...and one past the wall is still cut
         assert!(4.0 > air);
     }
@@ -1165,7 +1180,7 @@ mod tests {
         for table in [[near_wall, far_wall], [far_wall, near_wall]] {
             let air = visible_air(eye, src, &table);
             assert!(
-                (air - 2.87).abs() < 1e-4,
+                (air - 2.88).abs() < 1e-4,
                 "table order changed the answer: {air}"
             );
         }
