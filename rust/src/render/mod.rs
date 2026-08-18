@@ -4,6 +4,11 @@
 //! every vertex instead, so two overlapping solids agree on the G channel
 //! by CONSTRUCTION rather than by a shader tie-break.
 //!
+//! - [`channel`] — what one data channel actually holds, measured rather
+//!   than assumed, and the geometric tolerance that turns on it: the
+//!   hearing pass reconstructs a world point from B, and only
+//!   `sight::RECT_SHRINK` keeps that point outside the wall it stands
+//!   against.
 //! - [`crease`] — the rendered response to a label difference: the
 //!   hearing pass's crease knee, derived from `labels::MIN_SEP` rather than
 //!   retyped in GLSL, so the law that ALLOCATES separations and the law
@@ -33,6 +38,7 @@
 //!   the wavefront passed. `sight` says where a wave reaches; this says when
 //!   it stops.
 
+pub mod channel;
 pub mod crease;
 pub mod depth;
 pub mod faces;

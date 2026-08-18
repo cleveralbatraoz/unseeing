@@ -1374,6 +1374,13 @@ impl WaveLevel {
         };
         let budget = level_plan::pack_range_budget(diagonal, level_plan::DIST_PACK_RANGE);
         self.say(editor, budget);
+        // ...and the OTHER direction, which pulls against it. The budget
+        // above tells a designer to raise DIST_PACK_RANGE when the map
+        // outgrows it; this one refuses a range the B channel can no longer
+        // reconstruct a world point from, which is what the hearing pass
+        // does with it. They cross at 40.92 m and the shipped range is 40.0.
+        let recon = render::channel::reconstruction_budget(level_plan::DIST_PACK_RANGE);
+        self.say(editor, recon);
     }
 
     /// Push the wall table onto one data-writing material — loud when it is

@@ -30,6 +30,14 @@
 # not need pinning any more: every case is a delta across the fan's own
 # voice, and the positive control refuses a phase in which it is dark.
 #
+# TWO scenes run here, and the first one is a measurement rather than an
+# assertion about the game. channel_probe measures how many levels the
+# screen texture actually preserves per channel — the platform fact
+# rust/src/render/channel.rs pins as CHANNEL_LEVELS, and which the whole
+# B-channel reconstruction guard turns on. The project had two stories about
+# it (the brief said 8-bit LDR; an earlier probe claimed RGB10_A2) and at 8
+# bits the guard is already broken by a factor of four. It is 1024.
+#
 # Env knobs: GODOT (binary).
 set -eu
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -91,7 +99,7 @@ run_scene() {
   UNSEEING_SEED=1 $KEEP_AWAKE "$GODOT" --path "$DIR/game" "$@"
 }
 
-for scene in res://tests/probe/occlusion_probe.tscn; do
+for scene in res://tests/probe/channel_probe.tscn res://tests/probe/occlusion_probe.tscn; do
   echo "probe: $scene — run 1 (cold cache legal; only agreement counts)"
   run_scene "$scene"
   echo "probe: $scene — run 2 (warm boot, the trusted one)"
