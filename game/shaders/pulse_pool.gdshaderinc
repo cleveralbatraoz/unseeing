@@ -116,13 +116,17 @@ const float SOURCE_BAND = 1.0e-3;
 // 0.9508 in each). data_core had carried the claim that it was unreliable
 // on WebGL2 for months, and that claim was simply wrong.
 //
+// The web reading has since been taken twice more: once under SwiftShader,
+// the software rasteriser the browser gate uses, and once under ANGLE on
+// an Apple Metal GPU, which answers 0.9490 as well. Three drivers, two
+// targets, one number.
+//
 // hearing_post nonetheless ORs this against the older wall-table inference
-// rather than replacing it, for a reason the measurement does not retire:
-// the web reading comes from SwiftShader, the software rasteriser the
-// browser gate uses, not from a GPU-backed WebGL2 driver on the machines
-// players actually have. The OR costs one comparison and cannot regress
-// anywhere — if some driver returns nothing, this is false everywhere and
-// the pass behaves exactly as it did before the depth read existed.
+// rather than replacing it, for the one reason no measurement can retire:
+// three drivers are not every driver. The OR costs one comparison and
+// cannot regress anywhere — if some future driver returns nothing, this is
+// false everywhere and the pass behaves exactly as it did before the depth
+// read existed.
 bool depth_is_acoustic_image(float depth) {
 	return depth >= ALWAYS_ON_TOP - SOURCE_BAND;
 }

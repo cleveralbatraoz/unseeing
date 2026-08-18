@@ -116,9 +116,9 @@ void fragment() {
 	// earns its place: the wall table misses a source hidden behind a
 	// PROP — WaveProp, WaveColumn and WaveWedge are in no occluder table
 	// anywhere — so its outline borrowed the pillar's brightness. ORed, not
-	// substituted, because the depth texture is measured on desktop GL and
-	// unmeasured on WebGL2: where it is dead the term is false everywhere
-	// and the cap degrades to precisely its former behaviour.
+	// substituted, because three measured drivers are not every driver:
+	// where the depth texture is dead the term is false everywhere and the
+	// cap degrades to precisely its former behaviour.
 	//
 	// WHAT IS STILL NOT FIXED, stated so nobody has to rediscover it: the
 	// prop gap is closed for the outline cap and OPEN for the ring cut. A
