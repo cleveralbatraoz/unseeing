@@ -46,13 +46,24 @@
 //! said 8-bit LDR and one earlier probe claimed RGB10_A2. It is RGB10_A2.
 //! At 8 bits the guard below would already be broken by a factor of four.
 //!
-//! # What is still unmeasured
+//! # The web target, measured
 //!
-//! The WEB target. This is a desktop GL measurement, and WebGL2 may hand
-//! Godot a different default format. If the web buffer is 8-bit, half a
-//! quantum is 78 mm against a 20 mm tolerance and the reconstruction is
-//! wrong there — see [`reconstruction_budget`], which is why the check is a
-//! derived predicate rather than a comment saying "fine on my machine".
+//! It agrees. `tools/measure_web_platform.sh` builds a throwaway export with
+//! `game/tests/probe/platform_probe.tscn` as its main scene and reads the
+//! verdict back out of the browser: **1024 levels**, the same as the
+//! desktop, with the probe's own control confirming Godot's in-game
+//! readback works there. So the guard below holds on both shipped targets
+//! rather than on one and a hope.
+//!
+//! Read under SwiftShader — the software rasteriser `test/web_smoke.sh`
+//! already uses — which executes the real GLSL but is not a GPU-backed
+//! WebGL2 driver. Treat 1024 as the floor a browser guarantees, not as a
+//! ceiling. A driver that gave FEWER levels would break the guard, and that
+//! is the direction this measurement rules out.
+//!
+//! It stays a derived predicate rather than a hardcoded conclusion, because
+//! [`reconstruction_budget`] has to keep answering for ranges and
+//! tolerances nobody has measured yet.
 
 use crate::level_plan;
 use crate::sight;

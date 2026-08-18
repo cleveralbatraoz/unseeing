@@ -110,16 +110,19 @@ const float SOURCE_BAND = 1.0e-3;
 // from the eye reads 0.0158 — the analytic reversed-Z value to four
 // decimals.
 //
-// WHY IT IS NOT THE ONLY TEST. This is a DESKTOP measurement and the web is
-// a first-class target; data_core carried the claim that the depth texture
-// is unreliable on WebGL2 long before anyone measured it here, and nobody
-// has measured it there. hearing_post therefore ORs this against the older
-// wall-table inference rather than replacing it: where the depth texture
-// lives, the layer test is exact and finally covers a source hidden behind
-// a PROP, which is in no occluder table anywhere; where it is dead, this
-// returns false everywhere and the pass degrades to precisely its former
-// behaviour. Never worse on any platform, better on the one that was
-// measured.
+// WHY IT IS STILL NOT THE ONLY TEST. Both shipped targets are now measured
+// and both agree: the depth texture is live on desktop GL and under the
+// browser (tools/measure_web_platform.sh reads 0.9490 against an analytic
+// 0.9508 in each). data_core had carried the claim that it was unreliable
+// on WebGL2 for months, and that claim was simply wrong.
+//
+// hearing_post nonetheless ORs this against the older wall-table inference
+// rather than replacing it, for a reason the measurement does not retire:
+// the web reading comes from SwiftShader, the software rasteriser the
+// browser gate uses, not from a GPU-backed WebGL2 driver on the machines
+// players actually have. The OR costs one comparison and cannot regress
+// anywhere — if some driver returns nothing, this is false everywhere and
+// the pass behaves exactly as it did before the depth read existed.
 bool depth_is_acoustic_image(float depth) {
 	return depth >= ALWAYS_ON_TOP - SOURCE_BAND;
 }
