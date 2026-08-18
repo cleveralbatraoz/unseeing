@@ -60,8 +60,8 @@ const DEPTH_GAIN := 60.0
 func _ready() -> void:
 	await get_tree().process_frame
 	_build()
-	await _report()
-	get_tree().quit(0)
+	var failures := await _report()
+	get_tree().quit(1 if failures > 0 else 0)
 
 
 func _build() -> void:
@@ -117,7 +117,11 @@ func _base_at(y: int, h: int) -> float:
 
 ## The same verdicts the PNG carries, printed — so a desktop run needs no
 ## decoder, and so a web run leaves them in the browser console too.
-func _report() -> void:
+##
+## Returns the number of failed checks, because this scene is run by
+## tools/probe_visibility.sh under `set -eu`: a measurement that cannot fail
+## is a line of output, not a gate.
+func _report() -> int:
 	for _i: int in 8:
 		await get_tree().process_frame
 		await RenderingServer.frame_post_draw
@@ -183,24 +187,61 @@ func _report() -> void:
 	var depth := img.get_pixel(int(0.775 * float(w)), h / 2).r
 	var control := img.get_pixel(int(0.925 * float(w)), h / 2).r
 	var expect := (NEAR / (FAR - NEAR)) * (FAR / WORLD_DIST - 1.0) * DEPTH_GAIN
-	# levels is reported for continuity with the older ladder, but the
-	# quantum is the number the reconstruction guard clears: half of it,
-	# scaled by DIST_PACK_RANGE, is how far a reconstructed point can sit
-	# from the surface that packed it.
+	# NO LEVEL COUNT. The old ladder ended in one and it was the wrong
+	# shape of answer twice over: a buffer depth cannot express a gap of
+	# 1.25 codes, and "819 levels" is neither the format (1024) nor
+	# anything `render::channel::CHANNEL_LEVELS` could be set from. What
+	# the reconstruction guard clears is the WORST STEP, in nominal codes,
+	# and that is what this reports.
 	print(
 		(
 			(
-				"# platform: quantum %.8f (1/%.1f) ; levels %d ; depth %.4f"
-				+ " (reversed-Z predicts %.4f) ; control %.4f"
+				"# platform: worst step %.3f nominal codes (%.8f of full scale)"
+				+ " ; depth %.4f (reversed-Z predicts %.4f) ; control %.4f"
 			)
-			% [
-				quantum,
-				1.0 / quantum if quantum > 0.0 else 0.0,
-				int(1.0 / quantum) + 1 if quantum > 0.0 else 0,
-				depth,
-				expect,
-				control,
-			]
+			% [quantum / TEN_BIT, quantum, depth, expect, control]
 		)
 	)
 	print("# CONTROL must read %.2f — anything else voids every verdict above" % CONTROL)
+
+	# THE GATE. The control decides whether anything above is admissible at
+	# all — Godot's own readback is how this scene reaches its own pixels,
+	# so a control that is not 0.5 voids the run rather than failing it.
+	var failures := 0
+	if absf(control - CONTROL) > 0.02:
+		failures += 1
+		print(
+			(
+				"not ok - the control reads %.4f, not %.2f: the readback is not working here"
+				% [control, CONTROL]
+			)
+		)
+		return failures
+	print("ok - the control reads %.4f, so the readback is trustworthy" % control)
+
+	# and the measurement itself, against what the renderer assumes. A
+	# platform needing a WIDER step than render::channel derives its
+	# tolerance from is one where a lit wall can read as a source seen
+	# through one, which is a level-breaking fault rather than a note.
+	var assumed: float = WaveCore.new().channel_worst_step()
+	if quantum > 0.0 and quantum <= assumed:
+		print(
+			(
+				"ok - the channel separates at %.3f nominal codes, inside the %.3f assumed"
+				% [quantum / TEN_BIT, assumed / TEN_BIT]
+			)
+		)
+	else:
+		failures += 1
+		print(
+			(
+				"not ok - the channel needs %.3f nominal codes but WORST_STEP_CODES assumes %.3f"
+				% [quantum / TEN_BIT, assumed / TEN_BIT]
+			)
+		)
+	print("1..2")
+	if failures > 0:
+		print("platform-probe: FAIL (%d)" % failures)
+	else:
+		print("platform-probe: PASS")
+	return failures

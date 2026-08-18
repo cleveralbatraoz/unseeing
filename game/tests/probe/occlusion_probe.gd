@@ -116,8 +116,8 @@ const SPAWN_SIDE: Array[Vector3] = [
 ## perfectly, and so does a fan that simply stopped humming. It is what
 ## proves the toggle these deltas are built on does anything at all.
 ##
-## x = 6.55 sits 0.02 m OUTSIDE the divider's occluder rect (x ∈ [6.27,
-## 6.53] after RECT_SHRINK), exactly as WALL_TAP does on the far side, so
+## x = 6.55 sits 0.03 m OUTSIDE the divider's occluder rect (x ∈ [6.28,
+## 6.52] after RECT_SHRINK), exactly as WALL_TAP does on the far side, so
 ## the hub's line to it never enters the rect.
 ##
 ## NOT a doorway: the fan cannot reach the spawn room through one. Its room
@@ -301,7 +301,7 @@ func _ready() -> void:
 	# An ABSOLUTE brightness reading here does not catch it either, and the
 	# measurement says why: the tap is queued AT the strike point, so the
 	# segment fed to the wall test is near-degenerate (from == to), and
-	# WALL_TAP (x = 6.25) sits 0.02 m OUTSIDE the divider's occluder rect —
+	# WALL_TAP (x = 6.25) sits 0.03 m OUTSIDE the divider's occluder rect —
 	# shrunk by RECT_SHRINK (rust/src/sight.rs) from the wall's real
 	# half-thickness — so it reads ZERO crossings to its own face and an
 	# inverted gate gives it nothing — but the FAN reaches the same face

@@ -4,12 +4,12 @@ extends Node
 ##
 ## `hearing_post` reconstructs a world point from the B channel and asks the
 ## wall table about it, and the only thing keeping that point outside the
-## wall it stands on is that `sight::RECT_SHRINK` (0.02 m) exceeds B's own
-## half-LSB. That half-LSB is `DIST_PACK_RANGE / (2 * (levels - 1))`, so the
-## whole guard turns on a number the project had two contradictory stories
+## wall it stands on is that `sight::RECT_SHRINK` (0.03 m) exceeds B's own
+## half-gap, `DIST_PACK_RANGE * WORST_STEP_CODES / (2 * (levels - 1))`. So
+## the guard turns on a number the project had two contradictory stories
 ## about: the brief said 8-bit LDR, and one measurement claimed RGB10_A2. At
-## 8 bits the half-LSB is 78 mm and the guard is already broken; at 10 bits
-## it is 19.6 mm and the shipped build clears it by 0.4 mm.
+## 8 bits the half-gap is 78 mm and the guard is broken; at the measured
+## 1.25 nominal codes it is 24.4 mm and the shipped build clears it by 5.6.
 ##
 ## METHOD. Write two values into the data channels that differ by exactly
 ## one 10-bit step — 1/1023 — on either side of the screen. Sample both
@@ -24,6 +24,17 @@ extends Node
 ## The control is the same measurement at a step of 1/255, which every
 ## candidate format preserves — without it a black reading cannot be told
 ## from a probe that measured nothing at all.
+##
+## THE LADDER LIVES ELSEWHERE NOW. This probe used to walk nine bit depths
+## across seventeen bases and end in a level count, and both halves of that
+## were wrong: a subsample of the base column reports a step the buffer does
+## not really preserve everywhere (it missed the two bases in 649 where a
+## nominal 10-bit step collapses on Mesa/AMD), and a power-of-two ladder can
+## only ever answer 512 or 1024. `platform_probe.tscn` does that measurement
+## properly, at every base, in ONE frame — nine spatial bands instead of
+## nine hundred readbacks. What is left here is the FORMAT question this
+## probe is uniquely shaped for, plus a gate on the one step the renderer's
+## tolerance is actually derived against.
 
 const READ_SHADER := preload("res://shaders/probe_channel_read.gdshader")
 const WRITE_SHADER := preload("res://shaders/probe_channel_write.gdshader")
@@ -107,44 +118,43 @@ func _measure() -> void:
 	# THE PRECISION, measured as a WORST CASE over the whole channel rather
 	# than at one convenient value.
 	#
-	# A single base lies at one arbitrary place on the quantisation grid, and
-	# that alone can move the answer by a full bit: 0.5 x 1023 = 511.5 sits
-	# exactly between two 10-bit codes, so HALF a code still crosses a
-	# boundary there and appears to resolve, while 0.25 x 1023 = 255.75 does
-	# not. Measured at fixed bases this channel reported 2^-11 at 0.5 and
-	# 2^-10 at 0.25 — the same buffer, two answers.
+	# THE GATE: the step the renderer's tolerance is derived against must
+	# separate at every base this probe can reach.
 	#
-	# So: for each candidate step, sweep bases across the channel and demand
-	# that EVERY one separates. The largest step that fails anywhere is the
-	# channel's real quantum, and that is the number the reconstruction guard
-	# has to clear.
+	# A single base lies at one arbitrary place on the quantisation grid,
+	# and that alone can move a verdict: 0.5 x 1023 = 511.5 sits exactly
+	# between two 10-bit codes, so HALF a code still crosses a boundary
+	# there, while 0.25 x 1023 = 255.75 does not. Measured at fixed bases
+	# this channel reported 2^-11 at 0.5 and 2^-10 at 0.25 — the same
+	# buffer, two answers. So the step is swept across the channel and
+	# every base must separate.
+	#
+	# The step itself comes from Rust rather than a literal here, because a
+	# platform gate that carries its own copy of the number it is gating on
+	# can drift from the renderer while both keep passing.
+	var worst_step: float = WaveCore.new().channel_worst_step()
+	var nominal := 1.0 / 1023.0
 	var bases: PackedFloat64Array = PackedFloat64Array()
 	for i: int in 17:
 		bases.append(0.05 + 0.9 * float(i) / 16.0)
-	var levels := 0
-	for bits: int in range(8, 17):
-		var step := 1.0 / (pow(2.0, float(bits)) - 1.0)
-		var separates_everywhere := true
-		for probe_base: float in bases:
-			_write_mat.set_shader_parameter("u_lo", probe_base)
-			_write_mat.set_shader_parameter("u_hi", probe_base + step)
-			if await _read_verdict() <= 0.5:
-				separates_everywhere = false
-				break
-		print(
-			(
-				"#   %d-bit step (1/%d) separates everywhere: %s"
-				% [bits, int(pow(2.0, float(bits))) - 1, str(separates_everywhere)]
-			)
+	var separated := 0
+	for probe_base: float in bases:
+		_write_mat.set_shader_parameter("u_lo", probe_base)
+		_write_mat.set_shader_parameter("u_hi", probe_base + worst_step)
+		if await _read_verdict() > 0.5:
+			separated += 1
+	print(
+		(
+			"# channel: the assumed worst step %.8f (%.3f nominal codes) separated at %d/%d bases"
+			% [worst_step, worst_step / nominal, separated, bases.size()]
 		)
-		if separates_everywhere:
-			levels = int(pow(2.0, float(bits)))
-		else:
-			break
-	print("# VERDICT: the screen texture holds %d levels per channel" % levels)
+	)
 	_check(
-		"the screen texture holds at least 1024 levels per channel (measured %d)" % levels,
-		levels >= 1024
+		(
+			"the step render::channel derives its tolerance from separates at every base (%d/%d)"
+			% [separated, bases.size()]
+		),
+		separated == bases.size()
 	)
 	print("1..%d" % 3)
 	if _failures > 0:

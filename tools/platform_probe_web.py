@@ -148,11 +148,18 @@ if verdict is None:
     print("platform-web: FAILED the probe never reported a verdict line")
     sys.exit(1)
 
-# "# platform: levels 1024 ; depth 0.9490 (...) ; control 0.5020"
+# "# platform: worst step 1.020 nominal codes (0.00099707 of full scale)
+#  ; depth 0.9490 (...) ; control 0.5020"
 fields = verdict.replace(";", " ").split()
-levels = int(fields[fields.index("levels") + 1])
+step = float(fields[fields.index("step") + 1])
 depth = float(fields[fields.index("depth") + 1])
 control = float(fields[-1])
+
+# What the renderer assumes, and therefore what this gates on. Keep in
+# step with rust/src/render/channel.rs::WORST_STEP_CODES: a browser that
+# needs a WIDER step than the guard was derived against is a browser on
+# which a lit wall can read as a source seen through one.
+ASSUMED_WORST_STEP = 1.25
 
 ok = True
 if abs(control - 0.5) > 0.02:
@@ -164,7 +171,20 @@ if abs(control - 0.5) > 0.02:
     ok = False
 else:
     print("ok - the control reads %.4f, so the readback is trustworthy" % control)
-    print("ok - the web screen texture holds %d levels per channel" % levels)
+    if step <= ASSUMED_WORST_STEP:
+        print(
+            "ok - the web channel needs %.3f nominal codes to separate, inside "
+            "the %.2f the reconstruction guard was derived against"
+            % (step, ASSUMED_WORST_STEP)
+        )
+    else:
+        print(
+            "platform-web: FAILED the web channel needs %.3f nominal codes to "
+            "separate but render::channel::WORST_STEP_CODES assumes %.2f — the "
+            "B-channel reconstruction guard does not hold on this driver"
+            % (step, ASSUMED_WORST_STEP)
+        )
+        ok = False
     print(
         "ok - the web depth texture reads %.4f (dead would be 0.0000)" % depth
         if depth > 0.01

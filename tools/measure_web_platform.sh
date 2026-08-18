@@ -13,10 +13,13 @@
 # runs on every exit path including a crash.
 #
 # WHAT IT ANSWERS, and why the answers are load-bearing:
-#   - how many levels one data channel preserves. rust/src/render/channel.rs
-#     pins CHANNEL_LEVELS from a desktop measurement and the B-channel
-#     reconstruction guard turns on it; at 8 bits that guard is broken four
-#     times over.
+#   - how far apart two values must be to survive one data channel, in
+#     units of a nominal 10-bit code. rust/src/render/channel.rs pins that
+#     as WORST_STEP_CODES and the B-channel reconstruction guard turns on
+#     it: the desktop needs 1.25 codes, so sight::RECT_SHRINK has to clear
+#     24.4 mm rather than the 19.6 a clean code would imply. A browser that
+#     needs MORE than the pinned figure fails this run, which is the whole
+#     point of taking the measurement on the target rather than assuming it.
 #   - whether hint_depth_texture is live. game/shaders/hearing_post.gdshader
 #     ORs its exact depth-based layer test with an older, incomplete
 #     wall-table inference purely because this was unknown on the web.

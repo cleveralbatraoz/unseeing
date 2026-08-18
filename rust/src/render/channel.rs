@@ -34,7 +34,8 @@
 //! where the precision still exists — so that an 8-bit screenshot can
 //! report a deeper buffer. It is RGB10_A2, which settles a question the
 //! project had two stories about: the brief said 8-bit LDR. At 8 bits the
-//! guard below would already be broken by a factor of four.
+//! guard below would be broken outright — a half-code of 78 mm against a
+//! 30 mm tolerance.
 //!
 //! # What the format promises and what the pipeline delivers
 //!
@@ -78,8 +79,11 @@ use crate::sight;
 /// Distinct values one data channel preserves through the screen texture,
 /// measured on desktop GL by `game/tests/probe/channel_probe.gd`.
 ///
-/// 1024 — RGB10_A2. The channel therefore has `CHANNEL_LEVELS - 1` steps
-/// between 0.0 and 1.0, which is the divisor every quantum below uses.
+/// 1024 — RGB10_A2. The channel therefore has `CHANNEL_LEVELS - 1` NOMINAL
+/// steps between 0.0 and 1.0. That is the divisor every quantum below uses,
+/// but it is not the whole of one: [`WORST_STEP_CODES`] says how many of
+/// those nominal steps the pipeline actually needs to keep two values
+/// apart, and the two are multiplied, never conflated.
 pub const CHANNEL_LEVELS: u32 = 1024;
 
 /// The widest gap the channel actually showed, in units of one nominal
@@ -160,13 +164,15 @@ pub fn reconstruction_budget(range: f64) -> Option<level_plan::Budget> {
         text: format!(
             "WaveLevel: a DIST_PACK_RANGE of {range} m is too coarse for the B channel to \
              reconstruct a world point safely. hearing_post rebuilds the visible surface as \
-             cam + rd * B * range and asks the wall table about it; with {} levels per channel \
-             that point can be off by {:.4} m, and the only thing keeping it outside the wall it \
+             cam + rd * B * range and asks the wall table about it; with {} codes per channel \
+             and a widest measured gap of {} of them, that point can be off by {:.4} m, and the \
+             only thing keeping it outside the wall it \
              stands against is sight::RECT_SHRINK ({} m). Past {ceiling:.2} m the two cross, a lit \
              wall starts reading as a source seen THROUGH a wall, and every ring is cut and every \
              outline capped at the wrong surface. Shrink the map instead, or stop reconstructing \
              a point from B.",
             CHANNEL_LEVELS,
+            WORST_STEP_CODES,
             recon_eps(range),
             sight::RECT_SHRINK,
         ),
@@ -273,7 +279,8 @@ mod tests {
     }
 
     /// At 8 bits — which is what the project's own brief claimed the
-    /// channel was — the guard fails by a factor of four. Kept as the
+    /// channel was — the guard fails by 2.6x even at the wider tolerance,
+    /// and that is before the measured gap is applied to it. Kept as the
     /// counter-example that makes the measurement load-bearing rather than
     /// decorative: if `CHANNEL_LEVELS` is ever set from a story instead of
     /// a probe, this is the size of the mistake.

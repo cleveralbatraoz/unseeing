@@ -1032,7 +1032,7 @@ mod tests {
     /// THE POSITIVE HALF OF THE BARRIER LAW: a wave reaches the next room
     /// through a DOORWAY, and the doorway is not a special case in the code
     /// — it is the absence of a rect. `retired_map_rects` runs the divider
-    /// as two segments, z ∈ [0.47, 8.13] and z ∈ [12.27, 19.53], leaving
+    /// as two segments, z ∈ [0.48, 8.12] and z ∈ [12.28, 19.52], leaving
     /// the opening between them, so the SAME westward line answers both
     /// ways depending only on the z it is drawn at.
     ///
@@ -1048,7 +1048,7 @@ mod tests {
         let beside = Vector3::new(3.0, 0.9, 4.0);
         assert!(
             !blocked_from(Vector3::new(8.6, 0.9, 10.2), through, &rects),
-            "the divider's opening spans z 8.13..12.27; a line at z = 10.2 crosses no rect"
+            "the divider's opening spans z 8.12..12.28; a line at z = 10.2 crosses no rect"
         );
         assert!(blocked_from(Vector3::new(8.6, 0.9, 4.0), beside, &rects));
         // and the counter agrees with the predicate on both, so the two
