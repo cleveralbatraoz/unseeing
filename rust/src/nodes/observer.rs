@@ -1072,6 +1072,13 @@ fn ray_dict(explanation: &RayExplanation, names: &[String]) -> VarDictionary {
     entry.set("camera_crossings", i64::from(explanation.camera_crossings));
     entry.set("source_crossings", i64::from(explanation.source_crossings));
     entry.set("prop_crossings", i64::from(explanation.prop_crossings));
+    entry.set("visible_air", explanation.visible_air);
+    entry.set(
+        "first_wall",
+        explanation
+            .first_wall
+            .map_or(-1_i64, |i| i64::try_from(i).unwrap_or(-1)),
+    );
     entry.set("wave_transmission", explanation.wave_transmission);
     entry.set("source_transmission", explanation.source_transmission);
     entry.set("walls", &walls);

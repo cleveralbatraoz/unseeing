@@ -9,7 +9,8 @@
 use godot::builtin::{Vector2, Vector3, Vector4};
 
 use crate::sight::{
-    Occluder, blocked_from, contains, crosses, crossings, crossings_from, reveal_visibility,
+    Occluder, blocked_from, contains, crosses, crossings, crossings_from, entry, first_entry,
+    reveal_visibility, visible_air,
 };
 
 /// One wall's answer for one sight line.
@@ -41,6 +42,19 @@ pub struct RayExplanation {
     pub camera_crossings: u32,
     /// Source to lit point: the birth wall is skipped.
     pub source_crossings: u32,
+    /// HOW FAR the eye can see air along this ray, in metres: the whole way
+    /// to the lit point, or only as far as the nearest wall it enters.
+    /// [`sight::visible_air`], the newest law in the pass and the one that
+    /// already shipped as a visible defect — a ring drawn through a wall
+    /// over an x-rayed source's silhouette. AGENTS.md names this surface as
+    /// the thing to reach for instead of a screenshot, and a maintainer
+    /// asking "why did my ring vanish at this pixel" had no structured
+    /// answer for exactly the law most likely to have eaten it.
+    pub visible_air: f64,
+    /// Which wall ended the air, as an index into `walls`, or `None` if
+    /// nothing did. The distance alone says a wall stopped the ray; this
+    /// says which one, so the reader can go and look at it.
+    pub first_wall: Option<usize>,
     /// Eye to lit point, PROPS only — the solids `spans_the_corridor`
     /// refused, which stop no wave but each take [`level_plan::prop_through`]
     /// from a source's standing image. A source can read muffled with zero
@@ -95,6 +109,16 @@ pub fn explain_ray(
         camera_crossings,
         source_crossings,
         prop_crossings,
+        visible_air: visible_air(from, to, occluders),
+        // the NEAREST entry, matched back to the wall that produced it —
+        // recomputed per wall rather than threaded out of `first_entry`,
+        // because the oracle's job is to agree with the shipped function,
+        // not to reimplement its fold
+        first_wall: first_entry(from, to, occluders).and_then(|t| {
+            occluders
+                .iter()
+                .position(|occ| entry(from, to, *occ).is_some_and(|e| e == t))
+        }),
         // The oracle asks the SAME predicate the shipped shader asks, not
         // an equivalent restatement of it: `source_reveal_vis` in
         // data_core.gdshaderinc is `wall_blocked_from(src, world) ? 0.0 :
@@ -119,6 +143,43 @@ mod tests {
     use godot::builtin::{Vector3, Vector4};
 
     const WALL_TOP: f64 = level_plan::WALL_H;
+
+    /// THE BREAK: the observer reporting a ring cut that does not match the
+    /// one the shader made. `visible_air` is the newest law in the hearing
+    /// pass and the one that already shipped as a visible defect — rings
+    /// drawn straight through a wall over an x-rayed source. It had no
+    /// structured surface at all, so the only way to ask "why did my ring
+    /// vanish here" was a screenshot, which AGENTS.md calls a last resort.
+    ///
+    /// Hand-derived: the wall's near face stands at x = 3 less the hair
+    /// `wall_rect` leaves, and the eye is 9 m from the lit point along x, so
+    /// the air ends a little under a third of the way and names wall 0. A
+    /// clear line sees its whole length and names nothing.
+    #[test]
+    fn the_verdict_says_how_far_the_eye_sees_air_and_which_wall_ended_it() {
+        let wall = Occluder::new(Vector4::new(3.0, -5.0, 3.0, 5.0), 0.0, WALL_TOP).unwrap();
+        let eye = Vector3::new(0.0, 1.5, 0.0);
+        let lit = Vector3::new(9.0, 1.5, 0.0);
+
+        let cut = explain_ray(eye, lit, &[wall], &[]);
+        assert_eq!(cut.first_wall, Some(0));
+        // the near face is at 3 - (WALL_T/2 - RECT_SHRINK); the air ends
+        // there, well short of the 9 m the ray would otherwise travel
+        assert!(
+            cut.visible_air > 2.8 && cut.visible_air < 3.0,
+            "air ended at {} m, not at the wall's near face",
+            cut.visible_air
+        );
+
+        // and with nothing in the way the eye sees the whole ray
+        let clear = explain_ray(eye, Vector3::new(-9.0, 1.5, 0.0), &[wall], &[]);
+        assert_eq!(clear.first_wall, None);
+        assert!(
+            (clear.visible_air - 9.0).abs() < 1.0e-4,
+            "an unwalled line saw {} m of its own 9",
+            clear.visible_air
+        );
+    }
 
     /// THE BREAK: the oracle and the engine composing a source's muffle by
     /// different laws. This module's whole purpose is that "a disagreement
