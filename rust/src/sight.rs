@@ -106,6 +106,55 @@ impl Occluder {
         })
     }
 
+    /// An occluder built from a solid's own world AABB rather than from a
+    /// centerline.
+    ///
+    /// [`Self::new`] is for WALLS, which are authored as a centerline and
+    /// inflate outward by their own thickness. A pillar has no centerline —
+    /// it has a footprint — so inflating one would double its width. This
+    /// takes the footprint the solid actually occupies and shrinks it by
+    /// [`RECT_SHRINK`], the same hair `wall_rect` leaves, so a crate shoved
+    /// flush against a pillar is not swallowed by it.
+    ///
+    /// Refuses anything that describes no volume: an inverted or degenerate
+    /// footprint, or a non-finite corner. A refused solid simply does not
+    /// occlude, which is what it did yesterday — the failure direction that
+    /// changes nothing rather than the one that blanks a room.
+    #[must_use]
+    pub fn from_bounds(
+        min_x: f64,
+        min_z: f64,
+        max_x: f64,
+        max_z: f64,
+        bottom: f64,
+        top: f64,
+    ) -> Option<Self> {
+        let shrink = RECT_SHRINK as f32;
+        let (min_x, min_z) = (min_x as f32, min_z as f32);
+        let (max_x, max_z) = (max_x as f32, max_z as f32);
+        let (bottom, top) = (bottom as f32, top as f32);
+        if !(min_x.is_finite()
+            && min_z.is_finite()
+            && max_x.is_finite()
+            && max_z.is_finite()
+            && bottom.is_finite()
+            && top.is_finite())
+        {
+            return None;
+        }
+        let rect = Vector4::new(
+            min_x + shrink,
+            min_z + shrink,
+            max_x - shrink,
+            max_z - shrink,
+        );
+        let occluder = Self {
+            rect,
+            span: Vector2::new(bottom.min(top), bottom.max(top)),
+        };
+        (!occluder.is_empty()).then_some(occluder)
+    }
+
     /// An occluder built from an already-inflated rect and a raw span,
     /// ordering nothing and checking nothing — for tests that need to
     /// reach the degenerate shapes [`Self::new`] refuses to build.
@@ -933,5 +982,55 @@ mod tests {
         assert!(blocked > 100, "grid never crossed a wall: {blocked}");
         assert!(clear > 100, "grid never had a clear line: {clear}");
         assert!(born_in_wall > 0, "grid never started inside a wall");
+    }
+
+    /// THE BREAK: a solid's footprint being inflated like a wall's
+    /// centerline, doubling every pillar's shadow — or shrunk the wrong
+    /// way, so a pillar stops occluding the moment anything leans on it.
+    ///
+    /// Hand-derived: a 0.5 m pillar centred at (2, 3) occupies
+    /// [1.75, 2.25] x [2.75, 3.25]; RECT_SHRINK takes 0.02 off each side.
+    #[test]
+    fn a_solids_footprint_is_taken_as_given_and_not_inflated() {
+        let occ = Occluder::from_bounds(1.75, 2.75, 2.25, 3.25, 0.0, 3.0)
+            .expect("a half-metre pillar describes a volume");
+        let r = occ.rect();
+        assert!((f64::from(r.x) - 1.77).abs() < 1e-6, "min_x was {}", r.x);
+        assert!((f64::from(r.y) - 2.77).abs() < 1e-6, "min_z was {}", r.y);
+        assert!((f64::from(r.z) - 2.23).abs() < 1e-6, "max_x was {}", r.z);
+        assert!((f64::from(r.w) - 3.23).abs() < 1e-6, "max_z was {}", r.w);
+        assert!((f64::from(occ.span().x) - 0.0).abs() < 1e-6);
+        assert!((f64::from(occ.span().y) - 3.0).abs() < 1e-6);
+        // The property that matters, stated directly: a FOOTPRINT shrinks
+        // inward, strictly inside what the solid occupies. A CENTERLINE
+        // does the opposite — the same middle, fed to the wall
+        // constructor, straddles it — so feeding a footprint to `new`
+        // would hand the sight tests a shadow wider than the pillar.
+        assert!(f64::from(r.x) > 1.75 && f64::from(r.z) < 2.25);
+        assert!(f64::from(r.y) > 2.75 && f64::from(r.w) < 3.25);
+        let centreline = Occluder::new(Vector4::new(2.0, 3.0, 2.0, 3.0), 0.0, 3.0).unwrap();
+        let c = centreline.rect();
+        assert!(
+            f64::from(c.x) < 2.0 && f64::from(c.z) > 2.0,
+            "a centerline must straddle its own line, got {c:?}"
+        );
+    }
+
+    /// THE BREAK: a degenerate or malformed solid entering the table as a
+    /// NaN-cornered rect, which every comparison in the slab walk answers
+    /// `false` for — a wall that silently stops occluding.
+    #[test]
+    fn a_footprint_describing_no_volume_is_refused() {
+        // thinner than twice RECT_SHRINK: shrinking inverts it
+        assert_eq!(Occluder::from_bounds(0.0, 0.0, 0.03, 1.0, 0.0, 3.0), None);
+        assert_eq!(Occluder::from_bounds(1.0, 0.0, 0.0, 1.0, 0.0, 3.0), None);
+        assert_eq!(
+            Occluder::from_bounds(f64::NAN, 0.0, 1.0, 1.0, 0.0, 3.0),
+            None
+        );
+        assert_eq!(
+            Occluder::from_bounds(0.0, 0.0, 1.0, 1.0, f64::INFINITY, 3.0),
+            None
+        );
     }
 }

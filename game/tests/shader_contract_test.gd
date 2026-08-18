@@ -434,9 +434,7 @@ func test_decode_expressions_are_literal() -> void:
 func test_shape_and_detail_are_drawn_under_separate_laws() -> void:
 	var post := _read(HEARING_POST_PATH)
 	assert_str(post).contains("float sil = smoothstep(0.012, 0.03, lap);")
-	assert_str(post).contains(
-		"float crease = smoothstep(u_crease_knee.x, u_crease_knee.y, nrm);"
-	)
+	assert_str(post).contains("float crease = smoothstep(u_crease_knee.x, u_crease_knee.y, nrm);")
 	assert_str(post).contains("vec3 col = vec3(max(sil * reveal, crease * detail * reveal));")
 	# and DETAIL must be gated on the reveal the x-ray cap has already
 	# lowered, not the one before it — otherwise a source keeps its creases

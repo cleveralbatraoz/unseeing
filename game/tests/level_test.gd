@@ -696,14 +696,12 @@ func _stub_walls(count: int) -> WaveLevel:
 	return level
 
 
-## The heads-up half of the wall budget, at the engine boundary. The words
-## are pinned in cargo (level_plan::wall_budget); what is pinned HERE is
-## that they are actually SAID — that push_wall_table still hands the
-## verdict to godot_warn!. Delete that one call and every cargo test and
+## The heads-up half of the occluder budget, at the engine boundary. The
+## words are pinned in cargo (level_plan::occluder_budget); what is pinned
+## HERE is that they are actually SAID — that push_wall_table still hands
+## the verdict to godot_warn!. Delete that one call and every cargo test and
 ## every other suite stays green while a designer is never told anything.
-##
-## A heads-up, not an error: 29 walls of 32 still occlude, nothing is
-## truncated, and the level is merely one room short of the ceiling.
+## A heads-up, not an error: 29 of 32 still occlude and nothing is truncated.
 func test_a_level_nearing_the_wall_slots_warns_with_its_headroom() -> void:
 	var level := _stub_walls(29)
 	var enter := func() -> void: add_child(level)
@@ -711,10 +709,10 @@ func test_a_level_nearing_the_wall_slots_warns_with_its_headroom() -> void:
 		(
 			"WaveLevel: 29 walls against the sight shaders' 32 slots — 3 segments left, short of "
 			+ "the 4 another room costs (three sides plus the doorway, which is the gap between "
-			+ "two segments and so costs a segment of its own). Every wall past the last slot "
+			+ "two segments and so costs a segment of its own). Every occluder past the last slot "
 			+ "silently stops occluding. Raising MAXW (rust/src/sight.rs, mirrored in "
 			+ "game/shaders/pulse_pool.gdshaderinc) is a measured decision and not a free one: "
-			+ "every wall is another rect in the per-fragment sight loop, on every platform."
+			+ "every occluder is another rect in the per-fragment sight loop, on every platform."
 		)
 	))
 	assert_int(level.wall_segments().size()).is_equal(29)
@@ -732,10 +730,12 @@ func test_a_level_past_the_wall_slots_errors_and_counts_the_dropped_walls() -> v
 		(
 			"WaveLevel: 33 walls exceed the sight shaders' 32 slots — the table keeps the first "
 			+ "32 and drops 1, which stop occluding entirely: waves pass straight through them "
-			+ "and no sight line counts them. Delete or merge walls, or raise MAXW "
-			+ "(rust/src/sight.rs, mirrored in game/shaders/pulse_pool.gdshaderinc) — a measured "
-			+ "decision and not a free one: every wall is another rect in the per-fragment sight "
-			+ "loop, on every platform."
+			+ "and no sight line counts them. Note that a pillar can cost a wall its slot: solids "
+			+ "are appended after the walls, so the drops come off the end of whichever "
+			+ "population runs over. Delete or merge walls, lower or thin a spanning solid so it "
+			+ "stops qualifying, or raise MAXW (rust/src/sight.rs, mirrored in "
+			+ "game/shaders/pulse_pool.gdshaderinc) — a measured decision and not a free one: "
+			+ "every occluder is another rect in the per-fragment sight loop, on every platform."
 		)
 	))
 	assert_int(level.wall_rects().size()).is_equal(32)  # truncated, as the message says

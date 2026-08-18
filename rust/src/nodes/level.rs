@@ -212,6 +212,15 @@ pub struct WaveLevel {
     tap_normal: Vector3,
     source_children: Vec<DynGd<Node, dyn SoundSource>>,
     cat_children: Vec<Gd<WaveCat>>,
+    /// Non-wall solids admitted to the occluder table by geometry, in the
+    /// order they were appended after the walls.
+    ///
+    /// Kept and reported because a geometric admission rule without a
+    /// diagnostic is how a designer loses a wall in silence: a pillar now
+    /// consumes a `MAXW` slot, and the budget message must be able to say
+    /// so rather than telling them to delete walls they can already count.
+    spanning_solids: Vec<String>,
+
     /// The walls the occluder table was built FROM, in table order, kept so
     /// a crossing can be named without re-walking the scene — and, more
     /// importantly, so the names cannot drift out of step with the table.
@@ -592,7 +601,7 @@ impl WaveLevel {
     }
 
     /// Occluder slots the sight shaders allocate ([`sight::MAXW`]) — the
-    /// ceiling [`level_plan::wall_budget`] measures a level's headroom
+    /// ceiling [`level_plan::occluder_budget`] measures a level's headroom
     /// against, served the same way [`Self::wall_height`] is.
     ///
     /// It exists so the number can be READ BACK from the engine layer. The
@@ -943,6 +952,50 @@ impl WaveLevel {
             }
             self.node_faults.push(fault);
         }
+        // Solids that ACTUALLY STAND IN THE WAY join the wall table.
+        //
+        // Occlusion is decided by geometry, never by node class. A pillar
+        // running floor to ceiling and half a metre thick stops sound the
+        // way a wall does, because it is a wall that happens to be round;
+        // a crate at knee height does not, because sound goes over it.
+        // `data_core.gdshaderinc` asserted for months that props are
+        // transparent "deliberately"; the occluder table had simply only
+        // ever been built from the wall census, and the sole recorded
+        // argument was the cost of admitting all 106 props at once. That
+        // cost argument stands and is why the rule is narrow.
+        //
+        // AFTER the walls, never interleaved: `wall_names()[i]` names
+        // `occluders[i]`, and every authored wall must keep the slot index
+        // it has always had so a designer's fault message still points at
+        // the right node.
+        let mut admitted: Vec<String> = Vec::new();
+        for solid in &census.solids {
+            let node = solid.clone().into_gd();
+            let Some(shape) = Self::unwalled_world_shape(&node) else {
+                continue;
+            };
+            let Some(box3) = render::faces::bounds(&shape) else {
+                continue; // unmeasurable: refused, which is what it did before
+            };
+            let width = box3.max[0] - box3.min[0];
+            let depth = box3.max[2] - box3.min[2];
+            if !level_plan::spans_the_corridor(box3.min[1], box3.max[1], width.min(depth)) {
+                continue;
+            }
+            let Some(occluder) = sight::Occluder::from_bounds(
+                box3.min[0],
+                box3.min[2],
+                box3.max[0],
+                box3.max[2],
+                box3.min[1],
+                box3.max[1],
+            ) else {
+                continue;
+            };
+            admitted.push(root.get_path_to(&node).to_string());
+            occluders.push(occluder);
+        }
+        self.spanning_solids = admitted;
         self.push_wall_table(occluders, editor);
         self.report_pack_range(editor);
         self.paint_labels(&census, editor);
@@ -1356,6 +1409,30 @@ impl WaveLevel {
         entries
     }
 
+    /// The world shape of a solid that is NOT a wall, for the occlusion
+    /// admission walk.
+    ///
+    /// The same concrete dispatch [`Self::paint_entries`] performs, and for
+    /// the same reason: `WaveSolid` carries only `set_material`, so the
+    /// geometry lives on the concrete classes. Walls are excluded here
+    /// because they are admitted unconditionally, by class contract, in the
+    /// loop above — asking geometry about a wall could only ever refuse one.
+    fn unwalled_world_shape(node: &Gd<Node>) -> Option<render::Shape> {
+        if node.clone().try_cast::<WaveWall>().is_ok() {
+            return None;
+        }
+        if let Ok(prop) = node.clone().try_cast::<WaveProp>() {
+            return Some(prop.bind().world_shape());
+        }
+        if let Ok(column) = node.clone().try_cast::<WaveColumn>() {
+            return Some(column.bind().world_shape());
+        }
+        if let Ok(wedge) = node.clone().try_cast::<WaveWedge>() {
+            return Some(wedge.bind().world_shape());
+        }
+        None
+    }
+
     /// Hand one entry its chosen labels — the concrete-type dispatch
     /// [`PaintEntry`]'s own `item` exists for, since a floor/ceiling slab
     /// is owned directly by the level (no `Skin` indirection) while every
@@ -1386,13 +1463,17 @@ impl WaveLevel {
     /// against.
     ///
     /// Loud about the shaders' slot ceiling BEFORE it is hit as well as
-    /// after ([`level_plan::wall_budget`]): a level past it has walls that
+    /// after ([`level_plan::occluder_budget`]): a level past it has walls that
     /// silently stopped occluding, and a level one room short of it is
     /// about to. Only the truncation stays here, because it is the act the
     /// message describes — the words themselves are a decision over two
     /// numbers, and live in the pure plan where cargo can hold them.
     fn push_wall_table(&mut self, mut occluders: Vec<sight::Occluder>, editor: bool) {
-        let budget = level_plan::wall_budget(occluders.len(), sight::MAXW);
+        let budget = level_plan::occluder_budget(
+            occluders.len().saturating_sub(self.spanning_solids.len()),
+            self.spanning_solids.len(),
+            sight::MAXW,
+        );
         self.say(editor, budget);
         occluders.truncate(sight::MAXW); // a no-op below the ceiling
         // kept for the per-object source muffle: the walls a camera→source
@@ -1726,9 +1807,10 @@ impl WaveLevel {
     /// prevent.
     pub(super) fn wall_names(&self) -> Vec<String> {
         let root = self.base().clone().upcast::<Node>();
-        self.wall_children
+        // The authored walls first, in the slot order they were built in.
+        let mut names: Vec<String> = self
+            .wall_children
             .iter()
-            .take(self.occluders.len())
             .enumerate()
             .map(|(index, wall)| {
                 if wall.is_instance_valid() {
@@ -1737,7 +1819,17 @@ impl WaveLevel {
                     format!("<freed wall {index}>")
                 }
             })
-            .collect()
+            .collect();
+        // ...then the solids geometry admitted, in the order `derive`
+        // appended them. Without this the table would carry occluders no
+        // name could reach, and `explain_ray` — whose whole job is to say
+        // WHICH wall stopped a ray — would either run off the end of this
+        // list or blame the last authored wall for a pillar's work. That is
+        // the confident-wrong answer the observability layer exists to
+        // prevent, so the two lists grow together or the invariant is a lie.
+        names.extend(self.spanning_solids.iter().cloned());
+        names.truncate(self.occluders.len());
+        names
     }
 
     /// Every painted box in the level with the id it ACTUALLY carries,
