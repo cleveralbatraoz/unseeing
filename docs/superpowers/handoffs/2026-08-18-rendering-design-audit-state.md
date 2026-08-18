@@ -17,37 +17,41 @@ your goal is to compose a technically perfect rendering engine, not ad-hoc
 fixes application."*
 
 The barrier-law work (PR 47 plus its repairs) is the first 18 commits. The
-five most recent commits are the design audit's landed fixes and are what
+nine after it are the design audit — five fixes, then three more repairing
+what an adversarial re-review found in them, then this record — and are what
 this document is mainly about.
 
 ## Verification state of the tree
 
-Reproduced at commit `4420bfa`:
+Reproduced at commit `45f0536`:
 
 | gate | result |
 |---|---|
-| `cargo test` | 490 passed |
+| `cargo test` | 496 passed |
 | `cargo fmt --check`, `clippy -D warnings` | clean |
-| gdUnit4 | 330 cases / 31 suites, 0 failures |
+| gdUnit4 | 333 cases / 31 suites, 0 failures |
 | headless boot | no script/shader/engine errors |
-| `tools/probe_visibility.sh` | PASS, 7 checks, reproduced across a cold and a warm boot |
+| `tools/probe_visibility.sh` | PASS, 10 checks, reproduced across a cold and a warm boot |
 | `gdformat --check`, `gdlint` | clean |
+| `test/repo_hygiene.sh`, `ci/check_gdscript_policy.sh` | pass |
 
-Rendered probe readings after the audit fixes (Mesa / Linux / Godot 4.7.1,
-AMD Radeon, Compatibility):
+Rendered probe readings (Mesa / Linux / Godot 4.7.1, AMD Radeon,
+Compatibility). The full table with each row's bound is on the wiki's
+Build, Test, Deploy page; the two most informative:
 
-| check | reading | floor |
+| check | reading | bound |
 |---|---|---|
-| fan lifts the divider's FAR face | 0.000 | < 0.02 |
-| the same voice lifts its OWN face | 0.392 | > 0.05 |
-| fan's SHELL lifts the walled image | 0.000 | < 0.02 |
-| the same shell inside the fan's OWN room | 0.290–0.329 | > 0.05 |
-| tap lights its own struck face | 0.784–0.796 | > 0.15 |
+| the fan's own body, ABSOLUTE, through one wall | 0.192–0.196 | 0.13 … 0.30 |
+| the same shell inside the fan's OWN room | 0.306–0.322 | > 0.05 |
 
 The positive controls are markedly stronger than the pre-audit readings
-(0.161–0.314 for the own-face case). That is the wave-death gate: the
-"muted" baseline no longer carries an unexpired front, so the delta stops
-understating. Margin against the floor is now 5.8–7.8x.
+(0.161–0.314 for the own-face case, now 0.373–0.396). That is the wave-death
+gate: the "muted" baseline no longer carries an unexpired front, so the delta
+stops understating.
+
+Every row was proven able to FAIL by breaking the law it guards — see the
+adversarial-pass section below, which is where two of them turned out not to
+be.
 
 **Do not add `--fixed-fps` to the probe.** See the note in
 `tools/probe_visibility.sh`; at a fixed 60 fps a 12-frame baseline is 0.2 s
@@ -72,10 +76,12 @@ slot allocator.
 `rust/src/render/reveal.rs` is the new pure home of the law, beside
 `sight`'s: sight owns *where* a wave reaches, this owns *when it stops*.
 Both are written against seconds-since-the-front-passed, the only coordinate
-under which the fade is the same law near the source and at full reach. The
-envelope is the shipped shape minus its own value at the tail, so it lands
-on exactly zero, continuously, while the strike flash still saturates the
-clamp untouched.
+under which the fade is the same law near the source and at full reach.
+
+The envelope was first brought to zero by subtracting its own value at the
+tail. **That was wrong and is fixed** — see the adversarial pass below; it
+is now a closing window over the last quarter of each wave's life, which
+leaves the shape identical for every kind until then.
 
 **Design note worth keeping:** the audit proposed a new `vec4 u_plife[MAXP]`
 lane (1 KB) to carry death times. It is not needed — death is already
@@ -226,6 +232,75 @@ case green while the seams rendered weaker.
   `min_source_limb_gap`, `deepest_world_fragment_in_band`, `camera_near`,
   `role_labels`, `world_palette`, `min_label_separation`.
 
+## The adversarial pass, and the six repairs it forced
+
+A ten-agent workflow re-reviewed the five landed fixes, each skeptic tasked
+with REFUTING rather than confirming, with a second opinion on every
+refutation. It found real defects in three of the five. All are now fixed
+(commits `c667d0a`, `b932898`, `45f0536`).
+
+**The worst was mine, and it was in a test.** Making the wall muffle
+multiply the whole acoustic image shrank every reading on the fan by 3.3x,
+while the rendered probe's two hand-derived leak floors (0.12 and 0.08)
+stayed where they were. The largest delta a full-strength leak could then
+produce was `0.867 x (0.30 - 0.225) = 0.065` — under both floors. **The two
+checks that exist to catch a wave reaching through a wall could no longer
+fail.** Two agents derived this independently and I confirmed the
+arithmetic before touching anything. They are ratios of the fan's own
+standing image now, which is scale-free, plus a new ABSOLUTE row that
+catches the one failure no unit test can see: an instance uniform that never
+reached the GPU, because the suites and the observer read those uniforms
+back through the same names that would have been renamed. Verified by
+deleting the muffle from the skin — 0.659 against a 0.30 ceiling.
+
+**The envelope repair had over-reached.** Bringing the decay to zero by
+subtracting its own value at the tail reached zero correctly and darkened
+everything else by a kind-dependent amount: 17.3, 39.7, 55.4 and 65.6 codes
+of 255 for kinds 0..3. A cane tap and its own echo striking one surface read
+0.3144 and 0.2264 at the same age — a 22-code split with no cause in the
+world, only in the slot allocator. The decay is the acoustic law and the
+tail is only the budget, so a CLOSING WINDOW now ends the wave instead:
+flat at 1.0 through the first three quarters of every wave's life, then a
+smoothstep to exactly zero. `CLOSE_FRACTION = 0.25`.
+
+**Two "cargo-pinned references" pinned nothing.** `render::reveal::flare`
+and `::source_image` had no non-test caller, and the shipped GLSL was held
+to them by substring alone — a `contains()` cannot tell 1.3 from 1.0, or a
+3.0 time constant from a 4.0 one. And `ga = age - dist / speed`, the single
+time coordinate the whole law is written against, was asserted nowhere: with
+`ga = age` the fan (ring time exactly 2.0 s against kind 3's tail of exactly
+2.0 s) would stop revealing the outer metre of its own wash at the instant
+its front arrived, while the ring kept drawing. Both cross the language
+boundary numerically now, through `WaveCore.wave_flare` /
+`wave_close_fraction` / `wave_death_time`, with the shader's own constants
+parsed out of the GLSL and evaluated. Mutation-checked: the slow time
+constant, `CLOSE_FRACTION`, and the time coordinate all fail.
+
+**The probe had a second, older lie.** Its sweep window was 200 frames,
+about 3.3 s against the fan's 11.42 s oscillation, so it could land wholly
+in a phase where the beam points elsewhere — a POSITIVE control read 0.000
+on one boot and 0.322 and 0.310 on the next two. The window is a duration on
+the simulated clock now (`SWEEP_SECONDS = 12.0`), because the probe's frame
+rate is set by the full-framebuffer readback it does every frame and a fixed
+frame count means something different on every machine. Widening it exposed
+the second half: the hero is a `CharacterBody3D` running its own physics and
+drifts out from under the sample points over a window that long, so
+`_peak_r` now re-applies the POSE every sampled frame, not only the aim.
+
+Smaller repairs in the same pass: `paint_plan`'s `LABEL_MIN`/`LABEL_MAX`
+were a second executable copy of the ladder endpoints; the Godot-facing role
+roster was a hand-written array that a new `Role` could silently miss (it is
+paired with an exhaustive `role_name` match now); `SOURCE_THROUGH`'s own
+file still documented the law the campaign replaced; `pack_data` wrote G
+unclamped while clamping R and B; the anchor direction was a world-up
+literal rather than the slab's own basis; and two anchor limits that survive
+— a column's curved flank cannot be named by any direction, and two entries
+pinned to the SAME label across a seam are still refused outright — are now
+written down and tested as the unreachable edges they currently are.
+
+**Two of the five fixes survived refutation intact**: the label ladder and
+the face-scoped anchor drew only minor findings, both of which are fixed.
+
 ## Gaps identified and NOT yet fixed
 
 Ranked by my own assessment, not the audit's severity labels (which were
@@ -288,21 +363,25 @@ codebase before accepting it.
 
 ## Documentation state
 
-- The wiki checkout at `/home/albatraoz/unseeing.wiki` has **2 local commits
-  that are not pushed** (`29302ef`, `03e976d`), covering the barrier law's
-  two readers and the reveal gate as a predicate. Pushing is outward-facing
-  and is the user's call.
-- The wiki has **not** been updated for the five audit fixes above. Under
-  AGENTS.md, that is required before the work can be called complete:
-  `Mechanics-Rendering.md` (the depth band, the label ladder, the anchor
-  law), `Mechanics-Waves.md` (the reveal's end), `Mechanics-Sound-Sources.md`
-  (the muffle as a multiplier) and
-  `Engineering-Build-Test-Deploy.md` (the new probe readings) all describe
-  superseded behaviour.
-- No spec was written for the audit campaign. If this work continues, a spec
-  under `docs/superpowers/specs/` should freeze what was decided and why —
-  particularly the label ladder, which is a forced arrangement rather than a
-  taste and deserves to be recorded as such.
+- The wiki checkout at `/home/albatraoz/unseeing.wiki` has **3 local commits
+  that are not pushed** (`29302ef`, `03e976d`, `c199f4f`). The first two
+  cover the barrier law; the third rewrites `Mechanics-Rendering.md`,
+  `Mechanics-Waves.md`, `Mechanics-Sound-Sources.md` and
+  `Engineering-Build-Test-Deploy.md` for this campaign — the derived depth
+  band, the label ladder, the reveal's end, the muffle as a multiplier, and
+  the probe's ten-row evidence table with the measured value that proves
+  each row can still fail. **Pushing is outward-facing and is the user's
+  call.**
+- Two specs are amended in-repo rather than rewritten, since a spec freezes
+  what was decided: `2026-08-12-superface-outline-rendering-design.md` (the
+  label numbers it named broke their own separation law; the design it
+  describes is unchanged apart from anchors becoming face-scoped) and
+  `2026-08-10-debug-observability-design.md` (`u_source_floor` no longer
+  exists). Plans are left untouched: they record what was planned.
+- No NEW spec was written for the audit campaign. If this work continues,
+  one under `docs/superpowers/specs/` should freeze the label ladder in
+  particular — it is a forced arrangement rather than a taste, and the
+  derivation deserves its own page.
 
 ## Where to pick up
 
