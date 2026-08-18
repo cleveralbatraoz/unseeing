@@ -16,22 +16,35 @@
 //! wall-clock time by their own travel delay. Writing the law against raw
 //! `age` instead would make the fade depend on distance twice.
 //!
-//! # Why the envelope is shifted rather than merely cut
+//! # How the envelope is brought to zero
 //!
 //! The shipped decay `1.3·e^(-t/0.25) + 0.5·e^(-t/3)` is a sum of
 //! exponentials, so it is asymptotic: it never reaches zero. A pulse's slot
-//! is retired at [`pulse_pool::fade_tail`] seconds past the front, and the
-//! reveal must be gone by then or the wave's visible end is decided by the
-//! slot allocator instead of by the wave — which is exactly what happened:
-//! a surface stayed lit until some later sound happened to reuse the slot,
+//! is retired at [`fade_tail`] seconds past the front, and the reveal must
+//! be gone by then or the wave's visible end is decided by the slot
+//! allocator instead of by the wave — which is exactly what happened: a
+//! surface stayed lit until some later sound happened to reuse the slot,
 //! and then went dark in one frame.
 //!
-//! Cutting the raw decay off at the tail would trade an unbounded lifetime
-//! for a visible step (0.068 of peak for a tap, 0.257 for a hum). Shifting
-//! it down by its own value at the tail instead reaches zero exactly, with
-//! a continuous derivative-free landing, and leaves the perceptually
-//! important part — the strike flash, which saturates the [0, 1] clamp
-//! anyway — bit-for-bit where it was.
+//! Three ways to end it, and the choice matters more than it looks.
+//!
+//! *Cutting* the raw decay off at the tail trades an unbounded lifetime for
+//! a visible step — 0.068 of peak for a tap, 0.257 for a hum.
+//!
+//! *Shifting* it down by its own value at the tail reaches zero exactly, but
+//! darkens the WHOLE curve by that same kind-dependent amount: 17.3, 39.7,
+//! 55.4 and 65.6 codes of 255 for kinds 0..3. A cane tap and its own echo
+//! striking one surface would then read 0.3144 and 0.2264 at the same age —
+//! a 22-code split with no cause in the world, only in the slot allocator.
+//! The fade would become a function of the emitter's slot budget.
+//!
+//! *A closing window* is what this module does. The decay is the ACOUSTIC
+//! law and the tail is the BUDGET, so the budget is allowed to end the wave
+//! and nothing more: [`closing`] holds at 1.0 for the first
+//! `1 - CLOSE_FRACTION` of every wave's life, leaving the shipped shape
+//! untouched and identical for every kind, then smoothsteps to exactly zero
+//! at the tail. The whole change is confined to the last quarter of a
+//! wave's life, where it is a wave ending rather than a wave dimmed.
 
 use crate::pulse_pool::fade_tail;
 
@@ -45,6 +58,11 @@ const FAST_TIME: f64 = 0.25;
 /// un-shifted envelope immortal.
 const SLOW_WEIGHT: f64 = 0.5;
 const SLOW_TIME: f64 = 3.0;
+
+/// The fraction of a kind's tail spent closing the envelope out. Before it
+/// the decay is the shipped shape untouched; across it a smooth window
+/// carries the shape to exactly zero at the tail.
+pub const CLOSE_FRACTION: f64 = 0.25;
 
 /// The raw, un-shifted two-term decay. Asymptotic on purpose: it is the
 /// shape, not the law. [`flare`] is the law.
@@ -72,7 +90,31 @@ pub fn flare(since_front: f64, tail: f64) -> f64 {
     if since_front < 0.0 || since_front >= tail {
         return 0.0;
     }
-    (raw(since_front) - raw(tail)).clamp(0.0, 1.0)
+    (raw(since_front) * closing(since_front, tail)).clamp(0.0, 1.0)
+}
+
+/// The closing window: 1.0 for the whole early life of a wave, then a
+/// smoothstep down to exactly 0.0 at `tail`.
+///
+/// A window rather than a downward shift, and that is the design. The decay
+/// is the ACOUSTIC law; the tail is the SLOT BUDGET. Subtracting the shape's
+/// own value at the tail — the first repair of the immortal envelope — did
+/// reach zero, but it darkened the entire curve by a kind-dependent amount,
+/// so a cane tap and its own echo striking one surface read differently at
+/// the same age for no reason but how many pool slots each was granted.
+/// Multiplying instead confines the whole change to the last
+/// [`CLOSE_FRACTION`] of each wave's life, leaves every kind decaying by one
+/// law until then, and still lands on exactly zero.
+fn closing(since_front: f64, tail: f64) -> f64 {
+    let opens = tail * (1.0 - CLOSE_FRACTION);
+    if since_front <= opens {
+        return 1.0;
+    }
+    if since_front >= tail {
+        return 0.0;
+    }
+    let across = (since_front - opens) / (tail - opens);
+    1.0 - across * across * across.mul_add(-2.0, 3.0)
 }
 
 /// A sound source's standing acoustic image, as the two INDEPENDENT
@@ -183,6 +225,62 @@ mod tests {
             last < 0.001,
             "the envelope steps off a cliff at the tail: {last}"
         );
+    }
+
+    /// THE break this catches: the fade must be the SAME law for every kind
+    /// until that kind's own life is nearly over. It is an acoustic decay,
+    /// not a budget: how brightly a surface still rings a second after the
+    /// front passed cannot depend on how many pool slots the emitter was
+    /// granted.
+    ///
+    /// The first repair of the immortal envelope subtracted the shape's own
+    /// value at the tail, which reached zero correctly but darkened the
+    /// WHOLE curve by a kind-dependent amount — 17.3, 39.7, 55.4 and 65.6
+    /// codes of 255 for kinds 0..3. A cane tap and its own echo striking one
+    /// surface then read 0.3144 and 0.2264 at the same age: a 22-code split
+    /// with no cause in the world, only in the slot allocator. Hand-derived
+    /// from the two time constants: every kind must read
+    /// 1.3·e^-4 + 0.5·e^-(1/3) = 0.3820760 one second after the front.
+    #[test]
+    fn the_fade_is_one_law_for_every_kind_until_its_own_close() {
+        let expected = 1.3 * (-1.0_f64 / 0.25).exp() + 0.5 * (-1.0_f64 / 3.0).exp();
+        assert!(
+            (expected - 0.382_076).abs() < 1.0e-6,
+            "derivation drifted: {expected}"
+        );
+        for kind in [0, 1, 2, 3] {
+            let tail = reveal_tail(kind);
+            let got = flare(1.0, tail);
+            assert!(
+                (got - expected).abs() < 1.0e-12,
+                "kind {kind} (tail {tail} s) reads {got} one second after the front, \
+                 not the {expected} every other kind reads — its slot budget is \
+                 leaking into its acoustics"
+            );
+        }
+    }
+
+    /// The same law, stated as the boundary it actually holds to: until a
+    /// wave enters its own closing window it decays EXACTLY as the shipped
+    /// pre-fix shape did, clamped. That is what makes the death gate a
+    /// bounded change rather than a re-tuning of the whole envelope, and it
+    /// is checked across the full span rather than at one convenient point.
+    #[test]
+    fn before_its_close_the_envelope_is_the_shipped_shape_exactly() {
+        for kind in [0, 1, 2, 3] {
+            let tail = reveal_tail(kind);
+            let close_starts = tail * (1.0 - CLOSE_FRACTION);
+            for step in 0..=200 {
+                let since = close_starts * f64::from(step) / 200.0;
+                let shipped =
+                    (1.3 * (-since / 0.25).exp() + 0.5 * (-since / 3.0).exp()).clamp(0.0, 1.0);
+                let got = flare(since, tail);
+                assert!(
+                    (got - shipped).abs() < 1.0e-12,
+                    "kind {kind} at {since} s reads {got}, not the shipped {shipped}"
+                );
+            }
+        }
     }
 
     /// The strike flash is untouched by the shift. Hand-derived: the raw

@@ -32,6 +32,21 @@ extends Node
 ##      fan's SOLID interior only; the outline points sit at the fan/wall
 ##      boundary and would read the wall the tap rightly lights.
 ##
+##      Cases 5 and 6 are RATIOS of the fan's own standing image, not
+##      absolute deltas. As absolutes they silently became unfailable the
+##      moment the wall muffle turned into a multiplier over the whole
+##      acoustic image: every reading on the fan shrank 3.3x while the
+##      floors did not, and a full-strength leak measured 0.065 against a
+##      0.08 floor. A ratio is scale-free and cannot rot that way;
+##   7. THE MUFFLE ARRIVES (hearing pass OFF): the fan's own body, read as
+##      an ABSOLUTE through one wall, must land in a hand-derived window.
+##      Every other case here is a delta or a ratio and so is blind to a
+##      factor common to both halves — including the whole standing image
+##      going missing. This one catches an instance uniform that never
+##      reached the GPU, which no unit test can: the suites and the
+##      observer read those uniforms back by the same names that would
+##      have been renamed.
+##
 ## Windowed, real GPU; run by tools/probe_visibility.sh, not in headless.
 ##
 ## THREE WAYS THIS PROBE CAN LIE, all three met by hand:
@@ -41,8 +56,12 @@ extends Node
 ##     its own camera rotation each tick and a single `look_at` drifts off
 ##     target over a long window;
 ##   - a reading of a SWEPT source must outlast its sweep, or the same
-##     correct build measures 0.392, 0.000 and -0.020 on consecutive runs
-##     (`SWEEP_WINDOW`);
+##     correct build measures 0.392, 0.000 and -0.020 on consecutive runs.
+##     The window is therefore a DURATION on the simulated clock
+##     (`SWEEP_SECONDS`), never a frame count: the probe reads the whole
+##     framebuffer back every frame, so its frame rate — and with it the
+##     slice of the 11.42 s sweep any fixed frame count covers — depends on
+##     the machine;
 ##   - a delta is only honest if the world does not change between its two
 ##     halves, so the hero never MOVES inside one (a teleport emits a
 ##     footstep) and the level's creatures are silenced for the run.
@@ -127,7 +146,27 @@ const WINDOW := 26
 ##
 ## Do NOT "fix" this with --fixed-fps instead; see tools/probe_visibility.sh
 ## for why that breaks the tap cases.
-const SWEEP_WINDOW := 200
+## One full sweep of the fan's head, in SIMULATED seconds, plus margin.
+##
+## The head oscillates as sin(t * PIVOT_SPEED) with PIVOT_SPEED = 0.55
+## (rust/src/fan_wave.rs), so its period is 2*PI/0.55 = 11.42 s. Any window
+## shorter than that can land wholly in a phase where the beam points
+## somewhere else, and a peak taken over it reads nothing through no fault
+## of the law under test.
+##
+## It is a DURATION and not a frame count, and that is the fix rather than a
+## detail. This was 200 frames, which is 3.3 s at 60 fps — 29% of a cycle —
+## and the probe's own frame rate is set by the full-framebuffer readback
+## `_peak_r` performs every single frame, so the same 200 frames is a
+## different slice of the sweep on every machine and every driver. Measured
+## consequence: check 4, a POSITIVE control, read 0.000 on one boot and
+## 0.322 and 0.310 on the next two.
+const SWEEP_SECONDS := 12.0
+
+## Frames a windowed read may burn before it gives up waiting for the
+## simulated clock. A bound, not a budget: without it a stalled clock would
+## hang the probe instead of failing it.
+const WINDOW_FRAME_LIMIT := 4000
 
 var _checks := 0
 var _failed := 0
@@ -139,6 +178,14 @@ var _failed := 0
 ## clamped it to the black border, which reads as a silent PASS on a
 ## darkness check and a silent FAIL on a positive one. Both were observed.
 var _aim := Vector3.ZERO
+## The pose `_look` last placed the hero at, re-applied every sampled frame
+## alongside the aim. The hero is a CharacterBody3D running its own physics:
+## it settles, slides and drifts, which a short window never noticed and a
+## window long enough to outlast the fan's 11.42 s sweep certainly does.
+## Measured, holding only the aim: a 12 s window left the tap control reading
+## 0.000 and the fan's own body reading 0.000 while an outline point
+## saturated at 1.000 — the camera was no longer where the check believed.
+var _pose := Vector3.ZERO
 
 
 func _ready() -> void:
@@ -190,9 +237,9 @@ func _ready() -> void:
 	# footstep before the baseline is read.
 	var fan: SoundFan = main.level.get_node("Fan") as SoundFan
 	var voice: float = fan.volume
-	var leak := await _voice_delta(main, fan, voice, AT_SPAWN, SPAWN_AIM, SPAWN_SIDE, WINDOW)
+	var leak := await _voice_delta(main, fan, voice, AT_SPAWN, SPAWN_AIM, SPAWN_SIDE, SWEEP_SECONDS)
 	var lit := await _voice_delta(
-		main, fan, voice, IN_FAN_ROOM, FAN_SIDE[0], FAN_SIDE, SWEEP_WINDOW
+		main, fan, voice, IN_FAN_ROOM, FAN_SIDE[0], FAN_SIDE, SWEEP_SECONDS
 	)
 	print(
 		(
@@ -216,7 +263,9 @@ func _ready() -> void:
 	# see a shell at all. Hearing pass ON, same delta across the same voice,
 	# same sample points — with the quad up, a ring crossing the divider
 	# into the hero's air adds its brightness at exactly these pixels.
-	var shell := await _voice_delta(main, fan, voice, AT_SPAWN, SPAWN_AIM, SPAWN_SIDE, WINDOW)
+	var shell := await _voice_delta(
+		main, fan, voice, AT_SPAWN, SPAWN_AIM, SPAWN_SIDE, SWEEP_SECONDS
+	)
 	# ...and its positive half, because the NEW failure mode of a per-fragment
 	# source-keyed cut is OVER-blocking, and a darkness delta cannot see that.
 	# `float env = 0.0;` in hearing_post deletes every ring in the game while
@@ -225,7 +274,7 @@ func _ready() -> void:
 	# source's shell wrongly vanishing inside the hero's own room" — and
 	# without the reading below the probe could never produce that evidence.
 	var shell_lit := await _voice_delta(
-		main, fan, voice, IN_FAN_ROOM, FAN_SIDE[0], FAN_SIDE, SWEEP_WINDOW
+		main, fan, voice, IN_FAN_ROOM, FAN_SIDE[0], FAN_SIDE, SWEEP_SECONDS
 	)
 	print(
 		(
@@ -238,8 +287,7 @@ func _ready() -> void:
 		shell < 0.02
 	)
 	_check(
-		"the fan's ring IS drawn inside its own room (%.3f > 0.05)" % shell_lit,
-		shell_lit > 0.05
+		"the fan's ring IS drawn inside its own room (%.3f > 0.05)" % shell_lit, shell_lit > 0.05
 	)
 	_look(main, AT_WALL, FAN)
 	await _settle(20)
@@ -291,13 +339,105 @@ func _ready() -> void:
 	var base_r := await _peak_r(main, FAN_CORE, 12)
 	main.player.queue_wave(0, WALL_TAP, 6.0, 5.5, 1.0, 6, Vector3(-1, 0, 0))
 	var reveal := await _peak_r(main, FAN_CORE, 26) - base_r
+	# BOTH leak readings are expressed as a FRACTION of the fan's own
+	# standing image at this pose, never as an absolute delta, and the
+	# reason is a bug this probe already shipped once.
+	#
+	# The fan here is one wall from the eye, so every pixel of it is
+	# multiplied by its wall muffle (SOURCE_THROUGH = 0.3 per crossing,
+	# rust/src/level_plan.rs). When the muffle became a multiplier over the
+	# whole acoustic image rather than a floor under it, every reading on
+	# these points shrank by 3.3x while the floors 0.12 and 0.08 stayed
+	# where they were — and a full-strength leak, the exact bug this probe
+	# exists to catch, then measured 0.867 * (0.30 - 0.225) = 0.065, under
+	# BOTH floors. The checks could no longer fail.
+	#
+	# A ratio cannot rot that way: it asks "how much did the tap add,
+	# against how bright this fan already was", which is scale-free and
+	# survives any future change to how the image is composed. Hand-derived
+	# floor: a leak at full wave strength lifts max(wave, volume) from
+	# volume (0.75) to 1.0, a ratio of 0.333, so 0.10 catches it with 3.3x
+	# margin while sitting far above the measured noise (0.00-0.02).
+	var flare_ratio := flare / maxf(base_img, 0.001)
+	var reveal_ratio := reveal / maxf(base_r, 0.001)
 	print(
-		"# occlusion @wall: tap flares outline %.3f ; tap lifts fan reveal %.3f" % [flare, reveal]
+		(
+			"# occlusion @wall: tap flares outline %.3f of %.3f ; lifts fan reveal %.3f of %.3f"
+			% [flare, base_img, reveal, base_r]
+		)
 	)
-	_check("tapping the wall does NOT flare the fan behind it (%.3f < 0.12)" % flare, flare < 0.12)
+	# non-vacuity for both ratios: a fan that had gone dark would divide a
+	# nothing by a nothing and pass every leak check ever written
 	_check(
-		"the tap's reveal (with echoes) does NOT reach the fan (%.3f < 0.08)" % reveal,
-		reveal < 0.08
+		"the fan IS drawn at all, so the leak ratios mean something (%.3f > 0.05)" % base_r,
+		base_r > 0.05
+	)
+	_check(
+		(
+			"tapping the wall does NOT flare the fan behind it (%.3f of its own image < 0.10)"
+			% flare_ratio
+		),
+		flare_ratio < 0.10
+	)
+	_check(
+		(
+			"the tap's reveal (with echoes) does NOT reach the fan (%.3f of its own image < 0.10)"
+			% reveal_ratio
+		),
+		reveal_ratio < 0.10
+	)
+
+	# 7 — THE MUFFLE REACHES THE GPU AT ALL, read as an absolute.
+	#
+	# Everything above is a delta or a ratio, and none of them can see a
+	# source's standing image vanish or double: a factor common to both
+	# halves cancels. This one reads the fan's own body as an absolute
+	# number and holds it to a hand-derived window.
+	#
+	# Derivation. The eye stands one wall from the hub (asserted, not
+	# assumed), so the muffle is SOURCE_THROUGH^1 = 0.3
+	# (rust/src/level_plan.rs). FAN_CORE is the motor housing, which sits
+	# BEHIND the hub and so outside the fan's own forward cone — its wave
+	# term stays under the standing volume, leaving
+	# 0.3 * 0.75 = 0.225. pack_data then applies
+	# (0.9 + 0.1 * flicker) * exp(-vd * 0.05) with vd = 2.86 m: between
+	# 0.78 and 0.87. So the shipped reading is 0.176 to 0.195, and the
+	# window below is [0.13, 0.30].
+	#
+	# What it catches, and it is the failure mode nothing else could see:
+	# if u_source_muffle never reaches the limbs — a renamed constant, a
+	# push that stopped happening — the shader falls back to its declared
+	# default of 1.0 and this reads 0.75 * 0.867 = 0.65. If u_source_volume
+	# is the one that goes missing, its default is 0.0 and this reads
+	# nothing. Both are outside the window; both leave every unit test in
+	# the tree agreeing with itself, because the suites and the observer
+	# read the uniforms back through the SAME constants that would have
+	# been renamed.
+	#
+	# What it deliberately does NOT claim: this cannot tell
+	# muffle * max(wave, volume) from max(wave, volume * muffle). Those two
+	# differ only where a source's own wave washes its own body, and on the
+	# shipped fan that is the guard ring and the blades — a 5-pixel torus
+	# and a set of paddles that spin out from under any fixed world point,
+	# both sitting on the fan/wall silhouette where _peak_r's tolerance
+	# reads the wall instead (measured: 0.753, the wall's own unmuffled
+	# reveal, not the fan's). The composition law is held by
+	# rust/src/render/reveal.rs's cargo tests; this holds its delivery.
+	var walls_to_fan: int = (
+		main.observer.explain_ray(main.player.camera.global_position, FAN)["camera_crossings"]
+	)
+	print(
+		(
+			"# occlusion @wall: the fan's own body reads %.3f through %d wall(s)"
+			% [base_r, walls_to_fan]
+		)
+	)
+	_check(
+		"the fan really is ONE wall from the eye here (%d == 1)" % walls_to_fan, walls_to_fan == 1
+	)
+	_check(
+		"the fan's image arrives MUFFLED, not whole (0.13 < %.3f < 0.30)" % base_r,
+		base_r > 0.13 and base_r < 0.30
 	)
 	_report()
 
@@ -310,9 +450,13 @@ func _peak_r(main: UnseeingGame, pts: Array[Vector3], frames: int) -> float:
 	var peak := 0.0
 	for _i: int in frames:
 		await get_tree().process_frame
-		# hold the aim: the player rewrites its camera rotation every tick,
-		# so without this the sample point walks out of the frame mid-window
+		# hold the POSE and the aim: the player rewrites its camera rotation
+		# every tick and its body keeps running physics, so without both the
+		# sample point walks out of the frame mid-window — and the longer the
+		# window, the further it walks
 		if _aim != Vector3.ZERO:
+			main.player.position = _pose
+			main.player.velocity = Vector3.ZERO
 			cam.look_at(_aim, Vector3.UP)
 		await RenderingServer.frame_post_draw
 		var img := get_viewport().get_texture().get_image()
@@ -325,6 +469,22 @@ func _peak_r(main: UnseeingGame, pts: Array[Vector3], frames: int) -> float:
 					var x := clampi(cx + dx, 0, img.get_width() - 1)
 					var y := clampi(cy + dy, 0, img.get_height() - 1)
 					peak = maxf(peak, img.get_pixel(x, y).r)
+	return peak
+
+
+## Peak brightness over `pts` across at least `seconds` of SIMULATED time —
+## the same clock the fan's sweep and every wave in the pool run on, so a
+## window stated here means the same slice of the world's motion whatever
+## rate the probe happens to render at.
+func _peak_r_over(main: UnseeingGame, pts: Array[Vector3], seconds: float) -> float:
+	var until: float = main.now + seconds
+	var peak := 0.0
+	var frames := 0
+	while main.now < until and frames < WINDOW_FRAME_LIMIT:
+		frames += 1
+		peak = maxf(peak, await _peak_r(main, pts, 1))
+	if frames >= WINDOW_FRAME_LIMIT:
+		push_warning("probe: windowed read hit its frame bound before the clock advanced")
 	return peak
 
 
@@ -345,17 +505,17 @@ func _voice_delta(
 	where: Vector3,
 	at: Vector3,
 	pts: Array[Vector3],
-	frames: int
+	seconds: float
 ) -> float:
 	_look(main, where, at)
 	fan.volume = 0.0
 	# outlast fade_tail(SOURCE_KIND) = 2 s of live hum AND the footstep the
 	# walk-in just made
 	await _settle(150)
-	var muted := await _peak_r(main, pts, frames)
+	var muted := await _peak_r_over(main, pts, seconds)
 	fan.volume = voice
 	await _settle(150)
-	var voiced := await _peak_r(main, pts, frames)
+	var voiced := await _peak_r_over(main, pts, seconds)
 	return voiced - muted
 
 
@@ -364,6 +524,7 @@ func _voice_delta(
 ## cannot leave the pose half-applied while a readback is already running.
 func _look(main: UnseeingGame, where: Vector3, at: Vector3) -> void:
 	main.player.position = where
+	_pose = where
 	_aim = at
 	main.player.camera.look_at(at, Vector3.UP)
 

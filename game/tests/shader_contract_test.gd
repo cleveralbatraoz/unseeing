@@ -194,10 +194,7 @@ func test_a_wave_stops_revealing_when_its_pool_slot_expires() -> void:
 		)
 		. is_true()
 	)
-	# the shifted envelope: subtracting the shape's own value at the tail is
-	# what lands it on exactly zero instead of merely small
 	assert_str(core).contains("float pulse_flare(float since_front, float tail)")
-	assert_str(core).contains("return clamp(shape - at_tail, 0.0, 1.0);")
 	# and the gate must be paid BEFORE the cone test, or a dead pulse still
 	# buys a normalize, a dot and a smoothstep on every fragment it reaches
 	(
@@ -227,6 +224,115 @@ func test_a_wave_stops_revealing_when_its_pool_slot_expires() -> void:
 			)
 			. is_equal(wave_core.wave_fade_tail(kind))
 		)
+
+
+## THE SHAPE ITSELF, evaluated rather than spelled.
+##
+## `pulse_flare`'s four constants are the whole look of the game: the weight
+## and time constant of the strike flash, and of the lingering half. A
+## `contains()` assertion cannot tell 1.3 from 1.0, or a 3.0 time constant
+## from a 4.0 one — change either and the shipped decay is a different law
+## from render::reveal::flare while every substring pin in this suite still
+## matches. So the constants are read OUT of the shipped GLSL, the shape is
+## rebuilt from them here, and the result is compared against Rust across the
+## whole domain, per kind.
+##
+## The closing window rides with them, because it is what ends the wave:
+## flat at 1.0 for the first three quarters of every kind's life — so a cane
+## tap and its own echo decay identically on one surface until each nears its
+## own end — then smoothstepping to exactly zero at the tail.
+func test_the_rendered_decay_shape_is_the_cargo_pinned_one() -> void:
+	var core := _read(CORE_PATH)
+	var wave_core: WaveCore = auto_free(WaveCore.new())
+	var shape := _glsl_flare_constants(core)
+	(
+		assert_array(shape)
+		. append_failure_message("pulse_flare's shape constants are unreadable from the GLSL")
+		. is_not_empty()
+	)
+	var fast_w: float = shape[0]
+	var fast_t: float = shape[1]
+	var slow_w: float = shape[2]
+	var slow_t: float = shape[3]
+	var close := _shader_close_fraction(core)
+	assert_float(close).is_equal(wave_core.wave_close_fraction())
+	for kind: int in [0, 1, 2, 3]:
+		var tail: float = wave_core.wave_fade_tail(kind)
+		var opens: float = tail * (1.0 - close)
+		for step: int in 40:
+			var since: float = tail * float(step) / 39.0
+			var raw: float = fast_w * exp(-since / fast_t) + slow_w * exp(-since / slow_t)
+			var window: float = 1.0 - smoothstep(opens, tail, since)
+			var glsl: float = clampf(raw * window, 0.0, 1.0) if since < tail else 0.0
+			var rust: float = wave_core.wave_flare(since, tail)
+			(
+				assert_float(glsl)
+				. append_failure_message(
+					(
+						"kind %d at %s s: the shipped GLSL decays to %s, Rust to %s"
+						% [kind, str(since), str(glsl), str(rust)]
+					)
+				)
+				. is_equal_approx(rust, 1e-6)
+			)
+
+
+## THE TIME COORDINATE, pinned by the wall-clock death it implies.
+##
+## The whole reveal law is written against seconds-since-the-front-passed —
+## `ga = age - dist / speed` — and nothing else in the tree says so. Replace
+## it with `ga = age` and every cargo test and every substring pin stays
+## green, while the fan (reach 9 m at speed 4.5, so a ring time of exactly
+## 2.0 s, against kind 3's tail of exactly 2.0 s) stops revealing the outer
+## metre of its own wash at the instant its front arrives there — a ring
+## still drawn in the air over surfaces that never light.
+##
+## Asserted at two distances, because at zero the two coordinates agree.
+func test_a_waves_reveal_dies_later_the_farther_it_has_travelled() -> void:
+	var wave_core: WaveCore = auto_free(WaveCore.new())
+	assert_str(_read(CORE_PATH)).contains("float ga = age - dist / d.z;")
+	# hand-derived for a kind-3 hum at 4.5 m/s: at the source the front
+	# arrives at once and the reveal ends one tail later (2.0 s); nine metres
+	# out the front takes 9/4.5 = 2.0 s and the reveal ends at 4.0 s
+	assert_float(wave_core.wave_death_time(3, 0.0, 4.5)).is_equal_approx(2.0, 1e-9)
+	assert_float(wave_core.wave_death_time(3, 9.0, 4.5)).is_equal_approx(4.0, 1e-9)
+	# and the pool holds the slot exactly that long for the farthest point,
+	# so a wave's reveal and its data die together
+	assert_float(wave_core.wave_death_time(3, 9.0, 4.5)).is_equal_approx(
+		9.0 / 4.5 + wave_core.wave_fade_tail(3), 1e-9
+	)
+	# total at the door: a speed that cannot carry a wave answers NAN
+	assert_bool(is_nan(wave_core.wave_death_time(3, 1.0, 0.0))).is_true()
+	assert_bool(is_nan(wave_core.wave_death_time(3, -1.0, 4.5))).is_true()
+
+
+## `pulse_flare`'s four shape constants in source order — fast weight, fast
+## time, slow weight, slow time — or an empty array when the expression has
+## been rewritten past recognition, which fails the caller rather than
+## silently checking nothing.
+func _glsl_flare_constants(core: String) -> PackedFloat64Array:
+	var pattern := (
+		"float shape = ([0-9.]+) \\* exp\\(-since_front / ([0-9.]+)\\)"
+		+ " \\+ ([0-9.]+) \\* exp\\(-since_front / ([0-9.]+)\\);"
+	)
+	var m := RegEx.create_from_string(pattern).search(core)
+	if m == null:
+		return PackedFloat64Array()
+	return PackedFloat64Array(
+		[
+			m.get_string(1).to_float(),
+			m.get_string(2).to_float(),
+			m.get_string(3).to_float(),
+			m.get_string(4).to_float(),
+		]
+	)
+
+
+## CLOSE_FRACTION as the shipped shader declares it, or NAN — which fails
+## every numeric assert rather than skipping the check.
+func _shader_close_fraction(core: String) -> float:
+	var m := RegEx.create_from_string("const float CLOSE_FRACTION = ([0-9.]+);").search(core)
+	return m.get_string(1).to_float() if m != null else NAN
 
 
 ## `pulse_fade_tail`'s guarded arms as (threshold, seconds) pairs, in source

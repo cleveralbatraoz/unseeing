@@ -333,6 +333,61 @@ impl WaveCore {
         PackedFloat64Array::from(&render::labels::WORLD_PALETTE[..])
     }
 
+    /// The reveal envelope at `since_front` seconds past the wavefront, for
+    /// a wave granted `tail` seconds — `render::reveal::flare`.
+    ///
+    /// Exposed so a suite can evaluate the SHAPE across its domain rather
+    /// than substring-match it. The four constants in
+    /// `data_core.gdshaderinc`'s `pulse_flare` are the whole look of the
+    /// game and a `contains()` assertion cannot tell 1.3 from 1.0 or a 3.0
+    /// time constant from a 4.0 one.
+    #[func]
+    fn wave_flare(&self, since_front: f64, tail: f64) -> f64 {
+        render::reveal::flare(since_front, tail)
+    }
+
+    /// The fraction of a wave's tail spent closing its envelope out —
+    /// `render::reveal::CLOSE_FRACTION`.
+    #[func]
+    fn wave_close_fraction(&self) -> f64 {
+        render::reveal::CLOSE_FRACTION
+    }
+
+    /// When a point `dist` metres from a sound of `kind` travelling at
+    /// `speed` stops being revealed by it, measured from the sound's birth.
+    ///
+    /// This is the one number that pins the shader's time coordinate. The
+    /// reveal law is written against seconds-since-the-front-passed
+    /// (`ga = age - dist / speed`), and nothing else in the tree asserts
+    /// that `ga` is that and not simply `age`: with `ga = age` the fan,
+    /// whose ring time is exactly its own 2.0 s tail, would stop revealing
+    /// the outer metre of its wash at the instant its front arrived there,
+    /// while the hearing pass kept drawing the ring — a ring in the air over
+    /// unlit surfaces, and every existing test still green.
+    ///
+    /// Total over every input: a non-positive or non-finite speed or a
+    /// negative distance answers [`f64::NAN`], which fails every assertion
+    /// rather than inventing a date.
+    #[func]
+    fn wave_death_time(&self, kind: i64, dist: f64, speed: f64) -> f64 {
+        if !dist.is_finite() || !speed.is_finite() || speed <= 0.0 || dist < 0.0 {
+            return f64::NAN;
+        }
+        dist / speed + render::reveal::reveal_tail(i32::try_from(kind).unwrap_or(i32::MAX))
+    }
+
+    /// A sound source's composed acoustic image — `render::reveal::source_image`,
+    /// the law `data_xray.gdshader` transliterates.
+    ///
+    /// The composition is a Rust law with a Godot caller rather than an
+    /// expression a suite reconstructs for itself: a test that multiplies
+    /// volume by muffle on its own asserts a product the shader may well
+    /// have stopped forming.
+    #[func]
+    fn compose_source_image(&self, wave: f64, volume: f64, muffle: f64) -> f64 {
+        render::reveal::source_image(wave, render::reveal::SourceImage { volume, muffle })
+    }
+
     /// The separation the shader's crease knee demands between two labels
     /// that must draw a seam — `render::labels::MIN_SEP`.
     #[func]

@@ -27,14 +27,26 @@ use crate::oid_palette::Box3;
 /// Wall height in meters — walls run floor to ceiling.
 pub const WALL_H: f64 = 3.0;
 
-/// How much a source's own SILHOUETTE survives crossing one wall — its
+/// How much a source's own ACOUSTIC IMAGE survives crossing one wall — its
 /// wave, by contrast, stops dead at that same wall
 /// (`crate::sight::reveal_visibility`), so a source felt through a wall is
 /// a shape with nothing behind it: a faint ghost, fainter still through
-/// two. This attenuates the source skin's standing floor per wall between
-/// the eye and the source (see [`crate::nodes`]' `source_muffle`); a wall
-/// dims the shape, never erases it — the source is always felt, just
-/// muted.
+/// two. A wall dims the shape, never erases it — the source is always
+/// felt, just muted.
+///
+/// It is a MULTIPLIER over the whole image, not a floor under part of it,
+/// and the distinction is the difference between a law and a decoration.
+/// `crate::render::reveal::source_image` composes it as
+/// `muffle * max(wave, volume)`, where `muffle` is this constant raised to
+/// the number of walls between the EYE and the source (`WaveLevel`'s
+/// `source_muffle`, the camera occluder). Delivered instead as a
+/// pre-multiplied standing floor — which is what shipped — it could only
+/// compete with the source's own wave reveal through a `max()`, and always
+/// lost: a source's hub is unwalled from its own body by construction, so
+/// that wave reads near full strength however many walls stand between the
+/// source and the player. The 0.30 / 0.09 / 0.027 ladder below held only
+/// while the source happened to be silent, which for a running fan or
+/// radio is never.
 pub const SOURCE_THROUGH: f64 = 0.3;
 
 /// Half-thickness of a wall in meters.

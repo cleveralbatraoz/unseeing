@@ -100,21 +100,33 @@ float source_reveal_vis(vec3 src, vec3 world) {
 
 // How strongly a wave still reveals a point `since_front` seconds after its
 // own front passed there, given the tail its kind is granted.
-// rust/src/render/reveal.rs::flare is the cargo-pinned reference.
+// rust/src/render/reveal.rs::flare is the cargo-pinned reference, and
+// game/tests/shader_contract_test.gd reads the four constants below straight
+// out of this text and evaluates them against it — a substring match cannot
+// tell 1.3 from 1.0, and this shape is the whole look of the game.
 //
-// The shape is a fast strike flash plus a slow lingering half; the SHIFT is
-// the law. A sum of exponentials never reaches zero, so before the shift
-// this returned 0.068 of peak (a tap) or 0.257 (a hum) at the very moment
-// the CPU retires the pulse's slot — and kept returning it. A surface a
-// sound once lit stayed lit, and went dark only when some later, unrelated
-// sound happened to claim that slot. Subtracting the shape's own value at
-// the tail lands it on exactly zero there, continuously, while the strike
-// flash still saturates the clamp and is untouched.
+// The shape is a fast strike flash plus a slow lingering half. A sum of
+// exponentials never reaches zero, so on its own it left 0.068 of peak (a
+// tap) or 0.257 (a hum) on every surface a wave ever swept, for as long as
+// the pool slot lasted — the wave's visible end was decided by the slot
+// allocator.
+//
+// The CLOSING WINDOW ends it, and a window is the point rather than a
+// downward shift: the decay is the acoustic law and the tail is only the
+// budget. Subtracting the shape's own tail value would reach zero too, but
+// it would darken the whole curve by a kind-dependent amount and make a
+// cane tap and its own echo read differently on one surface at one age. The
+// window holds at 1.0 for the first three quarters of every wave's life —
+// so every kind decays by ONE law until then — and smoothsteps to exactly
+// zero at the tail.
+const float CLOSE_FRACTION = 0.25;
+
 float pulse_flare(float since_front, float tail) {
 	if (since_front < 0.0 || since_front >= tail) { return 0.0; }
 	float shape = 1.3 * exp(-since_front / 0.25) + 0.5 * exp(-since_front / 3.0);
-	float at_tail = 1.3 * exp(-tail / 0.25) + 0.5 * exp(-tail / 3.0);
-	return clamp(shape - at_tail, 0.0, 1.0);
+	float opens = tail * (1.0 - CLOSE_FRACTION);
+	float closing = 1.0 - smoothstep(opens, tail, since_front);
+	return clamp(shape * closing, 0.0, 1.0);
 }
 
 // How strongly the waves in flight reveal this world point: the struck
