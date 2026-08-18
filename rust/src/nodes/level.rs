@@ -212,6 +212,21 @@ pub struct WaveLevel {
     tap_normal: Vector3,
     source_children: Vec<DynGd<Node, dyn SoundSource>>,
     cat_children: Vec<Gd<WaveCat>>,
+    /// Every solid geometry REFUSED — the crates, wedges and standpipes
+    /// that do not stop waves — kept as world AABBs for the per-source
+    /// clarity walk alone.
+    ///
+    /// CPU-ONLY, and that is the whole reason this is affordable. It is
+    /// never pushed to any shader: the muffle is one scalar per source per
+    /// frame, so the cost is sources x props (about 212 segment tests on
+    /// the shipped level) instead of the 259 M per-fragment near-tests that
+    /// killed the idea of putting props in the wall table. The measured
+    /// objection to that table was never only cost, either — a column's
+    /// bounding square over-approximates by 41% radially and would bite a
+    /// visible notch out of every ring. Here the same over-approximation
+    /// moves a per-object scalar by a hair, which no player can see.
+    prop_occluders: Vec<sight::Occluder>,
+
     /// Non-wall solids admitted to the occluder table by geometry, in the
     /// order they were appended after the walls.
     ///
@@ -768,13 +783,21 @@ impl WaveLevel {
     }
 
     /// How muffled a source's SILHOUETTE at `to` reads from the eye at
-    /// `from`: `SOURCE_THROUGH` per wall the sight line crosses — a faint
-    /// ghost through one wall, fainter through two. General to any source,
-    /// not the fan alone; exposed so the suites can hold the law directly.
+    /// `from`: [`level_plan::SOURCE_THROUGH`] per wall the sight line
+    /// crosses and [`level_plan::prop_through`] per prop, so two props cost
+    /// exactly one wall. General to any source, not the fan alone; exposed
+    /// so the suites can hold the law directly.
+    ///
+    /// The two walks read two different tables and that is deliberate. The
+    /// wall table is the one the SHADERS also read, so a wave and a
+    /// silhouette agree about what a barrier is. The prop table exists only
+    /// here: those solids do not stop waves at all, and never enter a
+    /// uniform.
     #[func]
     fn source_muffle(&self, from: Vector3, to: Vector3) -> f64 {
-        let crossings = sight::crossings(from, to, &self.occluders);
-        level_plan::SOURCE_THROUGH.powi(crossings as i32)
+        let walls = sight::crossings(from, to, &self.occluders);
+        let props = sight::crossings(from, to, &self.prop_occluders);
+        level_plan::source_muffle(walls, props)
     }
 
     /// Where the hero wakes, and every word a designer needs about the
@@ -969,6 +992,7 @@ impl WaveLevel {
         // it has always had so a designer's fault message still points at
         // the right node.
         let mut admitted: Vec<String> = Vec::new();
+        let mut refused: Vec<sight::Occluder> = Vec::new();
         for solid in &census.solids {
             let node = solid.clone().into_gd();
             let Some(shape) = Self::unwalled_world_shape(&node) else {
@@ -980,6 +1004,19 @@ impl WaveLevel {
             let width = box3.max[0] - box3.min[0];
             let depth = box3.max[2] - box3.min[2];
             if !level_plan::spans_the_corridor(box3.min[1], box3.max[1], width.min(depth)) {
+                // Refused as a WAVE occluder — sound goes over a crate — but
+                // it still stands between an eye and a sounding thing, and
+                // takes something from how clearly that thing reads.
+                if let Some(prop) = sight::Occluder::from_bounds(
+                    box3.min[0],
+                    box3.min[2],
+                    box3.max[0],
+                    box3.max[2],
+                    box3.min[1],
+                    box3.max[1],
+                ) {
+                    refused.push(prop);
+                }
                 continue;
             }
             let Some(occluder) = sight::Occluder::from_bounds(
@@ -996,6 +1033,7 @@ impl WaveLevel {
             occluders.push(occluder);
         }
         self.spanning_solids = admitted;
+        self.prop_occluders = refused;
         self.push_wall_table(occluders, editor);
         self.report_pack_range(editor);
         self.paint_labels(&census, editor);

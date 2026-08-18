@@ -67,6 +67,57 @@ pub const SLAB_T: f64 = 0.1;
 /// pillars reach 3.00 exactly and the pipes stop at 2.90.
 pub const SPAN_EPS: f64 = 0.05;
 
+/// What one PROP leaves of a source's standing image — the solids that do
+/// NOT stop waves ([`spans_the_corridor`] refuses them) but do stand
+/// between the eye and a sounding thing.
+///
+/// # Why props dim at all, when they do not block
+///
+/// Waves pass a crate because sound goes over and around it; that law is
+/// unchanged. But a source's SILHOUETTE is a different question from a
+/// wave's propagation. The player is being shown where a sounding thing is,
+/// and the honest answer degrades when a solid stands in the line — the
+/// same reason a wall dims a source rather than only stopping its waves.
+///
+/// Before this, a crate did neither: it cast no acoustic shadow and took
+/// nothing from a source's clarity, while still spawning echoes off its own
+/// surface when the cane struck near it. A prop could ANSWER a tap and
+/// simultaneously let that tap light the wall behind it at full strength.
+/// Whatever the right treatment of props is, it was not that.
+///
+/// # Why the square root
+///
+/// **Two props cost exactly one wall.** A prop is a partial obstruction and
+/// a wall is a complete one, so the natural relation is that it takes half
+/// as many decibels — and halving a logarithm is a square root in linear
+/// amplitude. It is derived from [`SOURCE_THROUGH`] rather than chosen
+/// beside it, so the two cannot drift into disagreeing about what a wall is
+/// worth.
+///
+/// NOT a wavelength argument, and deliberately not: this engine has no
+/// frequency axis anywhere and its wavefronts travel at walking pace, so a
+/// diffraction coefficient computed here would be fiction wearing the
+/// clothes of physics. It is a stated stylisation with a stated ratio.
+#[must_use]
+pub fn prop_through() -> f64 {
+    SOURCE_THROUGH.sqrt()
+}
+
+/// What survives of a source's standing image across everything between it
+/// and the eye: [`SOURCE_THROUGH`] per wall, [`prop_through`] per prop.
+///
+/// Total over every count, the absurd ones included: the exponents are
+/// `u32`, `powi` takes `i32`, and a count past `i32::MAX` saturates to a
+/// factor of zero rather than wrapping to a negative power — which would
+/// return a number LARGER than one and brighten a source for being deeply
+/// buried.
+#[must_use]
+pub fn source_muffle(walls: u32, props: u32) -> f64 {
+    let clamp = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+    let through = SOURCE_THROUGH.powi(clamp(walls)) * prop_through().powi(clamp(props));
+    through.clamp(0.0, 1.0)
+}
+
 /// Does this solid actually stand in the way of sound?
 ///
 /// # Why geometry decides, and not the node's class
@@ -3958,5 +4009,51 @@ mod tests {
         assert!(!spans_the_corridor(f64::NEG_INFINITY, f64::INFINITY, 0.5));
         // a degenerate zero-extent solid occupies no space and blocks nothing
         assert!(!spans_the_corridor(0.0, 3.0, 0.0));
+    }
+
+    /// THE BREAK: props taking nothing from a source's clarity — the state
+    /// this repaired — or taking as much as a wall, which would make a
+    /// crate a barrier and contradict waves passing straight through it.
+    ///
+    /// Hand-derived from SOURCE_THROUGH = 0.3: one wall leaves 0.3, two
+    /// leave 0.09; one prop leaves sqrt(0.3) = 0.5477, and TWO props must
+    /// leave exactly what one wall does.
+    #[test]
+    fn two_props_cost_exactly_one_wall() {
+        assert!((source_muffle(0, 0) - 1.0).abs() < 1e-12);
+        assert!((source_muffle(1, 0) - 0.3).abs() < 1e-12);
+        assert!((source_muffle(2, 0) - 0.09).abs() < 1e-12);
+
+        let one_prop = source_muffle(0, 1);
+        assert!(
+            (one_prop - 0.547_722_557_505_166_1).abs() < 1e-12,
+            "one prop left {one_prop}"
+        );
+        // the relation the constant exists to express
+        assert!(
+            (source_muffle(0, 2) - source_muffle(1, 0)).abs() < 1e-12,
+            "two props left {} and one wall leaves {}",
+            source_muffle(0, 2),
+            source_muffle(1, 0)
+        );
+        // and a prop must take LESS than a wall, or it is a barrier
+        assert!(one_prop > source_muffle(1, 0));
+        // walls and props compose, never one shadowing the other
+        assert!((source_muffle(1, 2) - 0.09).abs() < 1e-12);
+    }
+
+    /// THE BREAK: a count large enough to overflow `powi`'s `i32`, which
+    /// wraps to a NEGATIVE exponent and returns a factor greater than one —
+    /// a source that grows brighter the deeper it is buried.
+    #[test]
+    fn a_source_never_brightens_for_being_buried() {
+        for (walls, props) in [(u32::MAX, 0), (0, u32::MAX), (u32::MAX, u32::MAX), (99, 99)] {
+            let m = source_muffle(walls, props);
+            assert!(
+                (0.0..=1.0).contains(&m),
+                "{walls} walls and {props} props left {m}"
+            );
+        }
+        assert!(source_muffle(40, 0) < 1e-20);
     }
 }

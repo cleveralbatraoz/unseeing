@@ -120,3 +120,61 @@ func test_the_shipped_level_admits_its_pillars_and_refuses_its_pipes() -> void:
 	# 19 authored wall segments + 7 pillars, inside MAXW = 32 with headroom
 	assert_int(names.size()).is_equal(26)
 	assert_int(names.size()).is_less_equal(WaveLevel.wall_slots())
+
+
+## THE BREAK: a crate answering the cane with an echo while taking nothing
+## at all from the source standing behind it.
+##
+## That asymmetry shipped for months and is indefensible under any reading:
+## props ARE physics colliders, so the reflection fan strikes them and they
+## spawn echoes, while the same tap's reveal passed straight through and lit
+## the wall behind at full strength. Waves still pass a crate — that law is
+## untouched — but a solid in the line now costs a source some of its
+## clarity.
+##
+## Hand-derived from SOURCE_THROUGH = 0.3: one prop leaves sqrt(0.3) =
+## 0.5477, and two props must leave exactly what one wall leaves, 0.3.
+func test_a_prop_between_the_eye_and_a_source_costs_it_clarity() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(WaveSpawn.new())
+	var crate := WaveProp.new()
+	crate.name = "ACrateInTheWay"
+	crate.size = Vector3(1.0, 0.8, 1.0)
+	level.add_child(crate)
+	crate.position = Vector3(3.0, 0.4, 0.0)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+
+	# the crate tops out at 0.8 m in a 3 m room, so it is NOT a wave occluder
+	var clear: float = level.source_muffle(Vector3(0.0, 0.4, 0.0), Vector3(1.0, 0.4, 0.0))
+	assert_float(clear).is_equal_approx(1.0, 1e-6)
+
+	# ...but a sight line straight through it does lose clarity
+	var through: float = level.source_muffle(Vector3(0.0, 0.4, 0.0), Vector3(6.0, 0.4, 0.0))
+	assert_float(through).is_equal_approx(0.5477225575, 1e-6)
+	# strictly brighter than a wall would leave: a crate is not a barrier
+	assert_float(through).is_greater(0.3)
+
+
+## THE BREAK: the prop clarity walk reading the WALL table, or vice versa —
+## after which a crate would start stopping waves, or a pillar would stop
+## dimming what stands behind it.
+##
+## The two tables are deliberately separate: the wall table is the one the
+## shaders also read, so a wave and a silhouette agree on what a barrier is;
+## the prop table exists only on the CPU and never enters a uniform.
+func test_a_pillar_dims_a_source_as_a_wall_does_not_as_a_prop() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(WaveSpawn.new())
+	var pillar := WaveColumn.new()
+	pillar.name = "AStructuralPillar"
+	pillar.radius = 0.25
+	pillar.height = 3.0
+	level.add_child(pillar)
+	pillar.position = Vector3(3.0, 0.0, 0.0)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+
+	# admitted as a wave occluder, so it dims by the FULL wall factor
+	var through: float = level.source_muffle(Vector3(0.0, 1.6, 0.0), Vector3(6.0, 1.6, 0.0))
+	assert_float(through).is_equal_approx(0.3, 1e-6)
