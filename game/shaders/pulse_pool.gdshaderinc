@@ -153,9 +153,17 @@ bool wall_empty(vec4 rect, vec2 yspan) {
 // sight.rs::crosses — the three-slab segment-vs-AABB test over the wall's
 // OWN y sweep, total on axis-parallel directions, both parametric endpoints
 // ignored inside the graze window.
-bool wall_crosses(vec3 from, vec3 to, vec4 rect, vec2 yspan) {
-	if (wall_empty(rect, yspan)) { return false; }
-	if (!wall_near(from, to, rect)) { return false; }
+// A miss, as a fraction past the far end of the segment. Any value > 1.0
+// would do; 2.0 is chosen so a min() fold over a whole table stays finite
+// and readable in a debugger.
+const float WALL_MISS = 2.0;
+
+// sight.rs::entry — WHERE the segment first enters this wall, as a fraction
+// of itself, or WALL_MISS if it never does. The same three-slab arithmetic
+// that used to answer only yes-or-no, now reporting the t0 it always had.
+float wall_entry(vec3 from, vec3 to, vec4 rect, vec2 yspan) {
+	if (wall_empty(rect, yspan)) { return WALL_MISS; }
+	if (!wall_near(from, to, rect)) { return WALL_MISS; }
 	vec3 d = to - from;
 	vec3 lo = vec3(rect.x, yspan.x, rect.y);
 	vec3 hi = vec3(rect.z, yspan.y, rect.w);
@@ -163,16 +171,44 @@ bool wall_crosses(vec3 from, vec3 to, vec4 rect, vec2 yspan) {
 	float t1 = 0.999;
 	for (int k = 0; k < 3; k++) {
 		if (abs(d[k]) < 1e-6) {
-			if (from[k] < lo[k] || from[k] > hi[k]) { return false; }
+			if (from[k] < lo[k] || from[k] > hi[k]) { return WALL_MISS; }
 		} else {
 			float ta = (lo[k] - from[k]) / d[k];
 			float tb = (hi[k] - from[k]) / d[k];
 			t0 = max(t0, min(ta, tb));
 			t1 = min(t1, max(ta, tb));
-			if (t0 > t1) { return false; }
+			if (t0 > t1) { return WALL_MISS; }
 		}
 	}
-	return true;
+	return t0;
+}
+
+// sight.rs::crosses — now a READING of wall_entry, so the two can never
+// disagree about whether a wall is in the way while disagreeing about
+// where it is.
+//
+// THE NEGATION IS LOAD-BEARING. `!(x > 1.0)` and `x <= 1.0` differ on NaN:
+// every comparison against NaN is false, so the first answers TRUE (this
+// wall blocks) and the second answers FALSE (it does not). GLSL leaves
+// max/min with a NaN operand implementation-defined, so a NaN really can
+// reach here — and wall_blocked_from calls this to stop WAVES. Failing
+// toward "blocks" is the direction settled law 3 requires and the one
+// wall_empty's own `!(a <= b)` discipline exists to hold. (The Rust twin
+// cannot produce the NaN at all: Rust's max/min suppress it. The
+// asymmetry is real, measured, and recorded in sight.rs::entry.)
+bool wall_crosses(vec3 from, vec3 to, vec4 rect, vec2 yspan) {
+	return !(wall_entry(from, to, rect, yspan) > 1.0);
+}
+
+// sight.rs::first_entry — the NEAREST wall entry along the segment, as a
+// fraction of it, or WALL_MISS if the line is clear.
+float wall_first_entry(vec3 from, vec3 to) {
+	float first = WALL_MISS;
+	for (int i = 0; i < MAXW; i++) {
+		if (i >= u_wall_count) { break; }
+		first = min(first, wall_entry(from, to, u_walls[i], u_wall_y[i]));
+	}
+	return first;
 }
 
 // sight.rs::crossings — the CAMERA occluder: every wall the sight line

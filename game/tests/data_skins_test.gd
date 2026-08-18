@@ -161,7 +161,16 @@ func test_pool_slab_test_mirrors_the_rust_reference() -> void:
 	# ...including the exact cheap refusal in front of it (sight.rs::near),
 	# which is what keeps the per-fragment sight loop affordable now that
 	# the map holds nineteen walls instead of ten
-	assert_str(src).contains("if (!wall_near(from, to, rect)) { return false; }")
+	# the slab arithmetic now lives in wall_entry and REPORTS its own t0;
+	# wall_crosses is a reading of it, so the two cannot disagree about
+	# whether a wall is in the way while disagreeing about where it is
+	assert_str(src).contains("if (!wall_near(from, to, rect)) { return WALL_MISS; }")
+	# THE NEGATION IS LOAD-BEARING and this pin is why it cannot be
+	# quietly flattened to `<= 1.0`: the two differ on NaN, and GLSL leaves
+	# max/min with a NaN operand implementation-defined. `!(x > 1.0)` reads
+	# NaN as BLOCKING, which is the direction settled law 3 needs, because
+	# wall_blocked_from calls this to stop waves.
+	assert_str(src).contains("return !(wall_entry(from, to, rect, yspan) > 1.0);")
 	assert_str(src).contains("min(from.x, to.x) <= rect.z && max(from.x, to.x) >= rect.x")
 
 
@@ -227,11 +236,26 @@ func test_hearing_pass_never_washes_player_rings_on_an_xrayed_source() -> void:
 	# definition. A depth read cannot answer the ring cut's question at all —
 	# at an x-rayed pixel the depth buffer holds the SOURCE's faked
 	# always-on-top value, not the occluder's.
-	assert_str(src).contains("bool seen_walled = wall_crossings(cam, seen_pt) > 0;")
+	assert_str(src).contains("float wall_t = wall_first_entry(cam, seen_pt);")
+	assert_str(src).contains("bool seen_walled = !(wall_t > 1.0);")
 	assert_str(src).contains(
 		"bool seen_image = depth_is_acoustic_image(texture(depth_tex, uv).r) || seen_walled;"
 	)
-	assert_str(src).contains("if (t >= scene_d || seen_walled) { continue; }")
+	# A CUT IS A DISTANCE, NEVER A FLAG. The OR shipped and was a defect:
+	# a boolean is fragment-constant, so it killed every root at the pixel
+	# including rings physically NEARER than the wall that set it — and
+	# because an x-rayed source's skin takes the pixel from the wall behind
+	# it, that flag was true across the source's whole silhouette. A source
+	# seen through a wall punched a source-shaped hole in the hero's own air.
+	assert_str(src).contains("if (t >= air_d) { continue; }")
+	# the NEGATIVE half, which is what catches the regression rewritten in
+	# any other spelling: no OR may return to that compare, because any
+	# boolean folded in there is fragment-constant by construction
+	assert_str(src).not_contains("t >= scene_d ||")
+	# and the NaN barrier, which Rust does not need and GLSL does
+	assert_str(src).contains(
+		"float air_d = seen_walled ? (wall_t >= 0.0 ? wall_t * scene_d : 0.0) : scene_d;"
+	)
 	assert_str(src).contains("if (seen_image) { src_r = c_c.r; }")
 	assert_str(src).contains("if (src_r >= 0.0) { reveal = min(reveal, src_r); }")
 

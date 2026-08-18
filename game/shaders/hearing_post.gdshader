@@ -131,7 +131,19 @@ void fragment() {
 	// occluder (props are transparent to waves, deliberately) and a
 	// per-fragment cost on the hottest path in the game.
 	vec3 seen_pt = cam + rd * scene_d;
-	bool seen_walled = wall_crossings(cam, seen_pt) > 0;
+	// sight.rs::visible_air — HOW FAR the eye can see air along this ray:
+	// the whole way to the surface, or only as far as the nearest wall it
+	// enters. A DISTANCE, never a flag; see the ring cut below for why that
+	// distinction shipped as a visible defect.
+	float wall_t = wall_first_entry(cam, seen_pt);
+	bool seen_walled = !(wall_t > 1.0);
+	// The inner guard is the GLSL twin of visible_air's non-finite arm, and
+	// it is NOT redundant here the way it is in Rust: GLSL leaves max/min
+	// with a NaN operand implementation-defined, so wall_t really can come
+	// back NaN. Left unguarded, air_d would be NaN, `t >= air_d` would be
+	// false for EVERY root, and one bad pixel would draw every ring in the
+	// level straight through every wall.
+	float air_d = seen_walled ? (wall_t >= 0.0 ? wall_t * scene_d : 0.0) : scene_d;
 	bool seen_image = depth_is_acoustic_image(texture(depth_tex, uv).r) || seen_walled;
 
 	// thin white outlines: silhouettes (Laplacian of the packed distance in B)
@@ -218,15 +230,24 @@ void fragment() {
 			float t = -b + (s == 0 ? -sq : sq);
 			if (t <= 0.05) { continue; }
 			vec3 hp = cam + rd * t;
-			// Two DIFFERENT laws cut a ring, and both are needed.
+			// The CAMERA's law: the eye cannot see air that something
+			// stands in front of. ONE comparison, against a DISTANCE.
 			//
-			// First the CAMERA's: the eye cannot see air the world stands
-			// in front of, and none of it washes an x-rayed source seen
-			// through a wall. seen_walled is not redundant with the depth
-			// test — the always-on-top source skins corrupt packed depth at
-			// their own pixels, so scene_d alone cannot be trusted on a ray
-			// that reaches a source through a wall.
-			if (t >= scene_d || seen_walled) { continue; }
+			// This shipped as the surface compare ORed with a walled FLAG,
+			// and the OR was a real defect. A boolean is fragment-constant:
+			// it killed
+			// EVERY root at the pixel, including rings physically nearer
+			// than the wall that set it. And because an x-rayed source's
+			// skin takes the pixel from the wall behind it, the flag was
+			// true across that source's whole screen-space silhouette — so
+			// a source seen through a wall punched a source-shaped HOLE in
+			// rings that had every right to be drawn, in the hero's own air.
+			//
+			// air_d folds every ender of the eye's view — the visible
+			// surface, and the nearest wall the ray enters — with a
+			// minimum. A root nearer than all of them survives, which is
+			// the whole point.
+			if (t >= air_d) { continue; }
 			vec3 sn = (hp - u_ppos[i]) / radius;
 			float cone = pulse_cone(cn, sn);
 			if (cone <= 0.0) { continue; }

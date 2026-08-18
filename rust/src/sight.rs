@@ -238,20 +238,37 @@ pub fn near(from: Vector3, to: Vector3, rect: Vector4) -> bool {
         && from.z.max(to.z) >= rect.y
 }
 
-/// Whether the segment `from -> to` crosses `occ` — its XZ rect swept
-/// through its OWN y span — by the classic three-slab test, clamped to the
-/// graze-free parametric window, behind [`near`]'s exact cheap refusal.
-/// Total on any input: a zero direction component degenerates to a
-/// point-in-slab check.
+/// WHERE the segment `from -> to` first enters `occ`, as a fraction of the
+/// segment, or `None` if it never does — the three-slab test reporting its
+/// own `t0` instead of discarding it.
+///
+/// [`crosses`] is now a reading of this, so the two can never disagree
+/// about whether a wall is in the way while disagreeing about where.
+///
+/// # On NaN, and a claim worth not repeating
+///
+/// It is tempting to say this answers `Some(NaN)` for a malformed segment,
+/// since `lo[k] - a[k]` is NaN and `t0 > t1` is false the way every NaN
+/// comparison is false. MEASURED, it does not: Rust's `f32::max` and
+/// `f32::min` SUPPRESS NaN — `0.001f32.max(f32::NAN)` is `0.001` — so the
+/// window survives intact and the fraction that comes back is finite. A
+/// non-finite XZ coordinate is refused earlier still, by [`near`].
+///
+/// This is a real difference from the GLSL twin, not a detail. GLSL leaves
+/// `max`/`min` with a NaN operand implementation-defined, so `wall_entry`
+/// CAN hand back a NaN where this cannot, and its caller needs a guard this
+/// one does not. [`visible_air`]'s non-finite arm is the matching barrier,
+/// kept as defence-in-depth rather than as live arithmetic — see its own
+/// note on which direction that guard has to fail in.
 #[must_use]
-pub fn crosses(from: Vector3, to: Vector3, occ: Occluder) -> bool {
+pub fn entry(from: Vector3, to: Vector3, occ: Occluder) -> Option<f32> {
     if occ.is_empty() {
-        return false;
+        return None;
     }
     let rect = occ.rect();
     let span = occ.span();
     if !near(from, to, rect) {
-        return false;
+        return None;
     }
     let a = [from.x, from.y, from.z];
     let d = [to.x - from.x, to.y - from.y, to.z - from.z];
@@ -262,7 +279,7 @@ pub fn crosses(from: Vector3, to: Vector3, occ: Occluder) -> bool {
     for k in 0..3 {
         if d[k].abs() < AXIS_TINY {
             if a[k] < lo[k] || a[k] > hi[k] {
-                return false;
+                return None;
             }
         } else {
             let ta = (lo[k] - a[k]) / d[k];
@@ -270,11 +287,78 @@ pub fn crosses(from: Vector3, to: Vector3, occ: Occluder) -> bool {
             t0 = t0.max(ta.min(tb));
             t1 = t1.min(ta.max(tb));
             if t0 > t1 {
-                return false;
+                return None;
             }
         }
     }
-    true
+    Some(t0)
+}
+
+/// Whether the segment `from -> to` crosses `occ` — its XZ rect swept
+/// through its OWN y span — by the classic three-slab test, clamped to the
+/// graze-free parametric window, behind [`near`]'s exact cheap refusal.
+/// Total on any input: a zero direction component degenerates to a
+/// point-in-slab check.
+#[must_use]
+pub fn crosses(from: Vector3, to: Vector3, occ: Occluder) -> bool {
+    entry(from, to, occ).is_some()
+}
+
+/// The nearest entry among `occluders`, as a fraction of the segment.
+///
+/// `total_cmp` rather than `partial_cmp().unwrap()`: [`entry`] can answer
+/// `Some(NaN)` by design, and an ordering that panics on it would be a
+/// panic waiting for a future edit rather than a bug caught today.
+#[must_use]
+pub fn first_entry(from: Vector3, to: Vector3, occluders: &[Occluder]) -> Option<f32> {
+    occluders
+        .iter()
+        .filter_map(|occ| entry(from, to, *occ))
+        .min_by(f32::total_cmp)
+}
+
+/// How far the eye can see AIR along `from -> to`: the whole segment when
+/// nothing is in the way, or the distance to the nearest wall it enters.
+///
+/// # Why this exists, and what it replaces
+///
+/// `hearing_post` used to cut the player's expanding rings with a BOOLEAN —
+/// "is the surface at this pixel seen through a wall?" — ORed into the
+/// depth compare. A boolean is fragment-constant: it kills EVERY ring root
+/// at that pixel, including rings that are physically nearer than the wall
+/// and nearer than the thing behind it. Because an x-rayed source's skin
+/// takes the pixel from the wall behind it, that flag was true across the
+/// whole screen-space silhouette of any source seen through a wall, and
+/// punched a source-shaped HOLE in rings that had every right to be drawn.
+///
+/// A cut is a DISTANCE, never a flag. Everything that ends the eye's view
+/// of air folds in with a minimum, and a root nearer than all of them
+/// survives.
+///
+/// Total over every input: a non-finite segment answers 0.0 — no air at
+/// all — and that single guard is what actually catches every malformed
+/// sight line today, because a NaN coordinate makes the segment's own
+/// length non-finite before the table is ever consulted.
+///
+/// The `Some(non-finite)` arm below is DEFENCE-IN-DEPTH and is honestly
+/// unreachable through [`entry`]'s current arithmetic (Rust's `max`/`min`
+/// suppress NaN). It is kept because the GLSL twin has no such guarantee,
+/// and because the direction it fails in is the one that matters: under
+/// GLSL every comparison against NaN is false, so a NaN cut distance would
+/// make `t >= air_d` false for EVERY ring root, and one bad pixel would
+/// draw every ring in the level straight through every wall. Answering
+/// "no air" draws nothing instead.
+#[must_use]
+pub fn visible_air(from: Vector3, to: Vector3, occluders: &[Occluder]) -> f64 {
+    let scene_d = f64::from((to - from).length());
+    if !scene_d.is_finite() {
+        return 0.0;
+    }
+    match first_entry(from, to, occluders) {
+        Some(t) if t.is_finite() => scene_d * f64::from(t),
+        Some(_) => 0.0,
+        None => scene_d,
+    }
 }
 
 /// How many of the wall rects the sight line `from -> to` crosses — the
@@ -1032,5 +1116,126 @@ mod tests {
             Occluder::from_bounds(0.0, 0.0, 1.0, 1.0, f64::INFINITY, 3.0),
             None
         );
+    }
+
+    /// THE BREAK, and it shipped: the ring cut being a fragment-constant
+    /// BOOLEAN rather than a distance. A source seen through a wall takes
+    /// its own pixels from the wall behind it, so "this pixel is walled"
+    /// was true across that source's whole screen-space silhouette — and
+    /// killed every ring root there, including rings physically nearer than
+    /// the wall. A source-shaped hole, punched in air the eye can see.
+    ///
+    /// Hand-derived: `Occluder::new` inflates a centerline by
+    /// `WALL_T - RECT_SHRINK` = 0.15 - 0.02 = 0.13, so a wall centred at
+    /// x = 3 spans x in [2.87, 3.13]. From the eye at the origin to a
+    /// source 6 m along +x, the entry fraction is 2.87/6 = 0.4783..., and
+    /// the air the eye can see is exactly 2.87 m.
+    #[test]
+    fn a_ring_nearer_than_the_wall_survives_a_source_seen_through_it() {
+        let wall = Occluder::new(Vector4::new(3.0, -5.0, 3.0, 5.0), 0.0, 3.0)
+            .expect("a 6 m wall across the path");
+        let eye = Vector3::new(0.0, 1.5, 0.0);
+        let src = Vector3::new(6.0, 1.5, 0.0);
+
+        assert!(
+            crosses(eye, src, wall),
+            "the fixture must actually be walled"
+        );
+        let air = visible_air(eye, src, &[wall]);
+        assert!(
+            (air - 2.87).abs() < 1e-4,
+            "the eye can see {air} m of air, not the 2.87 m up to the wall"
+        );
+        // the whole point: a ring at 1.5 m is NEARER than the wall and must
+        // still be drawn, where the old boolean discarded it
+        assert!(1.5 < air, "a ring 1.5 m out was cut by a wall at 2.87 m");
+        // ...and one past the wall is still cut
+        assert!(4.0 > air);
+    }
+
+    /// THE BREAK: folding the entries with max, or taking the last one — a
+    /// table whose walls happen to be ordered far-to-near would then let the
+    /// eye see straight through the nearer one.
+    #[test]
+    fn the_nearest_wall_ends_the_air_whatever_order_the_table_holds() {
+        let near_wall = Occluder::new(Vector4::new(3.0, -5.0, 3.0, 5.0), 0.0, 3.0).unwrap();
+        let far_wall = Occluder::new(Vector4::new(5.0, -5.0, 5.0, 5.0), 0.0, 3.0).unwrap();
+        let eye = Vector3::new(0.0, 1.5, 0.0);
+        let src = Vector3::new(6.0, 1.5, 0.0);
+        for table in [[near_wall, far_wall], [far_wall, near_wall]] {
+            let air = visible_air(eye, src, &table);
+            assert!(
+                (air - 2.87).abs() < 1e-4,
+                "table order changed the answer: {air}"
+            );
+        }
+    }
+
+    /// THE BREAK: [`entry`]'s deliberate NaN reaching a shader. Under GLSL
+    /// every comparison against NaN is false, so `t >= air_d` would be
+    /// false for EVERY root and one bad pixel would draw every ring in the
+    /// level through every wall. The barrier must fail toward drawing
+    /// NOTHING.
+    #[test]
+    fn a_malformed_sight_line_sees_no_air_rather_than_infinite_air() {
+        let wall = Occluder::new(Vector4::new(3.0, -5.0, 3.0, 5.0), 0.0, 3.0).unwrap();
+        let src = Vector3::new(6.0, 1.5, 0.0);
+        for bad in [
+            Vector3::new(f32::NAN, 1.5, 0.0),
+            Vector3::new(0.0, f32::NAN, 0.0),
+            Vector3::new(0.0, 1.5, f32::NAN),
+            Vector3::new(f32::INFINITY, 1.5, 0.0),
+            Vector3::new(f32::NEG_INFINITY, 1.5, 0.0),
+        ] {
+            assert_eq!(
+                visible_air(bad, src, &[wall]),
+                0.0,
+                "an undescribable eye at {bad:?} was told it can see air"
+            );
+            assert_eq!(visible_air(bad, src, &[]), 0.0);
+        }
+        // and the arithmetic that makes the `Some(non-finite)` arm
+        // defence-in-depth rather than live: Rust's max/min suppress NaN,
+        // so entry itself never hands one back. GLSL gives no such promise,
+        // which is why the shader twin carries its own guard.
+        assert_eq!(0.001_f32.max(f32::NAN), 0.001);
+        assert_eq!(0.999_f32.min(f32::NAN), 0.999);
+        let nan_y = Vector3::new(0.0, f32::NAN, 0.0);
+        assert!(entry(nan_y, src, wall).is_none_or(|t| t.is_finite()));
+    }
+
+    /// THE BREAK: `entry` and `crosses` drifting apart, after which the
+    /// shader would cut air at a wall the wave law does not think is there,
+    /// or vice versa. They must be ONE arithmetic with two readings.
+    #[test]
+    fn the_entry_and_the_predicate_are_one_arithmetic() {
+        let wall = Occluder::new(Vector4::new(3.0, -5.0, 3.0, 5.0), 0.0, 3.0).unwrap();
+        let mut agreed = 0;
+        for i in 0..40 {
+            let a = f32::from(i as i16) * 0.25 - 2.0;
+            for j in 0..40 {
+                let b = f32::from(j as i16) * 0.4 - 2.0;
+                let from = Vector3::new(a, 1.5, b);
+                let to = Vector3::new(b + 6.0, 1.5, a);
+                assert_eq!(
+                    entry(from, to, wall).is_some(),
+                    crosses(from, to, wall),
+                    "entry and crosses disagreed at {from:?} -> {to:?}"
+                );
+                agreed += 1;
+            }
+        }
+        assert_eq!(agreed, 1600);
+    }
+
+    /// THE BREAK: an unwalled sight line reporting anything other than its
+    /// own whole length, which would cut every ring short in open air.
+    #[test]
+    fn open_air_is_the_whole_segment() {
+        let eye = Vector3::new(0.0, 1.5, 0.0);
+        let src = Vector3::new(6.0, 1.5, 0.0);
+        assert!((visible_air(eye, src, &[]) - 6.0).abs() < 1e-6);
+        let elsewhere = Occluder::new(Vector4::new(3.0, 20.0, 3.0, 25.0), 0.0, 3.0).unwrap();
+        assert!((visible_air(eye, src, &[elsewhere]) - 6.0).abs() < 1e-6);
     }
 }
