@@ -63,7 +63,6 @@ use godot::obj::DynGd;
 use godot::prelude::*;
 
 use super::cat::WaveCat;
-use super::props::{WaveColumn, WaveProp, WaveWedge};
 use super::run::WaveRun;
 use super::solid::{
     SKIN_NAME, WaveSolid, basis_columns_f64, build_box, clear_limbs, mesh_first_label, to_f64_3,
@@ -121,11 +120,15 @@ struct Census {
 /// reach their mesh), while every solid node (authored or derived) paints itself back
 /// through its own `paint()` method; see [`WaveLevel::paint_entry`].
 enum PaintItem {
-    Slab { lid: bool },
-    Wall(Gd<WaveWall>),
-    Prop(Gd<WaveProp>),
-    Column(Gd<WaveColumn>),
-    Wedge(Gd<WaveWedge>),
+    Slab {
+        lid: bool,
+    },
+    /// Any censused solid, reached through the one contract the level needs
+    /// of it. This used to be four concrete arms — `Wall`, `Prop`, `Column`,
+    /// `Wedge` — and so did `node()`, `paint_entry` and the solids half of
+    /// `paint_entries`: four hand-written rosters of the same list, each
+    /// falling through silently for anything absent from it.
+    Solid(DynGd<Node, dyn WaveSolid>),
 }
 
 impl PaintItem {
@@ -136,10 +139,7 @@ impl PaintItem {
     fn node(&self) -> Option<Gd<Node>> {
         match self {
             PaintItem::Slab { .. } => None,
-            PaintItem::Wall(node) => Some(node.clone().upcast()),
-            PaintItem::Prop(node) => Some(node.clone().upcast()),
-            PaintItem::Column(node) => Some(node.clone().upcast()),
-            PaintItem::Wedge(node) => Some(node.clone().upcast()),
+            PaintItem::Solid(solid) => Some(solid.clone().into_gd()),
         }
     }
 }
@@ -1003,11 +1003,21 @@ impl WaveLevel {
         // the right node.
         let mut admitted: Vec<String> = Vec::new();
         let mut refused: Vec<sight::Occluder> = Vec::new();
+        // Walls already hold a slot, built from their CENTERLINE above — a
+        // different geometry from the world AABB this walk measures, and one
+        // a wall is admitted by unconditionally. Skipping them by identity
+        // rather than by class is what lets every other solid answer for
+        // itself: this used to be `unwalled_world_shape`, a second
+        // hand-written `try_cast` roster whose `None` meant BOTH "this is a
+        // wall" and "I do not recognise this class".
+        let wall_ids: std::collections::HashSet<InstanceId> =
+            census.walls.iter().map(|wall| wall.instance_id()).collect();
         for solid in &census.solids {
             let node = solid.clone().into_gd();
-            let Some(shape) = Self::unwalled_world_shape(&node) else {
+            if wall_ids.contains(&node.instance_id()) {
                 continue;
-            };
+            }
+            let shape = solid.dyn_bind().world_shape();
             let Some(box3) = render::faces::bounds(&shape) else {
                 continue; // unmeasurable: refused, which is what it did before
             };
@@ -1244,7 +1254,18 @@ impl WaveLevel {
                         }),
                         _ => None,
                     },
-                    is_wall: matches!(entry.item, PaintItem::Wall(_)),
+                    // The ONE genuinely wall-specific question left, and
+                    // it is not a geometry dispatch: the paint plan's merge
+                    // law treats wall-to-wall seams differently from every
+                    // other pair, so it must know which entries are walls.
+                    // A concrete cast is the honest way to ask "is this a
+                    // wall"; what the trait replaced was four casts asking
+                    // "what shape is this", which every solid can answer for
+                    // itself.
+                    is_wall: entry
+                        .item
+                        .node()
+                        .is_some_and(|node| node.try_cast::<WaveWall>().is_ok()),
                 })
                 .collect(),
             sources: census
@@ -1420,65 +1441,13 @@ impl WaveLevel {
             if mesh_world_box(&node).is_none() {
                 continue; // draws nothing, so it can show no seam
             }
-            let name = root.get_path_to(&node).to_string();
-            if let Ok(wall) = node.clone().try_cast::<WaveWall>() {
-                let shape = wall.bind().world_shape();
-                entries.push(PaintEntry {
-                    name,
-                    shape,
-                    item: PaintItem::Wall(wall),
-                });
-            } else if let Ok(prop) = node.clone().try_cast::<WaveProp>() {
-                let shape = prop.bind().world_shape();
-                entries.push(PaintEntry {
-                    name,
-                    shape,
-                    item: PaintItem::Prop(prop),
-                });
-            } else if let Ok(column) = node.clone().try_cast::<WaveColumn>() {
-                let shape = column.bind().world_shape();
-                entries.push(PaintEntry {
-                    name,
-                    shape,
-                    item: PaintItem::Column(column),
-                });
-            } else if let Ok(wedge) = node.clone().try_cast::<WaveWedge>() {
-                let shape = wedge.bind().world_shape();
-                entries.push(PaintEntry {
-                    name,
-                    shape,
-                    item: PaintItem::Wedge(wedge),
-                });
-            }
-            // else: unreachable today — every `WaveSolid` impl the census
-            // can collect is one of the four arms above; skipped rather
-            // than guessed at if that ever stops being true.
+            entries.push(PaintEntry {
+                name: root.get_path_to(&node).to_string(),
+                shape: solid.dyn_bind().world_shape(),
+                item: PaintItem::Solid(solid.clone()),
+            });
         }
         entries
-    }
-
-    /// The world shape of a solid that is NOT a wall, for the occlusion
-    /// admission walk.
-    ///
-    /// The same concrete dispatch [`Self::paint_entries`] performs, and for
-    /// the same reason: `WaveSolid` carries only `set_material`, so the
-    /// geometry lives on the concrete classes. Walls are excluded here
-    /// because they are admitted unconditionally, by class contract, in the
-    /// loop above — asking geometry about a wall could only ever refuse one.
-    fn unwalled_world_shape(node: &Gd<Node>) -> Option<render::Shape> {
-        if node.clone().try_cast::<WaveWall>().is_ok() {
-            return None;
-        }
-        if let Ok(prop) = node.clone().try_cast::<WaveProp>() {
-            return Some(prop.bind().world_shape());
-        }
-        if let Ok(column) = node.clone().try_cast::<WaveColumn>() {
-            return Some(column.bind().world_shape());
-        }
-        if let Ok(wedge) = node.clone().try_cast::<WaveWedge>() {
-            return Some(wedge.bind().world_shape());
-        }
-        None
     }
 
     /// Hand one entry its chosen labels — the concrete-type dispatch
@@ -1497,10 +1466,7 @@ impl WaveLevel {
                     labels_by_ordinal,
                 );
             }
-            PaintItem::Wall(w) => w.clone().bind_mut().paint(labels_by_ordinal),
-            PaintItem::Prop(p) => p.clone().bind_mut().paint(labels_by_ordinal),
-            PaintItem::Column(c) => c.clone().bind_mut().paint(labels_by_ordinal),
-            PaintItem::Wedge(w) => w.clone().bind_mut().paint(labels_by_ordinal),
+            PaintItem::Solid(solid) => solid.clone().dyn_bind_mut().paint(labels_by_ordinal),
         }
     }
 

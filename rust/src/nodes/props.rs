@@ -136,28 +136,6 @@ impl WaveProp {
         self.skin.oid()
     }
 
-    /// This prop's box as `render::Shape`, in world space — a box prop is
-    /// CENTRED on its node (`ready()` builds it at lift `Vector3::ZERO`),
-    /// so the box's world center is simply the node's own global origin.
-    pub(crate) fn world_shape(&self) -> render::Shape {
-        let placed = self.base().get_global_transform();
-        render::Shape::Box3d {
-            center: solid::to_f64_3(placed.origin),
-            size: solid::to_f64_3(self.size),
-            basis: solid::basis_columns_f64(placed.basis),
-        }
-    }
-
-    /// Bake the derive-time paint pass's labels onto this prop — see
-    /// [`solid::paint_solid`].
-    pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
-        solid::paint_solid(
-            self.mesh.as_mut(),
-            render::paint::ShapeKind::Box,
-            labels_by_ordinal,
-        );
-    }
-
     /// The engine-facing read-back of
     /// [`IStaticBody3D::get_configuration_warnings`] — the GDVIRTUAL a
     /// script cannot reach directly; see [`Self::oid`] for the same
@@ -172,6 +150,28 @@ impl WaveProp {
 impl WaveSolid for WaveProp {
     fn set_material(&mut self, mat: &Gd<Material>) {
         self.skin.set_material(mat);
+    }
+
+    /// This prop's box as `render::Shape`, in world space — a box prop is
+    /// CENTRED on its node (`ready()` builds it at lift `Vector3::ZERO`),
+    /// so the box's world center is simply the node's own global origin.
+    fn world_shape(&self) -> render::Shape {
+        let placed = self.base().get_global_transform();
+        render::Shape::Box3d {
+            center: solid::to_f64_3(placed.origin),
+            size: solid::to_f64_3(self.size),
+            basis: solid::basis_columns_f64(placed.basis),
+        }
+    }
+
+    /// Bake the derive-time paint pass's labels onto this prop — see
+    /// [`solid::paint_solid`].
+    fn paint(&mut self, labels_by_ordinal: &[f32]) {
+        solid::paint_solid(
+            self.mesh.as_mut(),
+            render::paint::ShapeKind::Box,
+            labels_by_ordinal,
+        );
     }
 }
 
@@ -298,40 +298,6 @@ impl WaveColumn {
         self.skin.oid()
     }
 
-    /// This column's rims as `render::Shape::Column`, in world space —
-    /// upright only, matching the shape `render::faces::column_faces`
-    /// itself models: the world CENTER is the node's own global origin
-    /// lifted by [`prop_shape::cylinder_lift`]'s own `underhang`, exactly
-    /// as [`Self::relift`] positions the drawn mesh, so a level-tilted or
-    /// laid-down column's TRUE geometry is approximated by the nearest
-    /// upright cylinder at its standing height rather than represented
-    /// exactly — the same scope this render vocabulary's `Shape::Column`
-    /// variant is written for (no basis of its own), and every shipped
-    /// column and wedge stands upright in practice
-    /// (`prop_shape::tests::an_upright_shape_lifts_exactly_half_its_height`'s
-    /// own doc comment).
-    pub(crate) fn world_shape(&self) -> render::Shape {
-        let placed = self.base().get_global_transform();
-        let radius = self.radius as f32;
-        let height = self.height as f32;
-        let lift = prop_shape::cylinder_lift(placed.basis, radius, height);
-        render::Shape::Column {
-            center: solid::to_f64_3(placed * lift),
-            radius: self.radius,
-            half_height: self.height * 0.5,
-        }
-    }
-
-    /// Bake the derive-time paint pass's labels onto this column — see
-    /// [`solid::paint_solid`].
-    pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
-        solid::paint_solid(
-            self.mesh.as_mut(),
-            render::paint::ShapeKind::Column,
-            labels_by_ordinal,
-        );
-    }
-
     /// The engine-facing read-back of
     /// [`IStaticBody3D::get_configuration_warnings`] — the GDVIRTUAL a
     /// script cannot reach directly; see [`Self::oid`] for the same
@@ -380,6 +346,40 @@ impl WaveColumn {
 impl WaveSolid for WaveColumn {
     fn set_material(&mut self, mat: &Gd<Material>) {
         self.skin.set_material(mat);
+    }
+
+    /// This column's rims as `render::Shape::Column`, in world space —
+    /// upright only, matching the shape `render::faces::column_faces`
+    /// itself models: the world CENTER is the node's own global origin
+    /// lifted by [`prop_shape::cylinder_lift`]'s own `underhang`, exactly
+    /// as [`Self::relift`] positions the drawn mesh, so a level-tilted or
+    /// laid-down column's TRUE geometry is approximated by the nearest
+    /// upright cylinder at its standing height rather than represented
+    /// exactly — the same scope this render vocabulary's `Shape::Column`
+    /// variant is written for (no basis of its own), and every shipped
+    /// column and wedge stands upright in practice
+    /// (`prop_shape::tests::an_upright_shape_lifts_exactly_half_its_height`'s
+    /// own doc comment).
+    fn world_shape(&self) -> render::Shape {
+        let placed = self.base().get_global_transform();
+        let radius = self.radius as f32;
+        let height = self.height as f32;
+        let lift = prop_shape::cylinder_lift(placed.basis, radius, height);
+        render::Shape::Column {
+            center: solid::to_f64_3(placed * lift),
+            radius: self.radius,
+            half_height: self.height * 0.5,
+        }
+    }
+
+    /// Bake the derive-time paint pass's labels onto this column — see
+    /// [`solid::paint_solid`].
+    fn paint(&mut self, labels_by_ordinal: &[f32]) {
+        solid::paint_solid(
+            self.mesh.as_mut(),
+            render::paint::ShapeKind::Column,
+            labels_by_ordinal,
+        );
     }
 }
 
@@ -492,29 +492,6 @@ impl WaveWedge {
         self.skin.oid()
     }
 
-    /// This wedge's hull as `render::Shape::Wedge`, in world space: the
-    /// same six local points [`prop_shape::wedge_hull`] gives `ready()`,
-    /// lifted by [`prop_shape::wedge_lift`] exactly as the drawn mesh is,
-    /// then carried into world space by the node's own global transform.
-    pub(crate) fn world_shape(&self) -> render::Shape {
-        let placed = self.base().get_global_transform();
-        let lift = prop_shape::wedge_lift(placed.basis, self.size);
-        let hull = prop_shape::wedge_hull(self.size);
-        render::Shape::Wedge {
-            hull: hull.map(|p| solid::to_f64_3(placed * (p + lift))),
-        }
-    }
-
-    /// Bake the derive-time paint pass's labels onto this wedge — see
-    /// [`solid::paint_solid`].
-    pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
-        solid::paint_solid(
-            self.mesh.as_mut(),
-            render::paint::ShapeKind::Wedge,
-            labels_by_ordinal,
-        );
-    }
-
     /// The engine-facing read-back of
     /// [`IStaticBody3D::get_configuration_warnings`] — the GDVIRTUAL a
     /// script cannot reach directly; see [`Self::oid`] for the same
@@ -550,6 +527,29 @@ impl WaveWedge {
 impl WaveSolid for WaveWedge {
     fn set_material(&mut self, mat: &Gd<Material>) {
         self.skin.set_material(mat);
+    }
+
+    /// This wedge's hull as `render::Shape::Wedge`, in world space: the
+    /// same six local points [`prop_shape::wedge_hull`] gives `ready()`,
+    /// lifted by [`prop_shape::wedge_lift`] exactly as the drawn mesh is,
+    /// then carried into world space by the node's own global transform.
+    fn world_shape(&self) -> render::Shape {
+        let placed = self.base().get_global_transform();
+        let lift = prop_shape::wedge_lift(placed.basis, self.size);
+        let hull = prop_shape::wedge_hull(self.size);
+        render::Shape::Wedge {
+            hull: hull.map(|p| solid::to_f64_3(placed * (p + lift))),
+        }
+    }
+
+    /// Bake the derive-time paint pass's labels onto this wedge — see
+    /// [`solid::paint_solid`].
+    fn paint(&mut self, labels_by_ordinal: &[f32]) {
+        solid::paint_solid(
+            self.mesh.as_mut(),
+            render::paint::ShapeKind::Wedge,
+            labels_by_ordinal,
+        );
     }
 }
 

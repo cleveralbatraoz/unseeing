@@ -421,24 +421,6 @@ impl WaveWall {
         self.skin.oid()
     }
 
-    /// This wall's box as `render::Shape`, in world space — the geometry
-    /// the derive-time paint pass folds into the superface graph. Mirrors
-    /// exactly what `ready()` builds: [`level_plan::wall_box`], centered at
-    /// the same lift the mesh is drawn at (`(0, WALL_H/2, 0)` local),
-    /// carried into world space by the same stored canonical transform as
-    /// the generated mesh and physics body. The authored container may retain
-    /// a few low bits of parent round-trip dust; it is deliberately not a
-    /// second geometry source.
-    pub(crate) fn world_shape(&self) -> render::Shape {
-        let frame = self.geometry_frame();
-        let size = level_plan::wall_box(self.length);
-        render::Shape::Box3d {
-            center: solid::to_f64_3(frame.origin),
-            size: solid::to_f64_3(size),
-            basis: solid::basis_columns_f64(frame.basis),
-        }
-    }
-
     /// Read-only engine witness for the exact analytic box frame handed to
     /// the superface/paint pass. It deliberately reconstructs the frame from
     /// [`Self::world_shape`] rather than from the generated limbs, so an
@@ -489,16 +471,6 @@ impl WaveWall {
             aabb.size.y,
             aabb.size.z,
         ])
-    }
-
-    /// Bake the derive-time paint pass's labels onto this wall — see
-    /// [`solid::paint_solid`].
-    pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
-        solid::paint_solid(
-            self.mesh.as_mut(),
-            render::paint::ShapeKind::Box,
-            labels_by_ordinal,
-        );
     }
 
     /// The engine-facing read-back of
@@ -748,5 +720,33 @@ impl WaveWall {
 impl WaveSolid for WaveWall {
     fn set_material(&mut self, mat: &Gd<Material>) {
         self.skin.set_material(mat);
+    }
+
+    /// This wall's box as `render::Shape`, in world space — the geometry
+    /// the derive-time paint pass folds into the superface graph. Mirrors
+    /// exactly what `ready()` builds: [`level_plan::wall_box`], centered at
+    /// the same lift the mesh is drawn at (`(0, WALL_H/2, 0)` local),
+    /// carried into world space by the same stored canonical transform as
+    /// the generated mesh and physics body. The authored container may retain
+    /// a few low bits of parent round-trip dust; it is deliberately not a
+    /// second geometry source.
+    fn world_shape(&self) -> render::Shape {
+        let frame = self.geometry_frame();
+        let size = level_plan::wall_box(self.length);
+        render::Shape::Box3d {
+            center: solid::to_f64_3(frame.origin),
+            size: solid::to_f64_3(size),
+            basis: solid::basis_columns_f64(frame.basis),
+        }
+    }
+
+    /// Bake the derive-time paint pass's labels onto this wall — see
+    /// [`solid::paint_solid`].
+    fn paint(&mut self, labels_by_ordinal: &[f32]) {
+        solid::paint_solid(
+            self.mesh.as_mut(),
+            render::paint::ShapeKind::Box,
+            labels_by_ordinal,
+        );
     }
 }
