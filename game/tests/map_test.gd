@@ -746,11 +746,57 @@ func test_a_wall_occludes_where_it_draws_not_where_the_level_guesses() -> void:
 	# ...one through its body is muffled once...
 	var through := level.source_muffle(Vector3(3, 2.0, 4), Vector3(10, 2.0, 4))
 	assert_float(through).is_equal_approx(0.3, 0.0001)
-	# ...and one OVER its raised top meets nothing again
-	var over := level.source_muffle(Vector3(3, 3.9, 4), Vector3(10, 3.9, 4))
-	assert_float(over).is_equal_approx(0.3, 0.0001)
+	# ...one still inside its raised body is muffled too: 3.9 m is UNDER the
+	# wall's 4.0 m top, so this is a second crossing case and not, as an
+	# earlier comment here claimed, the clearance case
+	var high_inside := level.source_muffle(Vector3(3, 3.9, 4), Vector3(10, 3.9, 4))
+	assert_float(high_inside).is_equal_approx(0.3, 0.0001)
+	# ...and only a line genuinely OVER the raised top meets nothing again
 	var above := level.source_muffle(Vector3(3, 4.5, 4), Vector3(10, 4.5, 4))
 	assert_float(above).is_equal_approx(1.0, 0.0001)
+
+
+## ...and the SPANS REACH THE GPU, which is a different claim from the level
+## computing them correctly.
+##
+## Every other assertion about spans in this suite reads `level.wall_spans()`
+## or `level.source_muffle()` — both CPU. The shipped scene's own wiring
+## check reads `u_wall_y` back off the materials but only ever sees
+## floor-standing walls, so it asserts (0, 3) on every slot: exactly the
+## global the whole change removed. Replace the push with a constant (0, 3)
+## table and every one of those still passes.
+##
+## This is the case that cannot: a LIFTED wall, whose span reaches the
+## material as (1, 4) or does not reach it at all.
+func test_a_lifted_walls_own_sweep_reaches_the_occluding_skins() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var wall := WaveWall.new()
+	wall.length = 6.0
+	wall.position = Vector3(6, 1, 4)
+	level.add_child(wall)
+	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
+	var world := ShaderMaterial.new()
+	world.shader = load("res://shaders/data_pass.gdshader")
+	var image := ShaderMaterial.new()
+	image.shader = load("res://shaders/data_xray.gdshader")
+	level.inject(world, image, Pulses.new())
+	add_child(level)
+
+	for m: ShaderMaterial in [world, image]:
+		var spans: PackedVector2Array = m.get_shader_parameter("u_wall_y")
+		(
+			assert_int(spans.size())
+			. append_failure_message("the occluding skin was handed no span table at all")
+			. is_equal(1)
+		)
+		(
+			assert_float(spans[0].x)
+			. append_failure_message(
+				"the skin was handed a span of %s for a wall lifted to y = 1" % str(spans[0])
+			)
+			. is_equal_approx(1.0, 0.0001)
+		)
+		assert_float(spans[0].y).is_equal_approx(4.0, 0.0001)
 
 
 ## The catastrophic case, and the one nothing warned about: a level ROOT

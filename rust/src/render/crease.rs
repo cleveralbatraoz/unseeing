@@ -129,10 +129,40 @@ mod tests {
             f64::from((labels::MIN_SEP * LOW_KNEE_RATIO) as f32)
         );
 
-        let tightened = CreaseKnee::from_min_sep(0.05).expect("a positive separation is a knee");
-        assert!((tightened.hi() - 0.05).abs() < 1.0e-9);
-        assert!((tightened.lo() - 0.025).abs() < 1.0e-9);
-        assert_ne!(tightened, shipped, "the knee did not follow MIN_SEP at all");
+        // The shipped knee IS the derivation applied to the constant.
+        //
+        // Stated plainly, because no test can do better and pretending
+        // otherwise would be the more dangerous error: `from_min_sep(0.08)`
+        // returns exactly `(0.04, 0.08)`, so a `shipped()` that hardcoded
+        // that literal is INDISTINGUISHABLE from the derivation today. That
+        // is not a hole in the test, it is the "no pixel moves" property
+        // this commit was built on. The guard fires the moment MIN_SEP
+        // moves — at which point a hardcoded knee fails the first
+        // assertion above — and not one commit before.
+        assert_eq!(
+            shipped,
+            CreaseKnee::from_min_sep(labels::MIN_SEP).expect("MIN_SEP is a positive separation")
+        );
+
+        // the derivation tracks its input across the range, at separations
+        // the shipped constant does not sit on
+        for (sep, lo, hi) in [(0.05, 0.025, 0.05), (0.12, 0.06, 0.12), (0.2, 0.1, 0.2)] {
+            let knee = CreaseKnee::from_min_sep(sep).expect("a positive separation is a knee");
+            assert!(
+                (knee.hi() - hi).abs() < 1.0e-7,
+                "hi at {sep}: {}",
+                knee.hi()
+            );
+            assert!(
+                (knee.lo() - lo).abs() < 1.0e-7,
+                "lo at {sep}: {}",
+                knee.lo()
+            );
+            assert_ne!(
+                knee, shipped,
+                "the knee did not follow its separation at {sep}"
+            );
+        }
     }
 
     /// Moving the knee into Rust must change NO pixel: the shipped

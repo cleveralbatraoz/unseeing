@@ -217,12 +217,22 @@ func test_hearing_pass_never_washes_player_rings_on_an_xrayed_source() -> void:
 	# term is false everywhere and the pass degrades to exactly its former
 	# behaviour, never to worse.
 	assert_str(src).contains("uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;")
-	assert_str(src).contains("bool seen_walled = depth_is_acoustic_image(texture(depth_tex, uv).r)")
-	assert_str(src).contains("|| wall_crossings(cam, seen_pt) > 0;")
 	assert_str(_text(POOL_PATH)).contains("bool depth_is_acoustic_image(float depth)")
 	assert_str(_text(POOL_PATH)).contains("return depth >= ALWAYS_ON_TOP - SOURCE_BAND;")
+	# TWO DIFFERENT QUESTIONS, and the split is the assertion. Conflating
+	# them shipped for exactly one commit: feeding the ring cut "is this an
+	# acoustic image" instead of "is something in front of it" drops player
+	# rings over EVERY source pixel in the game, including a fan standing in
+	# the open, because every source fragment is an acoustic image by
+	# definition. A depth read cannot answer the ring cut's question at all —
+	# at an x-rayed pixel the depth buffer holds the SOURCE's faked
+	# always-on-top value, not the occluder's.
+	assert_str(src).contains("bool seen_walled = wall_crossings(cam, seen_pt) > 0;")
+	assert_str(src).contains(
+		"bool seen_image = depth_is_acoustic_image(texture(depth_tex, uv).r) || seen_walled;"
+	)
 	assert_str(src).contains("if (t >= scene_d || seen_walled) { continue; }")
-	assert_str(src).contains("if (seen_walled) { src_r = c_c.r; }")
+	assert_str(src).contains("if (seen_image) { src_r = c_c.r; }")
 	assert_str(src).contains("if (src_r >= 0.0) { reveal = min(reveal, src_r); }")
 
 

@@ -223,10 +223,14 @@ const PALETTE_NAMES: [&str; 5] = [
 /// this campaign replaced, with nothing asserting the two agreed — so
 /// tuning the shader knee and updating one copy would have left the
 /// colouring and the seam census judging by different thresholds. That
-/// copy is gone and `observe::oids` reads this one. What is still NOT
-/// single-sourced, and cannot be from Rust, is the shader literal itself:
-/// `hearing_post.gdshader`'s `smoothstep(0.04, 0.08, nrm)` is the actual
-/// authority, and no gate compares this constant against it.
+/// copy is gone and `observe::oids` reads this one. The shader literal that
+/// USED to be the real authority is gone too: `hearing_post.gdshader` reads
+/// `u_crease_knee`, derived from this constant by
+/// [`super::crease::CreaseKnee`] and pushed by the composition root, so the
+/// law that ALLOCATES a separation and the law that DRAWS it are now the
+/// same number. This doc comment previously said the opposite — that the
+/// GLSL was the authority and no gate compared them — and shipping that
+/// sentence rather than acting on it is how the drift survived.
 pub const MIN_SEP: f64 = 0.08;
 
 /// The shader and `ArrayMesh::CUSTOM0` both consume 32-bit lanes. Public

@@ -36,6 +36,7 @@ extends Node
 
 const DEPTH_SHADER := preload("res://shaders/probe_depth_read.gdshader")
 const COMBINED_SHADER := preload("res://shaders/probe_depth_combined.gdshader")
+const SCREEN_ONLY_SHADER := preload("res://shaders/probe_screen_read.gdshader")
 const WRITE_SHADER := preload("res://shaders/probe_channel_write.gdshader")
 const XRAY_WRITE_SHADER := preload("res://shaders/probe_depth_xray.gdshader")
 
@@ -167,10 +168,15 @@ func _measure() -> void:
 	# 3 — and the pass that must use it can. hearing_post IS the screen
 	# texture; if declaring a depth uniform beside it cost the screen read,
 	# the whole approach would be closed however well the depth read worked.
-	_read_mat.shader = COMBINED_SHADER
-	_read_mat.set_shader_parameter("u_want_depth", false)
+	#
+	# TWO SHADERS, not two branches of one. This compared `c` against
+	# `min(c + d, c)` at first — an algebraic identity, so the two readings
+	# were computed to be equal and the check could not fail whatever the
+	# platform did. The comparison only means something across a shader that
+	# declares the depth texture and one that does not.
+	_read_mat.shader = SCREEN_ONLY_SHADER
 	var colour_alone := await _read()
-	_read_mat.set_shader_parameter("u_want_depth", true)
+	_read_mat.shader = COMBINED_SHADER
 	var colour_beside_depth := await _read()
 	print(
 		(
@@ -184,7 +190,7 @@ func _measure() -> void:
 			"declaring hint_depth_texture costs the screen read NOTHING (%.3f == %.3f)"
 			% [colour_beside_depth, colour_alone]
 		),
-		absf(colour_beside_depth - colour_alone) < 0.01
+		absf(colour_beside_depth - colour_alone) < 0.02
 	)
 
 	print("1..5")

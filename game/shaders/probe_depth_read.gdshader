@@ -12,11 +12,13 @@ render_mode unshaded, cull_disabled, depth_draw_never, depth_test_disabled, fog_
 // exactly, since the source skin is opaque and writes DEPTH inside the
 // always-on-top band.
 //
-// This shader deliberately declares the depth texture ALONE. Declaring it
-// beside hint_screen_texture is itself fatal in Compatibility — measured:
-// the screen-texture read then returns nothing at all — which is a second,
-// independent reason hearing_post could never use it, since that pass IS
-// the screen texture.
+// This shader declares the depth texture ALONE so the measurement isolates
+// it. Whether it may be declared BESIDE hint_screen_texture is a separate
+// question and is measured separately, by probe_depth_combined — it may,
+// and that is what licenses hearing_post to do so. An earlier draft of this
+// comment asserted the opposite as a measured fact; it was not measured, it
+// was a misread of an unrelated edit, and the game now ships the
+// combination it called impossible.
 uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;
 // Amplification, because a world fragment's depth is ~0.016 and an 8-bit
 // frame cannot resolve it. Set to 1.0 when the value of interest is near

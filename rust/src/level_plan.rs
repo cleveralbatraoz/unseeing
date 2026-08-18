@@ -1482,7 +1482,7 @@ pub fn wall_budget(walls: usize, slots: usize) -> Option<Budget> {
 /// to lose: a walk that read only `x` and `y` would still measure a
 /// same-handed table correctly and would silently shrink any table whose
 /// quads arrived the other way round.
-fn wall_footprint(segments: &[Vector4]) -> Option<Box3> {
+fn wall_footprint(segments: &[Vector4], sweep: (f64, f64)) -> Option<Box3> {
     let first = segments.first()?;
     let (mut lo_x, mut hi_x) = (first.x.min(first.z), first.x.max(first.z));
     let (mut lo_z, mut hi_z) = (first.y.min(first.w), first.y.max(first.w));
@@ -1493,9 +1493,30 @@ fn wall_footprint(segments: &[Vector4]) -> Option<Box3> {
         hi_z = hi_z.max(s.y).max(s.w);
     }
     Some(Box3 {
-        min: [f64::from(lo_x), 0.0, f64::from(lo_z)],
-        max: [f64::from(hi_x), WALL_H, f64::from(hi_z)],
+        min: [f64::from(lo_x), sweep.0, f64::from(lo_z)],
+        max: [f64::from(hi_x), sweep.1, f64::from(hi_z)],
     })
+}
+
+/// The vertical extent the walls actually occupy, unioned over the whole
+/// table — `(0.0, WALL_H)` on a level whose walls all stand on its floor,
+/// and something else the moment one is lifted or the level root is.
+///
+/// Taken off the occluders because they are the only place a wall's own
+/// height survives: [`wall_segment`] writes `(x1, z1, x2, z2)` and discards
+/// it. An empty table answers `(0.0, 0.0)`, which contributes nothing to a
+/// union rather than inventing a storey.
+#[must_use]
+pub fn wall_sweep(occluders: &[crate::sight::Occluder]) -> (f64, f64) {
+    let mut span: Option<(f64, f64)> = None;
+    for occ in occluders {
+        let (lo, hi) = (f64::from(occ.span().x), f64::from(occ.span().y));
+        span = Some(match span {
+            Some((was_lo, was_hi)) => (was_lo.min(lo), was_hi.max(hi)),
+            None => (lo, hi),
+        });
+    }
+    span.unwrap_or((0.0, 0.0))
 }
 
 /// The longest sight line the authored map allows: the full 3D diagonal of
@@ -1520,10 +1541,21 @@ fn wall_footprint(segments: &[Vector4]) -> Option<Box3> {
 /// geometry a sight line can reach. On every map that behaves — walls
 /// resting within their own slab — this union changes nothing, since the
 /// slab pair already contains it.
+///
+/// The walls contribute their centerlines in XZ — this measures DRAWN
+/// geometry, so the occluder's shrunk sight rect would be the wrong
+/// vocabulary here — but their VERTICAL extent has to be measured rather
+/// than assumed. It used to be stamped as a global `[0, WALL_H]`, the last
+/// global wall-height read in the crate, and it made this measure lie about
+/// exactly the case the occluder rework exists for: lift a level ROOT by
+/// 2.557 m and the slabs rise with it, but the injected `[0, 3]` stretched
+/// the union from 3.2 m tall to 5.66 m and pushed the diagonal from 39.73
+/// to 40.00002 — a `Severity::Error` telling a designer to shrink a map
+/// whose true diagonal had not moved at all.
 #[must_use]
-pub fn slab_diagonal(floor: Box3, ceiling: Box3, walls: &[Vector4]) -> f64 {
+pub fn slab_diagonal(floor: Box3, ceiling: Box3, walls: &[Vector4], sweep: (f64, f64)) -> f64 {
     let mut extent = floor.union(&ceiling);
-    if let Some(wall_box) = wall_footprint(walls) {
+    if let Some(wall_box) = wall_footprint(walls, sweep) {
         extent = extent.union(&wall_box);
     }
     extent.diagonal()
@@ -3259,7 +3291,63 @@ mod tests {
     /// origin.
     #[test]
     fn wall_footprint_is_none_for_an_empty_table() {
-        assert_eq!(wall_footprint(&[]), None);
+        assert_eq!(wall_footprint(&[], (0.0, WALL_H)), None);
+    }
+
+    /// THE break this catches: a footprint that stamps a global height on
+    /// every wall instead of reading each wall's own sweep.
+    ///
+    /// It did, and it was the last global wall-height read in the crate.
+    /// The cost lands on `slab_diagonal`, and through it on the budget that
+    /// tells a designer their map has outgrown DIST_PACK_RANGE. Hand-derived
+    /// on the shipped 28 x 28 map: lift the level ROOT by 2.557 m and the
+    /// slabs rise to y in [2.457, 5.657], a union still only 3.2 m tall and
+    /// a diagonal still 39.727 — but a stamped [0, 3] stretches that union
+    /// to 5.657 m and the diagonal to 40.00002, one hundredth of a
+    /// millimetre past the range, raising a Severity::Error against a map
+    /// that never moved.
+    #[test]
+    fn a_footprint_reads_each_walls_own_sweep_not_a_global_height() {
+        // the sweep the level derives for a wall lifted with the gizmo
+        let lifted =
+            [
+                crate::sight::Occluder::new(
+                    Vector4::new(1.0, 2.0, 9.0, 2.0),
+                    2.557,
+                    2.557 + WALL_H,
+                )
+                .expect("finite"),
+            ];
+        let sweep = wall_sweep(&lifted);
+        assert!((sweep.0 - 2.557).abs() < 1e-6, "lo {}", sweep.0);
+        assert!((sweep.1 - 5.557).abs() < 1e-6, "hi {}", sweep.1);
+        assert_eq!(wall_sweep(&[]), (0.0, 0.0), "no walls invent no storey");
+
+        // and the consequence, end to end: a lifted level's diagonal must
+        // not move, because nothing about the map got bigger
+        let (floor, ceiling) = slab_boxes(28.0, 28.0);
+        let lift = |b: Box3| Box3 {
+            min: [b.min[0], b.min[1] + 2.557, b.min[2]],
+            max: [b.max[0], b.max[1] + 2.557, b.max[2]],
+        };
+        let walls = border(0.6, 0.6, 27.4, 27.4);
+        let diagonal = slab_diagonal(lift(floor), lift(ceiling), &walls, sweep);
+        assert!(
+            (diagonal - 39.727_068_857_392_44).abs() < 1e-6,
+            "a lifted level measured {diagonal} against an unmoved 39.727"
+        );
+        assert!(
+            pack_range_budget(diagonal, DIST_PACK_RANGE).is_none(),
+            "a map that did not grow was told to shrink"
+        );
+
+        // the counter-example that makes this non-vacuous: the global
+        // [0, WALL_H] the code used to stamp
+        let stamped = slab_diagonal(lift(floor), lift(ceiling), &walls, (0.0, WALL_H));
+        assert!(
+            stamped > DIST_PACK_RANGE,
+            "the old stamp no longer misfires, so this test proves nothing: {stamped}"
+        );
     }
 
     /// A centerline is a QUAD, not an ordered pair, and BOTH ends of both
@@ -3292,8 +3380,8 @@ mod tests {
             min: [1.0, 0.0, 2.0],
             max: [9.0, WALL_H, 7.0],
         };
-        assert_eq!(wall_footprint(&forward), Some(want));
-        assert_eq!(wall_footprint(&flipped), Some(want));
+        assert_eq!(wall_footprint(&forward, (0.0, WALL_H)), Some(want));
+        assert_eq!(wall_footprint(&flipped, (0.0, WALL_H)), Some(want));
     }
 
     /// The shipped 28 × 28 map: its slab pair alone spans
@@ -3308,7 +3396,7 @@ mod tests {
     fn the_slab_diagonal_spans_the_shipped_maps_floor_and_ceiling() {
         let (floor, ceiling) = slab_boxes(28.0, 28.0);
         let walls = border(0.6, 0.6, 27.4, 27.4);
-        let diagonal = slab_diagonal(floor, ceiling, &walls);
+        let diagonal = slab_diagonal(floor, ceiling, &walls, (0.0, WALL_H));
         assert!(
             (diagonal - 39.727_068_857_392_44).abs() < 1e-9,
             "{diagonal}"
@@ -3330,7 +3418,7 @@ mod tests {
     fn a_courtyard_with_one_small_room_still_saturates_the_pack_range() {
         let (floor, ceiling) = slab_boxes(80.0, 80.0);
         let walls = border(10.0, 10.0, 16.0, 16.0); // the one 6 × 6 room
-        let diagonal = slab_diagonal(floor, ceiling, &walls);
+        let diagonal = slab_diagonal(floor, ceiling, &walls, (0.0, WALL_H));
         assert!(
             (diagonal - 113.182_330_776_495_32).abs() < 1e-9,
             "{diagonal}"
@@ -3350,7 +3438,7 @@ mod tests {
     #[test]
     fn a_wall_less_courtyard_still_measures_off_its_slabs() {
         let (floor, ceiling) = slab_boxes(50.0, 50.0);
-        let diagonal = slab_diagonal(floor, ceiling, &[]);
+        let diagonal = slab_diagonal(floor, ceiling, &[], (0.0, WALL_H));
         assert!(
             (diagonal - 70.783_048_818_202_23).abs() < 1e-9,
             "{diagonal}"
@@ -3372,7 +3460,7 @@ mod tests {
     fn a_wall_reaching_past_the_slab_edge_still_widens_the_diagonal() {
         let (floor, ceiling) = slab_boxes(10.0, 10.0);
         let walls = [Vector4::new(-2.0, 5.0, 12.0, 5.0)];
-        let diagonal = slab_diagonal(floor, ceiling, &walls);
+        let diagonal = slab_diagonal(floor, ceiling, &walls, (0.0, WALL_H));
         assert!(
             (diagonal - 17.499_714_283_381_888).abs() < 1e-9,
             "{diagonal}"

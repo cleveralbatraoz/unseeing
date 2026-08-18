@@ -33,10 +33,13 @@ uniform float u_breath = 1.0;
 // went on fading over a knee it no longer matched, drawing the seams the
 // allocator had just approved at a fraction of strength.
 //
-// The default is deliberately NOT the shipped (0.04, 0.08). A post material
-// nobody pushed draws every seam at full strength regardless of label
-// distance, which is loudly wrong; a default that happened to be right
-// would hide a broken push forever.
+// The default is deliberately NOT the shipped (0.04, 0.08), so a post
+// material nobody pushed is visibly wrong rather than accidentally right.
+// It is wrong in the DIM direction, not the bright one: smoothstep(0, 1, x)
+// at a genuine MIN_SEP seam of 0.08 gives 0.0182, so creases all but
+// vanish while silhouettes carry on drawing. An earlier version of this
+// comment claimed the opposite — every seam at full strength — which is not
+// what the arithmetic does.
 uniform vec2 u_crease_knee = vec2(0.0, 1.0);
 uniform float u_grain_amp = 0.034;
 uniform float u_grain_t = 0.0;
@@ -83,23 +86,33 @@ void fragment() {
 	// source) — no player-made ring may wash it. A real-depth surface is
 	// never behind a wall (the wall would hide it), so this fires only on
 	// the x-rayed sources.
-	// TWO tests, ORed, and the pair is deliberate.
+	// TWO DIFFERENT QUESTIONS, and they must not be conflated — conflating
+	// them is a bug this pass shipped for exactly one commit.
 	//
-	// The depth read is EXACT: a fragment in the always-on-top band is a
-	// source, full stop. The wall-table inference underneath it is not —
-	// it rebuilds a world point from B and asks which walls stand there,
-	// and WaveProp, WaveColumn and WaveWedge are in no occluder table
-	// anywhere, so a source hidden behind a pillar was simply missed: its
-	// rings were never cut and its outline borrowed the pillar's
-	// brightness. The depth test covers exactly that case.
+	//   seen_walled — is there something BETWEEN THE EYE AND the surface at
+	//   this pixel? Only the wall table can answer that. A depth read
+	//   cannot: at an x-rayed pixel the depth buffer holds the SOURCE's
+	//   faked always-on-top value, not the occluder's, so it knows nothing
+	//   about what stands in front.
 	//
-	// The inference stays because the depth texture is measured on desktop
-	// GL and unmeasured on WebGL2. If it is dead there, the first term is
-	// false everywhere and this pass behaves precisely as it did before —
-	// which is why the OR is the safe shape and a replacement would not be.
+	//   seen_image — is the surface at this pixel an acoustic image at all?
+	//   Here the depth read is exact and the wall table is only a proxy.
+	//
+	// The ring cut below needs the FIRST. Feeding it the second drops
+	// player rings over every source pixel in the game, including a fan
+	// standing in the open with nothing between it and the eye, because
+	// every source fragment is an acoustic image by definition.
+	//
+	// The outline cap needs the SECOND, and that is where the depth read
+	// earns its place: the wall table misses a source hidden behind a
+	// PROP — WaveProp, WaveColumn and WaveWedge are in no occluder table
+	// anywhere — so its outline borrowed the pillar's brightness. ORed, not
+	// substituted, because the depth texture is measured on desktop GL and
+	// unmeasured on WebGL2: where it is dead the term is false everywhere
+	// and the cap degrades to precisely its former behaviour.
 	vec3 seen_pt = cam + rd * scene_d;
-	bool seen_walled = depth_is_acoustic_image(texture(depth_tex, uv).r)
-			|| wall_crossings(cam, seen_pt) > 0;
+	bool seen_walled = wall_crossings(cam, seen_pt) > 0;
+	bool seen_image = depth_is_acoustic_image(texture(depth_tex, uv).r) || seen_walled;
 
 	// thin white outlines: silhouettes (Laplacian of the packed distance in B)
 	// + creases (label differences in G — the per-vertex CUSTOM0 label:
@@ -122,7 +135,7 @@ void fragment() {
 	// a wall (an x-rayed source), and if so clamp the reveal to that tap's.
 	if (edge > 0.0) {
 		float src_r = -1.0;
-		if (seen_walled) { src_r = c_c.r; }
+		if (seen_image) { src_r = c_c.r; }
 		// the same pair at each neighbour: the exact depth test first, the
 		// wall-table inference as the platform fallback behind it
 		if (depth_is_acoustic_image(texture(depth_tex, uv - vec2(px.x, 0.0)).r)

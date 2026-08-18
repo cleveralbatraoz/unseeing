@@ -1366,9 +1366,12 @@ impl WaveLevel {
     /// holds them; this end only measures.
     fn report_pack_range(&mut self, editor: bool) {
         let diagonal = match (self.floor_box(), self.ceiling_box()) {
-            (Some(floor), Some(ceiling)) => {
-                level_plan::slab_diagonal(floor, ceiling, &self.segments)
-            }
+            (Some(floor), Some(ceiling)) => level_plan::slab_diagonal(
+                floor,
+                ceiling,
+                &self.segments,
+                level_plan::wall_sweep(&self.occluders),
+            ),
             // slabs not yet built: nothing drawn to measure, nothing to say
             _ => 0.0,
         };

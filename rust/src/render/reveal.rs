@@ -465,14 +465,34 @@ mod tests {
         );
     }
 
-    /// The tail this module hands the renderer is the SAME number the pool
-    /// retires the slot with. Were they to drift, one of the two failure
-    /// modes returns: a longer reveal tail outlives its own slot data, and
-    /// a shorter one darkens a wave the ring in the air is still drawing.
+    /// The tail every kind is granted, hand-derived rather than delegated.
+    ///
+    /// This used to assert `reveal_tail(kind) == fade_tail(kind)`, which is
+    /// a tautology: `reveal_tail` IS a one-line call to `fade_tail`, so the
+    /// assertion compared a function against itself and would have agreed
+    /// with any table whatsoever. The numbers are written out instead —
+    /// including the wildcard arm, which is what a kind outside 0..=3 gets
+    /// and the one arm a reader is most likely to forget exists.
     #[test]
-    fn the_reveal_tail_is_the_pools_own_slot_lifetime() {
-        for kind in [-1, 0, 1, 2, 3, 4, 99] {
-            assert_eq!(reveal_tail(kind), fade_tail(kind), "kind {kind}");
+    fn every_kind_is_granted_the_tail_its_slot_is_budgeted_for() {
+        assert_eq!(reveal_tail(0), 6.0, "a cane tap lingers longest");
+        assert_eq!(
+            reveal_tail(1),
+            3.5,
+            "an echo is shorter than its parent tap"
+        );
+        assert_eq!(
+            reveal_tail(2),
+            2.5,
+            "a footstep recurs, so it must free its slot"
+        );
+        assert_eq!(reveal_tail(3), 2.0, "a world source recurs fastest of all");
+        for stranger in [-1, 4, 99, i32::MIN, i32::MAX] {
+            assert_eq!(
+                reveal_tail(stranger),
+                6.0,
+                "kind {stranger} fell through to something other than the tap's tail"
+            );
         }
     }
 }

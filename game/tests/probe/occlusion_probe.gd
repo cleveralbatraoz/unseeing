@@ -366,11 +366,22 @@ func _ready() -> void:
 			% [flare, base_img, reveal, base_r]
 		)
 	)
-	# non-vacuity for both ratios: a fan that had gone dark would divide a
-	# nothing by a nothing and pass every leak check ever written
+	# non-vacuity, one guard per denominator: a fan that had gone dark would
+	# divide a nothing by a nothing and pass every leak check ever written
 	_check(
-		"the fan IS drawn at all, so the leak ratios mean something (%.3f > 0.05)" % base_r,
+		"the fan IS drawn at all, so the reveal ratio means something (%.3f > 0.05)" % base_r,
 		base_r > 0.05
+	)
+	# ...and the OUTLINE ratio has its own denominator, which needs its own
+	# guard. The comment above once promised a guard "for both ratios" while
+	# only one existed: a fan whose outline had gone dark would divide a
+	# nothing by a nothing and pass the flare check for the wrong reason.
+	_check(
+		(
+			"the fan's OUTLINE is drawn at all, so the flare ratio means something (%.3f > 0.05)"
+			% base_img
+		),
+		base_img > 0.05
 	)
 	_check(
 		(
