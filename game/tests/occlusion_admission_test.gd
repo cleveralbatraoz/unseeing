@@ -156,6 +156,41 @@ func test_a_prop_between_the_eye_and_a_source_costs_it_clarity() -> void:
 	assert_float(through).is_greater(0.3)
 
 
+## THE BREAK: the observer being handed only the wall table, after which it
+## reports a source's muffle by a different law from the one the level
+## composed and pushed. `explain_ray`'s whole reason to exist is that "a
+## disagreement between the two would surface as a failing test here rather
+## than as a plausible-looking wrong answer in the field", and the shipped
+## level is full of crates, so this was wrong on most sight lines in the
+## game. The cargo case pins the ARITHMETIC; only this end can pin that the
+## boundary actually hands the prop table over.
+func test_the_observers_muffle_is_the_one_the_level_composed() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(WaveSpawn.new())
+	var crate := WaveProp.new()
+	crate.name = "ACrateInTheWay"
+	crate.size = Vector3(1.0, 0.8, 1.0)
+	level.add_child(crate)
+	crate.position = Vector3(3.0, 0.4, 0.0)
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	var obs := _observer()
+	obs.inject(level, _eye())
+
+	var eye := Vector3(0.0, 0.4, 0.0)
+	var beyond := Vector3(6.0, 0.4, 0.0)
+	var ray: Dictionary = obs.explain_ray(eye, beyond)
+
+	# the crate is no wave occluder, so no WALL stands in the line...
+	assert_int(ray["camera_crossings"]).is_equal(0)
+	# ...but a prop does, and the observer must say so
+	assert_int(ray["prop_crossings"]).is_equal(1)
+	# and the number it reports must be the level's own, not walls-only
+	assert_float(ray["source_transmission"]).is_equal_approx(level.source_muffle(eye, beyond), 1e-9)
+	# walls alone would have answered 1.0 here, which is the defect
+	assert_float(ray["source_transmission"]).is_less(0.9)
+
+
 ## THE BREAK: the prop clarity walk reading the WALL table, or vice versa —
 ## after which a crate would start stopping waves, or a pillar would stop
 ## dimming what stands behind it.

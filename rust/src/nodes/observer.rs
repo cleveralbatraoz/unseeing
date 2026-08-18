@@ -257,7 +257,7 @@ impl WaveObserver {
             // mistaken for a world rendered at flicker zero.
             flick.unwrap_or(f64::NAN),
             SceneObservation {
-                sources: sources(&level, eye, level.occluders()),
+                sources: sources(&level, eye, level.occluders(), level.prop_occluders()),
                 wall_rects: rects,
                 eye: EyeObservation {
                     position: eye,
@@ -398,7 +398,7 @@ impl WaveObserver {
         let level = level.bind();
         // the occluders themselves, spans included — not rebuilt from the
         // rect projection, which no longer carries a wall's height
-        let explanation = ray::explain_ray(from, to, level.occluders());
+        let explanation = ray::explain_ray(from, to, level.occluders(), level.prop_occluders());
         ray_dict(&explanation, &level.wall_names())
     }
 
@@ -796,6 +796,7 @@ fn sources(
     level: &WaveLevel,
     eye: Vector3,
     occluders: &[crate::sight::Occluder],
+    props: &[crate::sight::Occluder],
 ) -> Vec<SourceObservation> {
     level
         .source_handles()
@@ -806,7 +807,7 @@ fn sources(
             let bound = source.dyn_bind();
             let voice = bound.voice();
             let position = bound.hub();
-            let line = ray::explain_ray(eye, position, occluders);
+            let line = ray::explain_ray(eye, position, occluders, props);
             SourceObservation {
                 name,
                 position,
@@ -1070,6 +1071,7 @@ fn ray_dict(explanation: &RayExplanation, names: &[String]) -> VarDictionary {
     entry.set("to", explanation.to);
     entry.set("camera_crossings", i64::from(explanation.camera_crossings));
     entry.set("source_crossings", i64::from(explanation.source_crossings));
+    entry.set("prop_crossings", i64::from(explanation.prop_crossings));
     entry.set("wave_transmission", explanation.wave_transmission);
     entry.set("source_transmission", explanation.source_transmission);
     entry.set("walls", &walls);

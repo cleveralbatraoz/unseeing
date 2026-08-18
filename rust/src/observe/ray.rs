@@ -8,7 +8,6 @@
 
 use godot::builtin::{Vector2, Vector3, Vector4};
 
-use crate::level_plan::SOURCE_THROUGH;
 use crate::sight::{
     Occluder, blocked_from, contains, crosses, crossings, crossings_from, reveal_visibility,
 };
@@ -42,14 +41,21 @@ pub struct RayExplanation {
     pub camera_crossings: u32,
     /// Source to lit point: the birth wall is skipped.
     pub source_crossings: u32,
+    /// Eye to lit point, PROPS only — the solids `spans_the_corridor`
+    /// refused, which stop no wave but each take [`level_plan::prop_through`]
+    /// from a source's standing image. A source can read muffled with zero
+    /// walls crossed, and this is the only thing that explains it.
+    pub prop_crossings: u32,
     /// How much of the source's WAVE survives — the shader's
     /// `source_reveal_vis`, keyed to the SOURCE occluder so a sound born
     /// flush on a wall still lights its own face. A gate, not a fade: a
     /// wall stops a wave whatever kind made it.
     pub wave_transmission: f64,
-    /// `SOURCE_THROUGH ^ camera_crossings` — how much of its SILHOUETTE
-    /// survives (the engine's `source_muffle`, keyed to the CAMERA
-    /// occluder — every wall between the eye and the source counts).
+    /// How much of a source's SILHOUETTE survives everything between it and
+    /// the eye — composed by [`level_plan::source_muffle`] itself, not by a
+    /// restatement of it, so the oracle cannot drift from the engine again.
+    /// `SOURCE_THROUGH` per wall and [`level_plan::prop_through`] per prop,
+    /// both keyed to the CAMERA occluder.
     pub source_transmission: f64,
 }
 
@@ -62,7 +68,12 @@ pub struct RayExplanation {
 /// between the two would surface as a failing test here rather than as a
 /// plausible-looking wrong answer in the field.
 #[must_use]
-pub fn explain_ray(from: Vector3, to: Vector3, occluders: &[Occluder]) -> RayExplanation {
+pub fn explain_ray(
+    from: Vector3,
+    to: Vector3,
+    occluders: &[Occluder],
+    props: &[Occluder],
+) -> RayExplanation {
     let walls = occluders
         .iter()
         .enumerate()
@@ -75,6 +86,7 @@ pub fn explain_ray(from: Vector3, to: Vector3, occluders: &[Occluder]) -> RayExp
         })
         .collect();
     let camera_crossings = crossings(from, to, occluders);
+    let prop_crossings = crossings(from, to, props);
     let source_crossings = crossings_from(from, to, occluders);
     RayExplanation {
         from,
@@ -82,6 +94,7 @@ pub fn explain_ray(from: Vector3, to: Vector3, occluders: &[Occluder]) -> RayExp
         walls,
         camera_crossings,
         source_crossings,
+        prop_crossings,
         // The oracle asks the SAME predicate the shipped shader asks, not
         // an equivalent restatement of it: `source_reveal_vis` in
         // data_core.gdshaderinc is `wall_blocked_from(src, world) ? 0.0 :
@@ -90,10 +103,12 @@ pub fn explain_ray(from: Vector3, to: Vector3, occluders: &[Occluder]) -> RayExp
         // reader debugging a sight line wants to know how many walls stand
         // there even though the law stops caring after the first.
         wave_transmission: reveal_visibility(blocked_from(from, to, occluders)),
-        // SOURCE_THROUGH is the source_muffle exponent base
-        // (nodes/level.rs), which reads off sight::crossings — the CAMERA
-        // occluder, every wall counted.
-        source_transmission: SOURCE_THROUGH.powi(camera_crossings as i32),
+        // The engine's own function, called — not `SOURCE_THROUGH` raised
+        // by hand to the wall count, which is what this was and which made
+        // the oracle wrong on every sight line through a crate. Props stop
+        // no wave, so they are absent from `wave_transmission` above; they
+        // dim a standing image, so they belong here.
+        source_transmission: crate::level_plan::source_muffle(camera_crossings, prop_crossings),
     }
 }
 
@@ -104,6 +119,50 @@ mod tests {
     use godot::builtin::{Vector3, Vector4};
 
     const WALL_TOP: f64 = level_plan::WALL_H;
+
+    /// THE BREAK: the oracle and the engine composing a source's muffle by
+    /// different laws. This module's whole purpose is that "a disagreement
+    /// between the two would surface as a failing test here rather than as a
+    /// plausible-looking wrong answer in the field", and
+    /// `source_transmission` is documented as "the engine's `source_muffle`".
+    /// The engine's is `level_plan::source_muffle(walls, props)`; the oracle
+    /// raised SOURCE_THROUGH to the wall count alone, so on any sight line
+    /// through a crate it reported a number no shader was holding — and
+    /// `WaveObserver.snapshot()` showed both, side by side, disagreeing.
+    ///
+    /// Hand-derived: one wall and two props is `0.30 * sqrt(0.30)^2` = 0.09,
+    /// exactly two walls' worth, which is `prop_through`'s "two props cost
+    /// one wall" stated as a number.
+    #[test]
+    fn the_oracle_muffles_by_the_law_the_engine_applies() {
+        let wall = Occluder::new(Vector4::new(3.0, -5.0, 3.0, 5.0), 0.0, WALL_TOP).unwrap();
+        let crate_a = Occluder::from_bounds(4.9, -0.5, 5.1, 0.5, 0.0, 0.8).unwrap();
+        let crate_b = Occluder::from_bounds(5.9, -0.5, 6.1, 0.5, 0.0, 0.8).unwrap();
+        let eye = Vector3::new(0.0, 0.4, 0.0);
+        let src = Vector3::new(9.0, 0.4, 0.0);
+
+        let e = explain_ray(eye, src, &[wall], &[crate_a, crate_b]);
+        assert_eq!(e.camera_crossings, 1, "the wall");
+        assert_eq!(e.prop_crossings, 2, "both crates");
+        assert!(
+            (e.source_transmission - 0.09).abs() < 1.0e-9,
+            "one wall and two crates should leave 0.09, not {}",
+            e.source_transmission
+        );
+
+        // and the law itself, so the oracle cannot be "repaired" by copying
+        // the arithmetic instead of calling the function the engine calls
+        assert_eq!(
+            e.source_transmission,
+            level_plan::source_muffle(e.camera_crossings, e.prop_crossings)
+        );
+
+        // the defect, stated: walls alone would have answered 0.30
+        assert!(
+            (e.source_transmission - level_plan::SOURCE_THROUGH).abs() > 1.0e-3,
+            "the props were ignored again"
+        );
+    }
 
     /// A RETIRED 20×20/10-wall map, not the shipped 28×28/19-wall scene —
     /// see `sight::tests::retired_map_rects` for why it remains a valid
@@ -141,6 +200,7 @@ mod tests {
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(8.6, 1.15, 4.4),
             &retired_map_rects(),
+            &[],
         );
         assert_eq!(e.camera_crossings, 1);
         let crossed: Vec<usize> = e
@@ -167,6 +227,7 @@ mod tests {
             Vector3::new(3.0, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 10.0),
             &retired_map_rects(),
+            &[],
         );
         assert_eq!(e.camera_crossings, 2);
         assert!(
@@ -190,6 +251,7 @@ mod tests {
             Vector3::new(8.0, 1.0, 4.0),
             Vector3::new(12.0, 1.5, 6.0),
             &retired_map_rects(),
+            &[],
         );
         assert_eq!(e.camera_crossings, 0);
         assert_eq!(e.walls.len(), 10);
@@ -208,6 +270,7 @@ mod tests {
             Vector3::new(6.4, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 4.0),
             &retired_map_rects(),
+            &[],
         );
         assert_eq!(e.camera_crossings, 1);
         assert_eq!(e.source_crossings, 0);
@@ -236,6 +299,7 @@ mod tests {
             Vector3::new(6.4, 0.9, 4.0),
             Vector3::new(10.0, 0.9, 4.0),
             &retired_map_rects(),
+            &[],
         );
         assert!(
             (e.wave_transmission - 1.0).abs() < 1e-9,

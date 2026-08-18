@@ -563,6 +563,16 @@ impl WaveLevel {
         &self.occluders
     }
 
+    /// The PROP table — the solids `spans_the_corridor` refused, which stop
+    /// no wave but each take [`level_plan::prop_through`] from a source's
+    /// standing image. The observer needs it for the same reason it needs
+    /// the wall table: [`Self::source_muffle`] composes both, so an oracle
+    /// handed only the walls reports a number no shader is holding on every
+    /// sight line through a crate.
+    pub(super) fn prop_occluders(&self) -> &[sight::Occluder] {
+        &self.prop_occluders
+    }
+
     /// Every fault the last derivation pinned to `node` specifically — an
     /// unfloored/sunken placement, a starved face-class seam, or a paint
     /// fault — matched by the same `root.get_path_to` address every entry
