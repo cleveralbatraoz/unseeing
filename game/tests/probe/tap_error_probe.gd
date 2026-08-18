@@ -148,8 +148,19 @@ func _measure() -> void:
 	_check("no reading clipped the +-%.1f code window (%d clipped)" % [SPAN, clipped], clipped == 0)
 	# WHAT THIS PROBE CAN HONESTLY ASSERT. The error is bounded, and that
 	# bound is the one thing here that is not in question.
+	# WHAT THIS CAN HONESTLY GATE ON. Not "the error is small" — it is not,
+	# and saying so was only possible while the sweep began at 0.30 and
+	# could not see the bottom of the channel. What must hold for the
+	# channel to be usable at all is that a band exists where the error is
+	# within one measured gap: distance is mapped into that band, so if it
+	# vanished the packing law would have nowhere to go.
+	var usable: float = floor_at[TOLS.find(1.25)]
 	_check(
-		"the value comes back within two nominal codes (|%.3f| <= 2.0)" % worst, absf(worst) <= 2.0
+		(
+			"a usable band exists: the channel is inside 1.25 codes above %.4f, leaving %.0f%%"
+			% [usable, (1.0 - usable) * 100.0]
+		),
+		usable >= 0.0 and usable < 0.90
 	)
 	# WHAT IT CANNOT SETTLE, PRINTED RATHER THAN ASSERTED. recon_eps halves
 	# the measured gap and calls that the worst error in one value. This

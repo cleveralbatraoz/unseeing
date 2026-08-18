@@ -107,6 +107,39 @@ about the channel's clothes. **The floor is therefore measured by
 `tap_error_probe`, which holds one base per frame, not by a region added to
 `platform_probe`.**
 
+## The floor, MEASURED — 2026-08-19, AMD radeonsi / Mesa 25.0.7, shipped LDR path
+
+| tolerance | channel is inside it above |
+|---|---|
+| 0.50 codes | 0.9537 |
+| 1.00 codes | 0.8506 |
+| **1.25 codes** | **0.4484** |
+| 1.50 codes | 0.3866 |
+| 2.00 codes | 0.2113 |
+| 3.00 codes | 0.1803 |
+
+Worst error −26.98 codes at base 0.0256; mean −2.903 over 106 bases.
+
+**The fitted model was wrong, and wrong in the dangerous direction.** It put
+the 1.25-code floor at 0.2384; the shipped path measures **0.4484**, nearly
+twice as high. This is the failure the section below anticipated, and it is
+why commit 1 is the probe and why nothing may be typed before it reads.
+
+Following from the measured floor, rounded UP to the next representable
+code — `ceil(0.4484 × 1023) / 1023 = 459/1023 = 0.448680`:
+
+- usable band 55.1% of the channel;
+- `DIST_UNPACK_SCALE = 40 / (1 − 0.448680) = 72.55`;
+- `quantum = 1.25 × 72.55 / 1023 = 0.0886 m`, `recon_eps = 0.0443 m`;
+- against today's measured **1.02 m**, a 23× improvement;
+- `sight::RECT_SHRINK` must then exceed 0.0443 m, so it rises from 0.03 to
+  0.05 — and this time as an authored geometric clearance bounded by a test,
+  not as a tolerance derived from a premise that turned out false.
+
+Still to measure on web (SwiftShader and ANGLE/Apple Metal) through
+`tools/measure_web_platform.sh`; `SAFE_FLOOR` ships as the worst of the
+measured drivers, never as the best.
+
 ## Migration, five commits, each green alone
 
 1. **The measurement.** `tap_error_probe` sweeps the whole channel (it began

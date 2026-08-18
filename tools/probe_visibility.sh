@@ -36,6 +36,17 @@
 # stories about it (the brief said 8-bit LDR; an earlier probe claimed
 # RGB10_A2) and at 8 bits the guard is broken outright. It is RGB10_A2.
 #
+# tap_error_probe answers the third leg of the same argument, and it is a
+# different question from the other two: platform_probe measures
+# RESOLUTION — the smallest step two values must be apart to come back
+# distinct — while this measures ACCURACY, how far ONE value moves. They are
+# not the same, and the reconstruction guard needs the second. Measured on
+# the shipped data pass, a wall 1 m from the eye reads back as 0 m, because
+# Godot's compatibility pass puts every ALBEDO write through an sRGB pair
+# whose halves are not inverses. It gates on what it can honestly assert —
+# that a usable band exists at all — and reports the floor that band starts
+# at, which is the number the packing law is derived from.
+#
 # platform_probe answers the harder half: a 1024-code buffer does not
 # hand back a clean code everywhere. It lays a ladder of step sizes across
 # one frame, sweeps the base down the column, and reports the smallest step
@@ -107,6 +118,7 @@ run_scene() {
 
 for scene in res://tests/probe/channel_probe.tscn \
   res://tests/probe/platform_probe.tscn \
+  res://tests/probe/tap_error_probe.tscn \
   res://tests/probe/depth_texture_probe.tscn \
   res://tests/probe/occlusion_probe.tscn; do
   echo "probe: $scene — run 1 (cold cache legal; only agreement counts)"
