@@ -211,5 +211,18 @@ float reveal_at(vec3 world) {
 vec3 pack_data(float reveal, vec3 world, vec3 cam) {
 	float vd = length(world - cam);
 	reveal *= (0.9 + 0.1 * u_flick) * exp(-vd * 0.05);
-	return vec3(clamp(reveal, 0.0, 1.0), v_label, clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));
+	// G is clamped like R and B. Every label a level ALLOCATES already lies
+	// in [0.15, 0.96], so this changes no shipped pixel — but the value
+	// reaching here is not always an allocated one: a solid whose paint pass
+	// was rejected keeps the placeholder ordinals nodes::solid::BOX_ORDINALS
+	// bakes at build time, which run 0..5 and leave the channel entirely.
+	// Writing those unclamped hands the target a value the rest of the
+	// pipeline has no defined reading of. It is still a broken picture — the
+	// deeper repair is a reserved in-band sentinel the hearing pass can
+	// RECOGNISE, so an unpainted world announces itself instead of merely
+	// looking seamless — but a broken picture with defined arithmetic.
+	return vec3(
+			clamp(reveal, 0.0, 1.0),
+			clamp(v_label, 0.0, 1.0),
+			clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));
 }

@@ -65,6 +65,62 @@ func test_xray_skin_carries_the_acoustic_image_contract() -> void:
 	assert_bool(src.contains("u_source_floor")).is_false()
 
 
+## THE WHOLE LABEL UNIVERSE IS ONE LADDER, and this holds the Godot side to
+## it. Every value that can reach the G channel in a shipped level — the
+## floor, the five palette entries every wall and prop is coloured from, the
+## cat, the hero's body, the ceiling, the cane — must be a rung of
+## render::labels' ladder, and every pair of them must be able to draw a
+## seam.
+##
+## Cargo proves the law over the Rust table; this proves the table the ENGINE
+## serves is that same table. They are the same numbers only because one of
+## them is computed from the other, and this is the assertion that says so —
+## the palette in particular had lived in the level node, where nothing could
+## compare it against the creature and viewmodel labels standing either side
+## of it in the same band.
+func test_every_shipped_label_is_a_rung_of_the_one_ladder() -> void:
+	var core: WaveCore = auto_free(WaveCore.new())
+	var roles: Dictionary = core.role_labels()
+	var palette: PackedFloat64Array = core.world_palette()
+	var sep: float = core.min_label_separation()
+	assert_int(palette.size()).is_equal(5)
+
+	# the population that can share one rendered frame
+	var floor_label: float = roles["Floor"]
+	var coexisting := PackedFloat64Array([floor_label])
+	coexisting.append_array(palette)
+	for name: String in ["Cat", "HeroBody", "Ceiling", "HeroCane"]:
+		var label: float = roles[name]
+		coexisting.append(label)
+	assert_int(coexisting.size()).is_equal(10)
+
+	# ...every pair of which must draw a seam
+	for i: int in coexisting.size():
+		for j: int in range(i + 1, coexisting.size()):
+			var gap: float = absf(coexisting[i] - coexisting[j])
+			(
+				assert_float(gap)
+				. append_failure_message(
+					(
+						"%s and %s land %s apart, under MIN_SEP %s"
+						% [str(coexisting[i]), str(coexisting[j]), str(gap), str(sep)]
+					)
+				)
+				. is_greater_equal(sep)
+			)
+
+	# ...and every one is a rung: base 0.15, step 0.09, ten of them, filling
+	# the sRGB-safe band to exactly 0.96
+	for label: float in coexisting:
+		var rung: float = (label - 0.15) / 0.09
+		(
+			assert_float(absf(rung - roundf(rung)))
+			. append_failure_message("%s is not a rung of the ladder" % str(label))
+			. is_less(1e-6)
+		)
+		assert_float(label).is_between(0.15, 0.96)
+
+
 ## The shared pulse-pool include carries the wall table every occluding
 ## skin reads: the slots sized MAXW and the uniforms the level fills. The
 ## count must equal the Rust reference's, because the level truncates its

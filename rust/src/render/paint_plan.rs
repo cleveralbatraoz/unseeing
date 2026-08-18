@@ -5,8 +5,16 @@ use crate::render::faces::{Face, Shape, bounds, faces, paint_ordinal_count, plan
 use crate::render::labels;
 use crate::render::superface::{SeparationBuilder, Superfaces, superfaces};
 
-const LABEL_MIN: f64 = 0.15;
-const LABEL_MAX: f64 = 0.96;
+/// The band a painted label may land in — the label LADDER's own first and
+/// last rungs, read from `labels` rather than retyped here.
+///
+/// They were a second executable copy of 0.15 and 0.96, and nothing
+/// asserted the two agreed: re-spacing the ladder would have left this
+/// validator accepting labels the ladder no longer produces, or rejecting
+/// ones it does.
+const LABEL_MIN: f64 = labels::LADDER_BASE;
+const LABEL_MAX: f64 =
+    labels::LADDER_BASE + labels::LADDER_STEP * (labels::LADDER_RUNGS as f64 - 1.0);
 pub const MAX_PAINT_ENTRIES: usize = 256;
 pub const MAX_PAINT_SOURCES: usize = 256;
 pub const MAX_PALETTE_VALUES: usize = 11;
@@ -1304,6 +1312,28 @@ mod tests {
                 plan(request(vec![slab])),
                 Err(PaintPlanError::InvalidAnchor { entry: 0 }),
                 "facing {facing:?} was accepted"
+            );
+        }
+    }
+
+    /// The band this module validates against is the ladder's own span,
+    /// not a transcription of it. The break this catches is a re-spacing
+    /// that moves the ladder while leaving the validator behind — which
+    /// would either accept anchors the palette can never separate from or
+    /// reject the very labels the level allocates.
+    #[test]
+    fn the_accepted_band_is_exactly_the_label_ladder() {
+        assert_eq!(LABEL_MIN, labels::ladder_rung(0).expect("first rung"));
+        assert_eq!(
+            LABEL_MAX,
+            labels::ladder_rung(labels::LADDER_RUNGS - 1).expect("last rung")
+        );
+        // and every rung between them is an acceptable anchor
+        for rung in 0..labels::LADDER_RUNGS {
+            let label = labels::ladder_rung(rung).expect("rung in range");
+            assert!(
+                valid_label(label),
+                "rung {rung} ({label}) is not a valid label"
             );
         }
     }

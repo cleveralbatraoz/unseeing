@@ -145,6 +145,43 @@ pub const fn role_label(role: Role) -> f64 {
     }
 }
 
+/// Every role there is, in table order.
+///
+/// Paired with [`role_name`], whose `match` is exhaustive: a new [`Role`]
+/// variant cannot be added without the compiler stopping at that match, and
+/// its doc comment sends the author back here. Without the pair a new role
+/// would silently never reach the Godot-facing table the suites read, and
+/// every one of them would keep agreeing with a roster that had gone stale.
+pub const ALL_ROLES: [Role; 8] = [
+    Role::Case,
+    Role::Floor,
+    Role::Shell,
+    Role::Moving,
+    Role::Cat,
+    Role::HeroBody,
+    Role::Ceiling,
+    Role::HeroCane,
+];
+
+/// A role's name, for the Godot-facing table and for diagnostics.
+///
+/// EXHAUSTIVE ON PURPOSE. Adding a [`Role`] variant breaks this match, and
+/// whoever fixes it must also add the variant to [`ALL_ROLES`] — which is
+/// the only thing keeping the roster honest.
+#[must_use]
+pub const fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::Case => "Case",
+        Role::Floor => "Floor",
+        Role::Shell => "Shell",
+        Role::Moving => "Moving",
+        Role::Cat => "Cat",
+        Role::HeroBody => "HeroBody",
+        Role::Ceiling => "Ceiling",
+        Role::HeroCane => "HeroCane",
+    }
+}
+
 /// Every label that can stand beside another in ONE rendered frame of a
 /// shipped level and be asked to draw a seam between them, named so a
 /// failure says which pair.
@@ -453,6 +490,34 @@ mod tests {
         assert_eq!(ladder_rung(0), Some(0.15));
         let top = ladder_rung(LADDER_RUNGS - 1).expect("top rung");
         assert!((top - 0.96).abs() < 1.0e-9, "top rung is {top}");
+    }
+
+    /// The roster and the name table describe the same set of roles, and
+    /// every name is distinct. The break this catches is a role added to
+    /// the enum and to `role_name` but forgotten in `ALL_ROLES`, which
+    /// would drop it out of the Godot-facing table every gdUnit suite now
+    /// reads its expectations from — silently, with every suite still
+    /// green because they would simply never ask for it.
+    #[test]
+    fn the_roster_names_every_role_exactly_once() {
+        let mut names: Vec<&str> = ALL_ROLES.iter().copied().map(role_name).collect();
+        assert_eq!(names.len(), ALL_ROLES.len());
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            ALL_ROLES.len(),
+            "two roles share a name, so one of them cannot be looked up"
+        );
+        // the roster is complete: every label the level or a creature can
+        // wear is reachable through it
+        for (_, label) in coexisting_labels() {
+            assert!(
+                ALL_ROLES.iter().any(|&role| role_label(role) == label)
+                    || WORLD_PALETTE.contains(&label),
+                "{label} is drawn by nothing the roster names"
+            );
+        }
     }
 
     /// The role table, spot-checked against the brief's exact numbers —

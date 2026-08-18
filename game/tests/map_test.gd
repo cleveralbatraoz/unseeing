@@ -492,7 +492,7 @@ func test_a_junction_style_pair_merges_its_cap_and_separates_its_corner() -> voi
 	# MIN_SEP — the crease the corner itself draws.
 	var perp_face := _face_with_centroid_x_above(b_skin, 5.1)
 	var perp_label := _face_label(b_skin, perp_face)
-	assert_float(absf(perp_label - merged_label)).is_greater_equal(0.08)
+	assert_float(absf(perp_label - merged_label)).is_greater_equal(_min_sep())
 
 
 ## The four vertices belonging to face `f` (0..6, `render::paint::FACE_ORDER`
@@ -615,7 +615,7 @@ func test_a_lone_columns_flank_joins_its_rims_and_still_differs_from_its_neighbo
 	# from Base's own by at least MIN_SEP — carried by rule (c)'s blanket
 	# law between the two different, touching clusters, inherited by the
 	# flank purely by sharing Post's class number.
-	assert_float(absf(flank - base_label)).is_greater_equal(0.08)
+	assert_float(absf(flank - base_label)).is_greater_equal(_min_sep())
 
 
 ## The label a code-built column's mesh carries at ordinal `ord` (0 bottom

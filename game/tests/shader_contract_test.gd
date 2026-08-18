@@ -72,7 +72,11 @@ func test_data_core_reads_the_per_vertex_label_into_g() -> void:
 	var core := _read(CORE_PATH)
 	assert_str(core).contains("varying float v_label")
 	assert_str(core).contains("vec3 pack_data(float reveal, vec3 world, vec3 cam)")
-	assert_str(core).contains("clamp(reveal, 0.0, 1.0), v_label,")
+	# all THREE channels clamped, G included: an unpainted solid still
+	# carries nodes::solid::BOX_ORDINALS (0..5), which leaves the channel
+	assert_str(core).contains("clamp(reveal, 0.0, 1.0),")
+	assert_str(core).contains("clamp(v_label, 0.0, 1.0),")
+	assert_str(core).contains("clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));")
 	var data_pass := _read(DATA_PASS_PATH)
 	var xray := _read(XRAY_PATH)
 	assert_str(data_pass).contains("data_core.gdshaderinc")

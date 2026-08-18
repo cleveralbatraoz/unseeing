@@ -310,19 +310,12 @@ impl WaveCore {
     /// label universe is visible at once.
     #[func]
     fn role_labels(&self) -> VarDictionary {
-        use render::labels::Role;
         let mut table = VarDictionary::new();
-        for (name, role) in [
-            ("Case", Role::Case),
-            ("Floor", Role::Floor),
-            ("Shell", Role::Shell),
-            ("Moving", Role::Moving),
-            ("Cat", Role::Cat),
-            ("HeroBody", Role::HeroBody),
-            ("Ceiling", Role::Ceiling),
-            ("HeroCane", Role::HeroCane),
-        ] {
-            table.set(name, render::labels::role_label(role));
+        for role in render::labels::ALL_ROLES {
+            table.set(
+                render::labels::role_name(role),
+                render::labels::role_label(role),
+            );
         }
         table
     }
