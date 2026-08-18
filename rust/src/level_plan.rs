@@ -62,9 +62,22 @@ pub const SLAB_T: f64 = 0.1;
 ///
 /// Not a tolerance for float noise — 5 cm is far larger than that. It is
 /// the gap a designer may leave under a shelf or over a cabinet without the
-/// thing ceasing to be, acoustically, a piece of the room's structure. The
-/// shipped level separates its own populations by ten times this: the
-/// pillars reach 3.00 exactly and the pipes stop at 2.90.
+/// thing ceasing to be, acoustically, a piece of the room's structure.
+///
+/// The shipped level sits ON this number rather than clear of it. Its seven
+/// pillars reach 3.00 and its seven standpipes stop at 2.90, so against the
+/// `WALL_H - SPAN_EPS` = 2.95 threshold each population clears or misses by
+/// exactly one SPAN_EPS, and the two are 2 × SPAN_EPS apart. There is no
+/// slack in either direction: widen this at all and all seven pipes become
+/// wave-blocking walls in the middle of three rooms.
+///
+/// What holds them out with room to spare is the OTHER half of
+/// [`spans_the_corridor`]. The widest pipe is 0.20 m across against a
+/// required `2 * WALL_T` = 0.30 — a third short — while the narrowest pillar
+/// is 0.44. So the thickness test is the load-bearing one for refusing the
+/// pipes, and the span test is the load-bearing one for admitting the
+/// pillars. Tune the span slack and thickness is all that is left; that is
+/// the trade this constant is making, and it should be made knowingly.
 pub const SPAN_EPS: f64 = 0.05;
 
 /// What one PROP leaves of a source's standing image — the solids that do
@@ -3996,6 +4009,43 @@ mod tests {
             SPAN_EPS < pillar_top - pipe_top,
             "SPAN_EPS {SPAN_EPS} has grown to reach the pipes"
         );
+    }
+
+    /// THE BREAK: the two admission criteria being believed to hold the
+    /// shipped populations apart together, when only one of them has any
+    /// margin. Read off `game/scenes/level_01.tscn`: seven pillars at
+    /// height 3.00 and 0.44-0.50 across, seven standpipes at 2.90 and
+    /// 0.14-0.20. Against `WALL_H - SPAN_EPS` = 2.95 each population is
+    /// exactly one SPAN_EPS from the line, so SPAN_EPS cannot be widened OR
+    /// narrowed; against `2 * WALL_T` = 0.30 the widest pipe is short by a
+    /// third and the narrowest pillar clears by half. A maintainer who
+    /// tunes the span slack because "the thickness test catches them
+    /// anyway" needs the second half of that sentence to be true, and this
+    /// is where it is checked.
+    #[test]
+    fn each_shipped_population_is_refused_by_the_criterion_its_doc_names() {
+        let (pipe_top, pipe_widest) = (2.90, 0.20);
+        let (pillar_top, pillar_narrowest) = (3.00, 0.44);
+
+        // the span test alone, both populations given a pillar's girth so
+        // only the height can decide
+        assert!(!spans_the_corridor(0.0, pipe_top, pillar_narrowest));
+        assert!(spans_the_corridor(0.0, pillar_top, pillar_narrowest));
+        // the threshold is 2.95: the pipes fall short of it by SPAN_EPS and
+        // the pillars clear it by SPAN_EPS, hand-derived either side
+        assert!(((WALL_H - SPAN_EPS - pipe_top) - SPAN_EPS).abs() < 1.0e-12);
+        assert!(((pillar_top - (WALL_H - SPAN_EPS)) - SPAN_EPS).abs() < 1.0e-12);
+
+        // the thickness test alone, both populations given a pillar's height
+        // so only the girth can decide. This is the criterion with margin:
+        // 0.20 against a required 0.30, and 0.44 against the same 0.30.
+        assert!(!spans_the_corridor(0.0, pillar_top, pipe_widest));
+        assert!((2.0 * WALL_T - pipe_widest - 0.10).abs() < 1.0e-12);
+        assert!((pillar_narrowest - 2.0 * WALL_T - 0.14).abs() < 1.0e-12);
+
+        // and together, which is what the level actually presents
+        assert!(!spans_the_corridor(0.0, pipe_top, pipe_widest));
+        assert!(spans_the_corridor(0.0, pillar_top, pillar_narrowest));
     }
 
     /// THE BREAK: a malformed or degenerate solid producing a NaN-cornered
