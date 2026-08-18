@@ -101,6 +101,15 @@ inventory goes to zero **without touching the Laplacian at all**, because the
 melts are precisely the small depth steps where B is blind and G is where the
 information already was.
 
+> **Corrected 2026-08-18, after the ladder was densified.** The channel does
+> not deliver a nominal code everywhere: `render::channel::WORST_STEP_CODES`
+> records a widest measured gap of 1.25 nominal codes (Mesa/AMD desktop GL;
+> 1.02 on SwiftShader and ANGLE/Metal). So the band holds ~662 reliably
+> distinct codes, not ~828, and ~331 at two-code spacing rather than ~414.
+> The conclusion is unchanged — 179 classes fit inside 331 with room to
+> spare — but any future plan that sizes a palette against 828 is sizing it
+> against a number no driver measured.
+
 **And the adjacency question dissolves.** Two distinct classes draw a seam
 wherever they meet on screen — touching or 0.4 m apart, it makes no
 difference — while coplanar-merged faces keep bit-identical labels and still

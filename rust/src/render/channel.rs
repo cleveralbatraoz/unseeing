@@ -10,7 +10,7 @@
 //! source seen through one.
 //!
 //! The tolerance that has to cover that error is [`sight::RECT_SHRINK`]:
-//! the occluder rect stops 0.02 m short of the wall's real face. It was
+//! the occluder rect stops 0.03 m short of the wall's real face. It was
 //! chosen for something else entirely — so a prop standing flush against a
 //! wall is not self-shadowed by contact grazing — and it has to exceed the
 //! reconstruction error, which is half a B-channel quantum. Neither number
@@ -123,11 +123,13 @@ pub fn recon_eps(range: f64) -> f64 {
 /// guaranteed to land outside the wall it stands against, given the
 /// occluder's own `shrink`.
 ///
-/// `shrink > range / (2 * (LEVELS - 1))`, rearranged. At the shipped
-/// `RECT_SHRINK` of 0.02 m and 1024 levels that is **40.92 m** — and
-/// `DIST_PACK_RANGE` is 40.0, so the shipped build clears it by 0.92 m of
-/// range, or 0.45 mm of tolerance. A 2.3% margin on a number
-/// [`level_plan::pack_range_budget`] actively invites a designer to raise.
+/// `shrink > range * WORST_STEP_CODES / (2 * (LEVELS - 1))`, rearranged.
+/// At the shipped `RECT_SHRINK` of 0.03 m, 1024 codes and a worst measured
+/// gap of 1.25 of them, that is **49.10 m** — and `DIST_PACK_RANGE` is
+/// 40.0, so the shipped build clears it by 9.10 m of range, or 5.56 mm of
+/// tolerance. A 22.8% margin on a number
+/// [`level_plan::pack_range_budget`] actively invites a designer to raise;
+/// it was 2.3% while the gap being cleared was the nominal one.
 ///
 /// Total on any input: a non-finite or non-positive shrink answers 0.0, so
 /// no range is safe rather than every range being safe.

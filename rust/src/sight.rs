@@ -853,10 +853,16 @@ mod tests {
     /// Grazing an occluder face exactly at either endpoint is not a
     /// crossing: a fragment ON the rect, or a camera flush against it,
     /// stays unblocked — the GRAZE_EPS window at work.
+    ///
+    /// The endpoint must sit ON the shrunk face, `6.4 - (WALL_T -
+    /// RECT_SHRINK) = 6.28`, and re-deriving it is not cosmetic: at the old
+    /// 6.27 the point is a centimetre CLEAR of the rect, the slab walk
+    /// misses it outright, and this passes with GRAZE_EPS set to zero. A
+    /// test that no longer needs the window it is named for.
     #[test]
     fn endpoint_grazes_are_not_crossings() {
         let divider = standing(Vector4::new(6.4, 0.6, 6.4, 8.0));
-        let on_face = Vector3::new(6.27, 0.9, 4.0);
+        let on_face = Vector3::new(6.28, 0.9, 4.0);
         assert!(!crosses(Vector3::new(3.0, 0.9, 4.0), on_face, divider));
         assert!(!crosses(on_face, Vector3::new(3.0, 0.9, 4.0), divider));
     }

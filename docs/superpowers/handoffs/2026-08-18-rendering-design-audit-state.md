@@ -373,6 +373,20 @@ that by **0.45 mm** — a 2.3% margin on a tolerance chosen for an unrelated
 reason. `reconstruction_budget` refuses the range at which they cross,
 **40.92 m**, which `pack_range_budget` actively walks designers toward.
 
+> **Superseded 2026-08-18.** Seventeen bases was still a subsample. Read at
+> every base of the swept column and laddered in multiples of a nominal code
+> rather than in whole bits, the same buffer collapses a 1/1023 step at two
+> bases in 649 on Mesa/AMD; the smallest step that always survives there is
+> **1.25 nominal codes**, and 1.02 on SwiftShader and on ANGLE/Apple Metal.
+> The real worst reconstruction error was therefore 24.4 mm against a 20 mm
+> tolerance — the guard was in the red, and its own test passed because it
+> compared the tolerance against the nominal gap rather than the measured
+> one. `RECT_SHRINK` is now 0.03 m, the quantum carries
+> `render::channel::WORST_STEP_CODES`, and the refused range is 49.10 m. The
+> paragraph above is kept as written because the lesson it teaches — that a
+> sparse base sweep answers confidently and wrongly — turned out to apply to
+> itself.
+
 ### 4. `e67166f` — the hearing pass asks which layer a pixel is
 
 Two designs were refuted before the third worked, and both refutations are
