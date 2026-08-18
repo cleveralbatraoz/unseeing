@@ -23,9 +23,18 @@
 //! intact: expert echolocators detect an object's PRESENCE across a room
 //! while its SHAPE needs near-contact (Kolarik et al., *Hearing Research*
 //! 310 (2014) 60-68; Milne, Goodale & Thaler, *Atten Percept Psychophys*
-//! 76(6) (2014) 1828-1837), and lateral acoustic imaging is aperture-
-//! limited to roughly `λ/D` — about 0.7 m of resolvable feature at 3 m with
-//! a human head, even with a clear path and no wall in the way.
+//! 76(6) (2014) 1828-1837).
+//!
+//! That is where the borrowing stops. An earlier draft of this paragraph
+//! also quoted the aperture limit `λ/D` — "about 0.7 m of resolvable feature
+//! at 3 m with a human head" — and it had to go. `λ` is a wavelength, and
+//! there is no frequency axis anywhere in this codebase; the figure is in
+//! metres, while the knee below is a threshold on `reveal` in `[0, 1]` and
+//! has no length in it, so the number could not enter the derivation in any
+//! direction even if it were sound. A cited finding may ORDER two effects.
+//! It may not supply a number. [`crate::level_plan::prop_through`] refuses
+//! the same temptation in the same words, and two modules in one crate
+//! cannot answer it differently.
 //!
 //! # The knee is derived, and it buys a theorem
 //!
