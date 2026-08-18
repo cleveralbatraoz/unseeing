@@ -33,8 +33,9 @@ const READ_SHADER := preload("res://tests/probe/shaders/probe_platform_read.gdsh
 const WRITE_SHADER := preload("res://tests/probe/shaders/probe_platform_write.gdshader")
 
 ## Step sizes the ladder tests, left to right, as multiples of one 10-bit
-## step — must match STEPS in shaders/probe_platform_write.gdshader, and
-## NBANDS in both shaders.
+## step. The only copy: pushed to the write shader as `u_steps` in `_build`,
+## so the array that lays the bands out and the array that reads the verdict
+## are the same array.
 ##
 ## Not powers of two. The channel's worst-case QUANTUM is what the B-channel
 ## reconstruction guard clears, and a power-of-two ladder rounds that quantum
@@ -73,6 +74,14 @@ func _build() -> void:
 
 	var write_mat := ShaderMaterial.new()
 	write_mat.shader = WRITE_SHADER
+	# ONE copy of the ladder, in the language that computes the verdict. It
+	# used to exist twice — here and as a `const float STEPS[9]` in the write
+	# shader — bound by nothing but a comment, while the SHADER decided which
+	# band got which step and this file named the multiplier that survived.
+	# A one-entry drift produced a confident wrong quantum rather than an
+	# error, and that quantum is the sole source of
+	# render::channel::WORST_STEP_CODES.
+	write_mat.set_shader_parameter("u_steps", PackedFloat32Array(STEPS))
 	var writer := MeshInstance3D.new()
 	var quad := QuadMesh.new()
 	quad.size = Vector2(16, 16)

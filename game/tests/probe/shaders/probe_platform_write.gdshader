@@ -32,17 +32,25 @@ render_mode unshaded, cull_disabled, shadows_disabled, ambient_light_disabled, f
 // white or all black has measured nothing.
 
 const int NBANDS = 9;
-// multiples of one 10-bit step, ascending. Must match STEPS in
-// game/tests/probe/platform_probe.gd.
 const float TEN_BIT = 1.0 / 1023.0;
-const float STEPS[9] = float[9](0.50, 0.90, 1.00, 1.02, 1.05, 1.10, 1.25, 1.50, 2.00);
+// Multiples of one 10-bit step, ascending — PUSHED by platform_probe.gd,
+// which owns them, because that file computes the verdict by indexing its
+// own copy against the pixels this one wrote. Two copies bound by a comment
+// meant a single drifted entry mislabelled which step survived, silently,
+// and that verdict is the sole source of render::channel::WORST_STEP_CODES.
+//
+// The default is all zeros and is deliberately unusable: an unpushed ladder
+// collapses every band to no step at all, which is the probe's own
+// documented "all black means it measured nothing" failure, rather than a
+// plausible ladder nobody chose.
+uniform float u_steps[9] = float[9](0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 const float BASE_LO = 0.05;
 const float BASE_HI = 0.95;
 
 void fragment() {
 	int band = int(clamp(floor(SCREEN_UV.x * float(NBANDS)), 0.0, float(NBANDS - 1)));
 	float local = fract(SCREEN_UV.x * float(NBANDS));
-	float step_size = STEPS[band] * TEN_BIT;
+	float step_size = u_steps[band] * TEN_BIT;
 	float base = mix(BASE_LO, BASE_HI, SCREEN_UV.y);
 	// left half: the base. right half: the base plus one candidate step.
 	float v = local < 0.5 ? base : base + step_size;

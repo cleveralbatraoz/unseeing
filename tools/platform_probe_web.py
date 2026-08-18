@@ -168,12 +168,6 @@ step = float(fields[fields.index("step") + 1])
 depth = float(fields[fields.index("depth") + 1])
 control = float(fields[-1])
 
-# What the renderer assumes, and therefore what this gates on. Keep in
-# step with rust/src/render/channel.rs::WORST_STEP_CODES: a browser that
-# needs a WIDER step than the guard was derived against is a browser on
-# which a lit wall can read as a source seen through one.
-ASSUMED_WORST_STEP = 1.25
-
 ok = True
 if probe_failed:
     for line in probe_failed:
@@ -195,20 +189,15 @@ if abs(control - 0.5) > 0.02:
     ok = False
 else:
     print("ok - the control reads %.4f, so the readback is trustworthy" % control)
-    if step <= ASSUMED_WORST_STEP:
-        print(
-            "ok - the web channel needs %.3f nominal codes to separate, inside "
-            "the %.2f the reconstruction guard was derived against"
-            % (step, ASSUMED_WORST_STEP)
-        )
-    else:
-        print(
-            "platform-web: FAILED the web channel needs %.3f nominal codes to "
-            "separate but render::channel::WORST_STEP_CODES assumes %.2f — the "
-            "B-channel reconstruction guard does not hold on this driver"
-            % (step, ASSUMED_WORST_STEP)
-        )
-        ok = False
+    # The MEASUREMENT is reported here; the VERDICT is not re-derived here.
+    # platform_probe.gd already compares what it measured against
+    # WaveCore.channel_worst_step() — Rust's own number, read across the
+    # extension boundary inside the browser — and emits `not ok -` when the
+    # channel needs a wider step than the guard was derived against.
+    # `probe_failed` above carries that to this script's exit code. A second
+    # copy of 1.25 here would be a constant hand-typed into a third language,
+    # able to drift from the one the renderer actually uses.
+    print("ok - the web channel separates at %.3f nominal codes" % step)
     print(
         "ok - the web depth texture reads %.4f (dead would be 0.0000)" % depth
         if depth > 0.01

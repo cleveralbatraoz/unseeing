@@ -24,6 +24,14 @@ extends Node
 ## despite refreshing about once a second, so its p50/p95/p99 were
 ## percentiles of a handful of distinct values.
 ##
+## READ THE ARBITER BEFORE QUOTING ANY NUMBER HERE. The last line of the
+## report is wall clock per frame, and it must agree with the engine's own
+## delta. On a machine busy with other work they diverge hard — measured
+## here at 1001 ms of wall clock against an engine delta of 134.6 ms, with
+## the GPU timer switched off, so it is frame PACING and not the renderer.
+## A run whose two clocks disagree has measured its own conditions, and
+## every number in it is void. Quiesce the machine and run it again.
+##
 ## Measured on AMD Radeon (radeonsi, raphael_mendocino) / Mesa 25.0.7 /
 ## GL Compatibility, 240 frames after 90 settling:
 ##   viewport       GPU p50    render-CPU p50   frame delta p50
@@ -52,7 +60,7 @@ extends Node
 ## skips a loop body rather than a count that changes what is drawn.
 ##
 const SETTLE_FRAMES := 60
-const SAMPLE_FRAMES := 120
+const SAMPLE_FRAMES := 240
 
 var _cpu: PackedFloat64Array = PackedFloat64Array()
 var _gpu: PackedFloat64Array = PackedFloat64Array()
