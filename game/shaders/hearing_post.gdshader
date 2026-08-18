@@ -16,6 +16,22 @@ render_mode unshaded, cull_disabled, depth_draw_never, depth_test_disabled, fog_
 
 uniform sampler2D screen_tex : hint_screen_texture, filter_nearest;
 uniform float u_breath = 1.0;
+// The crease knee: a label difference of u_crease_knee.y draws a seam at
+// full strength, and one below u_crease_knee.x draws none.
+//
+// It is DERIVED in Rust from render::labels::MIN_SEP, the very separation
+// the colouring allocates against, and pushed by the composition root —
+// rust/src/render/crease.rs owns it. The two are the same law seen from two
+// ends and they used to be two literals that never met: lowering MIN_SEP to
+// fit a starved label band kept every cargo test green while this shader
+// went on fading over a knee it no longer matched, drawing the seams the
+// allocator had just approved at a fraction of strength.
+//
+// The default is deliberately NOT the shipped (0.04, 0.08). A post material
+// nobody pushed draws every seam at full strength regardless of label
+// distance, which is loudly wrong; a default that happened to be right
+// would hide a broken push forever.
+uniform vec2 u_crease_knee = vec2(0.0, 1.0);
 uniform float u_grain_amp = 0.034;
 uniform float u_grain_t = 0.0;
 
@@ -75,7 +91,7 @@ void fragment() {
 	// smoothstep below demands.
 	float lap = abs(c_l.b + c_r.b + c_u.b + c_d.b - 4.0 * c_c.b);
 	float nrm = abs(c_l.g - c_r.g) + abs(c_u.g - c_d.g);
-	float edge = max(smoothstep(0.012, 0.03, lap), smoothstep(0.04, 0.08, nrm));
+	float edge = max(smoothstep(0.012, 0.03, lap), smoothstep(u_crease_knee.x, u_crease_knee.y, nrm));
 	float reveal = max(c_c.r, max(max(c_l.r, c_r.r), max(c_u.r, c_d.r)));
 	// an x-rayed source's OUTLINE must never borrow the lit wall behind it.
 	// Its silhouette is a distance edge shared with that wall, so BOTH

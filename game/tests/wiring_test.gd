@@ -88,6 +88,48 @@ func test_wall_table_reaches_every_occluding_skin() -> void:
 			assert_float(span.y).is_equal(3.0)
 
 
+## THE ALLOCATOR AND THE RENDERER ARE ONE LAW, and this is where the two
+## ends meet on the engine side.
+##
+## `render::labels::MIN_SEP` decides how far apart two labels must be before
+## a seam may be drawn between them; the hearing pass's
+## `smoothstep(lo, hi, nrm)` decides how brightly that gap actually draws.
+## They used to be two literals — one in Rust, one in GLSL — with nothing
+## comparing them, so lowering MIN_SEP to fit a starved label band kept every
+## cargo test green while the shader went on fading over a knee it no longer
+## matched, rendering the seams the allocator had just approved at a fraction
+## of full strength.
+##
+## The knee is now derived in Rust and pushed. This asserts the composition
+## root actually pushed it, that it equals the derivation, and that the
+## shader READS the uniform rather than a literal — three things, because
+## any one of them alone is satisfiable while the law is broken.
+func test_the_crease_knee_reaches_the_post_pass_from_the_one_separation() -> void:
+	var main := _main()
+	var core: WaveCore = auto_free(WaveCore.new())
+	var pushed: Vector2 = main.post_mat.get_shader_parameter("u_crease_knee")
+	var derived: Vector2 = core.crease_knee()
+	(
+		assert_vector(pushed)
+		. append_failure_message(
+			"the post pass was pushed %s, but MIN_SEP derives %s" % [str(pushed), str(derived)]
+		)
+		. is_equal(derived)
+	)
+	# the derivation itself: full strength at MIN_SEP, half a knee below it
+	var sep: float = core.min_label_separation()
+	assert_float(derived.y).is_equal_approx(sep, 0.0001)
+	assert_float(derived.x).is_equal_approx(sep * 0.5, 0.0001)
+	# ...and it must be a knee GLSL can evaluate at all: smoothstep divides
+	# by (hi - lo)
+	assert_bool(derived.x < derived.y).is_true()
+	# the shader reads the uniform, not the literal it used to carry
+	var post := FileAccess.open("res://shaders/hearing_post.gdshader", FileAccess.READ)
+	var src := post.get_as_text() if post != null else ""
+	assert_str(src).contains("smoothstep(u_crease_knee.x, u_crease_knee.y, nrm)")
+	assert_bool(src.contains("smoothstep(0.04, 0.08")).is_false()
+
+
 ## Skin identities: the level hands EVERY sound source the source material,
 ## and the source image is LIVE — a source wears the XRAY skin (always
 ## heard, muffled through walls); the world, the props, the cat and the

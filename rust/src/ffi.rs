@@ -381,6 +381,19 @@ impl WaveCore {
         render::reveal::source_image(wave, render::reveal::SourceImage { volume, muffle })
     }
 
+    /// The crease knee the hearing pass fades a seam over, `(lo, hi)` —
+    /// `render::crease::CreaseKnee::shipped`, derived from `MIN_SEP`.
+    ///
+    /// Exposed so a suite can hold the pushed uniform against the
+    /// derivation rather than against a retyped literal: the allocator and
+    /// the renderer are the same law seen from two ends, and they used to
+    /// be two numbers that never met.
+    #[func]
+    fn crease_knee(&self) -> Vector2 {
+        let knee = render::crease::CreaseKnee::shipped();
+        Vector2::new(knee.lo() as f32, knee.hi() as f32)
+    }
+
     /// The separation the shader's crease knee demands between two labels
     /// that must draw a seam — `render::labels::MIN_SEP`.
     #[func]

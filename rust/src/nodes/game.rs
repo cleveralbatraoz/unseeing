@@ -210,6 +210,23 @@ impl INode3D for UnseeingGame {
         self.body_mat.set_shader(&data_shader);
         self.cane_mat
             .set_shader_parameter("u_base", &0.85_f64.to_variant());
+        // The crease knee, DERIVED from the one MIN_SEP the colouring
+        // allocates against (render::crease) rather than retyped in GLSL.
+        // The allocator and the renderer are the same law seen from two
+        // ends — how far apart two labels must be, and how brightly the gap
+        // between them draws — and nothing compared them: lowering MIN_SEP
+        // to make a starved band fit kept every cargo test green while the
+        // shader went on fading over a knee it no longer matched.
+        //
+        // Validated before it reaches the GPU: GLSL's smoothstep divides by
+        // (hi - lo), so an equal pair is a division by zero and an inverted
+        // one fades a bright seam dark. CreaseKnee refuses both, so this
+        // push cannot deliver one.
+        let knee = crate::render::crease::CreaseKnee::shipped();
+        self.post_mat.set_shader_parameter(
+            "u_crease_knee",
+            &Vector2::new(knee.lo() as f32, knee.hi() as f32).to_variant(),
+        );
 
         let core = WaveCore::new_gd();
         self.wave_core = Some(core.clone());
