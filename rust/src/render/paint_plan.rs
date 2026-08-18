@@ -927,6 +927,54 @@ mod tests {
         );
     }
 
+    /// THE BREAK: a source that DRAWS keeping its blueprint preview labels,
+    /// which are bit-for-bit `WORLD_PALETTE` entries (`Role::Shell` is
+    /// `[1]`, `Role::Moving` is `[4]`) and would therefore melt into a wall
+    /// the colouring painted the same. `render::labels` argues this cannot
+    /// happen because a level always relabels; this is where that stops
+    /// being an argument.
+    ///
+    /// Every route to `KeepExisting` must be a source that cannot melt.
+    /// `area: None` means no `MeshInstance3D` anywhere in the subtree, so
+    /// there is nothing on screen to melt; an unmeasurable box means no
+    /// describable geometry. Anything with a measurable area and a finite
+    /// sweep margin — which is every shipped source, since `sweep_margin`
+    /// is a trait method returning a computed constant — must come back
+    /// `Relabel`.
+    #[test]
+    fn a_measurable_source_is_always_relabelled() {
+        let area = Box3 {
+            min: [0.0, 0.0, 0.0],
+            max: [1.0, 2.0, 1.0],
+        };
+        for margin in [0.0, 0.25, 1.5] {
+            let plan = plan(PaintRequest {
+                entries: Vec::new(),
+                sources: vec![PaintSourceInput {
+                    area: Some(area),
+                    sweep_margin: margin,
+                    roles: 2,
+                }],
+                palette: PALETTE.to_vec(),
+            })
+            .expect("a lone measurable source is plannable");
+            let PaintCommand::Relabel(labels) = &plan.source_commands[0] else {
+                panic!(
+                    "a measurable source at margin {margin} kept its preview labels: {:?}",
+                    plan.source_commands[0]
+                );
+            };
+            assert_eq!(labels.len(), 2);
+            // and what it was given is not what it came with
+            for label in labels {
+                assert!(
+                    *label != crate::render::labels::role_label(crate::render::labels::Role::Shell),
+                    "the derived label is the preview default"
+                );
+            }
+        }
+    }
+
     #[test]
     fn two_hundred_fifty_seven_sources_are_an_explicit_atomic_error() {
         let input = PaintRequest {

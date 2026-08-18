@@ -122,13 +122,24 @@ pub const WORLD_PALETTE: [f64; 5] = [0.24, 0.33, 0.42, 0.51, 0.60];
 /// standalone radio preview, below the band entirely, and never a label a
 /// level allocates.
 ///
-/// `Shell` and `Moving` deliberately REUSE palette rungs. They are
-/// standalone blueprint preview defaults — a source dropped in the editor
-/// with no level around it — and a level derives per-instance labels for
-/// those roles instead, so they never stand beside a palette-coloured wall
-/// in a shipped frame. Twelve distinct labels do not fit in a band that
-/// holds eleven, and these two are the pair that provably never needs its
-/// own rung.
+/// `Shell` and `Moving` deliberately REUSE palette rungs — bit-for-bit, not
+/// merely nearby: `Shell` IS `WORLD_PALETTE[1]` and `Moving` IS
+/// `WORLD_PALETTE[4]`. Equal labels are the superface MELT condition, so
+/// this is not a small collision, and it is only safe because a level
+/// derives per-instance labels for both roles. They render as themselves
+/// only in a standalone blueprint preview, where no wall stands beside
+/// them.
+///
+/// That used to be an argument. It is now two tests, because an argument is
+/// what let it go unnoticed: `no_free_label_exists_for_the_preview_roles_to_move_to`
+/// shows there is nowhere else to put them — the ladder's ten rungs are all
+/// spoken for, anything inside the band sits at most 0.045 from one, and the
+/// only free interval is `[0, 0.07]`, too narrow to hold two labels that
+/// must also clear `MIN_SEP` from each other, with `Case` already in it —
+/// and `paint_plan`'s `a_measurable_source_is_always_relabelled` shows the
+/// preview defaults cannot reach a level's frame. Twelve distinct labels do
+/// not fit in a band that holds eleven, and these two are the pair that
+/// provably never needs its own rung.
 ///
 /// `const fn` on purpose: creatures/slabs build final labels and sources
 /// build standalone preview defaults without repeating numeric literals.
@@ -401,6 +412,70 @@ mod tests {
         PALETTE
             .iter()
             .any(|&candidate| candidate as f32 == label as f32)
+    }
+
+    /// THE BREAK: someone "fixing" the standalone-preview role labels by
+    /// moving them to a number that looks free. There is none, and this
+    /// says so with arithmetic rather than leaving the next reader to
+    /// rediscover it.
+    ///
+    /// `Role::Shell` is bit-for-bit `WORLD_PALETTE[1]` and `Role::Moving`
+    /// is bit-for-bit `WORLD_PALETTE[4]`. Equal labels are the superface
+    /// MELT condition — `nrm` is exactly zero and the seam vanishes by
+    /// construction — which AGENTS.md forbids for sources. What keeps that
+    /// off the screen is that a LEVEL always derives per-instance labels
+    /// for these roles, so the defaults only ever render in a standalone
+    /// preview where no wall stands beside them.
+    ///
+    /// The reason the collision cannot simply be moved: the ladder has ten
+    /// rungs at 0.09 and every one is spoken for by
+    /// [`coexisting_labels`], so any value INSIDE the band sits at most
+    /// 0.045 from a rung — under `MIN_SEP`. Outside it, everything above
+    /// `Role::HeroCane` needs 1.04 and there is no room; below
+    /// `Role::Floor` the free interval is `[0, 0.07]`, which is 0.07 wide
+    /// and therefore holds at most ONE mutually separated label. That one
+    /// slot is already `Role::Case`. Three preview roles cannot fit.
+    #[test]
+    fn no_free_label_exists_for_the_preview_roles_to_move_to() {
+        // the collision itself, stated so it cannot be discovered by
+        // accident a third time
+        assert_eq!(role_label(Role::Shell), WORLD_PALETTE[1]);
+        assert_eq!(role_label(Role::Moving), WORLD_PALETTE[4]);
+        assert!(!separated(role_label(Role::Shell), WORLD_PALETTE[1]));
+
+        // and that there is nowhere to move them. Swept at a tenth of
+        // MIN_SEP, which cannot step over a gap that would have to be at
+        // least 2 * MIN_SEP wide to hold anything.
+        let rungs: Vec<f64> = coexisting_labels().iter().map(|(_, v)| *v).collect();
+        let mut free_lo = f64::INFINITY;
+        let mut free_hi = f64::NEG_INFINITY;
+        let mut free_count = 0;
+        let steps = 100_000;
+        for i in 0..=steps {
+            let x = f64::from(i) / f64::from(steps);
+            if rungs.iter().all(|r| separated(x, *r)) {
+                free_lo = free_lo.min(x);
+                free_hi = free_hi.max(x);
+                free_count += 1;
+            }
+        }
+        assert!(free_count > 0, "not even Role::Case would fit");
+        // one interval, at the bottom, exactly MIN_SEP below Role::Floor
+        assert!(free_lo <= 1.0e-9, "the free interval does not start at 0");
+        assert!(
+            (free_hi - (role_label(Role::Floor) - MIN_SEP)).abs() < 1.0e-4,
+            "the free interval ends at {free_hi}, not at Floor - MIN_SEP"
+        );
+        // and it is too narrow to hold two labels that must also clear
+        // MIN_SEP from EACH OTHER
+        assert!(
+            free_hi - free_lo < MIN_SEP,
+            "the free interval is {} wide — wide enough for two, so the \
+             preview roles could be moved after all and this test is stale",
+            free_hi - free_lo
+        );
+        // which is why Role::Case sits there and the other two do not
+        assert!(role_label(Role::Case) >= free_lo && role_label(Role::Case) <= free_hi);
     }
 
     /// THE break this catches, and the law nothing enforced before: EVERY
