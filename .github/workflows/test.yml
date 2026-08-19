@@ -56,6 +56,25 @@ jobs:
           mkdir -p godot-bin
           mv "Godot_v${V}-stable_linux.x86_64" godot-bin/godot
           chmod +x godot-bin/godot
+      # The editor and the export templates are separate downloads. This job
+      # never needed them before -- SKIP_EXPORT=1 skipped the export
+      # entirely -- so this step never existed until the pipeline below
+      # started doing a real Web export.
+      - name: Cache Godot export templates
+        id: cache-templates
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.local/share/godot/export_templates
+          key: godot-templates-${{ steps.godot.outputs.version }}
+      - name: Fetch Godot export templates
+        if: steps.cache-templates.outputs.cache-hit != 'true'
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          curl -sL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_export_templates.tpz"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${V}.stable"
+          python3 -m zipfile -e templates.tpz /tmp/godot-templates-extract
+          mv /tmp/godot-templates-extract/templates/* "$HOME/.local/share/godot/export_templates/${V}.stable/"
+          rm -rf /tmp/godot-templates-extract templates.tpz
       # The constitution demands the wasm core verified on every change:
       # pinned nightly + emsdk 4.0.20 (matching Godot 4.7's web templates).
       # This has to run BEFORE the pipeline below now that the pipeline
