@@ -18,7 +18,11 @@
 //! at. The three keep their own types because they carry incompatible
 //! UNITS — a knee in metres pushed into `u_crease_knee` would fade label
 //! differences over a distance — and each keeps its own derivation and its
-//! own theorem. Only the contract is shared.
+//! own theorem. Only the contract, and the curve itself, are shared.
+//!
+//! [`Knee::fade`] is that curve. It is what lets a module owning a knee
+//! state what its pass actually DRAWS and cargo-test it, rather than
+//! asserting where the fade begins and trusting the GLSL for the shape.
 
 /// A `smoothstep` pair GLSL can evaluate: finite as f32 and strictly
 /// ordered in the width the GPU will use.
@@ -58,11 +62,86 @@ impl Knee {
     pub fn hi(self) -> f64 {
         f64::from(self.hi)
     }
+
+    /// What GLSL's `smoothstep(lo, hi, x)` evaluates to — the Hermite
+    /// `t * t * (3 - 2t)` over the normalised position, clamped to `[0, 1]`.
+    ///
+    /// This is what makes a knee a cargo-pinned REFERENCE rather than a pair
+    /// of endpoints the shader happens to be handed. A module owning a knee
+    /// can now state what the pass actually draws and test it, instead of
+    /// asserting where its fade begins and trusting the GLSL for the shape.
+    ///
+    /// No division by zero is reachable: `hi > lo` holds by construction,
+    /// which is the whole reason [`Knee::new`] exists.
+    ///
+    /// Total on any input, and DIVERGING from GLSL on one, deliberately and
+    /// recorded at both ends the way [`crate::render::reveal::flare`]'s
+    /// divergence is: GLSL leaves `smoothstep` with a NaN argument
+    /// implementation-defined, and this answers 0.0. Every fade in this
+    /// renderer is white on black, so absence must draw nothing rather than
+    /// stamp a white pixel over a blind hero's world.
+    #[must_use]
+    pub fn fade(self, x: f64) -> f64 {
+        let (lo, hi) = (self.lo(), self.hi());
+        if !x.is_finite() || x <= lo {
+            return 0.0;
+        }
+        if x >= hi {
+            return 1.0;
+        }
+        let t = (x - lo) / (hi - lo);
+        t * t * t.mul_add(-2.0, 3.0)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE BREAK: a Rust twin of a shader fade that is not the same curve.
+    /// GLSL's `smoothstep` is the Hermite `t * t * (3 - 2t)` over the
+    /// normalised position, NOT a linear ramp, and a linear stand-in agrees
+    /// at both ends and at the midpoint while differing by up to 9.6% in
+    /// between — enough to look like a taste decision and never like a bug.
+    ///
+    /// Hand-derived at the quarter point, where the two differ most
+    /// visibly: t = 0.25 gives 0.0625 * 2.5 = 0.15625, against a linear
+    /// 0.25.
+    #[test]
+    fn the_fade_is_the_hermite_curve_glsl_evaluates_and_not_a_ramp() {
+        let knee = Knee::new(0.0, 1.0).expect("the unit knee");
+        assert_eq!(knee.fade(0.25), 0.156_25);
+        assert_eq!(knee.fade(0.5), 0.5);
+        assert!((knee.fade(0.75) - 0.843_75).abs() < 1.0e-12);
+        // ...and it is that curve wherever the knee is placed, not only at
+        // the unit one: a quarter of the way across (0.3, 0.7) is 0.4.
+        // Compared at 1e-6 and not tighter, because the endpoints are
+        // NARROWED to f32 on the way in — 0.3 becomes 0.30000001 — and that
+        // narrowing is the type's promise, not a defect in the curve.
+        let placed = Knee::new(0.3, 0.7).expect("a placed knee");
+        assert!((placed.fade(0.4) - 0.156_25).abs() < 1.0e-6);
+    }
+
+    /// THE BREAK: a fade that runs past its own ends, or propagates a NaN.
+    /// Every caller multiplies this into a colour, so an unclamped value
+    /// brightens a pixel past white and a NaN turns one undefined.
+    ///
+    /// The GLSL divergence is deliberate and recorded at both ends, exactly
+    /// as `render::reveal::flare`'s is: GLSL leaves `smoothstep` with a NaN
+    /// argument implementation-defined, and this answers 0.0 — draw
+    /// nothing — because every fade in this renderer is white on black.
+    #[test]
+    fn the_fade_is_bounded_by_its_own_ends_and_never_propagates_a_nan() {
+        let knee = Knee::new(0.3, 0.7).expect("a placed knee");
+        assert_eq!(knee.fade(0.0), 0.0);
+        assert_eq!(knee.fade(0.3), 0.0);
+        assert_eq!(knee.fade(0.7), 1.0);
+        assert_eq!(knee.fade(9.0), 1.0);
+        assert_eq!(knee.fade(-9.0), 0.0);
+        assert_eq!(knee.fade(f64::NAN), 0.0);
+        assert_eq!(knee.fade(f64::INFINITY), 0.0);
+        assert_eq!(knee.fade(f64::NEG_INFINITY), 0.0);
+    }
 
     /// THE BREAK: a pair GLSL cannot evaluate reaching the GPU. `smoothstep`
     /// is `clamp((x - lo) / (hi - lo), 0, 1)` smoothed, so an equal pair is a

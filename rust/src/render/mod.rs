@@ -38,6 +38,11 @@
 //! - [`paint`] — the thin mesh boundary that bakes world-face or semantic-role
 //!   labels into `ArrayMesh` `CUSTOM0`; derivation and runtime builders share
 //!   it while the geometry and label decisions remain pure.
+//! - [`silhouette`] — SHAPE: the outline a break in the world's distance
+//!   draws, with its knee stated in METRES of depth step rather than in
+//!   channel units, so that raising the packing range — which
+//!   `level_plan::pack_range_budget` actively tells a designer to do — can no
+//!   longer retune the outline behind their back.
 //! - [`reveal`] — how long a swept surface keeps hearing the wave that swept
 //!   it: the decay envelope and its end, as a pure function of time since
 //!   the wavefront passed. `sight` says where a wave reaches; this says when
@@ -54,6 +59,7 @@ pub mod labels;
 pub mod paint;
 pub mod paint_plan;
 pub mod reveal;
+pub mod silhouette;
 pub mod superface;
 
 pub use faces::{Face, Shape, faces};
