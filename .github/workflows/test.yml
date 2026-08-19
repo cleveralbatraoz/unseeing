@@ -101,7 +101,7 @@ jobs:
       - name: Run CI pipeline (full, including Web export + browser smoke test)
         run: |
           chmod +x ci/pipeline.sh
-          GODOT="$PWD/godot-bin/godot" ci/pipeline.sh
+          GODOT="$PWD/godot-bin/godot" BUILD_SHA="$(printf %.9s "${{ github.sha }}")" ci/pipeline.sh
       - name: Upload the verified web build as a Pages artifact
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: actions/upload-pages-artifact@v5.0.0

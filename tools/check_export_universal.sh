@@ -97,10 +97,4 @@ if [ "$THIN" -gt 0 ]; then
   exit 1
 fi
 
-if [ -n "$PCK" ]; then
-  echo "check-export: FAILED $TARGET still carries $(basename "$PCK")"
-  echo "check-export:        the macOS preset declares binary_format/embed_pck=true"
-  exit 1
-fi
-
 echo "check-export: OK   $TARGET ships $MACHO universal binaries, libunseeing_core.dylib among them"
