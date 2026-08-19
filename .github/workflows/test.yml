@@ -6,10 +6,14 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+permissions:
+  contents: read
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Was 10 for a checks-only run; the Web export + browser smoke test now
+    # in this job's pipeline call take real additional time.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -49,12 +53,12 @@ jobs:
           mkdir -p godot-bin
           mv "Godot_v${V}-stable_linux.x86_64" godot-bin/godot
           chmod +x godot-bin/godot
-      - name: Run CI pipeline (checks only)
-        run: |
-          chmod +x ci/pipeline.sh
-          GODOT="$PWD/godot-bin/godot" SKIP_EXPORT=1 ci/pipeline.sh
       # The constitution demands the wasm core verified on every change:
       # pinned nightly + emsdk 4.0.20 (matching Godot 4.7's web templates).
+      # This has to run BEFORE the pipeline below now that the pipeline
+      # does the real Web export + browser smoke test (dropped
+      # SKIP_EXPORT=1): the export needs this exact toolchain already
+      # activated, not installed after the fact.
       - name: Install wasm toolchain
         run: |
           rustup toolchain install nightly-2026-05-25 --profile minimal
@@ -75,6 +79,15 @@ jobs:
         run: |
           (cd ~/emsdk && ./emsdk activate 4.0.20)
           ./rust/build-wasm.sh
+      - name: Run CI pipeline (full, including Web export + browser smoke test)
+        run: |
+          chmod +x ci/pipeline.sh
+          GODOT="$PWD/godot-bin/godot" ci/pipeline.sh
+      - name: Upload the verified web build as a Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: game/build/web
 
   windows-bootstrap:
     runs-on: windows-latest
@@ -134,3 +147,30 @@ jobs:
           Push-Location rust
           rustup run $toolchain cargo check --features editor-docs --target aarch64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  deploy:
+    needs: checks
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Verify the live page serves this commit
+        run: |
+          set -eu
+          SHORT="$(printf %.9s "${{ github.sha }}")"
+          LIVE="$(curl -skL --max-time 30 "${{ steps.deployment.outputs.page_url }}" \
+            | grep -o "UNSEEING_BUILD='[^']*'" | head -1 | sed "s/.*='//;s/'//")"
+          if [ "$LIVE" != "$SHORT" ]; then
+            echo "deploy: FAILED the live page serves build '${LIVE:-none}', not '$SHORT'"
+            exit 1
+          fi
+          echo "deploy: OK — https://cleveralbatraoz.github.io/unseeing/ serves $LIVE"
