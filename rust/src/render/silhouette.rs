@@ -145,25 +145,23 @@ mod tests {
     /// so that when the picture changes nobody can tell which of the two
     /// changes did it.
     ///
-    /// Hand-derived from the literals `hearing_post` carried before the
-    /// migration — `smoothstep(0.012, 0.03, lap)` over a channel packed as
-    /// `vd / 40` — which is a knee at 0.012 × 40 = 0.48 m and 0.03 × 40 =
-    /// 1.2 m of depth step. Those metres are the shipped look; they are
-    /// what this module now states, and they are what the migration must
-    /// leave alone.
+    /// Hand-derived ONCE, here in prose, and then written as the metres it
+    /// came out as: `hearing_post` carried `smoothstep(0.012, 0.03, lap)`
+    /// over a channel packed as `vd / 40`, so the knee it drew was 0.012 x
+    /// 40 = 0.48 m and 0.03 x 40 = 1.2 m of depth step.
+    ///
+    /// The assertion compares against 0.48 and 1.2 and NOT against
+    /// `0.012 * DIST_PACK_RANGE`, which is the whole point of the module
+    /// and was got wrong here first: computing the expectation from the
+    /// packing range restores the exact coupling this type exists to
+    /// remove, so raising the range to 60 would fail this test and demand
+    /// the authored knee follow it to 0.72 m. It must not. These metres are
+    /// a look, and a look does not move because a map grew.
     #[test]
     fn the_channel_repair_does_not_retune_the_outline() {
         let knee = SilhouetteKnee::shipped();
-        assert!(
-            (knee.lo() - 0.012 * DIST_PACK_RANGE).abs() < 1.0e-6,
-            "lo is {}",
-            knee.lo()
-        );
-        assert!(
-            (knee.hi() - 0.03 * DIST_PACK_RANGE).abs() < 1.0e-6,
-            "hi is {}",
-            knee.hi()
-        );
+        assert!((knee.lo() - 0.48).abs() < 1.0e-6, "lo is {}", knee.lo());
+        assert!((knee.hi() - 1.2).abs() < 1.0e-6, "hi is {}", knee.hi());
     }
 
     /// THE BREAK, and it is a live one rather than a hypothetical:

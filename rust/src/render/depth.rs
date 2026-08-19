@@ -331,12 +331,23 @@ mod tests {
 
         // in exact arithmetic the reading falls short...
         assert!(stored < floor, "the buffer happened to round up: {stored}");
-        // ...by far less than the width the comparison is made in
+        // ...by 4.6e-10, which is the number that matters and the one to
+        // check: HALF an f32 ULP is what guarantees the narrowing rounds
+        // back to the threshold's own bit pattern rather than to the value
+        // below it. An f32 ULP here is 5.96e-8, so the residue clears the
+        // bound it actually needs by 64x. (An earlier version of this
+        // assertion used an undeirved ulp/100 and passed by 1.28x, and the
+        // commit that introduced it quoted the residue as 6e-11.)
         let ulp = f64::from((floor as f32).next_up()) - f64::from(floor as f32);
+        let residue = floor - stored;
         assert!(
-            floor - stored < ulp / 100.0,
-            "the shortfall {} is no longer negligible against an f32 ULP of {ulp}",
-            floor - stored
+            (residue - 4.6e-10).abs() < 1.0e-10,
+            "the residue moved: {residue}"
+        );
+        assert!(
+            residue < ulp * 0.5,
+            "the shortfall {residue} is no longer inside half an f32 ULP of {ulp}, so the \
+             read-back no longer narrows to the threshold"
         );
 
         // so every source out there still reads as an acoustic image

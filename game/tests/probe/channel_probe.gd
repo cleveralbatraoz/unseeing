@@ -4,12 +4,15 @@ extends Node
 ##
 ## `hearing_post` reconstructs a world point from the B channel and asks the
 ## wall table about it, and the only thing keeping that point outside the
-## wall it stands on is that `sight::RECT_SHRINK` (0.03 m) exceeds B's own
-## half-gap, `DIST_PACK_RANGE * WORST_STEP_CODES / (2 * (levels - 1))`. So
-## the guard turns on a number the project had two contradictory stories
-## about: the brief said 8-bit LDR, and one measurement claimed RGB10_A2. At
-## 8 bits the half-gap is 78 mm and the guard is broken; at the measured
-## 1.25 nominal codes it is 24.4 mm and the shipped build clears it by 5.6.
+## wall it stands on is that `sight::RECT_SHRINK` (0.05 m) exceeds B's own
+## half-gap. That half-gap is divided by the BAND distance is packed into
+## and not by the whole channel —
+## `DIST_PACK_RANGE * WORST_STEP_CODES / (2 * (levels - 1) * BAND)` — because
+## the pipeline's transfer destroys the bottom 45% of the codes. So the guard
+## turns on a number the project had two contradictory stories about: the
+## brief said 8-bit LDR, and one measurement claimed RGB10_A2. At 8 bits the
+## guard is broken outright; at the measured 1.25 nominal codes over the
+## measured band it is 44.3 mm and the shipped build clears it by 5.7.
 ##
 ## METHOD. Write two values into the data channels that differ by exactly
 ## one 10-bit step — 1/1023 — on either side of the screen. Sample both

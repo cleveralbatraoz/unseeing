@@ -239,10 +239,13 @@ func test_hearing_pass_never_washes_player_rings_on_an_xrayed_source() -> void:
 	# TWO tests, ORed. The depth read is exact — a fragment in the
 	# always-on-top band IS a source — and finally covers a source hidden
 	# behind a PROP, which is in no occluder table anywhere. The wall-table
-	# inference stays behind it because the depth texture is measured on
-	# desktop GL and unmeasured on WebGL2: if it is dead there the first
-	# term is false everywhere and the pass degrades to exactly its former
-	# behaviour, never to worse.
+	# inference stays behind it for the one reason no measurement retires:
+	# three drivers are not every driver. The depth texture IS measured on
+	# WebGL2 now — 0.9490 against an analytic 0.9508, under SwiftShader and
+	# under ANGLE/Apple Metal both — so the claim that it was unmeasured
+	# there is retired with this comment. Where some future driver returns
+	# nothing the first term is false everywhere and the pass degrades to
+	# exactly its former behaviour, never to worse.
 	assert_str(src).contains("uniform sampler2D depth_tex : hint_depth_texture, filter_nearest;")
 	assert_str(_text(POOL_PATH)).contains("bool depth_is_acoustic_image(float depth)")
 	assert_str(_text(POOL_PATH)).contains("return depth >= ALWAYS_ON_TOP - SOURCE_BAND;")

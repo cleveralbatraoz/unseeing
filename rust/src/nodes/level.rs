@@ -1548,7 +1548,7 @@ impl WaveLevel {
         // above tells a designer to raise DIST_PACK_RANGE when the map
         // outgrows it; this one refuses a range the B channel can no longer
         // reconstruct a world point from, which is what the hearing pass
-        // does with it. They cross at 49.10 m and the shipped range is 40.0.
+        // does with it. They cross at 45.12 m and the shipped range is 40.0.
         let recon = render::channel::reconstruction_budget(level_plan::DIST_PACK_RANGE);
         self.say(editor, recon);
     }

@@ -163,11 +163,16 @@ mod tests {
 
         let cut = explain_ray(eye, lit, &[wall], &[]);
         assert_eq!(cut.first_wall, Some(0));
-        // the near face is at 3 - (WALL_T/2 - RECT_SHRINK); the air ends
-        // there, well short of the 9 m the ray would otherwise travel
+        // Hand-derived: the occluder's near face is at
+        // `3 - (WALL_T - RECT_SHRINK)` = 3 - 0.10 = 2.90, and the air ends
+        // exactly there, well short of the 9 m the ray would otherwise
+        // travel. Pinned to the value and not to a 0.2 m band: the band was
+        // wide enough to pass at any shrink between 0.03 and 0.05, so it
+        // never held the derivation it quoted — which was itself wrong,
+        // reading WALL_T/2 where the inflation uses WALL_T.
         assert!(
-            cut.visible_air > 2.8 && cut.visible_air < 3.0,
-            "air ended at {} m, not at the wall's near face",
+            (cut.visible_air - 2.90).abs() < 1.0e-4,
+            "air ended at {} m, not at the wall's near face 2.90",
             cut.visible_air
         );
 

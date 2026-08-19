@@ -338,13 +338,20 @@ pub fn unpack_distance(packed: f64, range: f64) -> f64 {
 ///
 /// Total on any input: a range that is not a positive finite length answers
 /// 0.0, which flattens the Laplacian and draws no outline rather than an
-/// infinite one.
+/// infinite one — and so does a range whose GAIN overflows, which is the
+/// case no guard on the range alone catches. Dividing by [`BAND`] scales a
+/// range up by 1.81, so a finite range near [`f64::MAX`] produces an
+/// infinite gain, and [`unpack_distance`] then computes `0.0 * inf` for a
+/// reading exactly at the floor. That is NaN, and a NaN distance makes
+/// `t >= air_d` false for every ring root at that pixel — one fragment
+/// drawing every ring in the level through every wall.
 #[must_use]
 pub fn unpack_scale(range: f64) -> f64 {
     if !range.is_finite() || range <= 0.0 {
         return 0.0;
     }
-    range / BAND
+    let scale = range / BAND;
+    if scale.is_finite() { scale } else { 0.0 }
 }
 
 #[cfg(test)]
@@ -470,6 +477,18 @@ mod tests {
         assert_eq!(unpack_scale(0.0), 0.0);
         assert_eq!(unpack_scale(f64::NAN), 0.0);
         assert_eq!(unpack_scale(-40.0), 0.0);
+        // A range that is finite and positive but so large that the gain
+        // OVERFLOWS is still in the declared domain, and it is the one input
+        // that reaches NaN by a route no guard above covers: the gain goes
+        // infinite, and a reading exactly AT the floor then computes
+        // `0.0 * inf`, which is NaN in every IEEE implementation. A NaN
+        // distance makes `t >= air_d` false for every ring root at the
+        // pixel, so one bad fragment draws every ring in the level through
+        // every wall.
+        assert_eq!(unpack_scale(f64::MAX), 0.0);
+        assert_eq!(unpack_distance(SAFE_FLOOR, f64::MAX), 0.0);
+        assert_eq!(unpack_distance(1.0, f64::MAX), 0.0);
+        assert!(unpack_distance(SAFE_FLOOR, f64::MAX).is_finite());
     }
 
     /// THE guard, and the two numbers that had never been compared: the

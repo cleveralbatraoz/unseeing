@@ -888,16 +888,29 @@ mod tests {
     /// stays unblocked — the GRAZE_EPS window at work.
     ///
     /// The endpoint must sit ON the shrunk face, `6.4 - (WALL_T -
-    /// RECT_SHRINK) = 6.28`, and re-deriving it is not cosmetic: at the old
-    /// 6.27 the point is a centimetre CLEAR of the rect, the slab walk
-    /// misses it outright, and this passes with GRAZE_EPS set to zero. A
-    /// test that no longer needs the window it is named for.
+    /// RECT_SHRINK) = 6.30`, and re-deriving it is not cosmetic: a
+    /// centimetre CLEAR of the rect and the slab walk misses it outright,
+    /// so this passes with GRAZE_EPS set to zero — a test that no longer
+    /// needs the window it is named for. It went vacuous exactly that way
+    /// once, when RECT_SHRINK moved and this literal did not.
+    ///
+    /// The guard against that is below: the fixture point is asserted to be
+    /// ON the face rather than merely near it, so the literal cannot drift
+    /// away from the constant in silence again.
     #[test]
     fn endpoint_grazes_are_not_crossings() {
         let divider = standing(Vector4::new(6.4, 0.6, 6.4, 8.0));
-        // 6.4 - 0.12, written as the subtraction because the literal is a
+        // 6.4 - 0.10, written as the subtraction because the literal is a
         // hair under TAU and clippy reads it as a mistyped constant
-        let on_face = Vector3::new(6.4 - 0.12, 0.9, 4.0);
+        let on_face = Vector3::new(6.4 - 0.10, 0.9, 4.0);
+        // ON the shrunk face, not beside it: without this the test passes
+        // for the wrong reason the moment RECT_SHRINK moves
+        assert!(
+            (f64::from(divider.rect().x) - f64::from(on_face.x)).abs() < 1.0e-6,
+            "the fixture point {} is not on the rect's west face {}",
+            on_face.x,
+            divider.rect().x
+        );
         assert!(!crosses(Vector3::new(3.0, 0.9, 4.0), on_face, divider));
         assert!(!crosses(on_face, Vector3::new(3.0, 0.9, 4.0), divider));
     }
@@ -1237,7 +1250,7 @@ mod tests {
     /// `WALL_T - RECT_SHRINK` = 0.15 - 0.03 = 0.12, so a wall centred at
     /// x = 3 spans x in [2.88, 3.12]. From the eye at the origin to a
     /// source 6 m along +x, the entry fraction is 2.88/6 = 0.48, and the
-    /// air the eye can see is exactly 2.88 m.
+    /// air the eye can see is exactly 2.90 m.
     #[test]
     fn a_ring_nearer_than_the_wall_survives_a_source_seen_through_it() {
         let wall = Occluder::new(Vector4::new(3.0, -5.0, 3.0, 5.0), 0.0, 3.0)
