@@ -411,12 +411,12 @@ func test_explain_ray_matches_the_pinned_crossing_counts() -> void:
 	assert_int(through["camera_crossings"]).is_equal(1)
 	assert_int(through["source_crossings"]).is_equal(1)
 	# an endpoint landing exactly on the wall's shrunk west face, 6.4 -
-	# (WALL_T - RECT_SHRINK) = 6.28: GRAZE_EPS is what keeps this at zero
+	# (WALL_T - RECT_SHRINK) = 6.30: GRAZE_EPS is what keeps this at zero
 	# rather than counting the touch as a crossing. The literal has to track
 	# the shrink -- a centimetre off the face and the line simply misses the
 	# rect, and this reads zero for a reason that has nothing to do with the
 	# window it is named for.
-	var graze: Dictionary = obs.explain_ray(Vector3(3.0, 0.9, 4.0), Vector3(6.28, 0.9, 4.0))
+	var graze: Dictionary = obs.explain_ray(Vector3(3.0, 0.9, 4.0), Vector3(6.30, 0.9, 4.0))
 	assert_int(graze["camera_crossings"]).is_equal(0)
 	# the birth-wall asymmetry: a source standing on the wall's own
 	# centerline lighting an open point skips the wall it is born in (the

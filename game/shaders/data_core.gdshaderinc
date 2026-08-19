@@ -3,7 +3,10 @@
 // pass to read from the screen texture:
 //   R — reveal: how recently/strongly a wave swept this point
 //   G — per-vertex face or semantic-role label: crease edge detection
-//   B — camera distance / DIST_PACK_RANGE (silhouette edges + wave occlusion)
+//   B — camera distance packed into [DIST_SAFE_FLOOR, 1] (silhouette edges +
+//       wave occlusion). NOT into [0, 1]: the pipeline destroys the bottom
+//       28 codes, so a wall one metre out used to read back as zero metres.
+//       See pack_distance in the pool include.
 // Distance is packed here on purpose, and the reason that used to be given
 // for it is gone. The depth texture IS live in desktop Compatibility —
 // game/tests/probe/depth_texture_probe.gd reads real reversed-Z depth out
@@ -210,5 +213,5 @@ vec3 pack_data(float reveal, vec3 world, vec3 cam) {
 	return vec3(
 			clamp(reveal, 0.0, 1.0),
 			clamp(v_label, 0.0, 1.0),
-			clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));
+			pack_distance(vd));
 }

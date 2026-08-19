@@ -250,6 +250,17 @@ impl INode3D for UnseeingGame {
             &Vector2::new(detail.lo() as f32, detail.hi() as f32).to_variant(),
         );
 
+        // The third knee: SHAPE. Stated in METRES of depth step rather than
+        // in channel units, so that raising DIST_PACK_RANGE — which
+        // level_plan::pack_range_budget actively tells a designer to do when
+        // the map outgrows it — can no longer retune the outline behind their
+        // back. Same validated-before-the-GPU contract as the other two.
+        let sil = crate::render::silhouette::SilhouetteKnee::shipped();
+        self.post_mat.set_shader_parameter(
+            "u_sil_knee",
+            &Vector2::new(sil.lo() as f32, sil.hi() as f32).to_variant(),
+        );
+
         // The grain's own amplitude, and the reason it is pushed rather than
         // mirrored: `reveal::PRESENCE` is DERIVED from it, and settled law 1
         // — a sound source is always visible — is that derivation. The

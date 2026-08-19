@@ -49,6 +49,23 @@ uniform vec2 u_crease_knee = vec2(0.0, 1.0);
 // be visibly wrong rather than accidentally right, exactly as
 // u_crease_knee's default is.
 uniform vec2 u_detail_knee = vec2(0.0, 1.0);
+// The silhouette knee, in METRES of depth step: a break of u_sil_knee.y
+// draws a full outline and one below u_sil_knee.x draws none.
+//
+// It used to be the literal pair (0.012, 0.03) in CHANNEL units, which made
+// the outline a hidden function of DIST_PACK_RANGE — and
+// level_plan::pack_range_budget exists to tell a designer to raise
+// DIST_PACK_RANGE when the map outgrows it. Following that from 40 m to 60 m
+// would have taken a 0.8 m step from drawing at 42% to drawing at 1.6%.
+// rust/src/render/silhouette.rs owns the pair and the composition root
+// pushes it.
+//
+// The default draws NOTHING, which is a long way outside any depth step a
+// room contains. An unpushed post material must be visibly wrong rather than
+// accidentally right, and it fails DIM like every other uniform on this
+// pass: a black screen is unmissable where a slightly-too-eager outline is
+// not.
+uniform vec2 u_sil_knee = vec2(1.0e4, 2.0e4);
 
 uniform float u_grain_amp = 0.034;
 uniform float u_grain_t = 0.0;
@@ -89,7 +106,7 @@ void fragment() {
 	vf.xyz /= vf.w;
 	vec3 world_far = (INV_VIEW_MATRIX * vec4(vf.xyz, 1.0)).xyz;
 	vec3 rd = normalize(world_far - cam);
-	float scene_d = c_c.b * DIST_PACK_RANGE;
+	float scene_d = unpack_distance(c_c.b);
 	// the surface visible at this pixel: if it lies BEHIND a wall from the
 	// eye it is an always-on-top skin x-rayed through the wall (a sound
 	// source) — no player-made ring may wash it. A real-depth surface is
@@ -158,13 +175,18 @@ void fragment() {
 	// sharing the SAME label draw no seam at all: see
 	// rust/src/render/labels.rs (MIN_SEP) for the 0.08 separation the
 	// smoothstep below demands.
-	float lap = abs(c_l.b + c_r.b + c_u.b + c_d.b - 4.0 * c_c.b);
+	// SHAPE, in METRES. The five coefficients sum to zero, so the packed
+	// floor cancels exactly and the whole of the packing that survives here
+	// is its gain — which is why the knee below can be stated in metres of
+	// depth step and stop depending on DIST_PACK_RANGE.
+	// rust/src/render/silhouette.rs::outline is the cargo-pinned reference.
+	float lap = abs(c_l.b + c_r.b + c_u.b + c_d.b - 4.0 * c_c.b) * DIST_UNPACK_SCALE;
 	float nrm = abs(c_l.g - c_r.g) + abs(c_u.g - c_d.g);
 	// SHAPE and DETAIL are two different facts and get two different laws.
 	// They were fused here — one max(), one shared reveal — and the whole
 	// perception model was inside the distinction that fusing threw away.
 	// rust/src/render/detail.rs carries the derivation and the theorem.
-	float sil = smoothstep(0.012, 0.03, lap);
+	float sil = smoothstep(u_sil_knee.x, u_sil_knee.y, lap);
 	float crease = smoothstep(u_crease_knee.x, u_crease_knee.y, nrm);
 	// the cap below must still fire on EXACTLY the pixels it fired on
 	// before the split, so it keeps asking the fused question
@@ -182,13 +204,13 @@ void fragment() {
 		// the same pair at each neighbour: the exact depth test first, the
 		// wall-table inference as the platform fallback behind it
 		if (depth_is_acoustic_image(texture(depth_tex, uv - vec2(px.x, 0.0)).r)
-				|| wall_any_crossing(cam, cam + rd * (c_l.b * DIST_PACK_RANGE))) { src_r = max(src_r, c_l.r); }
+				|| wall_any_crossing(cam, cam + rd * unpack_distance(c_l.b))) { src_r = max(src_r, c_l.r); }
 		if (depth_is_acoustic_image(texture(depth_tex, uv + vec2(px.x, 0.0)).r)
-				|| wall_any_crossing(cam, cam + rd * (c_r.b * DIST_PACK_RANGE))) { src_r = max(src_r, c_r.r); }
+				|| wall_any_crossing(cam, cam + rd * unpack_distance(c_r.b))) { src_r = max(src_r, c_r.r); }
 		if (depth_is_acoustic_image(texture(depth_tex, uv + vec2(0.0, px.y)).r)
-				|| wall_any_crossing(cam, cam + rd * (c_u.b * DIST_PACK_RANGE))) { src_r = max(src_r, c_u.r); }
+				|| wall_any_crossing(cam, cam + rd * unpack_distance(c_u.b))) { src_r = max(src_r, c_u.r); }
 		if (depth_is_acoustic_image(texture(depth_tex, uv - vec2(0.0, px.y)).r)
-				|| wall_any_crossing(cam, cam + rd * (c_d.b * DIST_PACK_RANGE))) { src_r = max(src_r, c_d.r); }
+				|| wall_any_crossing(cam, cam + rd * unpack_distance(c_d.b))) { src_r = max(src_r, c_d.r); }
 		if (src_r >= 0.0) { reveal = min(reveal, src_r); }
 	}
 	// DETAIL is gated on the FINAL reveal, after the x-ray cap above has

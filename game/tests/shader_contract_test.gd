@@ -76,7 +76,11 @@ func test_data_core_reads_the_per_vertex_label_into_g() -> void:
 	# carries nodes::solid::BOX_ORDINALS (0..5), which leaves the channel
 	assert_str(core).contains("clamp(reveal, 0.0, 1.0),")
 	assert_str(core).contains("clamp(v_label, 0.0, 1.0),")
-	assert_str(core).contains("clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));")
+	# ...and B is packed through the band, never into the raw channel: the
+	# pipeline's transfer returns everything under about 28 nominal codes as
+	# exactly zero, so `vd / DIST_PACK_RANGE` put a wall one metre from the
+	# eye at zero metres. See test_distance_is_packed_into_the_band_that_survives.
+	assert_str(core).contains("pack_distance(vd));")
 	var data_pass := _read(DATA_PASS_PATH)
 	var xray := _read(XRAY_PATH)
 	assert_str(data_pass).contains("data_core.gdshaderinc")
@@ -433,7 +437,7 @@ func test_decode_expressions_are_literal() -> void:
 ## deriving a knee nothing reads.
 func test_shape_and_detail_are_drawn_under_separate_laws() -> void:
 	var post := _read(HEARING_POST_PATH)
-	assert_str(post).contains("float sil = smoothstep(0.012, 0.03, lap);")
+	assert_str(post).contains("float sil = smoothstep(u_sil_knee.x, u_sil_knee.y, lap);")
 	assert_str(post).contains("float crease = smoothstep(u_crease_knee.x, u_crease_knee.y, nrm);")
 	assert_str(post).contains("vec3 col = vec3(max(sil * reveal, crease * detail * reveal));")
 	# and DETAIL must be gated on the reveal the x-ray cap has already
@@ -462,6 +466,81 @@ func test_the_detail_knee_is_the_one_rust_derived() -> void:
 	# ceiling a once-walled source is capped to, or a walled source can
 	# still name itself
 	assert_float(knee.x).is_equal_approx(WaveLevel.source_through(), 1e-6)
+
+
+## THE BREAK: the write end and the read end of the B channel landing on
+## different affine maps. The error would be smooth and plausible — every
+## visible surface at the wrong distance, no seam, no flicker — and it would
+## cut every ring against a world that is not where the pass thinks it is.
+##
+## Godot 4.7.1's gl_compatibility pass puts every ALBEDO write through an
+## sRGB pair whose halves are not inverses, and everything at or under about
+## 28 nominal codes comes back as exactly ZERO. Packed as vd / 40, a wall one
+## metre from the eye wrote 0.025 and read back as zero metres — measured
+## worst error 1.02 m against a sight::RECT_SHRINK of 0.03. So distance is
+## mapped into [DIST_SAFE_FLOOR, 1] instead, and the floor is held against
+## Rust's rather than against itself.
+##
+## rust/src/render/channel.rs owns the measurement and the derivation, and
+## a_distance_survives_the_round_trip_through_the_band is the cargo twin.
+func test_distance_is_packed_into_the_band_that_survives() -> void:
+	var pool := _include_text()
+	assert_str(pool).contains("float pack_distance(float dist) {")
+	assert_str(pool).contains(
+		(
+			"return DIST_SAFE_FLOOR + (1.0 - DIST_SAFE_FLOOR)"
+			+ " * clamp(dist / DIST_PACK_RANGE, 0.0, 1.0);"
+		)
+	)
+	assert_str(pool).contains("float unpack_distance(float packed) {")
+	assert_str(pool).contains(
+		"return clamp((packed - DIST_SAFE_FLOOR) * DIST_UNPACK_SCALE, 0.0, DIST_PACK_RANGE);"
+	)
+	assert_str(pool).contains(
+		"const float DIST_UNPACK_SCALE = DIST_PACK_RANGE / (1.0 - DIST_SAFE_FLOOR);"
+	)
+	var core: WaveCore = auto_free(WaveCore.new())
+	# compared to 1e-9 and not bit-for-bit: the GLSL side arrives through a
+	# text parse, so an exact comparison would be testing String.to_float.
+	# One channel code is 9.8e-4, six orders of magnitude coarser, so this
+	# still refuses any drift that could matter.
+	assert_float(_shader_const("DIST_SAFE_FLOOR")).is_equal_approx(core.dist_safe_floor(), 1e-9)
+	# and the hearing pass must UNPACK rather than multiply the raw channel:
+	# the six reads that need absolute metric distance
+	var post := _read(HEARING_POST_PATH)
+	assert_str(post).contains("float scene_d = unpack_distance(c_c.b);")
+	for tap: String in ["c_l", "c_r", "c_u", "c_d"]:
+		assert_str(post).contains("wall_any_crossing(cam, cam + rd * unpack_distance(%s.b))" % tap)
+	assert_bool(post.contains(".b * DIST_PACK_RANGE")).is_false()
+
+
+## THE BREAK: the silhouette knee going back to channel units, where it is a
+## hidden function of DIST_PACK_RANGE — the very constant
+## level_plan::pack_range_budget tells a designer to raise when the map
+## outgrows it. Following that from 40 m to 60 m took a 0.8 m depth step from
+## drawing at 42% to drawing at 1.6%, silently.
+##
+## The Laplacian is scaled into METRES first, which it can be because the
+## five taps' coefficients sum to zero: the packed floor cancels exactly and
+## only the gain survives.
+##
+## The default draws NOTHING — 1e4 m of depth step is far outside any room —
+## so an unpushed post material is visibly wrong rather than accidentally
+## right, and it fails dim like every other uniform on this pass.
+func test_the_silhouette_knee_is_stated_in_metres() -> void:
+	var post := _read(HEARING_POST_PATH)
+	assert_str(post).contains("uniform vec2 u_sil_knee = vec2(1.0e4, 2.0e4);")
+	assert_str(post).contains(
+		"float lap = abs(c_l.b + c_r.b + c_u.b + c_d.b - 4.0 * c_c.b) * DIST_UNPACK_SCALE;"
+	)
+	var core: WaveCore = auto_free(WaveCore.new())
+	var knee: Vector2 = core.silhouette_knee()
+	# hand-derived: the retired GLSL literals evaluated at the range they
+	# were tuned against, 0.012 * 40 and 0.03 * 40 — the shipped look, in
+	# units that do not move when the packing range does
+	assert_float(knee.x).is_equal_approx(0.48, 1e-6)
+	assert_float(knee.y).is_equal_approx(1.2, 1e-6)
+	assert_bool(knee.x < knee.y).is_true()
 
 
 ## THE BREAK: settled law 1 — a sound source is always visible, as itself —

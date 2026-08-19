@@ -9,11 +9,49 @@
 
 const int MAXP = 64;
 
-// Camera distance is packed into the data pass's BLUE channel divided by
-// this range; the hearing pass multiplies it back. Camera far (60) exceeds
-// it, which is safe only because the map is 28 m across, keeping the
-// floor-and-ceiling slab pair's own diagonal under this range.
+// Camera distance is packed into the data pass's BLUE channel against this
+// range; the hearing pass unpacks it back. Camera far (60) exceeds it, which
+// is safe only because the map is 28 m across, keeping the floor-and-ceiling
+// slab pair's own diagonal under this range.
 const float DIST_PACK_RANGE = 40.0;
+
+// ...but NOT into the whole channel, and that is the difference between a
+// wall one metre from the eye reading as one metre and reading as zero.
+//
+// Godot 4.7.1's gl_compatibility pass puts every value a spatial shader
+// writes to ALBEDO through an sRGB pair whose halves are not inverses:
+// linear_to_srgb_exact(srgb_to_linear_cubic(v)). It is not a driver bug —
+// AMD radeonsi and llvmpipe agree to the code — and it is not storage
+// quantisation: a half-float use_hdr_2d target shows the transfer PURE.
+// Below about 28 nominal codes it does not merely bend, it annihilates:
+// everything at or under v = 0.0274 comes back as exactly zero, and the old
+// packing wrote vd / 40, so one metre was 0.025 and landed inside that.
+// Measured worst error 1.02 m, always an undershoot.
+//
+// So distance is mapped into [DIST_SAFE_FLOOR, 1] instead, the part of the
+// channel game/tests/probe/tap_error_probe.gd measured as returning what was
+// written to within one gap. rust/src/render/channel.rs owns the constant,
+// the measurement and the derivation; 459/1023 is that reading rounded UP to
+// a whole code, and 55.1% of the channel is what survives.
+//
+// The silhouette Laplacian is why this closes the hole at its root rather
+// than moving it: its five coefficients sum to zero, so the floor cancels
+// exactly and only DIST_UNPACK_SCALE's gain reaches the outline.
+const float DIST_SAFE_FLOOR = 0.44868035190615835;
+const float DIST_UNPACK_SCALE = DIST_PACK_RANGE / (1.0 - DIST_SAFE_FLOOR);
+
+// rust/src/render/channel.rs::pack_distance is the cargo-pinned reference.
+float pack_distance(float dist) {
+	return DIST_SAFE_FLOOR + (1.0 - DIST_SAFE_FLOOR) * clamp(dist / DIST_PACK_RANGE, 0.0, 1.0);
+}
+
+// rust/src/render/channel.rs::unpack_distance is the cargo-pinned reference.
+// Clamped at BOTH ends: a reading below the floor is what a material nobody
+// pushed, or a pass that failed to draw, leaves behind, and it must read as
+// zero metres rather than as a negative distance that no later law expects.
+float unpack_distance(float packed) {
+	return clamp((packed - DIST_SAFE_FLOOR) * DIST_UNPACK_SCALE, 0.0, DIST_PACK_RANGE);
+}
 
 uniform float u_time = 0.0;
 uniform float u_flick = 1.0;

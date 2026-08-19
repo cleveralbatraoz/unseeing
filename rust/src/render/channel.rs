@@ -4,13 +4,13 @@
 //! # The two guards that met by accident
 //!
 //! `hearing_post` reconstructs a world point from the B channel —
-//! `cam + rd * c.b * DIST_PACK_RANGE` — and asks the wall table whether a
+//! `cam + rd * unpack_distance(c.b)` — and asks the wall table whether a
 //! wall stands there. For a REAL surface that point must land outside the
 //! wall it stands against, or the pass decides a lit wall is an x-rayed
 //! source seen through one.
 //!
 //! The tolerance that has to cover that error is [`sight::RECT_SHRINK`]:
-//! the occluder rect stops 0.03 m short of the wall's real face. It was
+//! the occluder rect stops 0.05 m short of the wall's real face. It was
 //! chosen for something else entirely — so a prop standing flush against a
 //! wall is not self-shadowed by contact grazing — and it has to exceed the
 //! reconstruction error, which is half a B-channel quantum. Neither number
@@ -119,6 +119,13 @@ pub const WORST_STEP_CODES: f64 = 1.25;
 /// Metres of camera distance per distinguishable B-channel code, at a given
 /// packing range.
 ///
+/// Divided by the [`BAND`] the packing actually uses, not by the whole
+/// channel: [`pack_distance`] maps the range onto `[SAFE_FLOOR, 1]`, so the
+/// same range is spread over 55.1% of the codes and each one is worth
+/// correspondingly more distance. Dividing by 1.0 here would understate the
+/// quantum by that factor and hand [`recon_eps`] a tolerance the channel
+/// does not deliver.
+///
 /// Total on any input: a non-finite or non-positive range answers
 /// [`f64::INFINITY`] — "nothing is distinguishable" — which fails every
 /// guard below rather than passing one.
@@ -127,7 +134,7 @@ pub fn quantum(range: f64) -> f64 {
     if !range.is_finite() || range <= 0.0 {
         return f64::INFINITY;
     }
-    range * WORST_STEP_CODES / f64::from(CHANNEL_LEVELS - 1)
+    range * WORST_STEP_CODES / (f64::from(CHANNEL_LEVELS - 1) * BAND)
 }
 
 /// The worst error in a world point reconstructed from B — half a quantum,
@@ -141,13 +148,16 @@ pub fn recon_eps(range: f64) -> f64 {
 /// guaranteed to land outside the wall it stands against, given the
 /// occluder's own `shrink`.
 ///
-/// `shrink > range * WORST_STEP_CODES / (2 * (LEVELS - 1))`, rearranged.
-/// At the shipped `RECT_SHRINK` of 0.03 m, 1024 codes and a worst measured
-/// gap of 1.25 of them, that is **49.10 m** — and `DIST_PACK_RANGE` is
-/// 40.0, so the shipped build clears it by 9.10 m of range, or 5.56 mm of
-/// tolerance. A 22.8% margin on a number
-/// [`level_plan::pack_range_budget`] actively invites a designer to raise;
-/// it was 2.3% while the gap being cleared was the nominal one.
+/// `shrink > range * WORST_STEP_CODES / (2 * (LEVELS - 1) * BAND)`,
+/// rearranged. At the shipped `RECT_SHRINK` of 0.05 m, 1024 codes, a worst
+/// measured gap of 1.25 of them and a band of 55.1%, that is **45.12 m** —
+/// and `DIST_PACK_RANGE` is 40.0, so the shipped build clears it by 5.12 m
+/// of range, or 5.7 mm of tolerance. A 12.8% margin on a number
+/// [`level_plan::pack_range_budget`] actively invites a designer to raise.
+///
+/// The ceiling FELL when distance moved into the band — from 49.10 m to
+/// 45.12 m — because the same range now has 45% fewer codes to live in.
+/// `RECT_SHRINK` rose from 0.03 to 0.05 to pay for it.
 ///
 /// Total on any input: a non-finite or non-positive shrink answers 0.0, so
 /// no range is safe rather than every range being safe.
@@ -156,7 +166,7 @@ pub fn max_safe_range(shrink: f64) -> f64 {
     if !shrink.is_finite() || shrink <= 0.0 {
         return 0.0;
     }
-    shrink * 2.0 * f64::from(CHANNEL_LEVELS - 1) / WORST_STEP_CODES
+    shrink * 2.0 * f64::from(CHANNEL_LEVELS - 1) * BAND / WORST_STEP_CODES
 }
 
 /// The complaint a packing range earns when the hearing pass could no
@@ -466,15 +476,21 @@ mod tests {
     /// occluder's geometric tolerance and the channel's own quantum.
     ///
     /// Hand-derived at the shipped settings. 1024 codes give 1023 nominal
-    /// steps across the range, so one nominal B code is 40 / 1023 =
-    /// 0.03910 m; the widest gap a driver actually showed is 1.25 of those,
-    /// 0.04888 m, and the worst reconstruction error is half of that,
-    /// 0.02444 m. RECT_SHRINK is 0.03 m, so the guard holds by 5.56 mm.
+    /// steps, but distance lives in only 55.1% of them — [`BAND`] — so one
+    /// nominal B code is worth 40 / (1023 x 0.55132) = 0.07092 m; the widest
+    /// gap a driver actually showed is 1.25 of those, 0.08865 m, and the
+    /// worst reconstruction error is half of that, 0.04433 m. RECT_SHRINK is
+    /// 0.05 m, so the guard holds by 5.7 mm.
+    ///
+    /// It was 0.02444 m against a 0.03 m shrink while distance was packed
+    /// into the whole channel — a channel whose bottom the pipeline destroys,
+    /// so the number was tighter and describing a reconstruction that was
+    /// already out by 1.02 m for a different reason entirely.
     #[test]
     fn a_reconstructed_point_lands_outside_the_wall_it_stands_against() {
         let eps = recon_eps(level_plan::DIST_PACK_RANGE);
         assert!(
-            (eps - 0.024_438).abs() < 1.0e-5,
+            (eps - 0.044_326).abs() < 1.0e-5,
             "the derivation moved: {eps}"
         );
         assert!(
@@ -483,8 +499,7 @@ mod tests {
              will start reading as a source seen through one",
             sight::RECT_SHRINK
         );
-        // and with margin this time, rather than the 0.45 mm the nominal
-        // derivation left
+        // and with margin, rather than sitting against it
         assert!(sight::RECT_SHRINK - eps > 0.005);
     }
 
@@ -514,7 +529,11 @@ mod tests {
             quantum(range) > nominal,
             "the quantum stopped accounting for the measured gap"
         );
-        assert!((quantum(range) / nominal - 1.25).abs() < 1.0e-9);
+        // TWO factors above the nominal code and they multiply: the measured
+        // 1.25-code gap, and the 55.1% of the channel distance is packed
+        // into. 1.25 / 0.55132 = 2.2673.
+        assert!((quantum(range) / nominal - 1.25 / BAND).abs() < 1.0e-9);
+        assert!((quantum(range) / nominal - 2.267_3).abs() < 1.0e-4);
         // the fiction, stated so it cannot come back unnoticed: at a
         // nominal code the half-quantum is 19.55 mm, which the RETIRED
         // 0.02 m tolerance cleared by 0.45 mm and the real gap does not
@@ -522,25 +541,26 @@ mod tests {
         assert!(quantum(range) * 0.5 > 0.02);
     }
 
-    /// The range that breaks it, stated rather than discovered. 49.10 m —
-    /// `0.03 * 2 * 1023 / 1.25` — against a shipped 40.0 and a map diagonal
-    /// of 39.73. The wider tolerance bought headroom on a number the
-    /// pack-range budget tells designers to raise when the map grows: it
-    /// was under one metre at the old shrink and nominal code.
+    /// The range that breaks it, stated rather than discovered. 45.12 m —
+    /// `0.05 * 2 * 1023 * 0.55132 / 1.25` — against a shipped 40.0 and a map
+    /// diagonal of 39.73.
+    ///
+    /// The ceiling FELL when distance moved into the band, from 49.10 m, and
+    /// that is the honest cost of the repair: the same range now has 45%
+    /// fewer codes to live in. Raising RECT_SHRINK from 0.03 to 0.05 bought
+    /// most of it back. The margin a designer has on a number
+    /// `pack_range_budget` invites them to raise is 5.12 m, down from 9.10.
     #[test]
     fn the_budget_refuses_a_range_the_channel_cannot_reconstruct() {
         let ceiling = max_safe_range(sight::RECT_SHRINK);
-        assert!(
-            (ceiling - 49.104).abs() < 1.0e-9,
-            "ceiling moved: {ceiling}"
-        );
+        assert!((ceiling - 45.12).abs() < 1.0e-9, "ceiling moved: {ceiling}");
         assert!(reconstruction_budget(level_plan::DIST_PACK_RANGE).is_none());
-        assert!(reconstruction_budget(49.0).is_none());
-        assert!(reconstruction_budget(49.2).is_some());
+        assert!(reconstruction_budget(45.0).is_none());
+        assert!(reconstruction_budget(45.2).is_some());
         assert!(reconstruction_budget(55.0).is_some());
         let complaint = reconstruction_budget(55.0).expect("55 m is past the ceiling");
         assert_eq!(complaint.severity, level_plan::Severity::Error);
-        assert!(complaint.text.contains("49.10"));
+        assert!(complaint.text.contains("45.12"));
     }
 
     /// Total on the degenerate ranges the type admits: absence answers "no

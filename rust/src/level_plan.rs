@@ -1615,10 +1615,12 @@ pub const ROOM_SEGMENTS: usize = 4;
 /// `game/tests/shader_contract_test.gd`.
 ///
 /// It is a CEILING ON THE MAP, which is why the level checks itself against
-/// it: `data_core.gdshaderinc` writes `clamp(vd / DIST_PACK_RANGE, 0, 1)`
-/// into the data pass's B channel, and `hearing_post.gdshader` multiplies
-/// it back to recover the scene depth every outline and every wave ring is
-/// resolved against.
+/// it: `data_core.gdshaderinc` writes `pack_distance(vd)` into the data
+/// pass's B channel, and `hearing_post.gdshader` calls `unpack_distance` to
+/// recover the scene depth every outline and every wave ring is resolved
+/// against. Not into the whole channel — see
+/// [`crate::render::channel::SAFE_FLOOR`] for the part of it that survives
+/// the pipeline at all.
 pub const DIST_PACK_RANGE: f64 = 40.0;
 
 /// How loudly the level says something about itself.
@@ -1804,16 +1806,16 @@ pub fn slab_diagonal(floor: Box3, ceiling: Box3, walls: &[Vector4], sweep: (f64,
 /// state — 39.73 m against 40, 0.27 m of headroom — and must stay silent.
 ///
 /// WHAT ACTUALLY BREAKS, since the packed value does NOT alias: the data
-/// core writes `clamp(vd / DIST_PACK_RANGE, 0, 1)` into B, so a point
-/// beyond the range saturates rather than wrapping, and everything out
-/// there reads the same flat 1.0. Three things follow from that flatness,
+/// core writes `pack_distance(vd)` into B, so a point beyond the range
+/// saturates rather than wrapping, and everything out there reads the same
+/// flat 1.0. Three things follow from that flatness,
 /// in the order a growing map meets them:
 ///
 /// 1. The silhouette outline is a LAPLACIAN of B, and the Laplacian of a
 ///    plateau is zero. Far geometry simply stops drawing its outline — the
 ///    perception law's one line per object, gone. Creases survive, because
 ///    they are diffed out of the per-face label channel instead.
-/// 2. The hearing pass recovers scene depth as `c_c.b * DIST_PACK_RANGE`,
+/// 2. The hearing pass recovers scene depth as `unpack_distance(c_c.b)`,
 ///    which pins at the range. A player-made ring is cut where it meets the
 ///    world, so past the range it is cut against a world that is not there
 ///    — the sound dies on an invisible sphere around the eye — and the
@@ -1840,13 +1842,15 @@ pub fn pack_range_budget(diagonal: f64, range: f64) -> Option<Budget> {
         text: format!(
             "WaveLevel: the map's {diagonal:.2} m diagonal reaches the sight shaders' \
              DIST_PACK_RANGE of {range} m. Packed camera distance SATURATES there, it does not \
-             wrap: the data core packs clamp(vd / DIST_PACK_RANGE, 0, 1) into B, so everything \
-             past {range} m reads a flat 1.0 — its silhouette Laplacian is zero and it draws no \
-             outline at all, and the hearing pass cuts player-sound rings against a world it \
-             believes is exactly {range} m away. Shrink the map, or raise DIST_PACK_RANGE in \
-             game/shaders/pulse_pool.gdshaderinc — a measured decision and not a free one: it \
-             rescales every packed distance, and the outline thresholds in hearing_post are tuned \
-             against this range."
+             wrap: the data core packs pack_distance(vd) into B, so everything past {range} m \
+             reads a flat 1.0 — its silhouette Laplacian is zero and it draws no outline at all, \
+             and the hearing pass cuts player-sound rings against a world it believes is exactly \
+             {range} m away. Shrink the map, or raise DIST_PACK_RANGE in \
+             game/shaders/pulse_pool.gdshaderinc — a measured decision and not a free one: \
+             distance is packed into only the part of the channel that survives the pipeline's \
+             transfer, so a longer range buys its reach out of reconstruction accuracy, and \
+             render::channel::reconstruction_budget refuses the range at which a lit wall starts \
+             reading as a source seen through one."
         ),
     })
 }
@@ -3820,15 +3824,19 @@ mod tests {
     /// 80 × 80 courtyard's slab pair pushes the diagonal to 113.18 m.
     ///
     /// The message says SATURATES, not aliases, because that is what the
-    /// GLSL does: data_core.gdshaderinc:149 packs
-    /// `clamp(vd / DIST_PACK_RANGE, 0.0, 1.0)` into B, so nothing wraps and
-    /// nothing folds — everything past the range reads a flat 1.0. The
-    /// consequences follow from the flatness rather than from a wrap:
-    /// hearing_post's silhouette Laplacian (line 72) over a plateau is
-    /// zero, so far geometry draws no outline at all, and its
-    /// `scene_d = c_c.b * DIST_PACK_RANGE` (line 57) pins at the range, so
-    /// the ring cut at line 123 kills a player's sound against a world that
-    /// is not where it says it is.
+    /// GLSL does: `data_core.gdshaderinc` packs `pack_distance(vd)` into B,
+    /// which clamps, so nothing wraps and nothing folds — everything past
+    /// the range reads a flat 1.0. The consequences follow from the
+    /// flatness rather than from a wrap: hearing_post's silhouette Laplacian
+    /// over a plateau is zero, so far geometry draws no outline at all, and
+    /// its `scene_d = unpack_distance(c_c.b)` pins at the range, so the ring
+    /// cut kills a player's sound against a world that is not where it says
+    /// it is.
+    ///
+    /// The advice no longer says the outline thresholds are tuned against
+    /// the range. They were, and that was the defect `render::silhouette`
+    /// exists to fix: the knee is in metres of depth step now and does not
+    /// move when the range does.
     #[test]
     fn a_map_past_the_packing_range_names_the_diagonal_and_what_saturates() {
         let budget = pack_range_budget(113.182_330_776_495_32, 40.0).expect("a report");
@@ -3837,13 +3845,14 @@ mod tests {
             budget.text,
             "WaveLevel: the map's 113.18 m diagonal reaches the sight shaders' DIST_PACK_RANGE \
              of 40 m. Packed camera distance SATURATES there, it does not wrap: the data core \
-             packs clamp(vd / DIST_PACK_RANGE, 0, 1) into B, so everything past 40 m reads a \
-             flat 1.0 — its silhouette Laplacian is zero and it draws no outline at all, and the \
-             hearing pass cuts player-sound rings against a world it believes is exactly 40 m \
-             away. Shrink the map, or raise DIST_PACK_RANGE in \
-             game/shaders/pulse_pool.gdshaderinc — a measured decision and not a free one: it \
-             rescales every packed distance, and the outline thresholds in hearing_post are tuned \
-             against this range."
+             packs pack_distance(vd) into B, so everything past 40 m reads a flat 1.0 — its \
+             silhouette Laplacian is zero and it draws no outline at all, and the hearing pass \
+             cuts player-sound rings against a world it believes is exactly 40 m away. Shrink \
+             the map, or raise DIST_PACK_RANGE in game/shaders/pulse_pool.gdshaderinc — a \
+             measured decision and not a free one: distance is packed into only the part of the \
+             channel that survives the pipeline's transfer, so a longer range buys its reach out \
+             of reconstruction accuracy, and render::channel::reconstruction_budget refuses the \
+             range at which a lit wall starts reading as a source seen through one."
         );
     }
 

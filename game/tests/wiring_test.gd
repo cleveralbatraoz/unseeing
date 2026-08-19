@@ -182,6 +182,35 @@ func test_the_crease_knee_reaches_the_post_pass_from_the_one_separation() -> voi
 	assert_bool(src.contains("smoothstep(0.04, 0.08")).is_false()
 
 
+## THE BREAK: the silhouette knee derived in Rust and never pushed, which is
+## exactly how u_grain_amp lived for months — the Rust doc claiming ownership
+## while the live value was the GLSL default.
+##
+## Here the default draws NOTHING at all, so an unpushed material is a black
+## screen rather than a slightly different picture. That is deliberate: it is
+## the one uniform on this pass whose wrong value is unmissable, and it must
+## stay that way.
+func test_the_silhouette_knee_reaches_the_post_pass_in_metres() -> void:
+	var main := _main()
+	var core: WaveCore = auto_free(WaveCore.new())
+	var pushed: Vector2 = main.post_mat.get_shader_parameter("u_sil_knee")
+	var derived: Vector2 = core.silhouette_knee()
+	(
+		assert_vector(pushed)
+		. append_failure_message(
+			"the post pass was pushed %s, but Rust derives %s" % [str(pushed), str(derived)]
+		)
+		. is_equal(derived)
+	)
+	# and it is NOT the shader default, which would mean nobody pushed
+	assert_bool(pushed.x < 1.0e3).is_true()
+	# the shader reads the uniform, not the literal it used to carry
+	var post := FileAccess.open("res://shaders/hearing_post.gdshader", FileAccess.READ)
+	var src := post.get_as_text() if post != null else ""
+	assert_str(src).contains("smoothstep(u_sil_knee.x, u_sil_knee.y, lap)")
+	assert_bool(src.contains("smoothstep(0.012, 0.03")).is_false()
+
+
 ## THE BREAK: `render::grain::GRAIN_AMP` and the shader's `u_grain_amp`
 ## drifting apart. The Rust doc claimed the constant was "owned here, pushed
 ## from the composition root" — it was not pushed at all, and the live value

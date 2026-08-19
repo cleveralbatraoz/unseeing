@@ -401,6 +401,30 @@ impl WaveCore {
         render::labels::MIN_SEP
     }
 
+    /// The silhouette knee, in METRES of depth step: `u_sil_knee`, derived by
+    /// `render::silhouette` and pushed by the composition root.
+    ///
+    /// In metres and not in channel units, which is the whole point of the
+    /// type: the pair used to be a GLSL literal that silently meant a
+    /// different depth step whenever `DIST_PACK_RANGE` moved.
+    #[func]
+    fn silhouette_knee(&self) -> Vector2 {
+        let knee = render::silhouette::SilhouetteKnee::shipped();
+        Vector2::new(knee.lo() as f32, knee.hi() as f32)
+    }
+
+    /// The bottom of the band camera distance is packed into —
+    /// `render::channel::SAFE_FLOOR`.
+    ///
+    /// Exposed for the reason [`Self::source_band`] is: the shipped GLSL
+    /// carries this number too, and a drift between the two would put the
+    /// write end and the read end of the channel on different affine maps —
+    /// every visible surface at the wrong distance, smoothly and plausibly.
+    #[func]
+    fn dist_safe_floor(&self) -> f64 {
+        render::channel::SAFE_FLOOR
+    }
+
     /// The widest gap the data channel was measured to leave, as a fraction
     /// of full scale — `WORST_STEP_CODES` over the nominal step count.
     ///

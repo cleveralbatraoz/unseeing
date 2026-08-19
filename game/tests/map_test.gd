@@ -39,10 +39,10 @@ func _skin(body: Node) -> MeshInstance3D:
 
 
 ## The Rust-side occluder inflation, mirrored: a centerline padded by a
-## wall half-thickness (0.15) MINUS the 0.03 contact shrink each way —
+## wall half-thickness (0.15) MINUS the 0.05 contact shrink each way —
 ## the exact rect sight.rs::wall_rect derives for the sight shaders.
 func _occluder(seg: Vector4) -> Vector4:
-	const PAD := 0.12
+	const PAD := 0.10
 	return Vector4(
 		minf(seg.x, seg.z) - PAD,
 		minf(seg.y, seg.w) - PAD,
