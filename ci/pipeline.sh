@@ -79,6 +79,8 @@ echo "ci: macOS universal-gate self-test"
 "$DIR/test/macos_universal_test.sh" || exit 1
 echo "ci: POSIX designer-bootstrap self-test"
 "$DIR/test/bootstrap_posix_test.sh" || exit 1
+echo "ci: designer engine-bundle packaging self-test"
+"$DIR/test/package_engine_bundle_test.sh" || exit 1
 if command -v pwsh >/dev/null 2>&1; then
   echo "ci: Windows designer-bootstrap self-test (PowerShell boundary fakes)"
   pwsh -NoProfile -File "$DIR/test/bootstrap_windows_test.ps1" || exit 1
