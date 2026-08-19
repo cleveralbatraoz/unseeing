@@ -110,7 +110,7 @@ jobs:
         # itself (not just the workflow trigger) can be verified for real
         # before merging. Reverted to main-only before this branch is done.
         if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/designer-engine-bundle') && github.event_name == 'push'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5.0.0
         with:
           path: game/build/web
 
@@ -188,7 +188,7 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5.0.0
       - name: Verify the live page serves this commit
         run: |
           set -eu
