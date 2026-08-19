@@ -40,8 +40,8 @@ printf 'not shipped\n' >"$REPO/rust/should-not-appear.txt"
   && git init -q \
   && git config user.email "fixture@example.invalid" \
   && git config user.name "fixture" \
-  && git add game \
-  && git commit -q -m "fixture game tree" )
+  && git add game rust/should-not-appear.txt \
+  && git commit -q -m "fixture game tree and unrelated file" )
 COMMIT="$(cd "$REPO" && git rev-parse HEAD)"
 
 printf 'fake engine library\n' >"$T/libunseeing_core.so"
