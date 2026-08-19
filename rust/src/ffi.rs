@@ -425,6 +425,19 @@ impl WaveCore {
         render::channel::SAFE_FLOOR
     }
 
+    /// One whole reconstruction gap at the shipped packing range — the bias
+    /// `probe_distance` pulls every reconstructed wall-test endpoint toward
+    /// the eye by, `render::channel::quantum(DIST_PACK_RANGE)`.
+    ///
+    /// Exposed so `shader_contract_test` can hold the GLSL twin's
+    /// `DIST_RECON_BIAS` derivation against the cargo one: a bias smaller
+    /// than the measured gap readmits the false wall crossing that flared a
+    /// fan through the wall it hides behind.
+    #[func]
+    fn dist_recon_bias(&self) -> f64 {
+        render::channel::quantum(level_plan::DIST_PACK_RANGE)
+    }
+
     /// The widest gap the data channel was measured to leave, as a fraction
     /// of full scale — `WORST_STEP_CODES` over the nominal step count.
     ///

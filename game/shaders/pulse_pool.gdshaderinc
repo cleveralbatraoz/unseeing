@@ -53,6 +53,28 @@ float unpack_distance(float packed) {
 	return clamp((packed - DIST_SAFE_FLOOR) * DIST_UNPACK_SCALE, 0.0, DIST_PACK_RANGE);
 }
 
+// One whole reconstruction gap, in metres: WORST_STEP_CODES (1.25, the
+// widest gap a driver showed — rust/src/render/channel.rs) of the channel's
+// 1023 nominal steps, at the band's own gain.
+const float DIST_RECON_BIAS = DIST_UNPACK_SCALE * 1.25 / 1023.0;
+
+// Where the eye's WALL TESTS may place the surface a packed reading
+// described: the unpacked distance pulled back toward the eye by one whole
+// gap. An in-band reading can come back up to +0.88 codes HIGH
+// (tap_error_probe) — +62 mm at the shipped range, past the 50 mm
+// sight::RECT_SHRINK — so an endpoint at the raw reading can land INSIDE
+// the wall the surface stands against, and the pixel then reads as a
+// source seen THROUGH that wall: its ring is cut at the wrong surface and
+// the outline cap borrows the wall's own bright reveal (occlusion_probe
+// case 8). No legal reading overshoots by more than the gap, so this probe
+// never passes the true surface — at any packing range — while an x-rayed
+// source keeps its crossing: it stands metres past the wall that hides it,
+// and the bias is under nine centimetres.
+// rust/src/render/channel.rs::probe_distance is the cargo-pinned reference.
+float probe_distance(float packed) {
+	return max(unpack_distance(packed) - DIST_RECON_BIAS, 0.0);
+}
+
 uniform float u_time = 0.0;
 uniform float u_flick = 1.0;
 uniform int u_count = 0;

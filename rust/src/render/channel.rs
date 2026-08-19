@@ -137,8 +137,17 @@ pub fn quantum(range: f64) -> f64 {
     range * WORST_STEP_CODES / (f64::from(CHANNEL_LEVELS - 1) * BAND)
 }
 
-/// The worst error in a world point reconstructed from B — half a quantum,
-/// since the channel rounds to the nearest code.
+/// Half a quantum — the worst reconstruction error IF the channel rounded
+/// each value to its nearest code.
+///
+/// It does not, and `tap_error_probe` says so on screen: absolute in-band
+/// error reaches about 1.6 nominal codes, 2.5x this number, because a
+/// slowly varying bias can move every value together without costing a
+/// step of RESOLUTION. That refutation is why [`probe_distance`] pulls
+/// every reconstructed endpoint a whole [`quantum`] toward the eye instead
+/// of leaning on [`sight::RECT_SHRINK`] to absorb a half-gap. This number
+/// survives only inside [`reconstruction_budget`]'s ceiling, whose
+/// rederivation against the biased probe is issue #55.
 #[must_use]
 pub fn recon_eps(range: f64) -> f64 {
     quantum(range) * 0.5
@@ -161,6 +170,13 @@ pub fn recon_eps(range: f64) -> f64 {
 ///
 /// Total on any input: a non-finite or non-positive shrink answers 0.0, so
 /// no range is safe rather than every range being safe.
+///
+/// SUPERSEDED as the sole guard, kept as the conservative ceiling: since
+/// [`probe_distance`] pulls every reconstructed endpoint one whole quantum
+/// toward the eye, the shrink only has to absorb whatever error EXCEEDS
+/// that gap, so the true ceiling is higher than this one computes. Its
+/// rederivation against the biased probe is issue #55; until then a
+/// ceiling that refuses slightly too early refuses nothing that ships.
 #[must_use]
 pub fn max_safe_range(shrink: f64) -> f64 {
     if !shrink.is_finite() || shrink <= 0.0 {
@@ -188,10 +204,10 @@ pub fn reconstruction_budget(range: f64) -> Option<level_plan::Budget> {
         text: format!(
             "WaveLevel: a DIST_PACK_RANGE of {range} m is too coarse for the B channel to \
              reconstruct a world point safely. hearing_post rebuilds the visible surface as \
-             cam + rd * B * range and asks the wall table about it; with {} codes per channel \
-             and a widest measured gap of {} of them, that point can be off by {:.4} m, and the \
-             only thing keeping it outside the wall it \
-             stands against is sight::RECT_SHRINK ({} m). Past {ceiling:.2} m the two cross, a lit \
+             cam + rd * probe_distance(B) and asks the wall table about it; with {} codes per \
+             channel and a widest measured gap of {} of them, that point can be off by \
+             {:.4} m past the one-gap bias the probe already subtracts, and what absorbs the \
+             rest is sight::RECT_SHRINK ({} m). Past {ceiling:.2} m the two cross, a lit \
              wall starts reading as a source seen THROUGH a wall, and every ring is cut and every \
              outline capped at the wrong surface. Shrink the map instead, or stop reconstructing \
              a point from B.",
@@ -325,6 +341,32 @@ pub fn unpack_distance(packed: f64, range: f64) -> f64 {
     ((packed - SAFE_FLOOR) * unpack_scale(range)).clamp(0.0, range)
 }
 
+/// Where the eye's wall test may probe for the surface a packed reading
+/// described: the unpacked distance pulled back toward the eye by one whole
+/// [`quantum`] — the Rust twin of the `probe_distance` every reconstructed
+/// endpoint in `hearing_post` goes through.
+///
+/// The bias is the guard. `tap_error_probe` measures in-band readings
+/// coming back up to +0.88 codes HIGH on Mesa/AMD — +62 mm at the shipped
+/// range, past the 50 mm [`sight::RECT_SHRINK`] — so an endpoint placed at
+/// the raw reading can land INSIDE the wall the surface stands against,
+/// and the pixel then reads as a source seen THROUGH that wall: its ring
+/// is cut at the wrong surface and the outline cap borrows the wall's own
+/// bright reveal (`occlusion_probe` case 8, the flare the reporter saw).
+/// One quantum is the widest gap a driver showed ([`WORST_STEP_CODES`]),
+/// so no legal reading overshoots further, and a probe biased by it can
+/// never pass the true surface — at ANY packing range, which is a
+/// guarantee [`sight::RECT_SHRINK`] alone could not give at 40 m. An
+/// x-rayed source keeps its crossing: it stands metres past the wall that
+/// hides it, and the bias is under nine centimetres.
+///
+/// Total on any input: everything [`unpack_distance`] refuses probes to
+/// 0.0 — the eye — where a degenerate segment crosses nothing.
+#[must_use]
+pub fn probe_distance(packed: f64, range: f64) -> f64 {
+    (unpack_distance(packed, range) - quantum(range)).max(0.0)
+}
+
 /// Metres of camera distance per unit of packed channel — the GAIN the
 /// silhouette Laplacian is scaled by, and the one number the outline knee
 /// turns on.
@@ -357,6 +399,76 @@ pub fn unpack_scale(range: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// THE BREAK: trusting the channel's reading as the probe endpoint,
+    /// which is what shipped and what `occlusion_probe` case 8 caught on
+    /// screen: `tap_error_probe` measures readings inside the band coming
+    /// back up to +0.88 codes HIGH (62 mm at the shipped range), past the
+    /// 50 mm `sight::RECT_SHRINK`, so a tapped wall's own pixels
+    /// reconstructed INSIDE that wall's occluder rect, read as a source
+    /// seen through it, and fed the wall's bright reveal into the outline
+    /// cap — tapping a wall flared the fan behind it at 107% of the fan's
+    /// own image.
+    ///
+    /// The guard: a reading that overshoots by up to one whole [`quantum`]
+    /// — [`WORST_STEP_CODES`] is the widest gap a driver showed, so no
+    /// legal reading lands further out — must still probe AT or SHORT of
+    /// the true surface. Shrinking the bias below the quantum (the old
+    /// half-gap `recon_eps` model) readmits the false crossing.
+    #[test]
+    fn a_reading_a_whole_gap_deep_still_probes_short_of_its_surface() {
+        let range = level_plan::DIST_PACK_RANGE;
+        let true_d = 2.0;
+        let worst_legal_reading = pack_distance(true_d + quantum(range), range);
+        assert!(
+            probe_distance(worst_legal_reading, range) <= true_d + 1.0e-12,
+            "the worst legal overshoot probes past the surface it read"
+        );
+    }
+
+    /// THE BREAK: a bias so large it swallows the x-ray detection the
+    /// probe exists for. The shipped fan stands 5.5 m from the occlusion
+    /// probe's eye with the divider's far face inside 2.3 m; one quantum at
+    /// the shipped range is 0.0887 m, so the biased probe still lands
+    /// metres past that wall and the crossing that classifies the fan as
+    /// seen-through-a-wall survives.
+    #[test]
+    fn an_x_rayed_source_still_probes_past_the_wall_it_hides_behind() {
+        let range = level_plan::DIST_PACK_RANGE;
+        let fan_reading = pack_distance(5.5, range);
+        assert!(
+            probe_distance(fan_reading, range) > 2.3,
+            "the bias ate the crossing that detects an x-rayed source"
+        );
+    }
+
+    /// Hand-derived: one quantum at the shipped range is
+    /// 40 * 1.25 / 564 = 50/564 m, so a clean 10 m reading probes to
+    /// 10 - 50/564 = 9.911347517730497 m. Catches a bias quietly retuned
+    /// away from the measured gap in either direction.
+    #[test]
+    fn the_probe_is_the_reading_less_exactly_one_quantum() {
+        let range = level_plan::DIST_PACK_RANGE;
+        let d = probe_distance(pack_distance(10.0, range), range);
+        assert!(
+            (d - 9.911_347_517_730_497).abs() < 1.0e-12,
+            "the bias moved: {d}"
+        );
+    }
+
+    /// A reading nearer than one quantum probes to the eye itself, never
+    /// to a negative metre no wall test has a defined answer for — and the
+    /// degenerate inputs [`unpack_distance`] already refuses stay refused.
+    #[test]
+    fn a_near_or_degenerate_reading_probes_to_the_eye() {
+        let range = level_plan::DIST_PACK_RANGE;
+        assert_eq!(probe_distance(pack_distance(0.05, range), range), 0.0);
+        assert_eq!(probe_distance(f64::NAN, range), 0.0);
+        assert_eq!(probe_distance(0.7, f64::NAN), 0.0);
+        assert_eq!(probe_distance(0.7, 0.0), 0.0);
+        assert_eq!(probe_distance(0.7, -1.0), 0.0);
+        assert_eq!(probe_distance(0.7, f64::INFINITY), 0.0);
+    }
 
     /// THE BREAK: packing distance into `[0, 1]` again, which is what the
     /// shipped path did and what put a wall one metre from the eye at zero
@@ -496,30 +608,34 @@ mod tests {
     ///
     /// Hand-derived at the shipped settings. 1024 codes give 1023 nominal
     /// steps, but distance lives in only 55.1% of them — [`BAND`] — so one
-    /// nominal B code is worth 40 / (1023 x 0.55132) = 0.07092 m; the widest
-    /// gap a driver actually showed is 1.25 of those, 0.08865 m, and the
-    /// worst reconstruction error is half of that, 0.04433 m. RECT_SHRINK is
-    /// 0.05 m, so the guard holds by 5.7 mm.
+    /// THE BREAK: shrinking either tolerance under the error the channel
+    /// actually delivers. This test replaces one that held
+    /// `RECT_SHRINK > recon_eps` — the half-gap model — and that model was
+    /// refuted on a screen: `tap_error_probe` measures absolute in-band
+    /// error up to about 1.6 nominal codes (0.88 on the latest boot, 1.6
+    /// recorded worst), and 1.6 > the 0.625-code half-gap, so a tapped
+    /// wall's own pixels reconstructed INSIDE the wall and `occlusion_probe`
+    /// case 8 flared the fan behind it.
     ///
-    /// It was 0.02444 m against a 0.03 m shrink while distance was packed
-    /// into the whole channel — a channel whose bottom the pipeline destroys,
-    /// so the number was tighter and describing a reconstruction that was
-    /// already out by 1.02 m for a different reason entirely.
+    /// The guard now has two layers and they COMPOSE: [`probe_distance`]
+    /// pulls the endpoint back one whole quantum (1.25 codes), and
+    /// [`sight::RECT_SHRINK`] still stops the rect short of the face —
+    /// 0.05 m at the shipped gain is 0.705 codes more. Together they cover
+    /// 1.955 codes of overshoot against the 1.6 measured, a 0.355-code
+    /// margin. Halving the bias (1.33 total) or dropping the shrink back to
+    /// 0.03 (1.673 total, a 0.073-code hair) both go red here.
     #[test]
-    fn a_reconstructed_point_lands_outside_the_wall_it_stands_against() {
-        let eps = recon_eps(level_plan::DIST_PACK_RANGE);
+    fn the_probe_bias_and_the_shrink_together_cover_the_measured_error() {
+        // 1.6 nominal codes at the shipped gain, hand-derived:
+        // 1.6 * 40 / (1023 * (564/1023)) = 64/564 m
+        let worst_measured = 0.113_475_177_304_964;
+        let guard = quantum(level_plan::DIST_PACK_RANGE) + sight::RECT_SHRINK;
         assert!(
-            (eps - 0.044_326).abs() < 1.0e-5,
-            "the derivation moved: {eps}"
+            guard > worst_measured + 0.02,
+            "the composed guard ({guard:.4} m) no longer clears the measured worst absolute \
+             error ({worst_measured:.4} m) with margin: a lit wall will start reading as a \
+             source seen through one"
         );
-        assert!(
-            sight::RECT_SHRINK > eps,
-            "RECT_SHRINK ({}) no longer clears the B channel's half-gap ({eps}): a lit wall \
-             will start reading as a source seen through one",
-            sight::RECT_SHRINK
-        );
-        // and with margin, rather than sitting against it
-        assert!(sight::RECT_SHRINK - eps > 0.005);
     }
 
     /// THE BREAK: reading the format's promise as the pipeline's delivery.

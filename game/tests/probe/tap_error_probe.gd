@@ -110,6 +110,11 @@ func _measure() -> void:
 
 	var worst := 0.0
 	var worst_at := 0.0
+	# the worst error among values the packing law can actually write —
+	# at or above the shipped band floor — which is the number the
+	# reconstruction guard composes against
+	var band_floor: float = WaveCore.new().dist_safe_floor()
+	var in_band_worst := 0.0
 	var shape: PackedStringArray = PackedStringArray()
 	var i := 0
 	var clipped := 0
@@ -125,6 +130,8 @@ func _measure() -> void:
 		if absf(codes) > absf(worst):
 			worst = codes
 			worst_at = value
+		if value >= band_floor and absf(codes) > absf(in_band_worst):
+			in_band_worst = codes
 		for t: int in TOLS.size():
 			if absf(codes) > TOLS[t]:
 				floor_at[t] = value
@@ -162,27 +169,26 @@ func _measure() -> void:
 		),
 		usable >= 0.0 and usable < 0.90
 	)
-	# WHAT IT CANNOT SETTLE, PRINTED RATHER THAN ASSERTED. recon_eps halves
-	# the measured gap and calls that the worst error in one value. This
-	# probe measures more than half a gap -- up to about 1.6 nominal codes
-	# against the 0.625 a centred representative would give -- and that is
-	# NOT a contradiction of platform_probe, which measures RESOLUTION: a
-	# slowly varying bias moves every value together and so preserves every
-	# step while breaking absolute accuracy. Which of the two the
-	# reconstruction guard actually needs is a question about the guard, not
-	# about the channel, and it is open. It is not asserted here because a
-	# probe that fails every run teaches nobody anything, and it is not
-	# quietly dropped because the guard's whole derivation turns on it.
-	if absf(worst) > 0.625:
-		print(
+	# THE MEASUREMENT THE GUARD IS BUILT ON, printed so a drift is seen.
+	# Absolute in-band error runs past the half-gap a centred representative
+	# would give -- up to about 1.6 nominal codes -- and that is NOT a
+	# contradiction of platform_probe, which measures RESOLUTION: a slowly
+	# varying bias moves every value together and so preserves every step
+	# while breaking absolute accuracy. This is why every reconstructed
+	# wall-test endpoint goes through probe_distance (one whole gap of bias
+	# toward the eye, rust/src/render/channel.rs) with sight::RECT_SHRINK
+	# absorbing the excess; the composed tolerance is 1.955 codes, held by
+	# the_probe_bias_and_the_shrink_together_cover_the_measured_error. A
+	# reading past 1.955 here means that guard is broken on this driver.
+	print(
+		(
 			(
-				(
-					"# OPEN: absolute error %.3f codes exceeds the half-gap (0.625) that"
-					+ " render::channel::recon_eps assumes. Resolution is unaffected."
-				)
-				% absf(worst)
+				"# in-band absolute error %.3f codes against a composed guard of 1.955"
+				+ " (probe bias 1.25 + RECT_SHRINK 0.705). Resolution is unaffected."
 			)
+			% absf(in_band_worst)
 		)
+	)
 	print("1..2")
 	if _failures > 0:
 		print("tap-error-probe: FAIL (%d)" % _failures)

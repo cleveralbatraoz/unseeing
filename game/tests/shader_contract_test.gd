@@ -509,9 +509,53 @@ func test_distance_is_packed_into_the_band_that_survives() -> void:
 	# the six reads that need absolute metric distance
 	var post := _read(HEARING_POST_PATH)
 	assert_str(post).contains("float scene_d = unpack_distance(c_c.b);")
-	for tap: String in ["c_l", "c_r", "c_u", "c_d"]:
-		assert_str(post).contains("wall_any_crossing(cam, cam + rd * unpack_distance(%s.b))" % tap)
 	assert_bool(post.contains(".b * DIST_PACK_RANGE")).is_false()
+
+
+## THE BREAK: feeding a wall test an endpoint placed at the RAW channel
+## reading. tap_error_probe measures in-band readings coming back up to
+## +0.88 codes HIGH — +62 mm at the shipped range, past the 50 mm
+## sight::RECT_SHRINK — so a tapped wall's own pixels reconstructed INSIDE
+## that wall's occluder rect, read as a source seen THROUGH it, and the
+## outline cap borrowed the wall's bright tap reveal: tapping the divider
+## flared the fan behind it at 107% of the fan's own image
+## (occlusion_probe case 8, and the report that found it).
+##
+## Every reconstructed endpoint therefore goes through probe_distance,
+## which pulls the reading one whole gap toward the eye — no legal reading
+## overshoots further (WORST_STEP_CODES is the widest gap a driver showed),
+## so the probe can never pass the true surface, at any packing range. The
+## RING CUT keeps the unbiased scene_d: rings die at the surface itself,
+## not nine centimetres in front of it.
+##
+## rust/src/render/channel.rs::probe_distance is the cargo twin, and
+## a_reading_a_whole_gap_deep_still_probes_short_of_its_surface holds the
+## law itself.
+func test_wall_probes_pull_the_reading_short_of_the_surface_it_read() -> void:
+	var pool := _include_text()
+	assert_str(pool).contains("const float DIST_RECON_BIAS = DIST_UNPACK_SCALE * 1.25 / 1023.0;")
+	assert_str(pool).contains("float probe_distance(float packed) {")
+	assert_str(pool).contains("return max(unpack_distance(packed) - DIST_RECON_BIAS, 0.0);")
+	# the GLSL derivation, evaluated from its own parsed constants, against
+	# the cargo door — retuning either side's gap or band alone goes red
+	var core: WaveCore = auto_free(WaveCore.new())
+	var bias_glsl := (
+		_shader_const("DIST_PACK_RANGE") / (1.0 - _shader_const("DIST_SAFE_FLOOR")) * 1.25 / 1023.0
+	)
+	assert_float(bias_glsl).is_equal_approx(core.dist_recon_bias(), 1e-9)
+	# the five reconstructed endpoints: the centre pixel's wall test and
+	# the four neighbour arms of the outline cap
+	var post := _read(HEARING_POST_PATH)
+	assert_str(post).contains("float probe_d = probe_distance(c_c.b);")
+	assert_str(post).contains("vec3 seen_pt = cam + rd * probe_d;")
+	assert_str(post).contains(
+		"float air_d = seen_walled ? (wall_t >= 0.0 ? wall_t * probe_d : 0.0) : scene_d;"
+	)
+	for tap: String in ["c_l", "c_r", "c_u", "c_d"]:
+		assert_str(post).contains("wall_any_crossing(cam, cam + rd * probe_distance(%s.b))" % tap)
+	# ...and no wall test anywhere still trusts a raw unpacked reading
+	assert_bool(post.contains("wall_any_crossing(cam, cam + rd * unpack_distance")).is_false()
+	assert_bool(post.contains("rd * scene_d")).is_false()
 
 
 ## THE BREAK: the silhouette knee going back to channel units, where it is a

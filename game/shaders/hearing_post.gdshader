@@ -150,7 +150,15 @@ void fragment() {
 	// solids — a different law from the wave occluder, which admits by
 	// geometry rather than by class — and a per-fragment cost on the
 	// hottest path in the game.
-	vec3 seen_pt = cam + rd * scene_d;
+	// The endpoint every wall test gets is the BIASED probe, never the raw
+	// reading: probe_distance pulls it one reconstruction gap toward the
+	// eye, because a reading that comes back a hair high places this
+	// surface inside its own wall and the pixel then reads as a source
+	// seen THROUGH it — see the include. The ring cut keeps the unbiased
+	// scene_d: rings die at the surface itself, not nine centimetres in
+	// front of it.
+	float probe_d = probe_distance(c_c.b);
+	vec3 seen_pt = cam + rd * probe_d;
 	// sight.rs::visible_air — HOW FAR the eye can see air along this ray:
 	// the whole way to the surface, or only as far as the nearest wall it
 	// enters. A DISTANCE, never a flag; see the ring cut below for why that
@@ -163,7 +171,7 @@ void fragment() {
 	// back NaN. Left unguarded, air_d would be NaN, `t >= air_d` would be
 	// false for EVERY root, and one bad pixel would draw every ring in the
 	// level straight through every wall.
-	float air_d = seen_walled ? (wall_t >= 0.0 ? wall_t * scene_d : 0.0) : scene_d;
+	float air_d = seen_walled ? (wall_t >= 0.0 ? wall_t * probe_d : 0.0) : scene_d;
 	bool seen_image = depth_is_acoustic_image(texture(depth_tex, uv).r) || seen_walled;
 
 	// thin white outlines: silhouettes (Laplacian of the packed distance in B)
@@ -204,13 +212,13 @@ void fragment() {
 		// the same pair at each neighbour: the exact depth test first, the
 		// wall-table inference as the platform fallback behind it
 		if (depth_is_acoustic_image(texture(depth_tex, uv - vec2(px.x, 0.0)).r)
-				|| wall_any_crossing(cam, cam + rd * unpack_distance(c_l.b))) { src_r = max(src_r, c_l.r); }
+				|| wall_any_crossing(cam, cam + rd * probe_distance(c_l.b))) { src_r = max(src_r, c_l.r); }
 		if (depth_is_acoustic_image(texture(depth_tex, uv + vec2(px.x, 0.0)).r)
-				|| wall_any_crossing(cam, cam + rd * unpack_distance(c_r.b))) { src_r = max(src_r, c_r.r); }
+				|| wall_any_crossing(cam, cam + rd * probe_distance(c_r.b))) { src_r = max(src_r, c_r.r); }
 		if (depth_is_acoustic_image(texture(depth_tex, uv + vec2(0.0, px.y)).r)
-				|| wall_any_crossing(cam, cam + rd * unpack_distance(c_u.b))) { src_r = max(src_r, c_u.r); }
+				|| wall_any_crossing(cam, cam + rd * probe_distance(c_u.b))) { src_r = max(src_r, c_u.r); }
 		if (depth_is_acoustic_image(texture(depth_tex, uv - vec2(0.0, px.y)).r)
-				|| wall_any_crossing(cam, cam + rd * unpack_distance(c_d.b))) { src_r = max(src_r, c_d.r); }
+				|| wall_any_crossing(cam, cam + rd * probe_distance(c_d.b))) { src_r = max(src_r, c_d.r); }
 		if (src_r >= 0.0) { reveal = min(reveal, src_r); }
 	}
 	// DETAIL is gated on the FINAL reveal, after the x-ray cap above has

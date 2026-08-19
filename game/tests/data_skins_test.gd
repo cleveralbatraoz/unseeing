@@ -273,9 +273,12 @@ func test_hearing_pass_never_washes_player_rings_on_an_xrayed_source() -> void:
 	# any other spelling: no OR may return to that compare, because any
 	# boolean folded in there is fragment-constant by construction
 	assert_str(src).not_contains("t >= scene_d ||")
-	# and the NaN barrier, which Rust does not need and GLSL does
+	# and the NaN barrier, which Rust does not need and GLSL does. The
+	# walled arm multiplies the BIASED probe_d — the same segment wall_t is
+	# a fraction of — while the clear arm keeps the unbiased scene_d, so
+	# rings die at the surface itself, not one reconstruction gap short.
 	assert_str(src).contains(
-		"float air_d = seen_walled ? (wall_t >= 0.0 ? wall_t * scene_d : 0.0) : scene_d;"
+		"float air_d = seen_walled ? (wall_t >= 0.0 ? wall_t * probe_d : 0.0) : scene_d;"
 	)
 	assert_str(src).contains("if (seen_image) { src_r = c_c.r; }")
 	assert_str(src).contains("if (src_r >= 0.0) { reveal = min(reveal, src_r); }")
