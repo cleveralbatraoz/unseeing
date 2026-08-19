@@ -29,11 +29,14 @@ So: propagation is exact. Perception is authored, and says so.
   crate's pierce line. Seams between *separate* touching solids draw too, and
   need labels at least `MIN_SEP` = 0.08 apart. Shape and detail are two laws,
   not one: the silhouette (a Laplacian of packed distance) carries a wave's
-  full reach and full tail, while the crease (a difference of labels) resolves
-  only near the hand and dies far sooner — `render::detail::DetailKnee`, whose
-  floor is derived as `SOURCE_THROUGH` so that a source behind a wall can
-  never draw a crease for any wave or any volume. You always know a source is
-  sounding in there. You stop knowing it is a radio. Creatures and sound sources
+  full reach and full tail, while an acoustic image's creases fade with its
+  reveal — `render::detail::DetailKnee`, whose floor is derived as
+  `SOURCE_THROUGH` so that a source behind a wall can never draw a crease for
+  any wave or any volume. You always know a source is sounding in there. You
+  stop knowing it is a radio. The knee's scope is the acoustic image ONLY
+  (`DetailKnee::gate`): the world's creases follow reveal untouched — gating
+  them too shipped once and cost footsteps the whole picture, since a step's
+  reveal peaks under the knee's floor. Creatures and sound sources
   never geometrically merge with the world; source semantic roles still join
   the separation graph so touching source copies cannot melt. Labels live in
   the sRGB-safe band `[0.15, 0.96]`, with one grandfathered standalone-preview

@@ -41,13 +41,15 @@ uniform float u_breath = 1.0;
 // comment claimed the opposite — every seam at full strength — which is not
 // what the arithmetic does.
 uniform vec2 u_crease_knee = vec2(0.0, 1.0);
-// Where a swept surface stops telling you WHAT it is while still telling
-// you THAT it is there. Derived in Rust from the wall factor
-// (render::detail::DetailKnee::shipped) and pushed by the composition
-// root. Defaults to (0.0, 1.0) — a fade that runs the whole range and so
-// dims every crease in the game — because an unpushed post material must
-// be visibly wrong rather than accidentally right, exactly as
-// u_crease_knee's default is.
+// Where a swept ACOUSTIC IMAGE stops telling you WHAT it is while still
+// telling you THAT it is there — the knee applies to image fragments
+// only; the world's creases never pass through it (see the composition
+// below for the playtest that scoped it). Derived in Rust from the wall
+// factor (render::detail::DetailKnee::shipped) and pushed by the
+// composition root. Defaults to (0.0, 1.0) — a fade that runs the whole
+// range and so dims every source's creases — because an unpushed post
+// material must be visibly wrong rather than accidentally right, exactly
+// as u_crease_knee's default is.
 uniform vec2 u_detail_knee = vec2(0.0, 1.0);
 // The silhouette knee, in METRES of depth step: a break of u_sil_knee.y
 // draws a full outline and one below u_sil_knee.x draws none.
@@ -221,21 +223,34 @@ void fragment() {
 				|| wall_any_crossing(cam, cam + rd * probe_distance(c_d.b))) { src_r = max(src_r, c_d.r); }
 		if (src_r >= 0.0) { reveal = min(reveal, src_r); }
 	}
-	// DETAIL is gated on the FINAL reveal, after the x-ray cap above has
-	// had its say. The ordering is the whole point and it is easy to get
-	// backwards: `reveal` is rewritten inside that block, so computing
-	// `detail` any earlier would gate identity on a number the cap is about
-	// to lower — a source's creases would survive precisely because it is
-	// being dimmed for standing behind a wall.
+	// DETAIL is the ACOUSTIC IMAGE's law, gated on the FINAL reveal, after
+	// the x-ray cap above has had its say. Both halves of that sentence are
+	// load-bearing and each was learned the hard way:
+	//
+	// THE SCOPE. The knee fades an IMAGE's creases only; the world's pass
+	// through at full strength. Gating every crease in the game shipped
+	// first, and a playtest rejected it in one sentence per symptom — a
+	// footstep's reveal peaks at 0.330 one metre out, under the knee's own
+	// 0.30 floor, so a walking hero swept a room whose corners, floor
+	// seams and face edges never drew, and a tap's crease field tore off
+	// at the 0.30 reveal contour mid-object. A world surface behind a wall
+	// already reveals NOTHING (source_reveal_vis is a hard gate), so
+	// world-side gating bought no theorem and cost the whole picture.
+	// rust/src/render/detail.rs::gate is the cargo-pinned twin.
+	//
+	// THE ORDERING. `reveal` is rewritten inside the cap block, so
+	// computing `detail` any earlier would gate identity on a number the
+	// cap is about to lower — a source's creases would survive precisely
+	// because it is being dimmed for standing behind a wall.
 	//
 	// The knee opens at SOURCE_THROUGH, which is the ceiling on a
 	// once-walled source's reveal, so the composition below is a theorem
 	// rather than a tuning: a source behind a wall CANNOT draw a crease.
 	// You always know it is sounding in there; you stop knowing it is a
 	// radio. rust/src/render/detail.rs::the_first_wall_takes_a_sources_identity.
-	float detail = smoothstep(u_detail_knee.x, u_detail_knee.y, reveal);
-	// With detail == 1 this is max(sil, crease) * reveal — bit-for-bit the
-	// fused line it replaces. Nothing changes until the knee bites.
+	float detail = seen_image ? smoothstep(u_detail_knee.x, u_detail_knee.y, reveal) : 1.0;
+	// With detail == 1 — every world fragment — this is
+	// max(sil, crease) * reveal, bit-for-bit the fused line it replaces.
 	vec3 col = vec3(max(sil * reveal, crease * detail * reveal));
 
 	// the waves themselves: rings in the air, cut where the world stands

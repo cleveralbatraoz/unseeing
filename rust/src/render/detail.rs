@@ -17,13 +17,26 @@
 //! distinction gone.
 //!
 //! Recovering it is the whole perception model. SHAPE carries to a wave's
-//! full reach and lasts its full tail; DETAIL resolves near the hand and
-//! dies in about a second and a half. That is the one thing about
+//! full reach and lasts its full tail; a SOURCE's detail resolves only
+//! while its image arrives loud. The ordering borrows one finding of
 //! non-visual sensing that survived this campaign's adversarial review
 //! intact: expert echolocators detect an object's PRESENCE across a room
 //! while its SHAPE needs near-contact (Kolarik et al., *Hearing Research*
 //! 310 (2014) 60-68; Milne, Goodale & Thaler, *Atten Percept Psychophys*
 //! 76(6) (2014) 1828-1837).
+//!
+//! # The knee's scope: the acoustic image, never the world
+//!
+//! The first shipped composition gated EVERY crease in the game on this
+//! knee, and a playtest rejected it in one sentence per symptom: a
+//! footstep's reveal peaks at 0.330 one metre out — under the knee's own
+//! 0.30 floor — so a walking hero swept a room whose corners, floor seams
+//! and face edges never drew, and a tap's crease field tore off at the
+//! 0.30 reveal contour mid-object. The theorem below is a statement about
+//! SOURCES, and a world surface behind a wall already reveals nothing at
+//! all (`source_reveal_vis` is a hard 0/1 gate), so the world-side fade
+//! bought no theorem and cost the whole picture. [`DetailKnee::gate`] is
+//! the scoped law and the shader's cargo twin.
 //!
 //! That is where the borrowing stops. An earlier draft of this paragraph
 //! also quoted the aperture limit `λ/D` — "about 0.7 m of resolvable feature
@@ -139,12 +152,82 @@ impl DetailKnee {
     pub fn hi(self) -> f64 {
         self.0.hi()
     }
+
+    /// How much detail this fragment keeps — the Rust twin of the shader's
+    /// composition, and the SCOPE of this whole module in one branch: the
+    /// knee fades the ACOUSTIC IMAGE's creases by its reveal, and leaves
+    /// the world's alone.
+    ///
+    /// The scope is load-bearing and was learned on a screen. Gating every
+    /// crease in the game on reveal shipped first, and a playtest rejected
+    /// it in one sentence per symptom: a footstep's reveal peaks at 0.330
+    /// one metre out — under this knee's own 0.30 floor — so a walking
+    /// hero swept a room whose corners, floor seams and face edges never
+    /// drew, and a tap's crease field tore off at the 0.30 reveal contour
+    /// mid-object. The theorem the knee buys is about SOURCES; a world
+    /// surface behind a wall already reveals nothing at all
+    /// (`source_reveal_vis` is a hard 0/1 gate), so the world-side fade
+    /// bought no theorem and cost the picture.
+    ///
+    /// Total over every f64 reveal in both arms: the image arm has
+    /// [`Knee::fade`]'s totality (a non-finite reveal draws nothing), and
+    /// the world arm never reads the reveal at all.
+    #[must_use]
+    pub fn gate(self, acoustic_image: bool, reveal: f64) -> f64 {
+        if acoustic_image {
+            self.0.fade(reveal)
+        } else {
+            1.0
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::render::reveal::{SourceImage, source_image};
+
+    /// THE BREAK: gating the WORLD's creases on the detail knee, which is
+    /// what shipped and what a playtest rejected on sight. A footstep's
+    /// reveal peaks at 0.35 x atten — 0.330 one metre out — under the
+    /// knee's own 0.30 floor almost everywhere, so a walking hero swept a
+    /// room whose corners, floor seams and face edges never drew, and a
+    /// tap's crease field tore off at the 0.30 reveal contour mid-object.
+    /// The knee is the ACOUSTIC IMAGE's law: the theorem below is about
+    /// sources, and a world surface behind a wall already reveals nothing
+    /// at all (`source_reveal_vis` is a hard gate), so world-side gating
+    /// bought no theorem and cost the whole picture.
+    #[test]
+    fn a_footsteps_dim_sweep_keeps_the_worlds_creases() {
+        let knee = DetailKnee::shipped();
+        // hand-derived: peak 0.35 * atten 1/(1 + 0.06) = 0.3302
+        let step_reveal = 0.330;
+        assert!(
+            (knee.gate(false, step_reveal) - 1.0).abs() < f64::EPSILON,
+            "the world's creases no longer pass the knee untouched"
+        );
+        // ...while the same reveal on an acoustic image stays inside the
+        // fade: smoothstep(0.3, 0.6, 0.330) = 0.1^2 * (3 - 0.2) = 0.028
+        let image_detail = knee.gate(true, step_reveal);
+        // 1e-6 and not 1e-12: the smoothstep evaluates through three f64
+        // subtractions whose representation error reaches 2.4e-8; any real
+        // retune of the knee moves this by whole percents.
+        assert!(
+            (image_detail - 0.028).abs() < 1.0e-6,
+            "an image's fade moved: {image_detail}"
+        );
+    }
+
+    /// Totality at the boundary the two arms share: a non-finite reveal
+    /// fades an image to nothing ([`Knee::fade`]'s contract) and leaves
+    /// the world's creases alone — the world arm never reads the reveal.
+    #[test]
+    fn a_non_finite_reveal_darkens_the_image_and_spares_the_world() {
+        let knee = DetailKnee::shipped();
+        assert_eq!(knee.gate(true, f64::NAN), 0.0);
+        assert_eq!(knee.gate(true, f64::INFINITY), 0.0);
+        assert!((knee.gate(false, f64::NAN) - 1.0).abs() < f64::EPSILON);
+    }
 
     /// THE BREAK: the detail knee and the wall factor drifting apart, so a
     /// source behind a wall starts drawing its own internal creases again —
