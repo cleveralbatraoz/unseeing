@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
           submodules: false
@@ -25,7 +25,7 @@ jobs:
       - name: Install gdtoolkit (gdformat + gdlint)
         run: pipx install "gdtoolkit==4.*"
       - name: Cache cargo + rust target
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -36,7 +36,7 @@ jobs:
         run: echo "version=$(cut -d. -f1-3 .godot-version)" >> "$GITHUB_OUTPUT"
       - name: Cache Godot
         id: cache-godot
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: godot-bin
           key: godot-${{ steps.godot.outputs.version }}-linux-x86_64
@@ -62,7 +62,7 @@ jobs:
           rustup target add wasm32-unknown-emscripten --toolchain nightly-2026-05-25
       - name: Cache emsdk
         id: cache-emsdk
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: ~/emsdk
           key: emsdk-4.0.20
@@ -80,7 +80,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
           submodules: false
@@ -94,12 +94,12 @@ jobs:
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$version`n", $utf8)
       - name: Cache Godot
         id: cache-godot
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: godot-bin
           key: godot-${{ steps.godot.outputs.version }}-windows-x86_64
       - name: Cache Cargo registry and bootstrap targets
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
