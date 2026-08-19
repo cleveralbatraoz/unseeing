@@ -175,7 +175,8 @@ jobs:
 
   deploy:
     needs: checks
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # TEMPORARY: see the matching note on the artifact-upload step above.
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/designer-engine-bundle') && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
