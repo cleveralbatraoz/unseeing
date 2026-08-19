@@ -78,5 +78,12 @@ DLL="$OUT_DIR/unseeing_core.dll"
   echo "export-windows: FAILED the exported bundle has no unseeing_core.dll beside it"
   exit 1
 }
+# The preset asks for binary_format/embed_pck=true; a loose .pck here means
+# that stopped taking effect and players would get a stray file back.
+PCK="$OUT_DIR/$(basename "$EXPORT_REL" .exe).pck"
+[ ! -e "$PCK" ] || {
+  echo "export-windows: FAILED found $PCK -- embed_pck should have folded it into the executable"
+  exit 1
+}
 
 echo "export-windows: OK   $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes)"

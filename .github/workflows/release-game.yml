@@ -64,7 +64,7 @@ jobs:
       - name: Export the game
         run: |
           chmod +x tools/export_linux.sh
-          GODOT="$PWD/godot-bin/godot" tools/export_linux.sh "Linux x86_64" build/linux/unseeing.x86_64
+          GODOT="$PWD/godot-bin/godot" tools/export_linux.sh "Linux x86_64" build/linux/unseeing
       - name: Package
         run: |
           mkdir -p bundle
@@ -132,7 +132,7 @@ jobs:
       - name: Export the game
         run: |
           chmod +x tools/export_linux.sh
-          GODOT="$PWD/godot-bin/godot" tools/export_linux.sh "Linux arm64" build/linux-arm64/unseeing.arm64
+          GODOT="$PWD/godot-bin/godot" tools/export_linux.sh "Linux arm64" build/linux-arm64/unseeing
       - name: Package
         run: |
           mkdir -p bundle

@@ -18,8 +18,8 @@
 # already made for the other desktop platforms.
 #
 # Usage: export_linux.sh <preset-name> <export-relative-path>
-#   e.g. export_linux.sh "Linux x86_64" build/linux/unseeing.x86_64
-#        export_linux.sh "Linux arm64" build/linux-arm64/unseeing.arm64
+#   e.g. export_linux.sh "Linux x86_64" build/linux/unseeing
+#        export_linux.sh "Linux arm64" build/linux-arm64/unseeing
 #
 # Env knobs: GODOT (binary).
 set -eu
@@ -82,6 +82,13 @@ OUT="$DIR/game/$EXPORT_REL"
 LIB="$OUT_DIR/libunseeing_core.so"
 [ -s "$LIB" ] || {
   echo "export-linux: FAILED the exported bundle has no libunseeing_core.so beside it"
+  exit 1
+}
+# The preset asks for binary_format/embed_pck=true; a loose .pck here means
+# that stopped taking effect and players would get a stray file back.
+PCK="$OUT_DIR/$(basename "$EXPORT_REL").pck"
+[ ! -e "$PCK" ] || {
+  echo "export-linux: FAILED found $PCK -- embed_pck should have folded it into the executable"
   exit 1
 }
 
