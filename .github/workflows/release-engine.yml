@@ -293,6 +293,8 @@ jobs:
             ~/.cargo/registry
             rust/target
           key: release-rust-macos-universal-${{ hashFiles('rust/Cargo.lock', 'rust/rust-toolchain.toml') }}
+      - name: Install the pinned Rust toolchain (build_macos_core.sh does not auto-provision it)
+        run: (cd rust && rustup show)
       - name: Build the universal release core
         run: tools/build_macos_core.sh
       - name: Package the designer bundle
