@@ -41,7 +41,7 @@ jobs:
         uses: actions/cache@v6.1.0
         with:
           path: ~/.local/share/godot/export_templates
-          key: godot-templates-${{ steps.godot.outputs.version }}
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
       - name: Fetch Godot export templates
         if: steps.cache-templates.outputs.cache-hit != 'true'
         run: |
@@ -109,7 +109,7 @@ jobs:
         uses: actions/cache@v6.1.0
         with:
           path: ~/.local/share/godot/export_templates
-          key: godot-templates-${{ steps.godot.outputs.version }}
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
       - name: Fetch Godot export templates
         if: steps.cache-templates.outputs.cache-hit != 'true'
         run: |
@@ -190,7 +190,7 @@ jobs:
         uses: actions/cache@v6.1.0
         with:
           path: godot-templates
-          key: godot-templates-${{ steps.godot.outputs.version }}
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
       - name: Fetch Godot export templates
         if: steps.cache-templates.outputs.cache-hit != 'true'
         shell: bash
@@ -279,7 +279,7 @@ jobs:
         uses: actions/cache@v6.1.0
         with:
           path: godot-templates
-          key: godot-templates-${{ steps.godot.outputs.version }}
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
       - name: Fetch Godot export templates
         if: steps.cache-templates.outputs.cache-hit != 'true'
         shell: bash
@@ -356,7 +356,7 @@ jobs:
         uses: actions/cache@v6.1.0
         with:
           path: ~/Library/Application Support/Godot/export_templates
-          key: godot-templates-${{ steps.godot.outputs.version }}
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
       - name: Fetch Godot export templates
         if: steps.cache-templates.outputs.cache-hit != 'true'
         run: |

@@ -62,7 +62,7 @@ jobs:
         uses: actions/cache@v6.1.0
         with:
           path: ~/.local/share/godot/export_templates
-          key: godot-templates-${{ steps.godot.outputs.version }}
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
       - name: Fetch Godot export templates
         if: steps.cache-templates.outputs.cache-hit != 'true'
         run: |
@@ -186,10 +186,20 @@ jobs:
         run: |
           set -eu
           SHORT="$(printf %.9s "${{ github.sha }}")"
-          LIVE="$(curl -skL --max-time 30 "${{ steps.deployment.outputs.page_url }}" \
-            | grep -o "UNSEEING_BUILD='[^']*'" | head -1 | sed "s/.*='//;s/'//")"
+          URL="${{ steps.deployment.outputs.page_url }}"
+          # CDN propagation commonly lags deploy-pages' own success signal by
+          # tens of seconds -- poll for the real condition (the live stamp
+          # matching) instead of trusting one race-prone curl.
+          DEADLINE=$(($(date +%s) + 90))
+          LIVE=""
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            LIVE="$(curl -skL --max-time 15 "$URL" \
+              | grep -o "UNSEEING_BUILD='[^']*'" | head -1 | sed "s/.*='//;s/'//" || true)"
+            [ "$LIVE" = "$SHORT" ] && break
+            sleep 5
+          done
           if [ "$LIVE" != "$SHORT" ]; then
-            echo "deploy: FAILED the live page serves build '${LIVE:-none}', not '$SHORT'"
+            echo "deploy: FAILED the live page serves build '${LIVE:-none}', not '$SHORT' after 90s"
             exit 1
           fi
           echo "deploy: OK — https://cleveralbatraoz.github.io/unseeing/ serves $LIVE"
