@@ -1,7 +1,10 @@
 name: release-game
 on:
   push:
-    branches: [main]
+    # TEMPORARY: designer-engine-bundle added only so this push can trigger
+    # a real verification run before this workflow exists on main. Reverted
+    # to [main] before this branch is done.
+    branches: [main, designer-engine-bundle]
   workflow_dispatch: {}
 concurrency:
   group: release-game-main
