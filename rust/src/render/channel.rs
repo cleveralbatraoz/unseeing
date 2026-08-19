@@ -367,6 +367,26 @@ pub fn probe_distance(packed: f64, range: f64) -> f64 {
     (unpack_distance(packed, range) - quantum(range)).max(0.0)
 }
 
+/// The composed reconstruction guard, in NOMINAL B-channel codes: the
+/// one-quantum bias [`probe_distance`] subtracts, plus
+/// [`sight::RECT_SHRINK`], both at the band's own gain — 1.955 at the
+/// shipped range, against a recorded worst absolute in-band error of 1.6.
+///
+/// Exposed as one number so `tap_error_probe` can gate and print its live
+/// measurement against the guard as DERIVED rather than against a pasted
+/// ladder of literals that drifts the moment either constant moves — the
+/// exact rot the pre-merge review flagged.
+///
+/// Total on any input: a degenerate range answers 0.0 — no guard at all —
+/// so the probe's comparison fails loudly rather than passing vacuously.
+#[must_use]
+pub fn guard_codes(range: f64) -> f64 {
+    if !range.is_finite() || range <= 0.0 {
+        return 0.0;
+    }
+    (quantum(range) + sight::RECT_SHRINK) * f64::from(CHANNEL_LEVELS - 1) * BAND / range
+}
+
 /// Metres of camera distance per unit of packed channel — the GAIN the
 /// silhouette Laplacian is scaled by, and the one number the outline knee
 /// turns on.
@@ -624,6 +644,20 @@ mod tests {
     /// 1.955 codes of overshoot against the 1.6 measured, a 0.355-code
     /// margin. Halving the bias (1.33 total) or dropping the shrink back to
     /// 0.03 (1.673 total, a 0.073-code hair) both go red here.
+    /// Hand-derived: the bias is exactly [`WORST_STEP_CODES`] nominal
+    /// codes by construction, and 0.05 m of shrink at the band's gain is
+    /// 0.705 more — 1.955. Catches either constant moving while the number
+    /// `tap_error_probe` gates and prints against stays put, which is the
+    /// drift the pre-merge review flagged in the hard-coded ladder.
+    #[test]
+    fn the_guard_in_codes_is_the_bias_plus_the_shrink() {
+        let g = guard_codes(level_plan::DIST_PACK_RANGE);
+        assert!((g - 1.955).abs() < 1.0e-9, "the composed guard moved: {g}");
+        assert_eq!(guard_codes(0.0), 0.0);
+        assert_eq!(guard_codes(f64::NAN), 0.0);
+        assert_eq!(guard_codes(-1.0), 0.0);
+    }
+
     #[test]
     fn the_probe_bias_and_the_shrink_together_cover_the_measured_error() {
         // 1.6 nominal codes at the shipped gain, hand-derived:

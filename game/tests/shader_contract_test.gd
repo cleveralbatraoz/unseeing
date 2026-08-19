@@ -456,8 +456,15 @@ func test_shape_and_detail_are_drawn_under_separate_laws() -> void:
 	)
 	# and DETAIL must be gated on the reveal the x-ray cap has already
 	# lowered, not the one before it — otherwise a source keeps its creases
-	# BECAUSE it is being dimmed for standing behind a wall
-	assert_int(post.find("reveal = min(reveal, src_r);")).is_less(
+	# BECAUSE it is being dimmed for standing behind a wall.
+	#
+	# The cap line's index is pinned NON-NEGATIVE first, because find()
+	# answers -1 for an absent string and -1 orders below every real index
+	# — the ordering assertion alone stayed green with no cap in the shader
+	# at all, which the pre-merge review caught.
+	var cap_at := post.find("reveal = min(reveal, src_r);")
+	assert_int(cap_at).is_greater_equal(0)
+	assert_int(cap_at).is_less(
 		post.find(
 			"float detail = seen_walled ? smoothstep(u_detail_knee.x, u_detail_knee.y, reveal)"
 		)

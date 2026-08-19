@@ -169,27 +169,32 @@ func _measure() -> void:
 		),
 		usable >= 0.0 and usable < 0.90
 	)
-	# THE MEASUREMENT THE GUARD IS BUILT ON, printed so a drift is seen.
+	# THE MEASUREMENT THE GUARD IS BUILT ON, gated as well as printed.
 	# Absolute in-band error runs past the half-gap a centred representative
 	# would give -- up to about 1.6 nominal codes -- and that is NOT a
 	# contradiction of platform_probe, which measures RESOLUTION: a slowly
 	# varying bias moves every value together and so preserves every step
-	# while breaking absolute accuracy. This is why every reconstructed
-	# wall-test endpoint goes through probe_distance (one whole gap of bias
-	# toward the eye, rust/src/render/channel.rs) with sight::RECT_SHRINK
-	# absorbing the excess; the composed tolerance is 1.955 codes, held by
-	# the_probe_bias_and_the_shrink_together_cover_the_measured_error. A
-	# reading past 1.955 here means that guard is broken on this driver.
-	print(
+	# while breaking absolute accuracy. Every reconstructed wall-test
+	# endpoint goes through probe_distance (one whole gap of bias toward
+	# the eye) with sight::RECT_SHRINK absorbing the excess. The guard is
+	# DERIVED through the recon_guard_codes door (1.955 at the shipped
+	# constants, render::channel::guard_codes), never pasted here, so a
+	# retune of either constant moves this gate with it — the pre-merge
+	# review caught the pasted ladder going stale. A driver whose in-band
+	# error beats the guard re-opens the tapped-wall flare occlusion_probe
+	# case 8 hard-gates in the same suite run; this check names the number.
+	var guard: float = WaveCore.new().recon_guard_codes()
+	_check(
 		(
 			(
-				"# in-band absolute error %.3f codes against a composed guard of 1.955"
-				+ " (probe bias 1.25 + RECT_SHRINK 0.705). Resolution is unaffected."
+				"the in-band error stays inside the composed reconstruction guard"
+				+ " (%.3f < %.3f codes). Resolution is unaffected."
 			)
-			% absf(in_band_worst)
-		)
+			% [absf(in_band_worst), guard]
+		),
+		absf(in_band_worst) < guard
 	)
-	print("1..2")
+	print("1..3")
 	if _failures > 0:
 		print("tap-error-probe: FAIL (%d)" % _failures)
 	else:

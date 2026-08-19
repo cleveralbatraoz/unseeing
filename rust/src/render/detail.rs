@@ -242,6 +242,32 @@ mod tests {
         );
     }
 
+    /// THE BREAK: the walled arm quietly capped below full strength — a
+    /// mutation (`fade(reveal).min(0.5)`) that the pre-merge review ran
+    /// against the whole suite and watched survive, because every other
+    /// test evaluates the walled arm at 0.330 or below. A loud walled
+    /// source washed by a wave in its own doorway must be able to reach
+    /// full detail once its reveal clears the knee, and the GLSL twin's
+    /// smoothstep does; the cargo twin must match it across the fade.
+    #[test]
+    fn a_walled_reveal_past_the_knee_keeps_full_detail() {
+        let knee = DetailKnee::shipped();
+        // at the knee's own hi the plateau is exact; at the nominal 0.6 the
+        // f32-narrowed hi sits a hair above, so that read is 1e-8 shy
+        assert!(
+            (knee.gate(true, knee.hi()) - 1.0).abs() < f64::EPSILON,
+            "the fade no longer reaches full strength at the knee's hi"
+        );
+        assert!((knee.gate(true, 0.6) - 1.0).abs() < 1.0e-6);
+        assert!((knee.gate(true, 1.0) - 1.0).abs() < f64::EPSILON);
+        // the fade's midpoint, hand-derived: t = 0.5, Hermite 0.25 * 2 = 0.5
+        let mid = knee.gate(true, 0.45);
+        assert!(
+            (mid - 0.5).abs() < 1.0e-6,
+            "the fade's midpoint moved: {mid}"
+        );
+    }
+
     /// Totality at the boundary the two arms share: a non-finite reveal
     /// fades a walled surface to nothing ([`Knee::fade`]'s contract) and
     /// leaves a clear one alone — the clear arm never reads the reveal.

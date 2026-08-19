@@ -438,6 +438,16 @@ impl WaveCore {
         render::channel::quantum(level_plan::DIST_PACK_RANGE)
     }
 
+    /// The composed reconstruction guard in nominal codes —
+    /// `render::channel::guard_codes` at the shipped range. The one number
+    /// `tap_error_probe` holds its live in-band error measurement against,
+    /// exposed so the probe gates on the derived guard instead of a pasted
+    /// literal that goes stale when the bias or the shrink is retuned.
+    #[func]
+    fn recon_guard_codes(&self) -> f64 {
+        render::channel::guard_codes(level_plan::DIST_PACK_RANGE)
+    }
+
     /// The widest gap the data channel was measured to leave, as a fraction
     /// of full scale — `WORST_STEP_CODES` over the nominal step count.
     ///
