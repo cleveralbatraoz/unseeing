@@ -10,7 +10,7 @@ touches.
 
 ![A cane tap revealing a rock-walled room and a wooden table in white outlines](docs/screenshot.png)
 
-**Play:** https://206.223.241.165 — best in a Chromium browser.
+**Play:** https://cleveralbatraoz.github.io/unseeing/ — best in a Chromium browser.
 (`?demo` makes the game tap by itself, if you just want to watch.)
 
 ## Controls
@@ -51,7 +51,7 @@ See `game/README.md` for the architecture and porting status.
 
 One Godot project, exported everywhere — no per-platform code:
 
-- **Web** — continuously deployed to https://206.223.241.165 (wasm).
+- **Web** — continuously deployed to https://cleveralbatraoz.github.io/unseeing/ (wasm).
 - **macOS** — universal binary (x86_64 + arm64): `godot --headless --path
   game --export-release macOS build/macos/unseeing.zip`
 - **Windows** — twin exports, `"Windows x86_64"` and `"Windows arm64"`

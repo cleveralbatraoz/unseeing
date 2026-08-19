@@ -1,0 +1,421 @@
+name: release-game
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+concurrency:
+  group: release-game-main
+  cancel-in-progress: false
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Read pinned Godot version
+        id: godot
+        run: echo "version=$(cut -d. -f1-3 .godot-version)" >> "$GITHUB_OUTPUT"
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v6.1.0
+        with:
+          path: godot-bin
+          key: godot-${{ steps.godot.outputs.version }}-linux-x86_64
+      - name: Fetch Godot
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          curl -sL -o godot.zip "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_linux.x86_64.zip"
+          python3 -m zipfile -e godot.zip .
+          mkdir -p godot-bin
+          mv "Godot_v${V}-stable_linux.x86_64" godot-bin/godot
+          chmod +x godot-bin/godot
+      - name: Cache Godot export templates
+        id: cache-templates
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.local/share/godot/export_templates
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
+      - name: Fetch Godot export templates
+        if: steps.cache-templates.outputs.cache-hit != 'true'
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          curl -sL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_export_templates.tpz"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${V}.stable"
+          python3 -m zipfile -e templates.tpz /tmp/godot-templates-extract
+          mv /tmp/godot-templates-extract/templates/* "$HOME/.local/share/godot/export_templates/${V}.stable/"
+          rm -rf /tmp/godot-templates-extract templates.tpz
+      - name: Cache cargo + rust target
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: game-rust-linux-x86_64-${{ hashFiles('rust/Cargo.lock', 'rust/rust-toolchain.toml') }}
+      - name: Export the game
+        run: |
+          chmod +x tools/export_linux.sh
+          GODOT="$PWD/godot-bin/godot" tools/export_linux.sh "Linux x86_64" build/linux/unseeing
+      - name: Package
+        run: |
+          mkdir -p bundle
+          python3 -c '
+          import os, zipfile
+          src = "game/build/linux"
+          with zipfile.ZipFile("bundle/unseeing-linux-x86_64.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+              for name in os.listdir(src):
+                  zf.write(os.path.join(src, name), name)
+          '
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: unseeing-linux-x86_64
+          path: bundle/unseeing-linux-x86_64.zip
+          retention-days: 1
+
+  linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Read pinned Godot version
+        id: godot
+        run: echo "version=$(cut -d. -f1-3 .godot-version)" >> "$GITHUB_OUTPUT"
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v6.1.0
+        with:
+          path: godot-bin
+          key: godot-${{ steps.godot.outputs.version }}-linux-arm64
+      - name: Fetch Godot
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          curl -sL -o godot.zip "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_linux.arm64.zip"
+          python3 -m zipfile -e godot.zip .
+          mkdir -p godot-bin
+          mv "Godot_v${V}-stable_linux.arm64" godot-bin/godot
+          chmod +x godot-bin/godot
+      - name: Cache Godot export templates
+        id: cache-templates
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.local/share/godot/export_templates
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
+      - name: Fetch Godot export templates
+        if: steps.cache-templates.outputs.cache-hit != 'true'
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          curl -sL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_export_templates.tpz"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${V}.stable"
+          python3 -m zipfile -e templates.tpz /tmp/godot-templates-extract
+          mv /tmp/godot-templates-extract/templates/* "$HOME/.local/share/godot/export_templates/${V}.stable/"
+          rm -rf /tmp/godot-templates-extract templates.tpz
+      - name: Cache cargo + rust target
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: game-rust-linux-arm64-${{ hashFiles('rust/Cargo.lock', 'rust/rust-toolchain.toml') }}
+      - name: Export the game
+        run: |
+          chmod +x tools/export_linux.sh
+          GODOT="$PWD/godot-bin/godot" tools/export_linux.sh "Linux arm64" build/linux-arm64/unseeing
+      - name: Package
+        run: |
+          mkdir -p bundle
+          python3 -c '
+          import os, zipfile
+          src = "game/build/linux-arm64"
+          with zipfile.ZipFile("bundle/unseeing-linux-arm64.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+              for name in os.listdir(src):
+                  zf.write(os.path.join(src, name), name)
+          '
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: unseeing-linux-arm64
+          path: bundle/unseeing-linux-arm64.zip
+          retention-days: 1
+
+  windows-x86_64:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Read pinned Godot version
+        id: godot
+        shell: powershell
+        run: |
+          $pin = (Get-Content .godot-version -Raw).Trim()
+          $version = (($pin -split '\.')[0..2] -join '.')
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$version`n", $utf8)
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v6.1.0
+        with:
+          path: godot-bin
+          key: godot-${{ steps.godot.outputs.version }}-windows-x86_64
+      - name: Fetch Godot
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          $version = "${{ steps.godot.outputs.version }}"
+          $url = "https://github.com/godotengine/godot-builds/releases/download/$version-stable/Godot_v$version-stable_win64.exe.zip"
+          Invoke-WebRequest -Uri $url -OutFile godot.zip
+          Expand-Archive -LiteralPath godot.zip -DestinationPath godot-bin
+      # Cached workspace-relative, not under ~/AppData -- Windows runners don't
+      # reliably put $HOME on the same drive as the workspace across runner
+      # instances, and actions/cache bakes absolute paths into the tarball at
+      # save time (tar -P). A cache saved by a C:-homed runner restores its
+      # files onto C: even on a run whose actual $HOME is on D:, landing
+      # nothing where Godot looks and failing with "No export template
+      # found" despite "Cache restored successfully". A workspace-relative
+      # path never has this problem: it's always relative to the checkout,
+      # which is unambiguous regardless of which drive that happens to be.
+      - name: Cache Godot export templates
+        id: cache-templates
+        uses: actions/cache@v6.1.0
+        with:
+          path: godot-templates
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
+      - name: Fetch Godot export templates
+        if: steps.cache-templates.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          curl -sL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_export_templates.tpz"
+          mkdir -p "godot-templates/${V}.stable"
+          python3 -m zipfile -e templates.tpz /tmp/godot-templates-extract
+          mv /tmp/godot-templates-extract/templates/* "godot-templates/${V}.stable/"
+          rm -rf /tmp/godot-templates-extract templates.tpz
+      # Unconditional (cache hit or miss): a fast local copy from the
+      # workspace-relative cache into Godot's real, drive-correct user data
+      # dir for THIS job's actual $APPDATA, every run.
+      - name: Install export templates where Godot expects them
+        shell: bash
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          mkdir -p "$APPDATA/Godot/export_templates/${V}.stable"
+          cp -r "godot-templates/${V}.stable/." "$APPDATA/Godot/export_templates/${V}.stable/"
+      - name: Cache cargo + rust target
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: game-rust-windows-x86_64-${{ hashFiles('rust/Cargo.lock', 'rust/rust-toolchain.toml') }}
+      - name: Export the game
+        shell: bash
+        run: |
+          godotConsole="$(find godot-bin -iname '*_console.exe' | head -1)"
+          chmod +x tools/export_windows.sh
+          GODOT="$godotConsole" tools/export_windows.sh "Windows x86_64" x86_64-pc-windows-msvc build/windows/unseeing.exe
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p bundle
+          python3 -c '
+          import os, zipfile
+          src = "game/build/windows"
+          with zipfile.ZipFile("bundle/unseeing-windows-x86_64.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+              for name in os.listdir(src):
+                  zf.write(os.path.join(src, name), name)
+          '
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: unseeing-windows-x86_64
+          path: bundle/unseeing-windows-x86_64.zip
+          retention-days: 1
+
+  windows-arm64:
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Read pinned Godot version
+        id: godot
+        shell: powershell
+        run: |
+          $pin = (Get-Content .godot-version -Raw).Trim()
+          $version = (($pin -split '\.')[0..2] -join '.')
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$version`n", $utf8)
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v6.1.0
+        with:
+          path: godot-bin
+          key: godot-${{ steps.godot.outputs.version }}-windows-arm64
+      - name: Fetch Godot
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          $version = "${{ steps.godot.outputs.version }}"
+          $url = "https://github.com/godotengine/godot-builds/releases/download/$version-stable/Godot_v$version-stable_windows_arm64.exe.zip"
+          Invoke-WebRequest -Uri $url -OutFile godot.zip
+          Expand-Archive -LiteralPath godot.zip -DestinationPath godot-bin
+      # See the matching comment on windows-x86_64's templates cache: cached
+      # workspace-relative, not under ~/AppData, so a drive mismatch between
+      # the runner that saved the cache and the runner that restores it can
+      # never leave the templates somewhere Godot won't look.
+      - name: Cache Godot export templates
+        id: cache-templates
+        uses: actions/cache@v6.1.0
+        with:
+          path: godot-templates
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
+      - name: Fetch Godot export templates
+        if: steps.cache-templates.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          curl -sL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_export_templates.tpz"
+          mkdir -p "godot-templates/${V}.stable"
+          python3 -m zipfile -e templates.tpz /tmp/godot-templates-extract
+          mv /tmp/godot-templates-extract/templates/* "godot-templates/${V}.stable/"
+          rm -rf /tmp/godot-templates-extract templates.tpz
+      - name: Install export templates where Godot expects them
+        shell: bash
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          mkdir -p "$APPDATA/Godot/export_templates/${V}.stable"
+          cp -r "godot-templates/${V}.stable/." "$APPDATA/Godot/export_templates/${V}.stable/"
+      - name: Cache cargo + rust target
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: game-rust-windows-arm64-${{ hashFiles('rust/Cargo.lock', 'rust/rust-toolchain.toml') }}
+      - name: Export the game
+        shell: bash
+        run: |
+          godotConsole="$(find godot-bin -iname '*_console.exe' | head -1)"
+          chmod +x tools/export_windows.sh
+          GODOT="$godotConsole" tools/export_windows.sh "Windows arm64" aarch64-pc-windows-msvc build/windows-arm64/unseeing.exe
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p bundle
+          python3 -c '
+          import os, zipfile
+          src = "game/build/windows-arm64"
+          with zipfile.ZipFile("bundle/unseeing-windows-arm64.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+              for name in os.listdir(src):
+                  zf.write(os.path.join(src, name), name)
+          '
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: unseeing-windows-arm64
+          path: bundle/unseeing-windows-arm64.zip
+          retention-days: 1
+
+  macos-universal:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Read pinned Godot version
+        id: godot
+        run: echo "version=$(cut -d. -f1-3 .godot-version)" >> "$GITHUB_OUTPUT"
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v6.1.0
+        with:
+          path: godot-bin
+          key: godot-${{ steps.godot.outputs.version }}-macos-universal
+      - name: Fetch Godot
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          curl -sL -o godot.zip "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_macos.universal.zip"
+          mkdir -p godot-bin
+          python3 -m zipfile -e godot.zip godot-bin
+          chmod +x godot-bin/Godot.app/Contents/MacOS/Godot
+      - name: Cache Godot export templates
+        id: cache-templates
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/Library/Application Support/Godot/export_templates
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
+      - name: Fetch Godot export templates
+        if: steps.cache-templates.outputs.cache-hit != 'true'
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          curl -sL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_export_templates.tpz"
+          mkdir -p "$HOME/Library/Application Support/Godot/export_templates/${V}.stable"
+          python3 -m zipfile -e templates.tpz /tmp/godot-templates-extract
+          mv /tmp/godot-templates-extract/templates/* "$HOME/Library/Application Support/Godot/export_templates/${V}.stable/"
+          rm -rf /tmp/godot-templates-extract templates.tpz
+      - name: Install the pinned Rust toolchain (build_macos_core.sh does not auto-provision it)
+        run: (cd rust && rustup show)
+      - name: Cache cargo + rust target
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: game-rust-macos-universal-${{ hashFiles('rust/Cargo.lock', 'rust/rust-toolchain.toml') }}
+      - name: Export the game
+        run: |
+          GODOT="$PWD/godot-bin/Godot.app/Contents/MacOS/Godot" ./tools/export_macos.sh
+      - name: Rename to match the download-artifact path publish expects
+        run: cp game/build/macos/unseeing.zip game/build/macos/unseeing-macos-universal.zip
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: unseeing-macos-universal
+          path: game/build/macos/unseeing-macos-universal.zip
+          retention-days: 1
+
+  publish:
+    needs: [linux-x86_64, linux-arm64, windows-x86_64, windows-arm64, macos-universal]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+      - uses: actions/download-artifact@v8.0.1
+        with:
+          path: bundles
+      - name: Publish to the rolling game-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          SHA="${{ github.sha }}"
+          SHORT="$(printf %.9s "$SHA")"
+          if ! gh release view game-latest --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create game-latest --repo "${{ github.repository }}" \
+              --prerelease --title "Unseeing (rolling)" \
+              --notes "Always matches main's HEAD. Currently built from commit $SHORT. Unsigned builds -- macOS Gatekeeper and Windows SmartScreen will show a warning on first launch."
+          else
+            gh release edit game-latest --repo "${{ github.repository }}" \
+              --notes "Always matches main's HEAD. Currently built from commit $SHORT. Unsigned builds -- macOS Gatekeeper and Windows SmartScreen will show a warning on first launch."
+          fi
+          gh release upload game-latest --repo "${{ github.repository }}" --clobber \
+            bundles/unseeing-linux-x86_64/unseeing-linux-x86_64.zip \
+            bundles/unseeing-linux-arm64/unseeing-linux-arm64.zip \
+            bundles/unseeing-windows-x86_64/unseeing-windows-x86_64.zip \
+            bundles/unseeing-windows-arm64/unseeing-windows-arm64.zip \
+            bundles/unseeing-macos-universal/unseeing-macos-universal.zip

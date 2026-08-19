@@ -6,12 +6,16 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+permissions:
+  contents: read
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Was 10 for a checks-only run; the Web export + browser smoke test now
+    # in this job's pipeline call take real additional time.
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
           submodules: false
@@ -25,7 +29,7 @@ jobs:
       - name: Install gdtoolkit (gdformat + gdlint)
         run: pipx install "gdtoolkit==4.*"
       - name: Cache cargo + rust target
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -36,7 +40,7 @@ jobs:
         run: echo "version=$(cut -d. -f1-3 .godot-version)" >> "$GITHUB_OUTPUT"
       - name: Cache Godot
         id: cache-godot
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: godot-bin
           key: godot-${{ steps.godot.outputs.version }}-linux-x86_64
@@ -49,12 +53,31 @@ jobs:
           mkdir -p godot-bin
           mv "Godot_v${V}-stable_linux.x86_64" godot-bin/godot
           chmod +x godot-bin/godot
-      - name: Run CI pipeline (checks only)
+      # The editor and the export templates are separate downloads. This job
+      # never needed them before -- SKIP_EXPORT=1 skipped the export
+      # entirely -- so this step never existed until the pipeline below
+      # started doing a real Web export.
+      - name: Cache Godot export templates
+        id: cache-templates
+        uses: actions/cache@v6.1.0
+        with:
+          path: ~/.local/share/godot/export_templates
+          key: godot-templates-${{ steps.godot.outputs.version }}-${{ runner.os }}
+      - name: Fetch Godot export templates
+        if: steps.cache-templates.outputs.cache-hit != 'true'
         run: |
-          chmod +x ci/pipeline.sh
-          GODOT="$PWD/godot-bin/godot" SKIP_EXPORT=1 ci/pipeline.sh
+          V="${{ steps.godot.outputs.version }}"
+          curl -sL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_export_templates.tpz"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${V}.stable"
+          python3 -m zipfile -e templates.tpz /tmp/godot-templates-extract
+          mv /tmp/godot-templates-extract/templates/* "$HOME/.local/share/godot/export_templates/${V}.stable/"
+          rm -rf /tmp/godot-templates-extract templates.tpz
       # The constitution demands the wasm core verified on every change:
       # pinned nightly + emsdk 4.0.20 (matching Godot 4.7's web templates).
+      # This has to run BEFORE the pipeline below now that the pipeline
+      # does the real Web export + browser smoke test (dropped
+      # SKIP_EXPORT=1): the export needs this exact toolchain already
+      # activated, not installed after the fact.
       - name: Install wasm toolchain
         run: |
           rustup toolchain install nightly-2026-05-25 --profile minimal
@@ -62,7 +85,7 @@ jobs:
           rustup target add wasm32-unknown-emscripten --toolchain nightly-2026-05-25
       - name: Cache emsdk
         id: cache-emsdk
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: ~/emsdk
           key: emsdk-4.0.20
@@ -75,12 +98,21 @@ jobs:
         run: |
           (cd ~/emsdk && ./emsdk activate 4.0.20)
           ./rust/build-wasm.sh
+      - name: Run CI pipeline (full, including Web export + browser smoke test)
+        run: |
+          chmod +x ci/pipeline.sh
+          GODOT="$PWD/godot-bin/godot" BUILD_SHA="$(printf %.9s "${{ github.sha }}")" ci/pipeline.sh
+      - name: Upload the verified web build as a Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: game/build/web
 
   windows-bootstrap:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
           submodules: false
@@ -94,12 +126,12 @@ jobs:
           [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "version=$version`n", $utf8)
       - name: Cache Godot
         id: cache-godot
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: godot-bin
           key: godot-${{ steps.godot.outputs.version }}-windows-x86_64
       - name: Cache Cargo registry and bootstrap targets
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -134,3 +166,40 @@ jobs:
           Push-Location rust
           rustup run $toolchain cargo check --features editor-docs --target aarch64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  deploy:
+    needs: checks
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5.0.0
+      - name: Verify the live page serves this commit
+        run: |
+          set -eu
+          SHORT="$(printf %.9s "${{ github.sha }}")"
+          URL="${{ steps.deployment.outputs.page_url }}"
+          # CDN propagation commonly lags deploy-pages' own success signal by
+          # tens of seconds -- poll for the real condition (the live stamp
+          # matching) instead of trusting one race-prone curl.
+          DEADLINE=$(($(date +%s) + 90))
+          LIVE=""
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            LIVE="$(curl -skL --max-time 15 "$URL" \
+              | grep -o "UNSEEING_BUILD='[^']*'" | head -1 | sed "s/.*='//;s/'//" || true)"
+            [ "$LIVE" = "$SHORT" ] && break
+            sleep 5
+          done
+          if [ "$LIVE" != "$SHORT" ]; then
+            echo "deploy: FAILED the live page serves build '${LIVE:-none}', not '$SHORT' after 90s"
+            exit 1
+          fi
+          echo "deploy: OK — https://cleveralbatraoz.github.io/unseeing/ serves $LIVE"
