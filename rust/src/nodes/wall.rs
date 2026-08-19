@@ -110,6 +110,24 @@ pub struct WaveWall {
     transform_warning: Option<String>,
     body_contract_warning: Option<String>,
     length_warning: Option<String>,
+    /// Whether waves STOP at this solid — always true for a wall, and true
+    /// by CONTRACT rather than by measurement.
+    ///
+    /// Every other solid earns its place in the occluder table by geometry
+    /// ([`crate::level_plan::spans_the_corridor`]). A wall does not: it is
+    /// authored as a centerline and admitted unconditionally, inflated to
+    /// its own thickness. Measuring a wall the way a prop is measured would
+    /// in fact REFUSE it — `WALL_T` is 0.15 m against a required 0.30 — so
+    /// the two answers come from different places, and this one is stated
+    /// rather than derived. Carried so a designer comparing a wall with a
+    /// pillar in the Inspector sees the same question answered for both.
+    #[var(get = get_stops_sound, usage_flags = [EDITOR, READ_ONLY])]
+    #[init(val = true)]
+    stops_sound: bool,
+    /// Why — see [`Self::stops_sound`].
+    #[var(get = get_sound_verdict, usage_flags = [EDITOR, READ_ONLY])]
+    #[init(val = GString::new())]
+    sound_verdict: GString,
     base: Base<Node3D>,
 }
 
@@ -421,24 +439,6 @@ impl WaveWall {
         self.skin.oid()
     }
 
-    /// This wall's box as `render::Shape`, in world space — the geometry
-    /// the derive-time paint pass folds into the superface graph. Mirrors
-    /// exactly what `ready()` builds: [`level_plan::wall_box`], centered at
-    /// the same lift the mesh is drawn at (`(0, WALL_H/2, 0)` local),
-    /// carried into world space by the same stored canonical transform as
-    /// the generated mesh and physics body. The authored container may retain
-    /// a few low bits of parent round-trip dust; it is deliberately not a
-    /// second geometry source.
-    pub(crate) fn world_shape(&self) -> render::Shape {
-        let frame = self.geometry_frame();
-        let size = level_plan::wall_box(self.length);
-        render::Shape::Box3d {
-            center: solid::to_f64_3(frame.origin),
-            size: solid::to_f64_3(size),
-            basis: solid::basis_columns_f64(frame.basis),
-        }
-    }
-
     /// Read-only engine witness for the exact analytic box frame handed to
     /// the superface/paint pass. It deliberately reconstructs the frame from
     /// [`Self::world_shape`] rather than from the generated limbs, so an
@@ -489,16 +489,6 @@ impl WaveWall {
             aabb.size.y,
             aabb.size.z,
         ])
-    }
-
-    /// Bake the derive-time paint pass's labels onto this wall — see
-    /// [`solid::paint_solid`].
-    pub(crate) fn paint(&mut self, labels_by_ordinal: &[f32]) {
-        solid::paint_solid(
-            self.mesh.as_mut(),
-            render::paint::ShapeKind::Box,
-            labels_by_ordinal,
-        );
     }
 
     /// The engine-facing read-back of
@@ -742,11 +732,55 @@ impl WaveWall {
             godot_warn!("WaveWall '{}': {}", self.base().get_name(), detail);
         }
     }
+
+    /// See the field: a wall is admitted by contract, so this is constant.
+    #[func]
+    fn get_stops_sound(&self) -> bool {
+        true
+    }
+
+    /// See the field.
+    #[func]
+    fn get_sound_verdict(&self) -> GString {
+        GString::from(
+            "Stops sound. A wall is admitted by contract rather than by measurement: it is \
+             authored as a centerline and inflated to its own thickness, so unlike a prop it \
+             does not have to prove its geometry. It spends one of the level's occluder slots.",
+        )
+    }
 }
 
 #[godot_dyn]
 impl WaveSolid for WaveWall {
     fn set_material(&mut self, mat: &Gd<Material>) {
         self.skin.set_material(mat);
+    }
+
+    /// This wall's box as `render::Shape`, in world space — the geometry
+    /// the derive-time paint pass folds into the superface graph. Mirrors
+    /// exactly what `ready()` builds: [`level_plan::wall_box`], centered at
+    /// the same lift the mesh is drawn at (`(0, WALL_H/2, 0)` local),
+    /// carried into world space by the same stored canonical transform as
+    /// the generated mesh and physics body. The authored container may retain
+    /// a few low bits of parent round-trip dust; it is deliberately not a
+    /// second geometry source.
+    fn world_shape(&self) -> render::Shape {
+        let frame = self.geometry_frame();
+        let size = level_plan::wall_box(self.length);
+        render::Shape::Box3d {
+            center: solid::to_f64_3(frame.origin),
+            size: solid::to_f64_3(size),
+            basis: solid::basis_columns_f64(frame.basis),
+        }
+    }
+
+    /// Bake the derive-time paint pass's labels onto this wall — see
+    /// [`solid::paint_solid`].
+    fn paint(&mut self, labels_by_ordinal: &[f32]) {
+        solid::paint_solid(
+            self.mesh.as_mut(),
+            render::paint::ShapeKind::Box,
+            labels_by_ordinal,
+        );
     }
 }

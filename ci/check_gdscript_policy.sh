@@ -9,6 +9,23 @@ DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 VIOLATIONS="$(gdscript_policy_violations "$DIR")"
 RESOURCE_VIOLATIONS="$(gdscript_resource_policy_violations "$DIR")"
+SHADER_VIOLATIONS="$(shader_placement_violations "$DIR")"
+DUPLICATE_ENTRY_POINTS="$(shader_duplicate_entry_points "$DIR")"
+if [ -n "$DUPLICATE_ENTRY_POINTS" ]; then
+  echo "ci: shader entry points FAILED — a shader declares one twice:" >&2
+  printf '%s\n' "$DUPLICATE_ENTRY_POINTS" | sed 's/^/ci:   /' >&2
+  echo "ci: Godot answers \"Redefinition of ...\" and the shader does not compile," >&2
+  echo "ci: so a probe carrying one silently produces no measurement at all." >&2
+  exit 1
+fi
+if [ -n "$SHADER_VIOLATIONS" ]; then
+  echo "ci: shader placement FAILED — a probe-only shader is in the shipped tree:" >&2
+  printf '%s\n' "$SHADER_VIOLATIONS" | sed 's/^/ci:   /' >&2
+  echo "ci: export_presets.cfg exports all_resources and excludes only tests/," >&2
+  echo "ci: addons/ and reports/, so these would be packed into every build." >&2
+  echo "ci: move them under game/tests/probe/shaders/ with the scenes that use them" >&2
+  exit 1
+fi
 if [ -n "$VIOLATIONS" ] || [ -n "$RESOURCE_VIOLATIONS" ]; then
   echo "ci: GDScript placement FAILED — first-party code is tests/probes only:" >&2
   [ -z "$VIOLATIONS" ] || printf '%s\n' "$VIOLATIONS" | sed 's/^/ci:   /' >&2
@@ -20,3 +37,5 @@ if [ -n "$VIOLATIONS" ] || [ -n "$RESOURCE_VIOLATIONS" ]; then
 fi
 
 echo "ci: GDScript placement OK (first-party scripts and embedded code are tests/probes only)"
+echo "ci: shader placement OK (no probe-only shader in the shipped resource tree)"
+echo "ci: shader entry points OK (no shader declares one twice)"

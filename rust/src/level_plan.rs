@@ -27,18 +27,26 @@ use crate::oid_palette::Box3;
 /// Wall height in meters — walls run floor to ceiling.
 pub const WALL_H: f64 = 3.0;
 
-/// How much a constant source's hum WAVES survive crossing one wall — the
-/// CPU half of the muffle vocabulary the shaders speak as `HUM_THROUGH` in
-/// pulse_pool.gdshaderinc (the shells in the air, the surfaces they wash).
-/// Kept in step by [`crate::sight`] tests and the shader contract.
-pub const HUM_THROUGH: f64 = 0.55;
-
-/// How much a source's own SILHOUETTE survives crossing one wall — dimmer
-/// than its waves, so a source felt through a wall is a faint ghost of
-/// itself, fainter still through two. This attenuates the source skin's
-/// standing floor per wall between the eye and the source (see
-/// [`crate::nodes`]' `source_muffle`); a wall dims the shape, never erases
-/// it — the source is always felt, just muted.
+/// How much a source's own ACOUSTIC IMAGE survives crossing one wall — its
+/// wave, by contrast, stops dead at that same wall
+/// (`crate::sight::reveal_visibility`), so a source felt through a wall is
+/// a shape with nothing behind it: a faint ghost, fainter still through
+/// two. A wall dims the shape, never erases it — the source is always
+/// felt, just muted.
+///
+/// It is a MULTIPLIER over the whole image, not a floor under part of it,
+/// and the distinction is the difference between a law and a decoration.
+/// `crate::render::reveal::source_image` composes it as
+/// `muffle * max(wave, volume)`, where `muffle` is this constant raised to
+/// the number of walls between the EYE and the source (`WaveLevel`'s
+/// `source_muffle`, the camera occluder). Delivered instead as a
+/// pre-multiplied standing floor — which is what shipped — it could only
+/// compete with the source's own wave reveal through a `max()`, and always
+/// lost: a source's hub is unwalled from its own body by construction, so
+/// that wave reads near full strength however many walls stand between the
+/// source and the player. The 0.30 / 0.09 / 0.027 ladder below held only
+/// while the source happened to be silent, which for a running fan or
+/// radio is never.
 pub const SOURCE_THROUGH: f64 = 0.3;
 
 /// Half-thickness of a wall in meters.
@@ -48,6 +56,228 @@ pub const MAX_WALL_LENGTH: f64 = 10_000.0;
 
 /// Thickness of the floor and ceiling slabs.
 pub const SLAB_T: f64 = 0.1;
+
+/// How far a solid may fall short of floor or ceiling and still count as
+/// spanning the corridor.
+///
+/// Not a tolerance for float noise — 5 cm is far larger than that. It is
+/// the gap a designer may leave under a shelf or over a cabinet without the
+/// thing ceasing to be, acoustically, a piece of the room's structure.
+///
+/// The shipped level sits ON this number rather than clear of it. Its seven
+/// pillars reach 3.00 and its seven standpipes stop at 2.90, so against the
+/// `WALL_H - SPAN_EPS` = 2.95 threshold each population clears or misses by
+/// exactly one SPAN_EPS, and the two are 2 × SPAN_EPS apart. There is no
+/// slack in either direction: widen this at all and all seven pipes become
+/// wave-blocking walls in the middle of three rooms.
+///
+/// What holds them out with room to spare is the OTHER half of
+/// [`spans_the_corridor`]. The widest pipe is 0.20 m across against a
+/// required `2 * WALL_T` = 0.30 — a third short — while the narrowest pillar
+/// is 0.44. So the thickness test is the load-bearing one for refusing the
+/// pipes, and the span test is the load-bearing one for admitting the
+/// pillars. Tune the span slack and thickness is all that is left; that is
+/// the trade this constant is making, and it should be made knowingly.
+pub const SPAN_EPS: f64 = 0.05;
+
+/// What one PROP leaves of a source's standing image — the solids that do
+/// NOT stop waves ([`spans_the_corridor`] refuses them) but do stand
+/// between the eye and a sounding thing.
+///
+/// # Why props dim at all, when they do not block
+///
+/// Waves pass a crate because sound goes over and around it; that law is
+/// unchanged. But a source's SILHOUETTE is a different question from a
+/// wave's propagation. The player is being shown where a sounding thing is,
+/// and the honest answer degrades when a solid stands in the line — the
+/// same reason a wall dims a source rather than only stopping its waves.
+///
+/// Before this, a crate did neither: it cast no acoustic shadow and took
+/// nothing from a source's clarity, while still spawning echoes off its own
+/// surface when the cane struck near it. A prop could ANSWER a tap and
+/// simultaneously let that tap light the wall behind it at full strength.
+/// Whatever the right treatment of props is, it was not that.
+///
+/// # Why the square root
+///
+/// **Two props cost exactly one wall.** A prop is a partial obstruction and
+/// a wall is a complete one, so the natural relation is that it takes half
+/// as many decibels — and halving a logarithm is a square root in linear
+/// amplitude. It is derived from [`SOURCE_THROUGH`] rather than chosen
+/// beside it, so the two cannot drift into disagreeing about what a wall is
+/// worth.
+///
+/// NOT a wavelength argument, and deliberately not: this engine has no
+/// frequency axis anywhere and its wavefronts travel at walking pace, so a
+/// diffraction coefficient computed here would be fiction wearing the
+/// clothes of physics. It is a stated stylisation with a stated ratio.
+#[must_use]
+pub fn prop_through() -> f64 {
+    SOURCE_THROUGH.sqrt()
+}
+
+/// What survives of a source's standing image across everything between it
+/// and the eye: [`SOURCE_THROUGH`] per wall, [`prop_through`] per prop.
+///
+/// Total over every count, the absurd ones included: the exponents are
+/// `u32`, `powi` takes `i32`, and a count past `i32::MAX` saturates to a
+/// factor of zero rather than wrapping to a negative power — which would
+/// return a number LARGER than one and brighten a source for being deeply
+/// buried.
+#[must_use]
+pub fn source_muffle(walls: u32, props: u32) -> f64 {
+    let clamp = |n: u32| i32::try_from(n).unwrap_or(i32::MAX);
+    let through = SOURCE_THROUGH.powi(clamp(walls)) * prop_through().powi(clamp(props));
+    through.clamp(0.0, 1.0)
+}
+
+/// Why a solid does or does not stop sound — the admission decision with
+/// its reason attached.
+///
+/// [`spans_the_corridor`] answers yes or no, which is all the occluder table
+/// needs and less than a designer needs. The geometric rule made a solid's
+/// own `radius`, `height` and `size` decide barrier-versus-decoration
+/// silently: nudging a standpipe from 2.90 to 2.95 builds an invisible
+/// sound-proof wall, and lowering a pillar by six centimetres deletes a
+/// barrier the level design depended on. Neither produces a warning, a fault
+/// or a visible change. This carries the reason out to the Inspector so the
+/// answer is legible without reading Rust.
+///
+/// Which criterion is reported when BOTH fail is deliberate: thinness wins,
+/// because it is the one a designer can act on without moving the ceiling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Barrier {
+    /// Floor to ceiling and no thinner than a wall: waves and sight lines
+    /// both end here, and it spends one of `sight::MAXW` occluder slots.
+    StopsSound,
+    /// Sound goes over it. Carries the top it reached.
+    PassesOver { top_cm: i64 },
+    /// It reaches, but a rect this thin would cast a shadow far wider than
+    /// the solid itself. Carries the narrowest side.
+    TooThin { extent_cm: i64 },
+    /// It floats: sound passes underneath. Carries the underside.
+    PassesUnder { bottom_cm: i64 },
+    /// Non-finite geometry — nothing can be said about it.
+    Unmeasurable,
+}
+
+/// The admission decision and its reason, from a solid's world AABB.
+///
+/// [`spans_the_corridor`] is this, with the reason discarded. Total over
+/// every f64: non-finite input answers [`Barrier::Unmeasurable`].
+///
+/// Reported in whole centimetres rather than metres so the Inspector string
+/// and this decision cannot round differently — the number a designer reads
+/// is the number that decided.
+#[must_use]
+pub fn barrier(bottom: f64, top: f64, min_horizontal_extent: f64) -> Barrier {
+    if !bottom.is_finite() || !top.is_finite() || !min_horizontal_extent.is_finite() {
+        return Barrier::Unmeasurable;
+    }
+    let cm = |m: f64| (m * 100.0).round() as i64;
+    // thinness first: when both criteria fail it is the actionable one
+    if min_horizontal_extent < 2.0 * WALL_T {
+        return Barrier::TooThin {
+            extent_cm: cm(min_horizontal_extent),
+        };
+    }
+    if bottom > SLAB_T + SPAN_EPS {
+        return Barrier::PassesUnder {
+            bottom_cm: cm(bottom),
+        };
+    }
+    if top < WALL_H - SPAN_EPS {
+        return Barrier::PassesOver { top_cm: cm(top) };
+    }
+    Barrier::StopsSound
+}
+
+/// One sentence a designer can act on, from a [`Barrier`].
+///
+/// Owned here, beside the rule it describes, so the Inspector text and the
+/// occluder table cannot drift: both come from `barrier`. Names the number
+/// that decided AND the number it would have to reach, because "does not
+/// stop sound" without a target is a fact a designer cannot use.
+#[must_use]
+pub fn barrier_sentence(verdict: Barrier) -> String {
+    let need_top = ((WALL_H - SPAN_EPS) * 100.0).round() as i64;
+    let need_bottom = ((SLAB_T + SPAN_EPS) * 100.0).round() as i64;
+    let need_across = (2.0 * WALL_T * 100.0).round() as i64;
+    match verdict {
+        Barrier::StopsSound => format!(
+            "Stops sound. It stands floor to ceiling and is at least {need_across} cm across, \
+             so waves and sight lines both end here. It spends one of the level's occluder \
+             slots."
+        ),
+        Barrier::PassesOver { top_cm } => format!(
+            "Does not stop sound — waves go over it. It tops out at {top_cm} cm and would have \
+             to reach {need_top} cm. It still dims a sound source standing behind it."
+        ),
+        Barrier::TooThin { extent_cm } => format!(
+            "Does not stop sound — it is too thin. Its narrowest side is {extent_cm} cm and a \
+             barrier must be at least {need_across} cm, or its shadow would be far wider than \
+             the solid itself. It still dims a sound source standing behind it."
+        ),
+        Barrier::PassesUnder { bottom_cm } => format!(
+            "Does not stop sound — it floats. Its underside is at {bottom_cm} cm and would have \
+             to be at or below {need_bottom} cm; sound passes underneath. It still dims a sound \
+             source standing behind it."
+        ),
+        Barrier::Unmeasurable => "Cannot be measured: this solid's geometry is not a \
+             describable box, so it enters no table at all."
+            .to_string(),
+    }
+}
+
+/// Does this solid actually stand in the way of sound?
+///
+/// # Why geometry decides, and not the node's class
+///
+/// `data_core.gdshaderinc` asserted for months that "props are transparent
+/// to waves — only walls obstruct", and three separate comments called it
+/// deliberate. It was not: the occluder table has only ever been built from
+/// the WALL census, so no prop could enter it whatever its shape, and the
+/// only argument ever recorded for the transparency was the cost of
+/// admitting all 106 of them at once.
+///
+/// The cost argument is sound and is not overturned here. What is
+/// overturned is deciding by class. A pillar from floor to ceiling and half
+/// a metre thick stops sound the way a wall does, because it IS a wall that
+/// happens to be round; a crate at knee height does not, because sound
+/// simply goes over it. Asking the geometry costs nothing, admits the few
+/// solids that genuinely block, and refuses the many that do not — where
+/// asking the class admits all or none.
+///
+/// # The two criteria, and why both
+///
+/// - **It spans the corridor.** From no higher than [`SLAB_T`] + [`SPAN_EPS`]
+///   to no lower than [`WALL_H`] − [`SPAN_EPS`]. Sound that can pass over a
+///   thing is not stopped by it, and every box prop in the shipped level
+///   tops out at 2.00 m against a 3.00 m ceiling and an eye at 1.6 m.
+/// - **It is no thinner than a wall.** Minimum horizontal extent at least
+///   twice [`WALL_T`]. This is the criterion that refuses standpipes: they
+///   run the full height of the room and are 14–20 cm across, and a table
+///   of axis-aligned rects would have them casting square metre-wide
+///   shadows they have no business casting.
+///
+/// Deliberately NOT a wavelength test. This engine has no frequency axis
+/// anywhere, and its wavefronts travel at 4–5.5 m/s; a Fresnel number
+/// computed here would be fiction dressed as physics. The adversarial
+/// review that examined exactly that argument refuted it 3/3.
+///
+/// Total over every f64: any non-finite input answers `false`, which
+/// refuses the solid rather than admitting a rect the sight tests would
+/// then walk with NaN corners.
+#[must_use]
+pub fn spans_the_corridor(bottom: f64, top: f64, min_horizontal_extent: f64) -> bool {
+    if !bottom.is_finite() || !top.is_finite() || !min_horizontal_extent.is_finite() {
+        return false;
+    }
+    matches!(
+        barrier(bottom, top, min_horizontal_extent),
+        Barrier::StopsSound
+    )
+}
 
 /// The hero's capsule center over the floor a spawn datum stands on.
 pub const SPAWN_LIFT: f64 = 0.9;
@@ -1298,6 +1528,24 @@ pub fn unfloored(floor: Box3, solids: &[PlacedSolid]) -> Vec<PlacementFault> {
     complaints
 }
 
+/// The complaint a wall earns when its own world box cannot be turned into
+/// an occluder — a non-finite transform, a size that is not a number.
+///
+/// It is a NAMED sentence rather than a silent fallback because the wall
+/// still occupies its slot in the table (`sight::Occluder::NOWHERE`):
+/// it draws, and it stops nothing. Without a word, a level would look whole
+/// while sound walked through one of its walls.
+#[must_use]
+pub fn unoccludable_wall(path: &str) -> PlacementFault {
+    PlacementFault {
+        path: path.to_string(),
+        text: format!(
+            "WaveLevel: '{path}' has no describable world box, so it occludes nothing — it will \
+             draw, and sound will pass straight through it. Give it a finite transform and size."
+        ),
+    }
+}
+
 /// Every solid that crosses or hides under the floor plane, said out loud
 /// — one line per node, in the order the level walk found them. The plane
 /// is the floor slab's TOP where it actually stands, never the world's
@@ -1364,13 +1612,15 @@ pub const ROOM_SEGMENTS: usize = 4;
 /// The range the sight shaders pack camera distance into — the CPU mirror
 /// of `DIST_PACK_RANGE` in `game/shaders/pulse_pool.gdshaderinc`, whose
 /// copy is the one that renders. Held to it by
-/// `game/tests/shader_contract_test.gd`, exactly as [`HUM_THROUGH`] is.
+/// `game/tests/shader_contract_test.gd`.
 ///
 /// It is a CEILING ON THE MAP, which is why the level checks itself against
-/// it: `data_core.gdshaderinc` writes `clamp(vd / DIST_PACK_RANGE, 0, 1)`
-/// into the data pass's B channel, and `hearing_post.gdshader` multiplies
-/// it back to recover the scene depth every outline and every wave ring is
-/// resolved against.
+/// it: `data_core.gdshaderinc` writes `pack_distance(vd)` into the data
+/// pass's B channel, and `hearing_post.gdshader` calls `unpack_distance` to
+/// recover the scene depth every outline and every wave ring is resolved
+/// against. Not into the whole channel — see
+/// [`crate::render::channel::SAFE_FLOOR`] for the part of it that survives
+/// the pipeline at all.
 pub const DIST_PACK_RANGE: f64 = 40.0;
 
 /// How loudly the level says something about itself.
@@ -1411,35 +1661,50 @@ pub struct Budget {
 /// Total on any pair, the degenerate `slots == 0` included: the headroom is
 /// a saturating subtraction, never a `usize` that wrapped past zero.
 #[must_use]
-pub fn wall_budget(walls: usize, slots: usize) -> Option<Budget> {
-    if walls > slots {
+pub fn occluder_budget(walls: usize, spanning: usize, slots: usize) -> Option<Budget> {
+    let used = walls.saturating_add(spanning);
+    // Only worth naming the second population when there IS one — a level
+    // with no pillars should read exactly as it always did.
+    let breakdown = if spanning == 0 {
+        format!("{walls} walls")
+    } else {
+        format!(
+            "{used} occluders ({walls} authored walls + {spanning} solids admitted by geometry: \
+             floor-to-ceiling and at least {:.2} m thick, see level_plan::spans_the_corridor)",
+            2.0 * WALL_T,
+        )
+    };
+    if used > slots {
         return Some(Budget {
             severity: Severity::Error,
             text: format!(
-                "WaveLevel: {walls} walls exceed the sight shaders' {slots} slots — the table \
-                 keeps the first {slots} and drops {}, which stop occluding entirely: waves pass \
-                 straight through them and no sight line counts them. Delete or merge walls, or \
-                 raise MAXW (rust/src/sight.rs, mirrored in \
-                 game/shaders/pulse_pool.gdshaderinc) — a measured decision and not a free one: \
-                 every wall is another rect in the per-fragment sight loop, on every platform.",
-                walls - slots,
+                "WaveLevel: {breakdown} exceed the sight shaders' {slots} slots — the table keeps \
+                 the first {slots} and drops {}, which stop occluding entirely: waves pass \
+                 straight through them and no sight line counts them. Note that a pillar can cost \
+                 a wall its slot: solids are appended after the walls, so the drops come off the \
+                 end of whichever population runs over. Delete or merge walls, lower or thin a \
+                 spanning solid so it stops qualifying, or raise MAXW (rust/src/sight.rs, \
+                 mirrored in game/shaders/pulse_pool.gdshaderinc) — a measured decision and not a \
+                 free one: every occluder is another rect in the per-fragment sight loop, on \
+                 every platform.",
+                used - slots,
             ),
         });
     }
-    let headroom = slots - walls;
+    let headroom = slots - used;
     if headroom >= ROOM_SEGMENTS {
         return None; // room for another room: nothing worth saying
     }
     Some(Budget {
         severity: Severity::Warn,
         text: format!(
-            "WaveLevel: {walls} walls against the sight shaders' {slots} slots — {headroom} \
+            "WaveLevel: {breakdown} against the sight shaders' {slots} slots — {headroom} \
              segments left, short of the {ROOM_SEGMENTS} another room costs (three sides plus the \
              doorway, which is the gap between two segments and so costs a segment of its own). \
-             Every wall past the last slot silently stops occluding. Raising MAXW \
+             Every occluder past the last slot silently stops occluding. Raising MAXW \
              (rust/src/sight.rs, mirrored in game/shaders/pulse_pool.gdshaderinc) is a measured \
-             decision and not a free one: every wall is another rect in the per-fragment sight \
-             loop, on every platform."
+             decision and not a free one: every occluder is another rect in the per-fragment \
+             sight loop, on every platform."
         ),
     })
 }
@@ -1456,7 +1721,7 @@ pub fn wall_budget(walls: usize, slots: usize) -> Option<Budget> {
 /// to lose: a walk that read only `x` and `y` would still measure a
 /// same-handed table correctly and would silently shrink any table whose
 /// quads arrived the other way round.
-fn wall_footprint(segments: &[Vector4]) -> Option<Box3> {
+fn wall_footprint(segments: &[Vector4], sweep: (f64, f64)) -> Option<Box3> {
     let first = segments.first()?;
     let (mut lo_x, mut hi_x) = (first.x.min(first.z), first.x.max(first.z));
     let (mut lo_z, mut hi_z) = (first.y.min(first.w), first.y.max(first.w));
@@ -1467,9 +1732,30 @@ fn wall_footprint(segments: &[Vector4]) -> Option<Box3> {
         hi_z = hi_z.max(s.y).max(s.w);
     }
     Some(Box3 {
-        min: [f64::from(lo_x), 0.0, f64::from(lo_z)],
-        max: [f64::from(hi_x), WALL_H, f64::from(hi_z)],
+        min: [f64::from(lo_x), sweep.0, f64::from(lo_z)],
+        max: [f64::from(hi_x), sweep.1, f64::from(hi_z)],
     })
+}
+
+/// The vertical extent the walls actually occupy, unioned over the whole
+/// table — `(0.0, WALL_H)` on a level whose walls all stand on its floor,
+/// and something else the moment one is lifted or the level root is.
+///
+/// Taken off the occluders because they are the only place a wall's own
+/// height survives: [`wall_segment`] writes `(x1, z1, x2, z2)` and discards
+/// it. An empty table answers `(0.0, 0.0)`, which contributes nothing to a
+/// union rather than inventing a storey.
+#[must_use]
+pub fn wall_sweep(occluders: &[crate::sight::Occluder]) -> (f64, f64) {
+    let mut span: Option<(f64, f64)> = None;
+    for occ in occluders {
+        let (lo, hi) = (f64::from(occ.span().x), f64::from(occ.span().y));
+        span = Some(match span {
+            Some((was_lo, was_hi)) => (was_lo.min(lo), was_hi.max(hi)),
+            None => (lo, hi),
+        });
+    }
+    span.unwrap_or((0.0, 0.0))
 }
 
 /// The longest sight line the authored map allows: the full 3D diagonal of
@@ -1494,10 +1780,21 @@ fn wall_footprint(segments: &[Vector4]) -> Option<Box3> {
 /// geometry a sight line can reach. On every map that behaves — walls
 /// resting within their own slab — this union changes nothing, since the
 /// slab pair already contains it.
+///
+/// The walls contribute their centerlines in XZ — this measures DRAWN
+/// geometry, so the occluder's shrunk sight rect would be the wrong
+/// vocabulary here — but their VERTICAL extent has to be measured rather
+/// than assumed. It used to be stamped as a global `[0, WALL_H]`, the last
+/// global wall-height read in the crate, and it made this measure lie about
+/// exactly the case the occluder rework exists for: lift a level ROOT by
+/// 2.557 m and the slabs rise with it, but the injected `[0, 3]` stretched
+/// the union from 3.2 m tall to 5.66 m and pushed the diagonal from 39.73
+/// to 40.00002 — a `Severity::Error` telling a designer to shrink a map
+/// whose true diagonal had not moved at all.
 #[must_use]
-pub fn slab_diagonal(floor: Box3, ceiling: Box3, walls: &[Vector4]) -> f64 {
+pub fn slab_diagonal(floor: Box3, ceiling: Box3, walls: &[Vector4], sweep: (f64, f64)) -> f64 {
     let mut extent = floor.union(&ceiling);
-    if let Some(wall_box) = wall_footprint(walls) {
+    if let Some(wall_box) = wall_footprint(walls, sweep) {
         extent = extent.union(&wall_box);
     }
     extent.diagonal()
@@ -1509,16 +1806,16 @@ pub fn slab_diagonal(floor: Box3, ceiling: Box3, walls: &[Vector4]) -> f64 {
 /// state — 39.73 m against 40, 0.27 m of headroom — and must stay silent.
 ///
 /// WHAT ACTUALLY BREAKS, since the packed value does NOT alias: the data
-/// core writes `clamp(vd / DIST_PACK_RANGE, 0, 1)` into B, so a point
-/// beyond the range saturates rather than wrapping, and everything out
-/// there reads the same flat 1.0. Three things follow from that flatness,
+/// core writes `pack_distance(vd)` into B, so a point beyond the range
+/// saturates rather than wrapping, and everything out there reads the same
+/// flat 1.0. Three things follow from that flatness,
 /// in the order a growing map meets them:
 ///
 /// 1. The silhouette outline is a LAPLACIAN of B, and the Laplacian of a
 ///    plateau is zero. Far geometry simply stops drawing its outline — the
 ///    perception law's one line per object, gone. Creases survive, because
 ///    they are diffed out of the per-face label channel instead.
-/// 2. The hearing pass recovers scene depth as `c_c.b * DIST_PACK_RANGE`,
+/// 2. The hearing pass recovers scene depth as `unpack_distance(c_c.b)`,
 ///    which pins at the range. A player-made ring is cut where it meets the
 ///    world, so past the range it is cut against a world that is not there
 ///    — the sound dies on an invisible sphere around the eye — and the
@@ -1545,13 +1842,15 @@ pub fn pack_range_budget(diagonal: f64, range: f64) -> Option<Budget> {
         text: format!(
             "WaveLevel: the map's {diagonal:.2} m diagonal reaches the sight shaders' \
              DIST_PACK_RANGE of {range} m. Packed camera distance SATURATES there, it does not \
-             wrap: the data core packs clamp(vd / DIST_PACK_RANGE, 0, 1) into B, so everything \
-             past {range} m reads a flat 1.0 — its silhouette Laplacian is zero and it draws no \
-             outline at all, and the hearing pass cuts player-sound rings against a world it \
-             believes is exactly {range} m away. Shrink the map, or raise DIST_PACK_RANGE in \
-             game/shaders/pulse_pool.gdshaderinc — a measured decision and not a free one: it \
-             rescales every packed distance, and the outline thresholds in hearing_post are tuned \
-             against this range."
+             wrap: the data core packs pack_distance(vd) into B, so everything past {range} m \
+             reads a flat 1.0 — its silhouette Laplacian is zero and it draws no outline at all, \
+             and the hearing pass cuts player-sound rings against a world it believes is exactly \
+             {range} m away. Shrink the map, or raise DIST_PACK_RANGE in \
+             game/shaders/pulse_pool.gdshaderinc — a measured decision and not a free one: \
+             distance is packed into only the part of the channel that survives the pipeline's \
+             transfer, so a longer range buys its reach out of reconstruction accuracy, and \
+             render::channel::reconstruction_budget refuses the range at which a lit wall starts \
+             reading as a source seen through one."
         ),
     })
 }
@@ -2991,17 +3290,16 @@ mod tests {
             Vector3::new(8.6, 0.0, 4.4),
         )
         .expect("tap derives");
-        let rects: Vec<Vector4> = retired_map_walls()
+        let occluders: Vec<crate::sight::Occluder> = retired_map_walls()
             .iter()
-            .map(|s| crate::sight::wall_rect(*s))
+            .map(|s| crate::sight::Occluder::new(*s, 0.0, WALL_H).expect("a floor-standing wall"))
             .collect();
-        let top = WALL_H as f32;
         assert_eq!(
-            crate::sight::crossings_from(plan.point, Vector3::new(4.0, 0.8, 4.0), &rects, top),
+            crate::sight::crossings_from(plan.point, Vector3::new(4.0, 0.8, 4.0), &occluders),
             0,
         );
         assert_eq!(
-            crate::sight::crossings_from(plan.point, Vector3::new(8.0, 0.8, 4.0), &rects, top),
+            crate::sight::crossings_from(plan.point, Vector3::new(8.0, 0.8, 4.0), &occluders),
             1,
         );
     }
@@ -3130,9 +3428,9 @@ mod tests {
     /// the last count with a whole room still in hand.
     #[test]
     fn a_map_with_rooms_to_spare_says_nothing_about_its_wall_budget() {
-        assert_eq!(wall_budget(19, 32), None);
-        assert_eq!(wall_budget(0, 32), None);
-        assert_eq!(wall_budget(28, 32), None);
+        assert_eq!(occluder_budget(19, 0, 32), None);
+        assert_eq!(occluder_budget(0, 0, 32), None);
+        assert_eq!(occluder_budget(28, 0, 32), None);
     }
 
     /// The heads-up fires one room short of the ceiling and quotes THE
@@ -3141,16 +3439,16 @@ mod tests {
     /// one short of the four another room costs.
     #[test]
     fn a_level_one_room_short_of_the_slots_reports_the_headroom_left() {
-        let budget = wall_budget(29, 32).expect("a heads-up");
+        let budget = occluder_budget(29, 0, 32).expect("a heads-up");
         assert_eq!(budget.severity, Severity::Warn);
         assert_eq!(
             budget.text,
             "WaveLevel: 29 walls against the sight shaders' 32 slots — 3 segments left, short of \
              the 4 another room costs (three sides plus the doorway, which is the gap between two \
-             segments and so costs a segment of its own). Every wall past the last slot silently \
-             stops occluding. Raising MAXW (rust/src/sight.rs, mirrored in \
-             game/shaders/pulse_pool.gdshaderinc) is a measured decision and not a free one: every \
-             wall is another rect in the per-fragment sight loop, on every platform."
+             segments and so costs a segment of its own). Every occluder past the last slot \
+             silently stops occluding. Raising MAXW (rust/src/sight.rs, mirrored in \
+             game/shaders/pulse_pool.gdshaderinc) is a measured decision and not a free one: \
+             every occluder is another rect in the per-fragment sight loop, on every platform."
         );
     }
 
@@ -3160,7 +3458,7 @@ mod tests {
     /// level; staying silent would hide that the very next wall is dropped.
     #[test]
     fn a_level_that_fills_every_slot_warns_with_no_headroom_left() {
-        let budget = wall_budget(32, 32).expect("a heads-up");
+        let budget = occluder_budget(32, 0, 32).expect("a heads-up");
         assert_eq!(budget.severity, Severity::Warn);
         assert!(
             budget
@@ -3178,18 +3476,82 @@ mod tests {
     /// walls to get back under the ceiling needs to know how many.
     #[test]
     fn a_level_past_the_slots_errors_and_counts_what_stopped_occluding() {
-        let budget = wall_budget(33, 32).expect("an error");
+        let budget = occluder_budget(33, 0, 32).expect("an error");
         assert_eq!(budget.severity, Severity::Error);
-        assert_eq!(
-            budget.text,
-            "WaveLevel: 33 walls exceed the sight shaders' 32 slots — the table keeps the first 32 \
-             and drops 1, which stop occluding entirely: waves pass straight through them and no \
-             sight line counts them. Delete or merge walls, or raise MAXW (rust/src/sight.rs, \
-             mirrored in game/shaders/pulse_pool.gdshaderinc) — a measured decision and not a free \
-             one: every wall is another rect in the per-fragment sight loop, on every platform."
+        // a level with no spanning solids must still read exactly as it
+        // always did — the second population is named only when it exists
+        assert!(
+            budget.text.starts_with(
+                "WaveLevel: 33 walls exceed the sight shaders' 32 slots — the table keeps the \
+                 first 32 and drops 1, which stop occluding entirely"
+            ),
+            "{}",
+            budget.text
         );
-        let far_past = wall_budget(40, 32).expect("an error");
+        assert!(
+            !budget.text.contains("admitted by geometry"),
+            "{}",
+            budget.text
+        );
+        let far_past = occluder_budget(40, 0, 32).expect("an error");
         assert!(far_past.text.contains("and drops 8,"), "{}", far_past.text);
+    }
+
+    /// THE BREAK: a designer being told to delete walls when what actually
+    /// consumed the slots was a pillar they dragged in — the message that
+    /// counts only walls cannot say so, and they would go looking for a
+    /// wall that does not exist.
+    ///
+    /// Both counts must appear, and the total must be their sum: solids are
+    /// APPENDED after the walls, so the population that overflows is
+    /// whichever one runs off the end.
+    #[test]
+    fn a_pillar_that_costs_a_wall_its_slot_says_so() {
+        let budget = occluder_budget(30, 4, 32).expect("an error");
+        assert_eq!(budget.severity, Severity::Error);
+        assert!(budget.text.contains("34 occluders"), "{}", budget.text);
+        assert!(
+            budget
+                .text
+                .contains("30 authored walls + 4 solids admitted by geometry"),
+            "{}",
+            budget.text
+        );
+        assert!(budget.text.contains("and drops 2,"), "{}", budget.text);
+        assert!(
+            budget.text.contains("a pillar can cost a wall its slot"),
+            "{}",
+            budget.text
+        );
+        // and the way out that does not involve deleting a wall
+        assert!(
+            budget.text.contains("lower or thin a spanning solid"),
+            "{}",
+            budget.text
+        );
+    }
+
+    /// The shipped level, measured off `game/scenes/level_01.tscn`: 19
+    /// authored wall segments and 7 floor-to-ceiling pillars. It must fit
+    /// with room to spare and say nothing at all — if this ever starts
+    /// warning, the admission rule has widened past the pillars.
+    #[test]
+    fn the_shipped_level_fits_its_pillars_without_a_word() {
+        assert_eq!(occluder_budget(19, 7, 32), None);
+        // What the pillars actually cost, stated rather than glossed. 26 of
+        // 32 slots leaves 6, which clears the 4 a room costs — so the
+        // shipped level is silent. But the NEXT room lands at 30 and warns.
+        // Before the pillars were admitted the same level sat at 19 with
+        // room for three more. Seven slots is close to two rooms of
+        // headroom, spent on occlusion a player can actually hear, and the
+        // warning is where the designer finds out.
+        assert!(
+            occluder_budget(19 + ROOM_SEGMENTS, 7, 32).is_some(),
+            "the very next room must warn — 26 of 32 leaves 6 slots and a \
+             room costs 4, so adding one drops the headroom under the \
+             threshold. If this goes quiet the budget has stopped counting \
+             the pillars."
+        );
     }
 
     /// Total on the degenerate budget a caller could hand it: a shader with
@@ -3197,8 +3559,14 @@ mod tests {
     /// on a `usize` is not a small number but a colossal one.
     #[test]
     fn a_slotless_shader_is_reported_not_subtracted_past_zero() {
-        assert_eq!(wall_budget(0, 0).map(|b| b.severity), Some(Severity::Warn));
-        assert_eq!(wall_budget(1, 0).map(|b| b.severity), Some(Severity::Error));
+        assert_eq!(
+            occluder_budget(0, 0, 0).map(|b| b.severity),
+            Some(Severity::Warn)
+        );
+        assert_eq!(
+            occluder_budget(1, 0, 0).map(|b| b.severity),
+            Some(Severity::Error)
+        );
     }
 
     /// The four border walls of a rectangular map, as centerlines.
@@ -3232,9 +3600,84 @@ mod tests {
     /// `None` for an empty table: a level with no walls contributes no wall
     /// footprint, and a caller must not read that as a real box at the
     /// origin.
+    /// The sentence a wall earns when its own world box cannot be turned
+    /// into an occluder — pinned, because its direct sibling
+    /// `source_paint_fault_text` is pinned byte-for-byte and this one was
+    /// not: deleting the word "occludes" from it failed nothing.
+    ///
+    /// It has to say three things, because a designer reading it in the
+    /// Scene dock has to act: WHICH node, that the wall still DRAWS, and
+    /// that sound passes THROUGH it. A wall that silently stopped occluding
+    /// looks exactly like a wall that works.
+    #[test]
+    fn an_unoccludable_wall_says_which_node_and_what_it_costs() {
+        let fault = unoccludable_wall("Rooms/North/CrookedWall");
+        assert_eq!(fault.path, "Rooms/North/CrookedWall");
+        assert!(fault.text.contains("Rooms/North/CrookedWall"));
+        assert!(fault.text.contains("occludes nothing"));
+        assert!(fault.text.contains("draw"));
+        assert!(fault.text.contains("pass straight through"));
+    }
+
     #[test]
     fn wall_footprint_is_none_for_an_empty_table() {
-        assert_eq!(wall_footprint(&[]), None);
+        assert_eq!(wall_footprint(&[], (0.0, WALL_H)), None);
+    }
+
+    /// THE break this catches: a footprint that stamps a global height on
+    /// every wall instead of reading each wall's own sweep.
+    ///
+    /// It did, and it was the last global wall-height read in the crate.
+    /// The cost lands on `slab_diagonal`, and through it on the budget that
+    /// tells a designer their map has outgrown DIST_PACK_RANGE. Hand-derived
+    /// on the shipped 28 x 28 map: lift the level ROOT by 2.557 m and the
+    /// slabs rise to y in [2.457, 5.657], a union still only 3.2 m tall and
+    /// a diagonal still 39.727 — but a stamped [0, 3] stretches that union
+    /// to 5.657 m and the diagonal to 40.00002, one hundredth of a
+    /// millimetre past the range, raising a Severity::Error against a map
+    /// that never moved.
+    #[test]
+    fn a_footprint_reads_each_walls_own_sweep_not_a_global_height() {
+        // the sweep the level derives for a wall lifted with the gizmo
+        let lifted =
+            [
+                crate::sight::Occluder::new(
+                    Vector4::new(1.0, 2.0, 9.0, 2.0),
+                    2.557,
+                    2.557 + WALL_H,
+                )
+                .expect("finite"),
+            ];
+        let sweep = wall_sweep(&lifted);
+        assert!((sweep.0 - 2.557).abs() < 1e-6, "lo {}", sweep.0);
+        assert!((sweep.1 - 5.557).abs() < 1e-6, "hi {}", sweep.1);
+        assert_eq!(wall_sweep(&[]), (0.0, 0.0), "no walls invent no storey");
+
+        // and the consequence, end to end: a lifted level's diagonal must
+        // not move, because nothing about the map got bigger
+        let (floor, ceiling) = slab_boxes(28.0, 28.0);
+        let lift = |b: Box3| Box3 {
+            min: [b.min[0], b.min[1] + 2.557, b.min[2]],
+            max: [b.max[0], b.max[1] + 2.557, b.max[2]],
+        };
+        let walls = border(0.6, 0.6, 27.4, 27.4);
+        let diagonal = slab_diagonal(lift(floor), lift(ceiling), &walls, sweep);
+        assert!(
+            (diagonal - 39.727_068_857_392_44).abs() < 1e-6,
+            "a lifted level measured {diagonal} against an unmoved 39.727"
+        );
+        assert!(
+            pack_range_budget(diagonal, DIST_PACK_RANGE).is_none(),
+            "a map that did not grow was told to shrink"
+        );
+
+        // the counter-example that makes this non-vacuous: the global
+        // [0, WALL_H] the code used to stamp
+        let stamped = slab_diagonal(lift(floor), lift(ceiling), &walls, (0.0, WALL_H));
+        assert!(
+            stamped > DIST_PACK_RANGE,
+            "the old stamp no longer misfires, so this test proves nothing: {stamped}"
+        );
     }
 
     /// A centerline is a QUAD, not an ordered pair, and BOTH ends of both
@@ -3267,8 +3710,8 @@ mod tests {
             min: [1.0, 0.0, 2.0],
             max: [9.0, WALL_H, 7.0],
         };
-        assert_eq!(wall_footprint(&forward), Some(want));
-        assert_eq!(wall_footprint(&flipped), Some(want));
+        assert_eq!(wall_footprint(&forward, (0.0, WALL_H)), Some(want));
+        assert_eq!(wall_footprint(&flipped, (0.0, WALL_H)), Some(want));
     }
 
     /// The shipped 28 × 28 map: its slab pair alone spans
@@ -3283,7 +3726,7 @@ mod tests {
     fn the_slab_diagonal_spans_the_shipped_maps_floor_and_ceiling() {
         let (floor, ceiling) = slab_boxes(28.0, 28.0);
         let walls = border(0.6, 0.6, 27.4, 27.4);
-        let diagonal = slab_diagonal(floor, ceiling, &walls);
+        let diagonal = slab_diagonal(floor, ceiling, &walls, (0.0, WALL_H));
         assert!(
             (diagonal - 39.727_068_857_392_44).abs() < 1e-9,
             "{diagonal}"
@@ -3305,7 +3748,7 @@ mod tests {
     fn a_courtyard_with_one_small_room_still_saturates_the_pack_range() {
         let (floor, ceiling) = slab_boxes(80.0, 80.0);
         let walls = border(10.0, 10.0, 16.0, 16.0); // the one 6 × 6 room
-        let diagonal = slab_diagonal(floor, ceiling, &walls);
+        let diagonal = slab_diagonal(floor, ceiling, &walls, (0.0, WALL_H));
         assert!(
             (diagonal - 113.182_330_776_495_32).abs() < 1e-9,
             "{diagonal}"
@@ -3325,7 +3768,7 @@ mod tests {
     #[test]
     fn a_wall_less_courtyard_still_measures_off_its_slabs() {
         let (floor, ceiling) = slab_boxes(50.0, 50.0);
-        let diagonal = slab_diagonal(floor, ceiling, &[]);
+        let diagonal = slab_diagonal(floor, ceiling, &[], (0.0, WALL_H));
         assert!(
             (diagonal - 70.783_048_818_202_23).abs() < 1e-9,
             "{diagonal}"
@@ -3347,7 +3790,7 @@ mod tests {
     fn a_wall_reaching_past_the_slab_edge_still_widens_the_diagonal() {
         let (floor, ceiling) = slab_boxes(10.0, 10.0);
         let walls = [Vector4::new(-2.0, 5.0, 12.0, 5.0)];
-        let diagonal = slab_diagonal(floor, ceiling, &walls);
+        let diagonal = slab_diagonal(floor, ceiling, &walls, (0.0, WALL_H));
         assert!(
             (diagonal - 17.499_714_283_381_888).abs() < 1e-9,
             "{diagonal}"
@@ -3381,15 +3824,19 @@ mod tests {
     /// 80 × 80 courtyard's slab pair pushes the diagonal to 113.18 m.
     ///
     /// The message says SATURATES, not aliases, because that is what the
-    /// GLSL does: data_core.gdshaderinc:149 packs
-    /// `clamp(vd / DIST_PACK_RANGE, 0.0, 1.0)` into B, so nothing wraps and
-    /// nothing folds — everything past the range reads a flat 1.0. The
-    /// consequences follow from the flatness rather than from a wrap:
-    /// hearing_post's silhouette Laplacian (line 72) over a plateau is
-    /// zero, so far geometry draws no outline at all, and its
-    /// `scene_d = c_c.b * DIST_PACK_RANGE` (line 57) pins at the range, so
-    /// the ring cut at line 123 kills a player's sound against a world that
-    /// is not where it says it is.
+    /// GLSL does: `data_core.gdshaderinc` packs `pack_distance(vd)` into B,
+    /// which clamps, so nothing wraps and nothing folds — everything past
+    /// the range reads a flat 1.0. The consequences follow from the
+    /// flatness rather than from a wrap: hearing_post's silhouette Laplacian
+    /// over a plateau is zero, so far geometry draws no outline at all, and
+    /// its `scene_d = unpack_distance(c_c.b)` pins at the range, so the ring
+    /// cut kills a player's sound against a world that is not where it says
+    /// it is.
+    ///
+    /// The advice no longer says the outline thresholds are tuned against
+    /// the range. They were, and that was the defect `render::silhouette`
+    /// exists to fix: the knee is in metres of depth step now and does not
+    /// move when the range does.
     #[test]
     fn a_map_past_the_packing_range_names_the_diagonal_and_what_saturates() {
         let budget = pack_range_budget(113.182_330_776_495_32, 40.0).expect("a report");
@@ -3398,13 +3845,14 @@ mod tests {
             budget.text,
             "WaveLevel: the map's 113.18 m diagonal reaches the sight shaders' DIST_PACK_RANGE \
              of 40 m. Packed camera distance SATURATES there, it does not wrap: the data core \
-             packs clamp(vd / DIST_PACK_RANGE, 0, 1) into B, so everything past 40 m reads a \
-             flat 1.0 — its silhouette Laplacian is zero and it draws no outline at all, and the \
-             hearing pass cuts player-sound rings against a world it believes is exactly 40 m \
-             away. Shrink the map, or raise DIST_PACK_RANGE in \
-             game/shaders/pulse_pool.gdshaderinc — a measured decision and not a free one: it \
-             rescales every packed distance, and the outline thresholds in hearing_post are tuned \
-             against this range."
+             packs pack_distance(vd) into B, so everything past 40 m reads a flat 1.0 — its \
+             silhouette Laplacian is zero and it draws no outline at all, and the hearing pass \
+             cuts player-sound rings against a world it believes is exactly 40 m away. Shrink \
+             the map, or raise DIST_PACK_RANGE in game/shaders/pulse_pool.gdshaderinc — a \
+             measured decision and not a free one: distance is packed into only the part of the \
+             channel that survives the pipeline's transfer, so a longer range buys its reach out \
+             of reconstruction accuracy, and render::channel::reconstruction_budget refuses the \
+             range at which a lit wall starts reading as a source seen through one."
         );
     }
 
@@ -3624,5 +4072,194 @@ mod tests {
             scene_signature(STILL_EXTENTS, &scene),
             scene_signature([2.0, 20.0], &scene)
         );
+    }
+
+    /// THE BREAK: the admission rule drifting until it swallows the whole
+    /// prop census (blowing the wall table and the shader's hottest loop)
+    /// or refuses the pillars it exists to admit.
+    ///
+    /// The numbers are the shipped level's own, measured off
+    /// `game/scenes/level_01.tscn` and written down here so the rule is
+    /// pinned against real content and not against itself: seven pillars
+    /// span [0.00, 3.00] and are 0.44–0.50 m across; seven standpipes span
+    /// [0.00, 2.90] and are 0.14–0.20 m; sixty-two boxes and wedges reach
+    /// at most 2.00 m.
+    #[test]
+    fn only_the_solids_that_really_stand_in_the_way_occlude() {
+        // pillars: floor to ceiling, thicker than a wall — admitted
+        assert!(spans_the_corridor(0.0, 3.0, 0.44));
+        assert!(spans_the_corridor(0.0, 3.0, 0.50));
+
+        // standpipes: full height, but far thinner than a wall. A rect
+        // table would give them metre-wide square shadows.
+        assert!(!spans_the_corridor(0.0, 2.9, 0.14));
+        assert!(!spans_the_corridor(0.0, 2.9, 0.20));
+        // even if one DID reach the ceiling, the thickness still refuses it
+        assert!(!spans_the_corridor(0.0, 3.0, 0.20));
+
+        // boxes and wedges: sound goes over them
+        assert!(!spans_the_corridor(0.0, 2.00, 1.4));
+        assert!(!spans_the_corridor(0.0, 0.70, 1.4));
+
+        // a shelf hung clear of the floor is not structure either
+        assert!(!spans_the_corridor(0.9, 3.0, 0.6));
+    }
+
+    /// THE BREAK: SPAN_EPS quietly widening into a tolerance that admits
+    /// the pipes, which sit exactly 0.10 m under the ceiling — twice the
+    /// slack the rule allows, and the margin the whole separation rests on.
+    #[test]
+    fn the_span_slack_stays_narrower_than_the_gap_the_level_authored() {
+        let pipe_top = 2.90;
+        let pillar_top = 3.00;
+        assert!(!spans_the_corridor(0.0, pipe_top, 0.5), "the pipes got in");
+        assert!(spans_the_corridor(0.0, pillar_top, 0.5));
+        // the authored gap is 0.10; the rule may not spend all of it
+        assert!(
+            SPAN_EPS < pillar_top - pipe_top,
+            "SPAN_EPS {SPAN_EPS} has grown to reach the pipes"
+        );
+    }
+
+    /// THE BREAK: the reason drifting from the decision, so the Inspector
+    /// explains one law while the occluder table applies another. Every case
+    /// is a shipped dimension read off `game/scenes/level_01.tscn`.
+    ///
+    /// Thinness is reported when BOTH criteria fail, and that is the choice
+    /// under test: a standpipe at 2.90 m and 0.14 m across misses the span
+    /// by 0.05 and the thickness by 0.16, and only the second is something a
+    /// designer can act on without moving the ceiling.
+    #[test]
+    fn a_solid_says_which_criterion_decided_it() {
+        // the seven pillars: floor to ceiling, 0.44-0.50 across
+        assert_eq!(barrier(0.0, 3.00, 0.44), Barrier::StopsSound);
+        // the seven standpipes: both criteria fail, thinness is reported
+        assert_eq!(barrier(0.0, 2.90, 0.14), Barrier::TooThin { extent_cm: 14 });
+        // a crate: wide enough, but sound goes over it
+        assert_eq!(barrier(0.0, 0.80, 0.62), Barrier::PassesOver { top_cm: 80 });
+        // the cistern, the closest single-criterion miss in the level
+        assert_eq!(
+            barrier(0.0, 1.80, 0.62),
+            Barrier::PassesOver { top_cm: 180 }
+        );
+        // a shelf mounted clear of the floor: sound passes underneath
+        assert_eq!(
+            barrier(0.60, 3.00, 0.50),
+            Barrier::PassesUnder { bottom_cm: 60 }
+        );
+        // and nothing describable
+        assert_eq!(barrier(f64::NAN, 3.0, 0.5), Barrier::Unmeasurable);
+        assert_eq!(barrier(0.0, f64::INFINITY, 0.5), Barrier::Unmeasurable);
+
+        // the two halves cannot disagree: the predicate IS this, with the
+        // reason discarded
+        for (b, t, w) in [
+            (0.0, 3.00, 0.44),
+            (0.0, 2.90, 0.14),
+            (0.0, 0.80, 0.62),
+            (0.60, 3.00, 0.50),
+            (f64::NAN, 3.0, 0.5),
+        ] {
+            assert_eq!(
+                spans_the_corridor(b, t, w),
+                barrier(b, t, w) == Barrier::StopsSound
+            );
+        }
+    }
+
+    /// THE BREAK: the two admission criteria being believed to hold the
+    /// shipped populations apart together, when only one of them has any
+    /// margin. Read off `game/scenes/level_01.tscn`: seven pillars at
+    /// height 3.00 and 0.44-0.50 across, seven standpipes at 2.90 and
+    /// 0.14-0.20. Against `WALL_H - SPAN_EPS` = 2.95 each population is
+    /// exactly one SPAN_EPS from the line, so SPAN_EPS cannot be widened OR
+    /// narrowed; against `2 * WALL_T` = 0.30 the widest pipe is short by a
+    /// third and the narrowest pillar clears by half. A maintainer who
+    /// tunes the span slack because "the thickness test catches them
+    /// anyway" needs the second half of that sentence to be true, and this
+    /// is where it is checked.
+    #[test]
+    fn each_shipped_population_is_refused_by_the_criterion_its_doc_names() {
+        let (pipe_top, pipe_widest) = (2.90, 0.20);
+        let (pillar_top, pillar_narrowest) = (3.00, 0.44);
+
+        // the span test alone, both populations given a pillar's girth so
+        // only the height can decide
+        assert!(!spans_the_corridor(0.0, pipe_top, pillar_narrowest));
+        assert!(spans_the_corridor(0.0, pillar_top, pillar_narrowest));
+        // the threshold is 2.95: the pipes fall short of it by SPAN_EPS and
+        // the pillars clear it by SPAN_EPS, hand-derived either side
+        assert!(((WALL_H - SPAN_EPS - pipe_top) - SPAN_EPS).abs() < 1.0e-12);
+        assert!(((pillar_top - (WALL_H - SPAN_EPS)) - SPAN_EPS).abs() < 1.0e-12);
+
+        // the thickness test alone, both populations given a pillar's height
+        // so only the girth can decide. This is the criterion with margin:
+        // 0.20 against a required 0.30, and 0.44 against the same 0.30.
+        assert!(!spans_the_corridor(0.0, pillar_top, pipe_widest));
+        assert!((2.0 * WALL_T - pipe_widest - 0.10).abs() < 1.0e-12);
+        assert!((pillar_narrowest - 2.0 * WALL_T - 0.14).abs() < 1.0e-12);
+
+        // and together, which is what the level actually presents
+        assert!(!spans_the_corridor(0.0, pipe_top, pipe_widest));
+        assert!(spans_the_corridor(0.0, pillar_top, pillar_narrowest));
+    }
+
+    /// THE BREAK: a malformed or degenerate solid producing a NaN-cornered
+    /// rect that the sight tests then walk, where every comparison answers
+    /// false and the wall silently stops occluding.
+    #[test]
+    fn a_solid_that_cannot_be_measured_is_refused_rather_than_admitted() {
+        assert!(!spans_the_corridor(f64::NAN, 3.0, 0.5));
+        assert!(!spans_the_corridor(0.0, f64::NAN, 0.5));
+        assert!(!spans_the_corridor(0.0, 3.0, f64::NAN));
+        assert!(!spans_the_corridor(f64::NEG_INFINITY, f64::INFINITY, 0.5));
+        // a degenerate zero-extent solid occupies no space and blocks nothing
+        assert!(!spans_the_corridor(0.0, 3.0, 0.0));
+    }
+
+    /// THE BREAK: props taking nothing from a source's clarity — the state
+    /// this repaired — or taking as much as a wall, which would make a
+    /// crate a barrier and contradict waves passing straight through it.
+    ///
+    /// Hand-derived from SOURCE_THROUGH = 0.3: one wall leaves 0.3, two
+    /// leave 0.09; one prop leaves sqrt(0.3) = 0.5477, and TWO props must
+    /// leave exactly what one wall does.
+    #[test]
+    fn two_props_cost_exactly_one_wall() {
+        assert!((source_muffle(0, 0) - 1.0).abs() < 1e-12);
+        assert!((source_muffle(1, 0) - 0.3).abs() < 1e-12);
+        assert!((source_muffle(2, 0) - 0.09).abs() < 1e-12);
+
+        let one_prop = source_muffle(0, 1);
+        assert!(
+            (one_prop - 0.547_722_557_505_166_1).abs() < 1e-12,
+            "one prop left {one_prop}"
+        );
+        // the relation the constant exists to express
+        assert!(
+            (source_muffle(0, 2) - source_muffle(1, 0)).abs() < 1e-12,
+            "two props left {} and one wall leaves {}",
+            source_muffle(0, 2),
+            source_muffle(1, 0)
+        );
+        // and a prop must take LESS than a wall, or it is a barrier
+        assert!(one_prop > source_muffle(1, 0));
+        // walls and props compose, never one shadowing the other
+        assert!((source_muffle(1, 2) - 0.09).abs() < 1e-12);
+    }
+
+    /// THE BREAK: a count large enough to overflow `powi`'s `i32`, which
+    /// wraps to a NEGATIVE exponent and returns a factor greater than one —
+    /// a source that grows brighter the deeper it is buried.
+    #[test]
+    fn a_source_never_brightens_for_being_buried() {
+        for (walls, props) in [(u32::MAX, 0), (0, u32::MAX), (u32::MAX, u32::MAX), (99, 99)] {
+            let m = source_muffle(walls, props);
+            assert!(
+                (0.0..=1.0).contains(&m),
+                "{walls} walls and {props} props left {m}"
+            );
+        }
+        assert!(source_muffle(40, 0) < 1e-20);
     }
 }

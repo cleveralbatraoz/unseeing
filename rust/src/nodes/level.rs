@@ -63,7 +63,6 @@ use godot::obj::DynGd;
 use godot::prelude::*;
 
 use super::cat::WaveCat;
-use super::props::{WaveColumn, WaveProp, WaveWedge};
 use super::run::WaveRun;
 use super::solid::{
     SKIN_NAME, WaveSolid, basis_columns_f64, build_box, clear_limbs, mesh_first_label, to_f64_3,
@@ -76,18 +75,12 @@ use crate::oid_palette;
 use crate::render;
 use crate::sight;
 
-/// The palette every wall and prop is coloured from. Walls and props share
-/// ONE palette because a prop leaning on a wall needs the same separation
-/// two walls do — the old split palettes left them only 0.06 apart, half
-/// strength. Entries are 0.09 apart, above the shader's 0.08 knee rather
-/// than exactly on it, and the whole band is clear of the floor below
-/// (0.15) and of the creature band above (the cat at 0.7), because every
-/// box stands on the floor and anything may walk in front of one.
-///
-/// Five entries is not a limit on how many solids a level may hold: ids are
-/// assigned by colouring the touch graph, so a hundred walls reuse these
-/// five freely and only differ where they actually meet.
-const WORLD_OIDS: [f64; 5] = [0.25, 0.34, 0.43, 0.52, 0.61];
+/// The palette every wall and prop is coloured from, read from the one
+/// place the whole label universe is visible at once
+/// (`render::labels::WORLD_PALETTE`). It used to be a literal here, which
+/// is why nothing could check it against the creature and viewmodel labels
+/// standing either side of it in the same band.
+const WORLD_OIDS: [f64; 5] = render::labels::WORLD_PALETTE;
 
 /// The names the level writes on the two slab bodies it builds for itself —
 /// its own limbs, recognised on the way back in exactly as a solid
@@ -127,11 +120,15 @@ struct Census {
 /// reach their mesh), while every solid node (authored or derived) paints itself back
 /// through its own `paint()` method; see [`WaveLevel::paint_entry`].
 enum PaintItem {
-    Slab { lid: bool },
-    Wall(Gd<WaveWall>),
-    Prop(Gd<WaveProp>),
-    Column(Gd<WaveColumn>),
-    Wedge(Gd<WaveWedge>),
+    Slab {
+        lid: bool,
+    },
+    /// Any censused solid, reached through the one contract the level needs
+    /// of it. This used to be four concrete arms — `Wall`, `Prop`, `Column`,
+    /// `Wedge` — and so did `node()`, `paint_entry` and the solids half of
+    /// `paint_entries`: four hand-written rosters of the same list, each
+    /// falling through silently for anything absent from it.
+    Solid(DynGd<Node, dyn WaveSolid>),
 }
 
 impl PaintItem {
@@ -142,10 +139,7 @@ impl PaintItem {
     fn node(&self) -> Option<Gd<Node>> {
         match self {
             PaintItem::Slab { .. } => None,
-            PaintItem::Wall(node) => Some(node.clone().upcast()),
-            PaintItem::Prop(node) => Some(node.clone().upcast()),
-            PaintItem::Column(node) => Some(node.clone().upcast()),
-            PaintItem::Wedge(node) => Some(node.clone().upcast()),
+            PaintItem::Solid(solid) => Some(solid.clone().into_gd()),
         }
     }
 }
@@ -199,7 +193,18 @@ pub struct WaveLevel {
     pulses: Option<Gd<RefCounted>>,
     slabs: Vec<Slab>,
     segments: Vec<Vector4>,
-    occluders: Vec<Vector4>,
+    occluders: Vec<sight::Occluder>,
+    /// Skins that occlude by the wall table but are owned by the
+    /// composition root rather than by the level — the hearing pass, and
+    /// the hero's own cane and body.
+    ///
+    /// They are REGISTERED rather than pushed to once, because the table is
+    /// rebuilt by every `derive()` and a push that happens once, after the
+    /// only derive a runtime level performs, is correct solely because of
+    /// that ordering. `rederive` is a `#[func]`: anything may call it, and
+    /// then two of the five occluding skins would be carrying last
+    /// derivation's walls. One owner, every skin, every derive.
+    extra_skins: Vec<Gd<Material>>,
     spawn_at: Vector3,
     spawn_heading: f64,
     tap_point: Vector3,
@@ -207,6 +212,30 @@ pub struct WaveLevel {
     tap_normal: Vector3,
     source_children: Vec<DynGd<Node, dyn SoundSource>>,
     cat_children: Vec<Gd<WaveCat>>,
+    /// Every solid geometry REFUSED — the crates, wedges and standpipes
+    /// that do not stop waves — kept as world AABBs for the per-source
+    /// clarity walk alone.
+    ///
+    /// CPU-ONLY, and that is the whole reason this is affordable. It is
+    /// never pushed to any shader: the muffle is one scalar per source per
+    /// frame, so the cost is sources x props (about 212 segment tests on
+    /// the shipped level) instead of the 259 M per-fragment near-tests that
+    /// killed the idea of putting props in the wall table. The measured
+    /// objection to that table was never only cost, either — a column's
+    /// bounding square over-approximates by 41% radially and would bite a
+    /// visible notch out of every ring. Here the same over-approximation
+    /// moves a per-object scalar by a hair, which no player can see.
+    prop_occluders: Vec<sight::Occluder>,
+
+    /// Non-wall solids admitted to the occluder table by geometry, in the
+    /// order they were appended after the walls.
+    ///
+    /// Kept and reported because a geometric admission rule without a
+    /// diagnostic is how a designer loses a wall in silence: a pillar now
+    /// consumes a `MAXW` slot, and the budget message must be able to say
+    /// so rather than telling them to delete walls they can already count.
+    spanning_solids: Vec<String>,
+
     /// The walls the occluder table was built FROM, in table order, kept so
     /// a crossing can be named without re-walking the scene — and, more
     /// importantly, so the names cannot drift out of step with the table.
@@ -510,7 +539,38 @@ impl WaveLevel {
     /// the hearing pass too, which cuts player-sound shells by these walls.
     #[func]
     pub(super) fn wall_rects(&self) -> PackedVector4Array {
-        PackedVector4Array::from(&self.occluders[..])
+        self.occluders.iter().map(|occ| occ.rect()).collect()
+    }
+
+    /// Each occluder's world Y sweep, `(bottom, top)` — the `u_wall_y`
+    /// lane, in the same slot order as [`Self::wall_rects`].
+    ///
+    /// Two arrays only because the uniform layout forces two; they are
+    /// projections of ONE `Vec<Occluder>`, so they cannot desync in length,
+    /// in order, or under truncation. A wall's height used to be a single
+    /// global `u_wall_top`, which is why a wall lifted with the gizmo
+    /// occluded a strip of empty air beneath itself and nothing at all
+    /// across its raised top.
+    #[func]
+    pub(super) fn wall_spans(&self) -> PackedVector2Array {
+        self.occluders.iter().map(|occ| occ.span()).collect()
+    }
+
+    /// The occluder table itself, for the debug observer — which must
+    /// describe the walls the shaders were actually handed, spans included,
+    /// rather than rebuild them from a projection.
+    pub(super) fn occluders(&self) -> &[sight::Occluder] {
+        &self.occluders
+    }
+
+    /// The PROP table — the solids `spans_the_corridor` refused, which stop
+    /// no wave but each take [`level_plan::prop_through`] from a source's
+    /// standing image. The observer needs it for the same reason it needs
+    /// the wall table: [`Self::source_muffle`] composes both, so an oracle
+    /// handed only the walls reports a number no shader is holding on every
+    /// sight line through a crate.
+    pub(super) fn prop_occluders(&self) -> &[sight::Occluder] {
+        &self.prop_occluders
     }
 
     /// Every fault the last derivation pinned to `node` specifically — an
@@ -566,7 +626,7 @@ impl WaveLevel {
     }
 
     /// Occluder slots the sight shaders allocate ([`sight::MAXW`]) — the
-    /// ceiling [`level_plan::wall_budget`] measures a level's headroom
+    /// ceiling [`level_plan::occluder_budget`] measures a level's headroom
     /// against, served the same way [`Self::wall_height`] is.
     ///
     /// It exists so the number can be READ BACK from the engine layer. The
@@ -601,6 +661,50 @@ impl WaveLevel {
     #[func]
     fn pack_range() -> f64 {
         level_plan::DIST_PACK_RANGE
+    }
+
+    /// The film grain's peak-to-peak swing ([`render::grain::GRAIN_AMP`]),
+    /// served so `game/tests/shader_contract_test.gd` can hold it against
+    /// `hearing_post.gdshader`'s own `u_grain_amp` default.
+    ///
+    /// The grain is a mood knob and would normally have no business in
+    /// Rust — except that [`render::reveal::PRESENCE`] is DERIVED from it,
+    /// and settled law 1 rests on that derivation. If the two drifted, a
+    /// source could sink back under the noise with every cargo test still
+    /// green, which is precisely the failure this pair exists to make
+    /// impossible.
+    #[func]
+    fn grain_amp() -> f64 {
+        render::grain::GRAIN_AMP
+    }
+
+    /// The floor under a sound source's packed reveal
+    /// ([`render::reveal::PRESENCE`]), served so the contract suite can
+    /// check that what the composition root pushes into `u_presence` is
+    /// what Rust derived.
+    #[func]
+    fn source_presence() -> f64 {
+        render::reveal::PRESENCE
+    }
+
+    /// What one wall leaves of a source's silhouette
+    /// ([`level_plan::SOURCE_THROUGH`]), served so the contract suite can
+    /// check the detail knee opens at exactly that ceiling — the
+    /// precondition the "a walled source cannot name itself" theorem rests
+    /// on, and the one number that would silently break it.
+    #[func]
+    fn source_through() -> f64 {
+        level_plan::SOURCE_THROUGH
+    }
+
+    /// The detail knee ([`render::detail::DetailKnee::shipped`]) as
+    /// `(lo, hi)`, served so `game/tests/shader_contract_test.gd` can hold
+    /// what the composition root pushes against what Rust derived — the
+    /// same drift the crease knee's own mirror exists to catch.
+    #[func]
+    fn detail_knee() -> Vector2 {
+        let knee = render::detail::DetailKnee::shipped();
+        Vector2::new(knee.lo() as f32, knee.hi() as f32)
     }
 
     /// Debug-facing shim, served the same way [`Self::wall_height`] is: not
@@ -676,19 +780,34 @@ impl WaveLevel {
                 hub = voice.hub();
                 volume = voice.voice().volume.image();
             }
-            let image = volume * self.source_muffle(eye, hub);
+            // Delivered as two numbers, never as their product: see
+            // render::reveal::source_image for why the muffle must
+            // multiply the whole acoustic image rather than floor half of
+            // it.
+            let image = render::reveal::SourceImage {
+                volume,
+                muffle: self.source_muffle(eye, hub),
+            };
             source.dyn_bind_mut().set_image(image);
         }
     }
 
     /// How muffled a source's SILHOUETTE at `to` reads from the eye at
-    /// `from`: `SOURCE_THROUGH` per wall the sight line crosses — a faint
-    /// ghost through one wall, fainter through two. General to any source,
-    /// not the fan alone; exposed so the suites can hold the law directly.
+    /// `from`: [`level_plan::SOURCE_THROUGH`] per wall the sight line
+    /// crosses and [`level_plan::prop_through`] per prop, so two props cost
+    /// exactly one wall. General to any source, not the fan alone; exposed
+    /// so the suites can hold the law directly.
+    ///
+    /// The two walks read two different tables and that is deliberate. The
+    /// wall table is the one the SHADERS also read, so a wave and a
+    /// silhouette agree about what a barrier is. The prop table exists only
+    /// here: those solids do not stop waves at all, and never enter a
+    /// uniform.
     #[func]
     fn source_muffle(&self, from: Vector3, to: Vector3) -> f64 {
-        let crossings = sight::crossings(from, to, &self.occluders, level_plan::WALL_H as f32);
-        level_plan::SOURCE_THROUGH.powi(crossings as i32)
+        let walls = sight::crossings(from, to, &self.occluders);
+        let props = sight::crossings(from, to, &self.prop_occluders);
+        level_plan::source_muffle(walls, props)
     }
 
     /// Where the hero wakes, and every word a designer needs about the
@@ -834,8 +953,108 @@ impl WaveLevel {
         for wall in &mut census.walls {
             wall.bind_mut().prepare_for_derive();
         }
-        self.segments = census.walls.iter().map(|w| w.bind().segment()).collect();
-        self.push_wall_table(editor);
+        // One loop, one bind per wall, both tables: a wall's centerline and
+        // the world Y span of the very box the paint pass draws. Built
+        // together on purpose — a table of rects beside a table of heights
+        // is two things that can disagree, and the disagreement is exactly
+        // the bug this replaced.
+        self.segments.clear();
+        let mut occluders: Vec<sight::Occluder> = Vec::with_capacity(census.walls.len());
+        let root = self.base().clone().upcast::<Node>();
+        let mut unoccludable: Vec<String> = Vec::new();
+        for wall in &census.walls {
+            let (segment, shape) = {
+                let bound = wall.bind();
+                (bound.segment(), bound.world_shape())
+            };
+            let occluder = render::faces::bounds(&shape)
+                .and_then(|box3| sight::Occluder::new(segment, box3.min[1], box3.max[1]));
+            if occluder.is_none() {
+                unoccludable.push(root.get_path_to(wall).to_string());
+            }
+            self.segments.push(segment);
+            // A refused wall keeps its SLOT rather than vanishing:
+            // `wall_names()[i]` names `occluders[i]`, and a hole slides
+            // every later name onto the wrong wall.
+            occluders.push(occluder.unwrap_or(sight::Occluder::NOWHERE));
+        }
+        for path in unoccludable {
+            let fault = level_plan::unoccludable_wall(&path);
+            if !editor {
+                godot_error!("{}", fault.text);
+            }
+            self.node_faults.push(fault);
+        }
+        // Solids that ACTUALLY STAND IN THE WAY join the wall table.
+        //
+        // Occlusion is decided by geometry, never by node class. A pillar
+        // running floor to ceiling and half a metre thick stops sound the
+        // way a wall does, because it is a wall that happens to be round;
+        // a crate at knee height does not, because sound goes over it.
+        // `data_core.gdshaderinc` asserted for months that props are
+        // transparent "deliberately"; the occluder table had simply only
+        // ever been built from the wall census, and the sole recorded
+        // argument was the cost of admitting all 106 props at once. That
+        // cost argument stands and is why the rule is narrow.
+        //
+        // AFTER the walls, never interleaved: `wall_names()[i]` names
+        // `occluders[i]`, and every authored wall must keep the slot index
+        // it has always had so a designer's fault message still points at
+        // the right node.
+        let mut admitted: Vec<String> = Vec::new();
+        let mut refused: Vec<sight::Occluder> = Vec::new();
+        // Walls already hold a slot, built from their CENTERLINE above — a
+        // different geometry from the world AABB this walk measures, and one
+        // a wall is admitted by unconditionally. Skipping them by identity
+        // rather than by class is what lets every other solid answer for
+        // itself: this used to be `unwalled_world_shape`, a second
+        // hand-written `try_cast` roster whose `None` meant BOTH "this is a
+        // wall" and "I do not recognise this class".
+        let wall_ids: std::collections::HashSet<InstanceId> =
+            census.walls.iter().map(|wall| wall.instance_id()).collect();
+        for solid in &census.solids {
+            let node = solid.clone().into_gd();
+            if wall_ids.contains(&node.instance_id()) {
+                continue;
+            }
+            let shape = solid.dyn_bind().world_shape();
+            let Some(box3) = render::faces::bounds(&shape) else {
+                continue; // unmeasurable: refused, which is what it did before
+            };
+            let width = box3.max[0] - box3.min[0];
+            let depth = box3.max[2] - box3.min[2];
+            if !level_plan::spans_the_corridor(box3.min[1], box3.max[1], width.min(depth)) {
+                // Refused as a WAVE occluder — sound goes over a crate — but
+                // it still stands between an eye and a sounding thing, and
+                // takes something from how clearly that thing reads.
+                if let Some(prop) = sight::Occluder::from_bounds(
+                    box3.min[0],
+                    box3.min[2],
+                    box3.max[0],
+                    box3.max[2],
+                    box3.min[1],
+                    box3.max[1],
+                ) {
+                    refused.push(prop);
+                }
+                continue;
+            }
+            let Some(occluder) = sight::Occluder::from_bounds(
+                box3.min[0],
+                box3.min[2],
+                box3.max[0],
+                box3.max[2],
+                box3.min[1],
+                box3.max[1],
+            ) else {
+                continue;
+            };
+            admitted.push(root.get_path_to(&node).to_string());
+            occluders.push(occluder);
+        }
+        self.spanning_solids = admitted;
+        self.prop_occluders = refused;
+        self.push_wall_table(occluders, editor);
         self.report_pack_range(editor);
         self.paint_labels(&census, editor);
         self.report_placement(&census, editor);
@@ -1009,15 +1228,44 @@ impl WaveLevel {
                 .iter()
                 .map(|entry| render::paint_plan::PaintEntryInput {
                     shape: entry.shape.clone(),
+                    // The anchor names ONE face: the side of the slab the
+                    // room actually meets — the floor's top, the ceiling's
+                    // underside. Never the whole slab. A slab owns one
+                    // class only while nothing merges with it, and the
+                    // instant a prop set flush into the floor splits its
+                    // faces, an entry-wide anchor put the same label on
+                    // classes the merge law had just separated and the
+                    // whole level went unpainted.
                     anchor: match entry.item {
-                        PaintItem::Slab { lid } => Some(render::role_label(if lid {
-                            render::Role::Ceiling
-                        } else {
-                            render::Role::Floor
-                        })),
+                        PaintItem::Slab { lid } => Some(render::paint_plan::FaceAnchor {
+                            label: render::role_label(if lid {
+                                render::Role::Ceiling
+                            } else {
+                                render::Role::Floor
+                            }),
+                            // off the slab's OWN basis, not a world-up
+                            // literal: a level tipped by its node transform
+                            // would otherwise anchor the role onto whichever
+                            // flank happened to face world up
+                            facing: {
+                                let up = render::paint_plan::shape_up(&entry.shape);
+                                if lid { [-up[0], -up[1], -up[2]] } else { up }
+                            },
+                        }),
                         _ => None,
                     },
-                    is_wall: matches!(entry.item, PaintItem::Wall(_)),
+                    // The ONE genuinely wall-specific question left, and
+                    // it is not a geometry dispatch: the paint plan's merge
+                    // law treats wall-to-wall seams differently from every
+                    // other pair, so it must know which entries are walls.
+                    // A concrete cast is the honest way to ask "is this a
+                    // wall"; what the trait replaced was four casts asking
+                    // "what shape is this", which every solid can answer for
+                    // itself.
+                    is_wall: entry
+                        .item
+                        .node()
+                        .is_some_and(|node| node.try_cast::<WaveWall>().is_ok()),
                 })
                 .collect(),
             sources: census
@@ -1193,39 +1441,11 @@ impl WaveLevel {
             if mesh_world_box(&node).is_none() {
                 continue; // draws nothing, so it can show no seam
             }
-            let name = root.get_path_to(&node).to_string();
-            if let Ok(wall) = node.clone().try_cast::<WaveWall>() {
-                let shape = wall.bind().world_shape();
-                entries.push(PaintEntry {
-                    name,
-                    shape,
-                    item: PaintItem::Wall(wall),
-                });
-            } else if let Ok(prop) = node.clone().try_cast::<WaveProp>() {
-                let shape = prop.bind().world_shape();
-                entries.push(PaintEntry {
-                    name,
-                    shape,
-                    item: PaintItem::Prop(prop),
-                });
-            } else if let Ok(column) = node.clone().try_cast::<WaveColumn>() {
-                let shape = column.bind().world_shape();
-                entries.push(PaintEntry {
-                    name,
-                    shape,
-                    item: PaintItem::Column(column),
-                });
-            } else if let Ok(wedge) = node.clone().try_cast::<WaveWedge>() {
-                let shape = wedge.bind().world_shape();
-                entries.push(PaintEntry {
-                    name,
-                    shape,
-                    item: PaintItem::Wedge(wedge),
-                });
-            }
-            // else: unreachable today — every `WaveSolid` impl the census
-            // can collect is one of the four arms above; skipped rather
-            // than guessed at if that ever stops being true.
+            entries.push(PaintEntry {
+                name: root.get_path_to(&node).to_string(),
+                shape: solid.dyn_bind().world_shape(),
+                item: PaintItem::Solid(solid.clone()),
+            });
         }
         entries
     }
@@ -1246,37 +1466,55 @@ impl WaveLevel {
                     labels_by_ordinal,
                 );
             }
-            PaintItem::Wall(w) => w.clone().bind_mut().paint(labels_by_ordinal),
-            PaintItem::Prop(p) => p.clone().bind_mut().paint(labels_by_ordinal),
-            PaintItem::Column(c) => c.clone().bind_mut().paint(labels_by_ordinal),
-            PaintItem::Wedge(w) => w.clone().bind_mut().paint(labels_by_ordinal),
+            PaintItem::Solid(solid) => solid.clone().dyn_bind_mut().paint(labels_by_ordinal),
         }
     }
 
     /// Tell the occluding skins where the walls stand: the derived
     /// centerlines inflated into shrunk occluder rects ([`sight::wall_rect`]),
-    /// pushed as `u_walls`/`u_wall_count`/`u_wall_top` onto the world and
+    /// pushed as `u_walls`/`u_wall_y`/`u_wall_count` onto the world and
     /// source skins — the wall table their analytic sight test runs
     /// against.
     ///
     /// Loud about the shaders' slot ceiling BEFORE it is hit as well as
-    /// after ([`level_plan::wall_budget`]): a level past it has walls that
+    /// after ([`level_plan::occluder_budget`]): a level past it has walls that
     /// silently stopped occluding, and a level one room short of it is
     /// about to. Only the truncation stays here, because it is the act the
     /// message describes — the words themselves are a decision over two
     /// numbers, and live in the pure plan where cargo can hold them.
-    fn push_wall_table(&mut self, editor: bool) {
-        let mut rects: Vec<Vector4> = self.segments.iter().map(|s| sight::wall_rect(*s)).collect();
-        let budget = level_plan::wall_budget(rects.len(), sight::MAXW);
+    fn push_wall_table(&mut self, mut occluders: Vec<sight::Occluder>, editor: bool) {
+        let budget = level_plan::occluder_budget(
+            occluders.len().saturating_sub(self.spanning_solids.len()),
+            self.spanning_solids.len(),
+            sight::MAXW,
+        );
         self.say(editor, budget);
-        rects.truncate(sight::MAXW); // a no-op below the ceiling
+        occluders.truncate(sight::MAXW); // a no-op below the ceiling
         // kept for the per-object source muffle: the walls a camera→source
         // sight line is counted against, once per frame on the CPU
-        self.occluders = rects.clone();
-        let table = PackedVector4Array::from(&rects[..]);
-        let count = rects.len() as i64;
-        self.push_table_to(self.data_mat.clone(), &table, count);
-        self.push_table_to(self.source_mat.clone(), &table, count);
+        self.occluders = occluders;
+        let rects = self.wall_rects();
+        let spans = self.wall_spans();
+        let count = self.occluders.len() as i64;
+        self.push_table_to(self.data_mat.clone(), &rects, &spans, count);
+        self.push_table_to(self.source_mat.clone(), &rects, &spans, count);
+        for skin in self.extra_skins.clone() {
+            self.push_table_to(Some(skin), &rects, &spans, count);
+        }
+    }
+
+    /// Register a skin the composition root owns that occludes by this
+    /// level's wall table, and hand it the table as it stands.
+    ///
+    /// Every later `derive()` refreshes it along with the level's own two.
+    /// Registering is the point: pushing once, from outside, is correct
+    /// only while nothing re-derives, and `rederive` is callable by anyone.
+    pub(super) fn add_occluding_skin(&mut self, skin: Gd<Material>) {
+        self.extra_skins.push(skin.clone());
+        let rects = self.wall_rects();
+        let spans = self.wall_spans();
+        let count = self.occluders.len() as i64;
+        self.push_table_to(Some(skin), &rects, &spans, count);
     }
 
     /// Loud when the authored map has outgrown the range the sight shaders
@@ -1295,27 +1533,43 @@ impl WaveLevel {
     /// holds them; this end only measures.
     fn report_pack_range(&mut self, editor: bool) {
         let diagonal = match (self.floor_box(), self.ceiling_box()) {
-            (Some(floor), Some(ceiling)) => {
-                level_plan::slab_diagonal(floor, ceiling, &self.segments)
-            }
+            (Some(floor), Some(ceiling)) => level_plan::slab_diagonal(
+                floor,
+                ceiling,
+                &self.segments,
+                level_plan::wall_sweep(&self.occluders),
+            ),
             // slabs not yet built: nothing drawn to measure, nothing to say
             _ => 0.0,
         };
         let budget = level_plan::pack_range_budget(diagonal, level_plan::DIST_PACK_RANGE);
         self.say(editor, budget);
+        // ...and the OTHER direction, which pulls against it. The budget
+        // above tells a designer to raise DIST_PACK_RANGE when the map
+        // outgrows it; this one refuses a range the B channel can no longer
+        // reconstruct a world point from, which is what the hearing pass
+        // does with it. They cross at 45.12 m and the shipped range is 40.0.
+        let recon = render::channel::reconstruction_budget(level_plan::DIST_PACK_RANGE);
+        self.say(editor, recon);
     }
 
     /// Push the wall table onto one data-writing material — loud when it is
     /// no ShaderMaterial (legal in tests, blind in the game).
-    fn push_table_to(&self, mat: Option<Gd<Material>>, table: &PackedVector4Array, count: i64) {
+    fn push_table_to(
+        &self,
+        mat: Option<Gd<Material>>,
+        rects: &PackedVector4Array,
+        spans: &PackedVector2Array,
+        count: i64,
+    ) {
         let Some(mat) = mat else {
             return; // uninjected: ready() already said so loudly
         };
         match mat.try_cast::<ShaderMaterial>() {
             Ok(mut shader_mat) => {
-                shader_mat.set_shader_parameter("u_walls", &table.to_variant());
+                shader_mat.set_shader_parameter("u_walls", &rects.to_variant());
+                shader_mat.set_shader_parameter("u_wall_y", &spans.to_variant());
                 shader_mat.set_shader_parameter("u_wall_count", &count.to_variant());
-                shader_mat.set_shader_parameter("u_wall_top", &level_plan::WALL_H.to_variant());
             }
             Err(other) => {
                 godot_warn!(
@@ -1567,9 +1821,10 @@ impl WaveLevel {
     /// prevent.
     pub(super) fn wall_names(&self) -> Vec<String> {
         let root = self.base().clone().upcast::<Node>();
-        self.wall_children
+        // The authored walls first, in the slot order they were built in.
+        let mut names: Vec<String> = self
+            .wall_children
             .iter()
-            .take(self.occluders.len())
             .enumerate()
             .map(|(index, wall)| {
                 if wall.is_instance_valid() {
@@ -1578,7 +1833,17 @@ impl WaveLevel {
                     format!("<freed wall {index}>")
                 }
             })
-            .collect()
+            .collect();
+        // ...then the solids geometry admitted, in the order `derive`
+        // appended them. Without this the table would carry occluders no
+        // name could reach, and `explain_ray` — whose whole job is to say
+        // WHICH wall stopped a ray — would either run off the end of this
+        // list or blame the last authored wall for a pillar's work. That is
+        // the confident-wrong answer the observability layer exists to
+        // prevent, so the two lists grow together or the invariant is a lie.
+        names.extend(self.spanning_solids.iter().cloned());
+        names.truncate(self.occluders.len());
+        names
     }
 
     /// Every painted box in the level with the id it ACTUALLY carries,

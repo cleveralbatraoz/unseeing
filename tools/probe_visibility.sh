@@ -11,6 +11,50 @@
 # probe therefore runs TWICE and both verdicts must agree; only a
 # reproduced PASS counts. set -eu fails the script on the first FAIL.
 #
+# Every check here is a before/after DELTA, so a wave the run did not ask
+# for mostly subtracts out — but only mostly, because an emitter that MOVES
+# between the two readings does not cancel. So the boot still keeps the
+# room quiet: it seeds with UNSEEING_SEED (determinism only) and must NEVER
+# be switched to UNSEEING_DEMO, whose automatic tap (rust/src/demo_tap.rs)
+# fires near the spawn-room sample points on a 0.6 s/4 s schedule; the probe
+# itself silences the level's creatures for the same reason.
+#
+# DO NOT ADD --fixed-fps. It was tried, to pin the fan's 11.42 s sweep to
+# the frame count, and it breaks the tap cases: at a fixed 60 fps a
+# 12-frame baseline is 0.2 s against the fan's own 0.4 s cadence, so the
+# baseline misses a throb of the fan's own body that the 26-frame window
+# catches, and the difference is charged to the tap — measured as a 0.329
+# reveal on the fan where the correct answer is 0.000. Left free-running,
+# each readback frame costs enough wall time that both windows span
+# several cadences and the fan's own rhythm cancels. The sweep phase does
+# not need pinning any more: every case is a delta across the fan's own
+# voice, and the positive control refuses a phase in which it is dark.
+#
+# The first two scenes are MEASUREMENTS rather than assertions about the
+# game, and together they answer what the B-channel reconstruction guard
+# turns on. channel_probe answers the format question — the project had two
+# stories about it (the brief said 8-bit LDR; an earlier probe claimed
+# RGB10_A2) and at 8 bits the guard is broken outright. It is RGB10_A2.
+#
+# tap_error_probe answers the third leg of the same argument, and it is a
+# different question from the other two: platform_probe measures
+# RESOLUTION — the smallest step two values must be apart to come back
+# distinct — while this measures ACCURACY, how far ONE value moves. They are
+# not the same, and the reconstruction guard needs the second. Measured on
+# the shipped data pass, a wall 1 m from the eye reads back as 0 m, because
+# Godot's compatibility pass puts every ALBEDO write through an sRGB pair
+# whose halves are not inverses. It gates on what it can honestly assert —
+# that a usable band exists at all — and reports the floor that band starts
+# at, which is the number the packing law is derived from.
+#
+# platform_probe answers the harder half: a 1024-code buffer does not
+# hand back a clean code everywhere. It lays a ladder of step sizes across
+# one frame, sweeps the base down the column, and reports the smallest step
+# that survives at EVERY base — 1.25 nominal codes on Mesa/AMD, which is
+# what rust/src/render/channel.rs pins as WORST_STEP_CODES and what
+# sight::RECT_SHRINK has to clear. It is here rather than only on the web
+# because the desktop is where the widest gap has been measured.
+#
 # Env knobs: GODOT (binary).
 set -eu
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -69,10 +113,14 @@ CFG
 
 # shellcheck disable=SC2086
 run_scene() {
-  UNSEEING_DEMO=1 $KEEP_AWAKE "$GODOT" --path "$DIR/game" "$@"
+  UNSEEING_SEED=1 $KEEP_AWAKE "$GODOT" --path "$DIR/game" "$@"
 }
 
-for scene in res://tests/probe/occlusion_probe.tscn; do
+for scene in res://tests/probe/channel_probe.tscn \
+  res://tests/probe/platform_probe.tscn \
+  res://tests/probe/tap_error_probe.tscn \
+  res://tests/probe/depth_texture_probe.tscn \
+  res://tests/probe/occlusion_probe.tscn; do
   echo "probe: $scene — run 1 (cold cache legal; only agreement counts)"
   run_scene "$scene"
   echo "probe: $scene — run 2 (warm boot, the trusted one)"

@@ -34,10 +34,6 @@ const MAIN_SCENE := preload("res://scenes/main.tscn")
 ## and cadence are knobs, not law, and are read straight off the live node
 ## instead of duplicated as constants.
 const SOURCE_THROUGH := 0.3
-## HUM_THROUGH (0.55, level_plan.rs), the per-wall wave-transmission law
-## explain_ray's own hum_transmission field reads through — the SOURCE
-## occluder's counterpart to SOURCE_THROUGH above.
-const HUM_THROUGH := 0.55
 const FULL_REACH := 12.0
 ## Every world source is born at SOURCE_KIND = 3 (sound_source.rs), whose
 ## fade tail — pulse_pool::fade_tail(3) — is a fixed 2 s: an engine law,
@@ -60,6 +56,15 @@ const TAP_AT := Vector3(3.0, 0.9, 4.0)
 ## fan reaches 0.8 x 6 = 4.8 m.
 const TAP_MAX_R := 6.0
 const TAP_SPEED := 5.5
+
+
+## One label from the single role table (render::labels::role_label), read
+## rather than retyped — a suite carrying its own copy of a label agrees
+## with whatever the table says, and the table used to be wrong.
+func _role(name: String) -> float:
+	var table: Dictionary = WaveCore.new().role_labels()
+	assert_bool(table.has(name)).is_true()
+	return table.get(name, NAN)
 
 
 func test_uninjected_observer_refuses_rather_than_reporting_zeros() -> void:
@@ -85,7 +90,7 @@ func test_uninjected_explainers_refuse_too() -> void:
 ## refuses, while the eye-free explainers keep working.
 ##
 ## The REASON is held to being true, not merely present. A refusal that blamed
-## `source_floor` would send a reader looking for a quantity the eye has
+## the standing image would send a reader looking for a quantity the eye has
 ## nothing to do with: the standing image is read straight back off the
 ## source's own limbs, and would be reportable with no camera in the scene at
 ## all. A debugging layer that misnames its own limits teaches the wrong
@@ -98,7 +103,8 @@ func test_a_snapshot_without_an_eye_refuses_rather_than_guessing_one() -> void:
 	assert_int(snap.size()).is_equal(1)
 	var reason: String = snap["unavailable"]
 	assert_str(reason).contains("walls_to_eye")
-	assert_str(reason).not_contains("source_floor")
+	assert_str(reason).not_contains("source_volume")
+	assert_str(reason).not_contains("source_muffle")
 	assert_bool(obs.explain_oids().has("unavailable")).is_false()
 
 
@@ -272,9 +278,19 @@ func test_a_snapshot_names_what_it_could_not_observe() -> void:
 	obs.inject(level, _eye())
 	var snap: Dictionary = obs.snapshot(0.0)
 	assert_bool(snap.has("flick")).is_false()
-	assert_bool((snap["sources"][0] as Dictionary).has("source_floor")).is_false()
-	assert_array(snap["unknown"]).contains(
-		["flick", "sources[0].source_floor", "sources[1].source_floor"]
+	assert_bool((snap["sources"][0] as Dictionary).has("source_volume")).is_false()
+	assert_bool((snap["sources"][0] as Dictionary).has("source_muffle")).is_false()
+	(
+		assert_array(snap["unknown"])
+		. contains(
+			[
+				"flick",
+				"sources[0].source_volume",
+				"sources[0].source_muffle",
+				"sources[1].source_volume",
+				"sources[1].source_muffle",
+			]
+		)
 	)
 
 
@@ -327,11 +343,15 @@ func test_snapshot_describes_the_levels_sound_sources() -> void:
 	)
 	# The fixture hand-places exactly one wall. Do not derive the expectation
 	# through level.source_muffle(eye, hub): that
-	# would call the identical function tick_sources used to WRITE
-	# source_floor in the first place, with the identical eye and hub, and
+	# would call the identical function tick_sources used to WRITE the
+	# muffle in the first place, with the identical eye and hub, and
 	# so would mirror the code under test rather than check it
 	assert_int(entry["walls_to_eye"]).is_equal(1)
-	assert_float(entry["source_floor"]).is_equal_approx(SOURCE_THROUGH * fan.volume, 0.0001)
+	# the two halves are reported APART, because the renderer consumes them
+	# apart: the volume stands on its own and the muffle multiplies the
+	# whole image. Their product is no longer a number the shader forms.
+	assert_float(entry["source_volume"]).is_equal_approx(fan.volume, 0.0001)
+	assert_float(entry["source_muffle"]).is_equal_approx(SOURCE_THROUGH, 0.0001)
 	# the clockwork, not only the voice: "the fan has gone quiet" is a whole
 	# question class, and a snapshot that carried neither the interval nor the
 	# standing appointment could only answer it by waiting to see
@@ -408,9 +428,10 @@ func _cat_level() -> Dictionary:
 ## The pairs only carry the ids of boxes that MEET, so a solid standing alone
 ## in a room had a name in the report and no id anywhere — and "which id did
 ## this thing actually get?" is the first question after "which seams are
-## broken". Hand-derived against the one role table
-## (render::labels::role_label, rust/src/render/labels.rs): the floor's
-## Role::Floor is 0.15 and Role::Cat is 0.7.
+## broken". The expected labels are READ from the one role table
+## (render::labels::role_label, rust/src/render/labels.rs) rather than
+## retyped: a suite carrying its own copy agrees with whatever the table
+## says, and the table used to be wrong.
 func test_the_oid_census_reports_the_id_of_every_box() -> void:
 	var fixture := _cat_level()
 	var level: WaveLevel = fixture["level"]
@@ -422,9 +443,9 @@ func test_the_oid_census_reports_the_id_of_every_box() -> void:
 	var oids: PackedFloat64Array = e["oids"]
 	assert_int(oids.size()).is_equal(names.size())
 	assert_array(names).contains(["Floor", str(cat.name)])
-	assert_float(oids[names.find("Floor")]).is_equal_approx(0.15, 0.0001)
+	assert_float(oids[names.find("Floor")]).is_equal_approx(_role("Floor"), 0.0001)
 	var cat_idx := names.find(str(cat.name))
-	assert_float(oids[cat_idx]).is_equal_approx(0.7, 0.0001)
+	assert_float(oids[cat_idx]).is_equal_approx(_role("Cat"), 0.0001)
 
 
 ## The creatures are IN the report. WaveCat and the hero's body occupy the
@@ -717,9 +738,9 @@ func _one_wall_level() -> WaveLevel:
 
 
 ## Occlusion, answerable. The line crosses the one wall this fixture holds
-## exactly once, born well clear of it, so the fan's WAVE arrives at
-## HUM_THROUGH and its silhouette at SOURCE_THROUGH — the engine law, not
-## a fact about any one map's layout.
+## exactly once, born well clear of it, so the fan's WAVE is extinguished
+## (0.0) while its silhouette survives at SOURCE_THROUGH — two different
+## laws, which is the break this assertion catches.
 func test_explain_ray_names_the_wall_it_crosses() -> void:
 	var level := _one_wall_level()
 	var obs := _observer()
@@ -727,13 +748,22 @@ func test_explain_ray_names_the_wall_it_crosses() -> void:
 	var e: Dictionary = obs.explain_ray(Vector3(3.0, 0.9, 4.0), Vector3(10.0, 0.9, 4.0))
 	assert_int(e["camera_crossings"]).is_equal(1)
 	assert_int(e["source_crossings"]).is_equal(1)
-	assert_float(e["hum_transmission"]).is_equal_approx(HUM_THROUGH, 0.0001)
+	assert_float(e["wave_transmission"]).is_equal_approx(0.0, 0.0001)
 	assert_float(e["source_transmission"]).is_equal_approx(SOURCE_THROUGH, 0.0001)
 	var crossed: Array[String] = []
 	for wall: Dictionary in e["walls"]:
 		if wall["crossed"]:
 			crossed.append(wall["name"])
 	assert_array(crossed).is_equal(["TheWall"])
+	# ...and the SAME fixture with a line that crosses nothing, because a
+	# 0.0 on its own is the value a dead field also reports: with only the
+	# assertion above, `entry.set("wave_transmission", 0.0)` in
+	# rust/src/nodes/observer.rs passes every suite in the repository while
+	# the debugging surface AGENTS.md points agents at reports a wall that
+	# is not there. This pair is what makes the field answerable.
+	var clear: Dictionary = obs.explain_ray(Vector3(8.0, 0.9, 4.0), Vector3(10.0, 0.9, 4.0))
+	assert_int(clear["source_crossings"]).is_equal(0)
+	assert_float(clear["wave_transmission"]).is_equal_approx(1.0, 0.0001)
 
 
 ## The wall names are pinned to the table they name, not to whatever the

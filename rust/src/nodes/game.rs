@@ -62,7 +62,6 @@ use super::settings::SettingsMenu;
 use crate::demo_tap::DemoTap;
 use crate::ffi::WaveCore;
 use crate::flicker::{Flicker, FlickerState};
-use crate::level_plan;
 use crate::temporal::{advance_clock, valid_time_or_zero};
 
 /// The perceptual ladder's world layer — real depth, everything but the
@@ -203,7 +202,7 @@ impl INode3D for UnseeingGame {
         self.data_mat.set_render_priority(PRIORITY_WORLD);
         self.post_mat.set_shader(&post_shader);
         // the source image is LIVE: a source is always heard, its standing
-        // floor pushed per instance by the level (u_source_floor)
+        // image pushed per instance by the level (u_source_volume/u_source_muffle)
         self.source_mat.set_shader(&xray_shader);
         self.source_mat.set_render_priority(PRIORITY_SOURCES);
         // the hero's cane and body render at real depth like the world
@@ -211,6 +210,69 @@ impl INode3D for UnseeingGame {
         self.body_mat.set_shader(&data_shader);
         self.cane_mat
             .set_shader_parameter("u_base", &0.85_f64.to_variant());
+        // The crease knee, DERIVED from the one MIN_SEP the colouring
+        // allocates against (render::crease) rather than retyped in GLSL.
+        // The allocator and the renderer are the same law seen from two
+        // ends — how far apart two labels must be, and how brightly the gap
+        // between them draws — and nothing compared them: lowering MIN_SEP
+        // to make a starved band fit kept every cargo test green while the
+        // shader went on fading over a knee it no longer matched.
+        //
+        // Validated before it reaches the GPU: GLSL's smoothstep divides by
+        // (hi - lo), so an equal pair is a division by zero and an inverted
+        // one fades a bright seam dark. CreaseKnee refuses both, so this
+        // push cannot deliver one.
+        let knee = crate::render::crease::CreaseKnee::shipped();
+        self.post_mat.set_shader_parameter(
+            "u_crease_knee",
+            &Vector2::new(knee.lo() as f32, knee.hi() as f32).to_variant(),
+        );
+
+        // Settled law 1's floor, pushed to the acoustic-image skin the way
+        // the crease knee is pushed to the post pass, and for the identical
+        // reason: it is DERIVED from the film grain's amplitude, and a
+        // derivation whose two ends live in different languages is exactly
+        // how MIN_SEP and the crease knee drifted apart while every cargo
+        // test stayed green.
+        self.source_mat.set_shader_parameter(
+            "u_presence",
+            &(crate::render::reveal::PRESENCE as f32).to_variant(),
+        );
+
+        // The second knee: SHAPE and DETAIL are two laws now, and this is
+        // the one that decides how much a swept surface tells you. Same
+        // validated-before-the-GPU contract as the crease knee — DetailKnee
+        // refuses an equal or inverted pair, so this push cannot deliver a
+        // division by zero or an inverted fade.
+        let detail = crate::render::detail::DetailKnee::shipped();
+        self.post_mat.set_shader_parameter(
+            "u_detail_knee",
+            &Vector2::new(detail.lo() as f32, detail.hi() as f32).to_variant(),
+        );
+
+        // The third knee: SHAPE. Stated in METRES of depth step rather than
+        // in channel units, so that raising DIST_PACK_RANGE — which
+        // level_plan::pack_range_budget actively tells a designer to do when
+        // the map outgrows it — can no longer retune the outline behind their
+        // back. Same validated-before-the-GPU contract as the other two.
+        let sil = crate::render::silhouette::SilhouetteKnee::shipped();
+        self.post_mat.set_shader_parameter(
+            "u_sil_knee",
+            &Vector2::new(sil.lo() as f32, sil.hi() as f32).to_variant(),
+        );
+
+        // The grain's own amplitude, and the reason it is pushed rather than
+        // mirrored: `reveal::PRESENCE` is DERIVED from it, and settled law 1
+        // — a sound source is always visible — is that derivation. The
+        // constant used to live only as the shader's uniform default while
+        // `render::grain`'s doc claimed the composition root pushed it, so
+        // Rust was the mirror and the GLSL was the original, in the one
+        // place the ordering matters. Now the push makes the doc true and
+        // the shader's default is only what an unpushed material shows.
+        self.post_mat.set_shader_parameter(
+            "u_grain_amp",
+            &(crate::render::grain::GRAIN_AMP as f32).to_variant(),
+        );
 
         let core = WaveCore::new_gd();
         self.wave_core = Some(core.clone());
@@ -254,15 +316,35 @@ impl INode3D for UnseeingGame {
 
         self.demo = DemoTap::new(level.bind().demo_tap(), level.bind().demo_tap_normal());
 
-        // the hearing pass cuts player-sound shells by the walls too: hand
-        // it the same wall table the data skins occlude by.
-        let rects = level.bind().wall_rects();
-        self.post_mat
-            .set_shader_parameter("u_walls", &rects.to_variant());
-        self.post_mat
-            .set_shader_parameter("u_wall_count", &(rects.len() as i64).to_variant());
-        self.post_mat
-            .set_shader_parameter("u_wall_top", &level_plan::WALL_H.to_variant());
+        // Every material the ROOT owns that consults the wall table gets it
+        // here, the way the level hands it to the two it owns
+        // (`WaveLevel::push_wall_table`). Three, not one:
+        //
+        //   - the hearing pass cuts every shell by the walls, the hero's and
+        //     a world source's alike;
+        //   - the cane and the body wear `data_pass.gdshader`, which runs
+        //     `reveal_at` -> `source_reveal_vis` -> `wall_blocked_from`
+        //     exactly like the world skin does.
+        //
+        // The last two are why this is a loop. Without a table `u_wall_count`
+        // keeps its shader default of 0, the wall loop breaks on its first
+        // iteration and `wall_blocked_from` answers `false` for every line —
+        // so the barrier law simply did not run on the two surfaces the
+        // player always has in frame, and a source in the next room lit the
+        // hero's own body through the wall. Held by
+        // `game/tests/wiring_test.gd::test_wall_table_reaches_every_occluding_skin`,
+        // which reads the count back off all five materials.
+        // REGISTERED, not pushed. The level owns its wall table and rebuilds
+        // it on every derive; a push from out here would be correct only
+        // because a runtime level happens to derive exactly once, before
+        // this line runs. `WaveLevel::rederive` is a #[func] and anything
+        // may call it, after which these three would be carrying last
+        // derivation's walls while the level's own two carried this one's.
+        for mat in [&self.post_mat, &self.cane_mat, &self.body_mat] {
+            level
+                .bind_mut()
+                .add_occluding_skin(mat.clone().upcast::<Material>());
+        }
 
         // the level's companion creatures — a later process() drives each
         // one's clock from this same handle.

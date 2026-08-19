@@ -67,3 +67,52 @@ gdscript_resource_policy_violations() {
     printf '%s\n' "$PROJECT_FILE"
   fi
 }
+
+# A shader is a shipped resource. game/export_presets.cfg exports
+# "all_resources" and its exclude filter names only tests/, addons/ and
+# reports/, so every .gdshader under res:// that those do not cover is packed
+# into the web, macOS and Windows builds whether or not the game references
+# it. Nine probe-only shaders shipped to players that way, each one carrying
+# a header saying it was never referenced by the game.
+#
+# This is a CONTENT test rather than a name test: it catches a shader that
+# declares itself probe-only under any filename, and renaming cannot defeat
+# it. Probe shaders belong under game/tests/, beside the scenes that preload
+# them, where one exclusion rule already covers the whole corpus and where
+# tools/measure_web_platform.sh's single sed still lifts it for the web
+# measurement.
+shader_placement_violations() {
+  find "$1/game" \
+    \( -path "$1/game/addons" -o -path "$1/game/.godot" \
+       -o -path "$1/game/build" -o -path "$1/game/reports" \
+       -o -path "$1/game/tests" \) \
+    -prune -o \( -name '*.gdshader' -o -name '*.gdshaderinc' \) \
+    -exec grep -Il -e 'PROBE ONLY' {} \;
+}
+
+# A shader that declares the same entry point twice does not compile, and until
+# something looks, nothing says so out loud. game/tests/probe/shaders/
+# probe_depth_read.gdshader carried a duplicated `void vertex()` for several
+# commits: Godot answered "Redefinition of 'vertex'", the probe produced no
+# measurement at all, and pulse_pool.gdshaderinc went on citing that probe's
+# readings as the evidence behind the acoustic-image band.
+#
+# It is not caught anywhere else. gdlint does not read shaders; the placement
+# check above deliberately prunes game/tests, which is exactly where probe
+# shaders live; and no gdUnit suite loads a probe shader, because Godot 4
+# exposes no compile status for a Shader resource. So this is a structural
+# read of the source: a top-level `void <name>(` may appear once per file.
+#
+# It covers the WHOLE game tree, probes included, which is the opposite prune
+# from the placement check — the two ask different questions of the same files.
+shader_duplicate_entry_points() {
+  find "$1/game" \
+    \( -path "$1/game/addons" -o -path "$1/game/.godot" \
+       -o -path "$1/game/build" -o -path "$1/game/reports" \) \
+    -prune -o \( -name '*.gdshader' -o -name '*.gdshaderinc' \) -print \
+    | while read -r shader; do
+        dupes="$(sed -n 's/^void \([A-Za-z_][A-Za-z0-9_]*\)(.*/\1/p' "$shader" \
+          | LC_ALL=C sort | LC_ALL=C uniq -d)"
+        [ -z "$dupes" ] || echo "$shader: $(echo "$dupes" | tr '\n' ' ')"
+      done
+}

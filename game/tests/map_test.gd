@@ -10,12 +10,25 @@ extends GdUnitTestSuite
 
 const LEVEL_SCENE := preload("res://scenes/level_01.tscn")
 
-## Full-strength crease separation, read off hearing_post.gdshader's
-## smoothstep(0.04, 0.08, nrm) upper knee on the G channel.
-const MIN_OID_SEP := 0.08
-
 ## Boxes that share a face register as touching at exactly zero overlap.
 const TOUCH_EPS := 0.01
+
+
+## Full-strength crease separation. Read from render::labels::MIN_SEP
+## rather than declared here: this file used to carry a third executable
+## copy of that number, so a Rust-side change kept the whole gdUnit suite
+## green while the seams it governs rendered at reduced strength.
+## One label from the single role table (render::labels::role_label), read
+## rather than retyped — a suite carrying its own copy of a label agrees
+## with whatever the table says, and the table used to be wrong.
+func _role(name: String) -> float:
+	var table: Dictionary = WaveCore.new().role_labels()
+	assert_bool(table.has(name)).is_true()
+	return table.get(name, NAN)
+
+
+static func _min_sep() -> float:
+	return WaveCore.new().min_label_separation()
 
 
 ## The first mesh limb a node built for itself.
@@ -26,10 +39,10 @@ func _skin(body: Node) -> MeshInstance3D:
 
 
 ## The Rust-side occluder inflation, mirrored: a centerline padded by a
-## wall half-thickness (0.15) MINUS the 0.02 contact shrink each way —
+## wall half-thickness (0.15) MINUS the 0.05 contact shrink each way —
 ## the exact rect sight.rs::wall_rect derives for the sight shaders.
 func _occluder(seg: Vector4) -> Vector4:
-	const PAD := 0.13
+	const PAD := 0.10
 	return Vector4(
 		minf(seg.x, seg.z) - PAD,
 		minf(seg.y, seg.w) - PAD,
@@ -325,7 +338,7 @@ func test_touching_boxes_draw_their_seam() -> void:
 			for near_label: float in near["labels"]:
 				for far_label: float in far["labels"]:
 					closest = minf(closest, absf(near_label - far_label))
-			if closest < MIN_OID_SEP:
+			if closest < _min_sep():
 				melted.append(
 					(
 						"%s touches %s, closest labels %.3f apart"
@@ -393,10 +406,12 @@ func test_shipped_level_derives_with_no_starved_classes() -> void:
 
 ## The wall<->slab seam at real per-face resolution. A wall's OWN six face
 ## labels — read straight off its mesh CUSTOM0 channel, not the coarser
-## first-face bridge — must clear BOTH Floor (0.15)
-## and Ceiling (0.90) by at least MIN_OID_SEP. Hand-derived: every wall
-## takes its label from the five-entry WORLD_OIDS palette
-## ([0.25, 0.34, 0.43, 0.52, 0.61], `rust/src/nodes/level.rs`) — walls and
+## first-face bridge — must clear BOTH the Floor and the Ceiling role
+## labels by at least MIN_SEP. Both, and the palette, are READ from
+## render::labels rather than retyped, because the whole point of this
+## campaign is that a transcribed copy agrees with a table that has drifted
+## out of its own law. Every wall takes its label from the five-entry
+## WORLD_PALETTE — walls and
 ## source roles are graph-coloured; only slabs are anchored — and every one
 ## of those five sits comfortably clear of both slab role labels
 ## (`render::labels::role_label`) already; this is the wiring pin that
@@ -405,8 +420,8 @@ func test_shipped_level_derives_with_no_starved_classes() -> void:
 ## (the ledgered, currently-unreachable anchor-conflict case). The one wall
 ## below is exact test input; no authored scene is required to keep a wall.
 func test_a_wall_clears_the_floor_and_ceiling_labels() -> void:
-	const FLOOR_LABEL := 0.15
-	const CEILING_LABEL := 0.90
+	var floor_label := _role("Floor")
+	var ceiling_label := _role("Ceiling")
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
 	var wall := WaveWall.new()
@@ -419,11 +434,11 @@ func test_a_wall_clears_the_floor_and_ceiling_labels() -> void:
 	var custom: PackedFloat32Array = _skin(wall).mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0]
 	for f in 6:
 		var label: float = custom[f * 4]
-		if absf(label - FLOOR_LABEL) < MIN_OID_SEP:
-			violations.append("face %d = %.3f too close to Floor (%.2f)" % [f, label, FLOOR_LABEL])
-		if absf(label - CEILING_LABEL) < MIN_OID_SEP:
+		if absf(label - floor_label) < _min_sep():
+			violations.append("face %d = %.3f too close to Floor (%.2f)" % [f, label, floor_label])
+		if absf(label - ceiling_label) < _min_sep():
 			violations.append(
-				"face %d = %.3f too close to Ceiling (%.2f)" % [f, label, CEILING_LABEL]
+				"face %d = %.3f too close to Ceiling (%.2f)" % [f, label, ceiling_label]
 			)
 	(
 		assert_array(violations)
@@ -477,7 +492,7 @@ func test_a_junction_style_pair_merges_its_cap_and_separates_its_corner() -> voi
 	# MIN_SEP — the crease the corner itself draws.
 	var perp_face := _face_with_centroid_x_above(b_skin, 5.1)
 	var perp_label := _face_label(b_skin, perp_face)
-	assert_float(absf(perp_label - merged_label)).is_greater_equal(0.08)
+	assert_float(absf(perp_label - merged_label)).is_greater_equal(_min_sep())
 
 
 ## The four vertices belonging to face `f` (0..6, `render::paint::FACE_ORDER`
@@ -600,7 +615,7 @@ func test_a_lone_columns_flank_joins_its_rims_and_still_differs_from_its_neighbo
 	# from Base's own by at least MIN_SEP — carried by rule (c)'s blanket
 	# law between the two different, touching clusters, inherited by the
 	# flank purely by sharing Post's class number.
-	assert_float(absf(flank - base_label)).is_greater_equal(0.08)
+	assert_float(absf(flank - base_label)).is_greater_equal(_min_sep())
 
 
 ## The label a code-built column's mesh carries at ordinal `ord` (0 bottom
@@ -689,8 +704,123 @@ func test_wall_table_reaches_the_occluding_skins() -> void:
 			. is_empty()
 		)
 		assert_int(m.get_shader_parameter("u_wall_count")).is_equal(segs.size())
-		assert_float(m.get_shader_parameter("u_wall_top")).is_equal(3.0)
+		var spans: PackedVector2Array = m.get_shader_parameter("u_wall_y")
+		assert_int(spans.size()).is_equal(segs.size())
 	assert_int(level.wall_rects().size()).is_equal(segs.size())
+
+
+## A WALL OCCLUDES WHERE IT DRAWS, and this is the boundary half of that law
+## — that `WaveLevel` derives each occluder's sweep from the very world box
+## the paint pass reads, rather than from a global height.
+##
+## Nothing constrains a wall's Y. `level_plan::plan_wall_transform`
+## normalises a wall's BASIS and carries `origin.y` through untouched, and
+## `wall_segment` then writes (x1, z1, x2, z2) and discards the height at the
+## one point it could have been noticed. Under one global `u_wall_top` a
+## lifted wall left a phantom barrier in the open air beneath it and an
+## unoccluded strip across its raised top; a lifted level ROOT put every
+## occluder below the map, and the barrier law failed open everywhere in
+## silence, with no warning anywhere.
+##
+## SOURCE_THROUGH (0.3) is written out rather than read back: deriving the
+## expectation through `level.source_muffle` would call the function under
+## test with the same arguments and mirror it.
+func test_a_wall_occludes_where_it_draws_not_where_the_level_guesses() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var wall := WaveWall.new()
+	wall.length = 6.0
+	wall.position = Vector3(6, 1, 4)  # lifted a metre off the floor
+	level.add_child(wall)
+	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+
+	var spans: PackedVector2Array = level.wall_spans()
+	assert_int(spans.size()).is_equal(1)
+	assert_float(spans[0].x).is_equal_approx(1.0, 0.0001)
+	assert_float(spans[0].y).is_equal_approx(4.0, 0.0001)
+
+	# a sight line UNDER the lifted wall meets nothing...
+	var under := level.source_muffle(Vector3(3, 0.5, 4), Vector3(10, 0.5, 4))
+	assert_float(under).is_equal_approx(1.0, 0.0001)
+	# ...one through its body is muffled once...
+	var through := level.source_muffle(Vector3(3, 2.0, 4), Vector3(10, 2.0, 4))
+	assert_float(through).is_equal_approx(0.3, 0.0001)
+	# ...one still inside its raised body is muffled too: 3.9 m is UNDER the
+	# wall's 4.0 m top, so this is a second crossing case and not, as an
+	# earlier comment here claimed, the clearance case
+	var high_inside := level.source_muffle(Vector3(3, 3.9, 4), Vector3(10, 3.9, 4))
+	assert_float(high_inside).is_equal_approx(0.3, 0.0001)
+	# ...and only a line genuinely OVER the raised top meets nothing again
+	var above := level.source_muffle(Vector3(3, 4.5, 4), Vector3(10, 4.5, 4))
+	assert_float(above).is_equal_approx(1.0, 0.0001)
+
+
+## ...and the SPANS REACH THE GPU, which is a different claim from the level
+## computing them correctly.
+##
+## Every other assertion about spans in this suite reads `level.wall_spans()`
+## or `level.source_muffle()` — both CPU. The shipped scene's own wiring
+## check reads `u_wall_y` back off the materials but only ever sees
+## floor-standing walls, so it asserts (0, 3) on every slot: exactly the
+## global the whole change removed. Replace the push with a constant (0, 3)
+## table and every one of those still passes.
+##
+## This is the case that cannot: a LIFTED wall, whose span reaches the
+## material as (1, 4) or does not reach it at all.
+func test_a_lifted_walls_own_sweep_reaches_the_occluding_skins() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	var wall := WaveWall.new()
+	wall.length = 6.0
+	wall.position = Vector3(6, 1, 4)
+	level.add_child(wall)
+	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
+	var world := ShaderMaterial.new()
+	world.shader = load("res://shaders/data_pass.gdshader")
+	var image := ShaderMaterial.new()
+	image.shader = load("res://shaders/data_xray.gdshader")
+	level.inject(world, image, Pulses.new())
+	add_child(level)
+
+	for m: ShaderMaterial in [world, image]:
+		var spans: PackedVector2Array = m.get_shader_parameter("u_wall_y")
+		(
+			assert_int(spans.size())
+			. append_failure_message("the occluding skin was handed no span table at all")
+			. is_equal(1)
+		)
+		(
+			assert_float(spans[0].x)
+			. append_failure_message(
+				"the skin was handed a span of %s for a wall lifted to y = 1" % str(spans[0])
+			)
+			. is_equal_approx(1.0, 0.0001)
+		)
+		assert_float(spans[0].y).is_equal_approx(4.0, 0.0001)
+
+
+## The catastrophic case, and the one nothing warned about: a level ROOT
+## lifted bodily. Floor, ceiling and walls all rise together, every placement
+## law stays quiet because they measure against the risen floor — and under a
+## global sweep every occluder stayed at world [0, 3], entirely below the map.
+func test_a_lifted_level_root_carries_its_walls_occluders_with_it() -> void:
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.position = Vector3(0, 5, 0)
+	var wall := WaveWall.new()
+	wall.length = 6.0
+	wall.position = Vector3(6, 0, 4)  # standing on ITS level's floor
+	level.add_child(wall)
+	level.add_child(_spawn_marker(Vector3(2, 0, 2)))
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+
+	var spans: PackedVector2Array = level.wall_spans()
+	assert_int(spans.size()).is_equal(1)
+	assert_float(spans[0].x).is_equal_approx(5.0, 0.0001)
+	assert_float(spans[0].y).is_equal_approx(8.0, 0.0001)
+	# and the barrier law still works at the height the world now sits at
+	var risen := level.source_muffle(Vector3(3, 6.0, 4), Vector3(10, 6.0, 4))
+	assert_float(risen).is_equal_approx(0.3, 0.0001)
 
 
 ## A level that outgrows the sight shaders' slots is REPORTED, not indexed
@@ -846,7 +976,7 @@ func test_world_faces_clear_the_source_roles_they_touch() -> void:
 		compared += 1
 		for world_label: float in solid["labels"]:
 			for role_label: float in _source_labels(source):
-				if absf(world_label - role_label) < MIN_OID_SEP:
+				if absf(world_label - role_label) < _min_sep():
 					melted.append(
 						(
 							"%s(%.2f) touches source role(%.2f)"

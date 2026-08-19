@@ -195,3 +195,43 @@ The wiki page *Engineering — Debugging and Observability* currently states tha
 no gate asserts shader correctness. When this lands, that section must be
 rewritten to say what is now pinned and what still is not — and the plan's OPEN
 item closed with a pointer to the gate rather than deleted.
+
+
+---
+
+## Superseded, 2026-08-18
+
+**This spec's law no longer exists.** It designed
+
+```rust
+pub enum Verdict { Lit, Dark }
+pub fn expect_lit(walls_between: u32, kind: i32) -> Verdict
+```
+
+on the premise that player sounds are cut crisp at a wall while a world
+source is muffled but not silenced, with `HUM_THROUGH` and `SOURCE_THROUGH`
+as its constants. The 2026-08-14 barrier campaign deleted `HUM_THROUGH` from
+both languages and made a wall absolute for every kind, so the function
+degenerates to `walls_between == 0` with `kind` a dead parameter, and the
+cargo tests this spec planned around those constants are untestable as
+written.
+
+**Its comparison is nonetheless shipped.** "At least one point Rust says is
+lit and one it says is dark, in the same frame, from the same tap" is
+implemented — in a stronger form, since it reads one wall from both sides
+across one voice change and so cancels every other emitter — by
+`game/tests/probe/occlusion_probe.gd`. Its checks 10 and 11 are the oracle
+pattern outright: ask `explain_ray(...)["camera_crossings"]`, then hold the
+pixel to a hand-derived window.
+
+**`rust/src/observe/oracle.rs` is deliberately not built.** What was missing
+was never an oracle but a scheduler and a host — see
+`docs/superpowers/specs/2026-08-18-closing-the-renderers-last-gaps-design.md`,
+which chooses software GL under `xvfb` in `ci/pipeline.sh` instead, on a
+recipe this repository had already researched and written down.
+
+The spec's other decisions have aged well and are worth keeping in view: the
+two-threshold form with a reported gap, so a shrinking margin is visible
+before it flakes; and the acceptance criterion — narrow the slab loop's
+`k < 3` to `k < 2` and watch the gate fail — which remains the right way to
+prove any rendered gate is not decoration.

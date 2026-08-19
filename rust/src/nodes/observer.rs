@@ -19,9 +19,9 @@
 //! answer of all. The eye-free explainers keep working.
 //!
 //! The standing image is NOT one of those quantities, and the refusal must
-//! not claim it is: `source_floor` is read straight back off a source's own
-//! limbs by [`standing_image`] and would be reportable with no camera in
-//! the scene at all. It is refused along with the rest only because a
+//! not claim it is: `source_volume`/`source_muffle` are read straight back
+//! off a source's own limbs by [`standing_image`] and would be reportable
+//! with no camera in the scene at all. It is refused along with the rest only because a
 //! snapshot is all-or-nothing by design.
 
 use godot::classes::{
@@ -38,7 +38,6 @@ use crate::cat_brain::{BrainCapture, BrainState, RoamRect};
 use crate::cat_gait::{GaitCapture, LEGS};
 use crate::echo_queue::PendingEcho;
 use crate::ffi::{WaveCore, cast_reflection_fan};
-use crate::level_plan;
 use crate::observe::evict::{EvictionPlan, EvictionRule, explain_eviction};
 use crate::observe::oids::{
     LabelFault, OidExplanation, coplanar_label_faults, explain_oids_checked,
@@ -67,7 +66,7 @@ const NO_LEVEL: &str = "observer was never injected a level";
 
 /// No camera: every eye-relative quantity in a snapshot would be a guess.
 /// The two that genuinely are eye-relative are named, and nothing else —
-/// a refusal that blamed `source_floor` (read back off the source's own
+/// a refusal that blamed the standing image (read back off the source's own
 /// limbs, camera or no camera) would send a reader hunting the wrong system.
 const NO_CAMERA: &str = "observer was never injected a camera — walls_to_eye and the camera group are measured \
      from the eye";
@@ -258,7 +257,7 @@ impl WaveObserver {
             // mistaken for a world rendered at flicker zero.
             flick.unwrap_or(f64::NAN),
             SceneObservation {
-                sources: sources(&level, eye, &rects),
+                sources: sources(&level, eye, level.occluders(), level.prop_occluders()),
                 wall_rects: rects,
                 eye: EyeObservation {
                     position: eye,
@@ -397,8 +396,9 @@ impl WaveObserver {
             Err(reason) => return unavailable(reason),
         };
         let level = level.bind();
-        let rects: Vec<Vector4> = level.wall_rects().as_slice().to_vec();
-        let explanation = ray::explain_ray(from, to, &rects, level_plan::WALL_H as f32);
+        // the occluders themselves, spans included — not rebuilt from the
+        // rect projection, which no longer carries a wall's height
+        let explanation = ray::explain_ray(from, to, level.occluders(), level.prop_occluders());
         ray_dict(&explanation, &level.wall_names())
     }
 
@@ -792,7 +792,12 @@ fn shader_flick(material: Option<Gd<Material>>) -> Option<f64> {
 /// added to one of them — while the observer went on confidently
 /// reporting a number no shader was holding. Unobserved is reported as
 /// [`f64::NAN`] and lands in the snapshot's `unknown`, never as a guess.
-fn sources(level: &WaveLevel, eye: Vector3, rects: &[Vector4]) -> Vec<SourceObservation> {
+fn sources(
+    level: &WaveLevel,
+    eye: Vector3,
+    occluders: &[crate::sight::Occluder],
+    props: &[crate::sight::Occluder],
+) -> Vec<SourceObservation> {
     level
         .source_handles()
         .iter()
@@ -802,7 +807,7 @@ fn sources(level: &WaveLevel, eye: Vector3, rects: &[Vector4]) -> Vec<SourceObse
             let bound = source.dyn_bind();
             let voice = bound.voice();
             let position = bound.hub();
-            let line = ray::explain_ray(eye, position, rects, level_plan::WALL_H as f32);
+            let line = ray::explain_ray(eye, position, occluders, props);
             SourceObservation {
                 name,
                 position,
@@ -811,7 +816,8 @@ fn sources(level: &WaveLevel, eye: Vector3, rects: &[Vector4]) -> Vec<SourceObse
                 cadence: voice.cadence,
                 next_emit: bound.next_emit().unwrap_or(f64::NAN),
                 walls_to_eye: line.camera_crossings,
-                source_floor: standing_image(&node).unwrap_or(f64::NAN),
+                source_volume: standing_image(&node, source::VOLUME_PARAM).unwrap_or(f64::NAN),
+                source_muffle: standing_image(&node, source::MUFFLE_PARAM).unwrap_or(f64::NAN),
                 slot_pressure: voice.slot_pressure(),
             }
         })
@@ -858,22 +864,27 @@ fn capture_cats(level: &WaveLevel) -> Result<Vec<CatCapture>, String> {
         .collect()
 }
 
-/// The standing acoustic image a source's limbs are actually carrying —
-/// the `u_source_floor` instance uniform the level pushes each frame. Every
-/// limb of one source is pushed the same value, so the first that answers
-/// speaks for the source. `None` before any frame has driven it, which is a
-/// different fact from an image of zero (a source muffled to silence).
-fn standing_image(node: &Gd<Node>) -> Option<f64> {
+/// One half of the standing acoustic image a source's limbs are actually
+/// carrying — whichever instance uniform `param` names, read back off the
+/// mesh the level pushed it to. Every limb of one source is pushed the same
+/// value, so the first that answers speaks for the source. `None` before
+/// any frame has driven it, which is a different fact from a value of zero
+/// (a source muffled to silence).
+///
+/// Parameterised by name rather than split into two walkers because the two
+/// halves are pushed together, to the same limbs, by the same call: one
+/// missing and the other present would be a bug in `SourceRig::set_image`,
+/// and the snapshot reports each independently so that bug is visible
+/// rather than averaged away.
+fn standing_image(node: &Gd<Node>, param: &str) -> Option<f64> {
     if let Ok(limb) = node.clone().try_cast::<MeshInstance3D>()
-        && let Ok(image) = limb
-            .get_instance_shader_parameter(source::IMAGE_PARAM)
-            .try_to::<f64>()
+        && let Ok(value) = limb.get_instance_shader_parameter(param).try_to::<f64>()
     {
-        return Some(image);
+        return Some(value);
     }
     node.get_children()
         .iter_shared()
-        .find_map(|child| standing_image(&child))
+        .find_map(|child| standing_image(&child, param))
 }
 
 fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionary {
@@ -897,8 +908,11 @@ fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionar
     state.set("echoes", &echoes);
     let sources: Array<VarDictionary> = observation.sources.iter().map(source_dict).collect();
     for (index, source) in observation.sources.iter().enumerate() {
-        if source.source_floor.is_nan() {
-            unknown.push(&format!("sources[{index}].source_floor"));
+        if source.source_volume.is_nan() {
+            unknown.push(&format!("sources[{index}].source_volume"));
+        }
+        if source.source_muffle.is_nan() {
+            unknown.push(&format!("sources[{index}].source_muffle"));
         }
         if source.next_emit.is_nan() {
             unknown.push(&format!("sources[{index}].next_emit"));
@@ -968,7 +982,7 @@ fn source_dict(source: &SourceObservation) -> VarDictionary {
     entry.set("volume", source.volume);
     entry.set("reach", source.reach);
     entry.set("cadence", source.cadence);
-    // the same NaN-means-absent rule as source_floor below: a gate that
+    // the same NaN-means-absent rule as the standing image below: a gate that
     // cannot fire is holding an appointment it will never keep, and a date
     // that never arrives is worse than an admitted absence
     if !source.next_emit.is_nan() {
@@ -978,8 +992,11 @@ fn source_dict(source: &SourceObservation) -> VarDictionary {
     // NaN is the "never pushed" marker set by `standing_image`, and the one
     // value the uniform can never legitimately hold: the key is left out
     // and named in the snapshot's `unknown` instead of reported as a guess.
-    if !source.source_floor.is_nan() {
-        entry.set("source_floor", source.source_floor);
+    if !source.source_volume.is_nan() {
+        entry.set("source_volume", source.source_volume);
+    }
+    if !source.source_muffle.is_nan() {
+        entry.set("source_muffle", source.source_muffle);
     }
     entry.set("slot_pressure", source.slot_pressure);
     entry
@@ -1043,6 +1060,7 @@ fn ray_dict(explanation: &RayExplanation, names: &[String]) -> VarDictionary {
             entry.set("index", wall.index as i64);
             entry.set("name", wall_name(names, wall.index).as_str());
             entry.set("rect", wall.rect);
+            entry.set("span", wall.span);
             entry.set("crossed", wall.crossed);
             entry.set("contains_origin", wall.contains_origin);
             entry
@@ -1051,10 +1069,17 @@ fn ray_dict(explanation: &RayExplanation, names: &[String]) -> VarDictionary {
     let mut entry = VarDictionary::new();
     entry.set("from", explanation.from);
     entry.set("to", explanation.to);
-    entry.set("wall_top", f64::from(explanation.wall_top));
     entry.set("camera_crossings", i64::from(explanation.camera_crossings));
     entry.set("source_crossings", i64::from(explanation.source_crossings));
-    entry.set("hum_transmission", explanation.hum_transmission);
+    entry.set("prop_crossings", i64::from(explanation.prop_crossings));
+    entry.set("visible_air", explanation.visible_air);
+    entry.set(
+        "first_wall",
+        explanation
+            .first_wall
+            .map_or(-1_i64, |i| i64::try_from(i).unwrap_or(-1)),
+    );
+    entry.set("wave_transmission", explanation.wave_transmission);
     entry.set("source_transmission", explanation.source_transmission);
     entry.set("walls", &walls);
     entry

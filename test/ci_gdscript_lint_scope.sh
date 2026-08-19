@@ -325,6 +325,44 @@ else
   bad "the production placement gate rejects the legal tests-only tree"
 fi
 
+# --- A shader with two entry points does not compile, and nothing said so.
+# game/tests/probe/shaders/probe_depth_read.gdshader carried a duplicated
+# void vertex() for several commits: Godot answered "Redefinition of 'vertex'",
+# the probe produced no measurement at all, and the shipped comments in
+# pulse_pool.gdshaderinc went on citing that probe's readings as evidence.
+# No gate looked, because probe shaders are deliberately outside the placement
+# check and nothing else reads them.
+#
+# Planted under game/tests/, where the placement gate is silent by design, so
+# this proves the ENTRY-POINT check and not that one. ---
+DUP_SHADER="$DIR/game/tests/probe/shaders/ci_scope_duplicate_entry.gdshader"
+cat >"$DUP_SHADER" <<'DUPEOF'
+shader_type spatial;
+// PROBE ONLY — planted by test/ci_gdscript_lint_scope.sh.
+void vertex() {
+	POSITION = vec4(VERTEX.xy * 2.0, 1.0, 1.0);
+}
+void vertex() {
+	POSITION = vec4(VERTEX.xy * 2.0, 1.0, 1.0);
+}
+void fragment() {
+	ALBEDO = vec3(0.0);
+}
+DUPEOF
+if "$DIR/ci/check_gdscript_policy.sh" >"$POLICY_OUT" 2>&1; then
+  bad "the shader gate accepted a shader with two entry points of the same name"
+elif grep -qF "$DUP_SHADER" "$POLICY_OUT"; then
+  ok "the shader gate refuses and names a shader with a duplicated entry point"
+else
+  bad "the shader gate failed without naming the duplicated entry point"
+fi
+rm -f "$DUP_SHADER"
+if "$DIR/ci/check_gdscript_policy.sh" >"$POLICY_OUT" 2>&1; then
+  ok "the shader gate accepts the tree once the duplicate is gone"
+else
+  bad "the shader gate rejects a tree whose shaders each declare one entry point"
+fi
+
 # --- prove the lint census's known third-party exclusions: tracked gdUnit4 is
 # in the tree, while the ignored godot_mcp addon may be installed locally.
 # Unknown addons were deliberately proved illegal above. Split

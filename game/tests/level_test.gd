@@ -599,8 +599,9 @@ func test_extents_knob_resizes_slabs() -> void:
 
 
 ## A slab is built through the SAME box path a wall and a prop take, then
-## derive anchors all its faces to the slab's fixed role label. Held on the
-## RESIZED slab specifically: `render::paint::resize_box_surface` rewrites
+## derive anchors it to the slab's fixed role label. A lone slab is a merge
+## singleton, so all six faces collapse into ONE class and carry that one
+## label. Held on the RESIZED slab: `render::paint::resize_box_surface` rewrites
 ## the mesh in place and must preserve that already-painted CUSTOM0 channel,
 ## rather than restoring placeholder ordinals or doubling the array after a
 ## botched `clear_surfaces`.
@@ -612,7 +613,8 @@ func test_a_resized_slab_preserves_its_fixed_role_label() -> void:
 	level.extents = Vector2(8, 6)
 	var slabs := _slabs(level)
 	assert_int(slabs.size()).is_equal(2)
-	var expected := PackedFloat32Array([0.15, 0.90])
+	var roles: Dictionary = WaveCore.new().role_labels()
+	var expected := PackedFloat32Array([roles["Floor"], roles["Ceiling"]])
 	for slab_i: int in slabs.size():
 		var slab := slabs[slab_i]
 		var mesh := _skin(slab).mesh as ArrayMesh
@@ -694,14 +696,12 @@ func _stub_walls(count: int) -> WaveLevel:
 	return level
 
 
-## The heads-up half of the wall budget, at the engine boundary. The words
-## are pinned in cargo (level_plan::wall_budget); what is pinned HERE is
-## that they are actually SAID — that push_wall_table still hands the
-## verdict to godot_warn!. Delete that one call and every cargo test and
+## The heads-up half of the occluder budget, at the engine boundary. The
+## words are pinned in cargo (level_plan::occluder_budget); what is pinned
+## HERE is that they are actually SAID — that push_wall_table still hands
+## the verdict to godot_warn!. Delete that one call and every cargo test and
 ## every other suite stays green while a designer is never told anything.
-##
-## A heads-up, not an error: 29 walls of 32 still occlude, nothing is
-## truncated, and the level is merely one room short of the ceiling.
+## A heads-up, not an error: 29 of 32 still occlude and nothing is truncated.
 func test_a_level_nearing_the_wall_slots_warns_with_its_headroom() -> void:
 	var level := _stub_walls(29)
 	var enter := func() -> void: add_child(level)
@@ -709,10 +709,10 @@ func test_a_level_nearing_the_wall_slots_warns_with_its_headroom() -> void:
 		(
 			"WaveLevel: 29 walls against the sight shaders' 32 slots — 3 segments left, short of "
 			+ "the 4 another room costs (three sides plus the doorway, which is the gap between "
-			+ "two segments and so costs a segment of its own). Every wall past the last slot "
+			+ "two segments and so costs a segment of its own). Every occluder past the last slot "
 			+ "silently stops occluding. Raising MAXW (rust/src/sight.rs, mirrored in "
 			+ "game/shaders/pulse_pool.gdshaderinc) is a measured decision and not a free one: "
-			+ "every wall is another rect in the per-fragment sight loop, on every platform."
+			+ "every occluder is another rect in the per-fragment sight loop, on every platform."
 		)
 	))
 	assert_int(level.wall_segments().size()).is_equal(29)
@@ -730,10 +730,12 @@ func test_a_level_past_the_wall_slots_errors_and_counts_the_dropped_walls() -> v
 		(
 			"WaveLevel: 33 walls exceed the sight shaders' 32 slots — the table keeps the first "
 			+ "32 and drops 1, which stop occluding entirely: waves pass straight through them "
-			+ "and no sight line counts them. Delete or merge walls, or raise MAXW "
-			+ "(rust/src/sight.rs, mirrored in game/shaders/pulse_pool.gdshaderinc) — a measured "
-			+ "decision and not a free one: every wall is another rect in the per-fragment sight "
-			+ "loop, on every platform."
+			+ "and no sight line counts them. Note that a pillar can cost a wall its slot: solids "
+			+ "are appended after the walls, so the drops come off the end of whichever "
+			+ "population runs over. Delete or merge walls, lower or thin a spanning solid so it "
+			+ "stops qualifying, or raise MAXW (rust/src/sight.rs, mirrored in "
+			+ "game/shaders/pulse_pool.gdshaderinc) — a measured decision and not a free one: "
+			+ "every occluder is another rect in the per-fragment sight loop, on every platform."
 		)
 	))
 	assert_int(level.wall_rects().size()).is_equal(32)  # truncated, as the message says
@@ -1035,9 +1037,8 @@ func test_a_degenerate_solid_is_refused_not_mislabelled() -> void:
 ##
 ## The wall stands well inside the default 20x20 extents so the placement
 ## laws stay silent and the only behaviour under test is the resize.
-## 0.15 is the floor slab's own fixed role label
-## (`render::labels::role_label(Role::Floor)`) and 0.08 is MIN_SEP, both
-## written out here rather than read back from the code that chose them.
+## The floor's role label and MIN_SEP are READ from render::labels, not
+## transcribed: a suite with its own copies agrees with a drifted table.
 func test_a_resize_after_the_derive_keeps_the_painted_labels() -> void:
 	var level: WaveLevel = auto_free(WaveLevel.new())
 	var wall := _wall(4.0, Vector3(5, 0, 5), false)
@@ -1057,8 +1058,10 @@ func test_a_resize_after_the_derive_keeps_the_painted_labels() -> void:
 	for vertex: int in range(24):
 		assert_float(resized[vertex]).is_equal(painted[vertex])
 	# and the seam with the floor it stands on still draws
+	var core := WaveCore.new()
+	var floor_label: float = core.role_labels()["Floor"]
 	for label: float in resized:
-		assert_float(absf(label - 0.15)).is_greater_equal(0.08)
+		assert_float(absf(label - floor_label)).is_greater_equal(core.min_label_separation())
 
 
 ## The same law on the OTHER resize path: a column and a wedge rebuild

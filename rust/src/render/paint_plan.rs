@@ -5,8 +5,16 @@ use crate::render::faces::{Face, Shape, bounds, faces, paint_ordinal_count, plan
 use crate::render::labels;
 use crate::render::superface::{SeparationBuilder, Superfaces, superfaces};
 
-const LABEL_MIN: f64 = 0.15;
-const LABEL_MAX: f64 = 0.96;
+/// The band a painted label may land in — the label LADDER's own first and
+/// last rungs, read from `labels` rather than retyped here.
+///
+/// They were a second executable copy of 0.15 and 0.96, and nothing
+/// asserted the two agreed: re-spacing the ladder would have left this
+/// validator accepting labels the ladder no longer produces, or rejecting
+/// ones it does.
+const LABEL_MIN: f64 = labels::LADDER_BASE;
+const LABEL_MAX: f64 =
+    labels::LADDER_BASE + labels::LADDER_STEP * (labels::LADDER_RUNGS as f64 - 1.0);
 pub const MAX_PAINT_ENTRIES: usize = 256;
 pub const MAX_PAINT_SOURCES: usize = 256;
 pub const MAX_PALETTE_VALUES: usize = 11;
@@ -207,9 +215,47 @@ pub fn update_role_labels(previous: &[Option<f64>], supplied: &[f64]) -> Vec<Opt
     updated
 }
 
+/// A label an entry brings with it instead of taking from the palette, and
+/// the ONE face of that entry it belongs to.
+///
+/// The face scoping is the whole of it. An anchor used to be a property of
+/// the whole solid, written onto every class the solid owned — which is
+/// correct only while the solid stays a merge singleton and therefore owns
+/// exactly one class. The moment anything coplanar-merges with it, its
+/// faces split, rule (a) separates the pairs that share an edge, and every
+/// one of those classes carries the same anchor: the separation check then
+/// compared a label against itself and rejected the entire level's paint.
+/// One floor hatch set flush into the floor was enough.
+///
+/// Scoping the anchor to a face also says the truer thing. A role like
+/// `Floor` or `Ceiling` names the SURFACE a room meets, not the six sides
+/// of the slab that carries it; the slab's buried flanks have no role and
+/// are free to take palette labels like any other geometry.
+///
+/// TWO LIMITS, both currently out of reach and both stated rather than
+/// discovered later. A [`Shape::Column`]'s curved flank is not a planar
+/// face and so has no entry to name — a lateral direction on a column
+/// resolves to whichever cap answers it best. And two DIFFERENT entries
+/// whose anchored classes must separate but carry the same label are a
+/// contradiction the planner still refuses outright
+/// ([`PaintPlanError::AnchorSeparationConflict`]). Only slabs are anchored
+/// today, a level builds exactly one floor and one ceiling, and their
+/// labels sit 0.72 apart, so neither limit is reachable from the shipped
+/// vocabulary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FaceAnchor {
+    /// The label that face must take.
+    pub label: f64,
+    /// Which face: the one whose outward world normal points most nearly
+    /// this way. A direction rather than a face ordinal, so a caller states
+    /// the thing it actually means ("the side facing the room") and stays
+    /// right through any change to face ordering or shape vocabulary.
+    pub facing: [f64; 3],
+}
+
 pub struct PaintEntryInput {
     pub shape: Shape,
-    pub anchor: Option<f64>,
+    pub anchor: Option<FaceAnchor>,
     pub is_wall: bool,
 }
 
@@ -376,6 +422,71 @@ fn valid_label(label: f64) -> bool {
     label.is_finite() && (LABEL_MIN..=LABEL_MAX).contains(&label)
 }
 
+/// Which way a shape's own local +Y points in world space — the direction a
+/// floor slab presents to the room, and the negation of the one a ceiling
+/// does.
+///
+/// Read off the shape rather than assumed to be world up. The anchor
+/// direction used to be the literal `[0, 1, 0]`, which is only the same
+/// thing while the level sits unrotated; a level tipped by its own node
+/// transform would have anchored `Role::Floor` onto whichever flank
+/// happened to face world up and left the surface underfoot taking a
+/// palette label. (A tipped level breaks the wall occluder independently —
+/// `sight::wall_rect` inflates world-axis XZ rects — so this is
+/// belt-and-braces rather than support for a rotated world.)
+///
+/// Total on any input: a shape whose basis is degenerate or non-finite
+/// answers world up, which is the shipped orientation and a direction
+/// [`finite_direction`] accepts, rather than a zero vector that would make
+/// the anchor invalid and take the level's whole paint with it.
+#[must_use]
+pub fn shape_up(shape: &Shape) -> [f64; 3] {
+    let up = match shape {
+        Shape::Box3d { basis, .. } => basis[1],
+        _ => [0.0, 1.0, 0.0],
+    };
+    if finite_direction(up) {
+        up
+    } else {
+        [0.0, 1.0, 0.0]
+    }
+}
+
+/// A usable anchor direction: finite, and actually pointing somewhere. The
+/// zero vector names no face at all, and would otherwise tie with every
+/// face at a dot product of zero.
+fn finite_direction(dir: [f64; 3]) -> bool {
+    dir.iter().all(|c| c.is_finite()) && dir.iter().any(|c| *c != 0.0)
+}
+
+/// Which of `entry`'s faces points most nearly along `facing` — the face a
+/// [`FaceAnchor`] names.
+///
+/// Ties break on the earlier face in build order, so the answer is a
+/// function of the request alone and never of hash iteration, matching the
+/// determinism law the rest of this vocabulary is written to. `None` when
+/// the entry contributed no faces, which is exactly the case a rejected
+/// entry leaves behind — an anchor with nothing to land on is dropped
+/// rather than misapplied to a neighbour.
+fn facing_face(faces: &[Face], entry: usize, facing: [f64; 3]) -> Option<usize> {
+    faces
+        .iter()
+        .enumerate()
+        .filter(|(_, face)| face.solid == entry)
+        .map(|(index, face)| {
+            let dot = (0..3).map(|axis| face.normal[axis] * facing[axis]).sum();
+            (index, dot)
+        })
+        .fold(
+            None,
+            |best: Option<(usize, f64)>, (index, dot): (usize, f64)| match best {
+                Some((_, best_dot)) if best_dot >= dot => best,
+                _ => Some((index, dot)),
+            },
+        )
+        .map(|(index, _)| index)
+}
+
 fn valid_box(area: Box3) -> bool {
     (0..3).all(|axis| {
         area.min[axis].is_finite() && area.max[axis].is_finite() && area.min[axis] <= area.max[axis]
@@ -405,7 +516,10 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
     validate_request_size(&request)?;
     validate_palette(&request.palette)?;
     for (entry, input) in request.entries.iter().enumerate() {
-        if input.anchor.is_some_and(|label| !valid_label(label)) {
+        if input
+            .anchor
+            .is_some_and(|anchor| !valid_label(anchor.label) || !finite_direction(anchor.facing))
+        {
             return Err(PaintPlanError::InvalidAnchor { entry });
         }
     }
@@ -503,27 +617,32 @@ pub fn plan(request: PaintRequest) -> Result<PaintPlan, PaintPlanError> {
 
     let mut anchor_by_class = filled(classes, None);
     for (entry, input) in request.entries.iter().enumerate() {
-        let Some(label) = input.anchor else { continue };
-        let mut seen = Vec::new();
-        for &class in &classes_of_entry[entry] {
-            if seen.contains(&class) {
-                continue;
+        let Some(anchor) = input.anchor else { continue };
+        if !accepted[entry] {
+            continue;
+        }
+        // ONE class per anchored entry: the class its named face landed in,
+        // never every class the entry owns. See `FaceAnchor` for what the
+        // entry-wide version cost.
+        let Some(face_index) = facing_face(&all_faces, entry, anchor.facing) else {
+            continue;
+        };
+        let Some(&class) = sf.class_of.get(face_index) else {
+            return Err(PaintPlanError::ClassOverflow);
+        };
+        let Some(slot) = anchor_by_class.get_mut(class) else {
+            return Err(PaintPlanError::ClassOverflow);
+        };
+        if let Some((prior, first_entry)) = *slot {
+            if f64::to_bits(prior) != anchor.label.to_bits() {
+                return Err(PaintPlanError::AnchorConflict {
+                    class,
+                    first_entry,
+                    second_entry: entry,
+                });
             }
-            seen.push(class);
-            let Some(slot) = anchor_by_class.get_mut(class) else {
-                return Err(PaintPlanError::ClassOverflow);
-            };
-            if let Some((prior, first_entry)) = *slot {
-                if f64::to_bits(prior) != label.to_bits() {
-                    return Err(PaintPlanError::AnchorConflict {
-                        class,
-                        first_entry,
-                        second_entry: entry,
-                    });
-                }
-            } else {
-                *slot = Some((label, entry));
-            }
+        } else {
+            *slot = Some((anchor.label, entry));
         }
     }
     let direct_anchors: Vec<(usize, f64)> = anchor_by_class
@@ -752,6 +871,16 @@ mod tests {
         }
     }
 
+    /// An anchor on the entry's UPWARD face — the shape a slab's Floor
+    /// role has, and the one every anchor case in this module is written
+    /// against unless it says otherwise.
+    fn up_anchor(label: f64) -> FaceAnchor {
+        FaceAnchor {
+            label,
+            facing: [0.0, 1.0, 0.0],
+        }
+    }
+
     fn request(entries: Vec<PaintEntryInput>) -> PaintRequest {
         PaintRequest {
             entries,
@@ -796,6 +925,54 @@ mod tests {
                 limit: 256,
             })
         );
+    }
+
+    /// THE BREAK: a source that DRAWS keeping its blueprint preview labels,
+    /// which are bit-for-bit `WORLD_PALETTE` entries (`Role::Shell` is
+    /// `[1]`, `Role::Moving` is `[4]`) and would therefore melt into a wall
+    /// the colouring painted the same. `render::labels` argues this cannot
+    /// happen because a level always relabels; this is where that stops
+    /// being an argument.
+    ///
+    /// Every route to `KeepExisting` must be a source that cannot melt.
+    /// `area: None` means no `MeshInstance3D` anywhere in the subtree, so
+    /// there is nothing on screen to melt; an unmeasurable box means no
+    /// describable geometry. Anything with a measurable area and a finite
+    /// sweep margin — which is every shipped source, since `sweep_margin`
+    /// is a trait method returning a computed constant — must come back
+    /// `Relabel`.
+    #[test]
+    fn a_measurable_source_is_always_relabelled() {
+        let area = Box3 {
+            min: [0.0, 0.0, 0.0],
+            max: [1.0, 2.0, 1.0],
+        };
+        for margin in [0.0, 0.25, 1.5] {
+            let plan = plan(PaintRequest {
+                entries: Vec::new(),
+                sources: vec![PaintSourceInput {
+                    area: Some(area),
+                    sweep_margin: margin,
+                    roles: 2,
+                }],
+                palette: PALETTE.to_vec(),
+            })
+            .expect("a lone measurable source is plannable");
+            let PaintCommand::Relabel(labels) = &plan.source_commands[0] else {
+                panic!(
+                    "a measurable source at margin {margin} kept its preview labels: {:?}",
+                    plan.source_commands[0]
+                );
+            };
+            assert_eq!(labels.len(), 2);
+            // and what it was given is not what it came with
+            for label in labels {
+                assert!(
+                    *label != crate::render::labels::role_label(crate::render::labels::Role::Shell),
+                    "the derived label is the preview default"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1015,32 +1192,53 @@ mod tests {
     #[test]
     fn invalid_and_conflicting_anchors_are_fatal() {
         let mut invalid = box_entry([0.0; 3], [1.0; 3]);
-        invalid.anchor = Some(0.05);
+        invalid.anchor = Some(up_anchor(0.05));
         assert_eq!(
             plan(request(vec![invalid])),
             Err(PaintPlanError::InvalidAnchor { entry: 0 })
         );
 
+        // two coincident boxes, both anchoring their upward face: those two
+        // faces are coplanar, same-facing and overlapping, so the merge law
+        // makes them ONE class — which is then asked to be 0.15 and 0.90 at
+        // once. A genuine authoring contradiction between two entries, and
+        // still fatal.
         let mut a = box_entry([0.0; 3], [2.0; 3]);
-        a.anchor = Some(0.15);
+        a.anchor = Some(up_anchor(0.15));
         let mut b = box_entry([0.0; 3], [2.0; 3]);
-        b.anchor = Some(0.90);
-        assert_eq!(
-            plan(request(vec![a, b])),
-            Err(PaintPlanError::AnchorConflict {
-                class: 0,
-                first_entry: 0,
-                second_entry: 1
-            })
-        );
+        b.anchor = Some(up_anchor(0.90));
+        let Err(PaintPlanError::AnchorConflict {
+            class,
+            first_entry,
+            second_entry,
+        }) = plan(request(vec![a, b]))
+        else {
+            panic!("two anchors on one merged class must be refused");
+        };
+        assert_eq!((first_entry, second_entry), (0, 1));
+        // the blamed class must be the one the two UPWARD faces merged
+        // into, not merely some class of theirs — under the entry-wide
+        // anchor this reported class 0, a face neither anchor named
+        let merged = plan(request(vec![
+            box_entry([0.0; 3], [2.0; 3]),
+            box_entry([0.0; 3], [2.0; 3]),
+        ]))
+        .expect("the same pair without anchors must plan");
+        let up_class = merged
+            .faces
+            .iter()
+            .find(|face| face.entry == 0 && face.face.normal[1] > 0.5)
+            .expect("no upward face")
+            .class;
+        assert_eq!(class, up_class);
     }
 
     #[test]
     fn touching_separate_anchors_that_cannot_draw_a_seam_are_fatal() {
         let mut first = box_entry([0.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
-        first.anchor = Some(0.15);
+        first.anchor = Some(up_anchor(0.15));
         let mut second = box_entry([2.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
-        second.anchor = Some(0.20);
+        second.anchor = Some(up_anchor(0.20));
         assert_eq!(
             plan(request(vec![first, second])),
             Err(PaintPlanError::AnchorSeparationConflict {
@@ -1052,14 +1250,259 @@ mod tests {
         );
     }
 
+    /// THE break this catches, and it takes down a whole level: an anchor
+    /// is a property of an ENTRY but labels are allocated per CLASS, and
+    /// the separation check had no exemption for a class pair belonging to
+    /// the same entry.
+    ///
+    /// A slab owns exactly one class only while it stays a merge singleton.
+    /// The moment any solid coplanar-merges with it — a floor hatch set
+    /// flush into the floor is the obvious authoring — the slab joins a
+    /// multi-member cluster, its six faces stop collapsing into one class,
+    /// and rule (a) separates each pair of its own faces that share an
+    /// edge. Every one of those classes carries the slab's own anchor, so
+    /// the check compared 0.15 against 0.15, found them closer than
+    /// MIN_SEP, and rejected the ENTIRE request. `WaveLevel::paint_labels`
+    /// answers a rejection with one warning line and `return`, so every
+    /// solid in the level keeps its unpainted BOX_ORDINALS — which
+    /// `pack_data` writes to G unclamped, saturating 1..5 to white. One
+    /// authored prop, and most of the world's outlines stop drawing.
+    ///
+    /// The fix is that an unsatisfiable anchor must degrade LOCALLY: the
+    /// anchored entry keeps its anchor on the faces that can hold it and
+    /// reports through the existing starvation channel, rather than
+    /// abandoning the level. A conflict between two DIFFERENT entries is
+    /// still fatal — that is a genuine authoring contradiction, and the two
+    /// tests above pin it.
+    #[test]
+    fn a_prop_flush_with_an_anchored_slab_does_not_abandon_the_level() {
+        // the floor slab: 0.1 m thick, its top face exactly at y = 0
+        let mut slab = box_entry([0.0, -0.05, 0.0], [10.0, 0.1, 10.0]);
+        slab.anchor = Some(up_anchor(0.15));
+        // a hatch set flush INTO it: same thickness, same top plane, so the
+        // two +Y faces are coplanar, same-facing and overlapping — the
+        // superface law merges them by construction
+        let hatch = box_entry([0.0, -0.05, 0.0], [1.0, 0.1, 1.0]);
+
+        let plan = plan(request(vec![slab, hatch]))
+            .expect("one flush prop must not cost the level every label it has");
+
+        // the slab's top face still takes the anchor it was given: that is
+        // the whole point of anchoring a slab, and it must survive the
+        // merge rather than be traded away to make the request legal
+        let top = plan
+            .faces
+            .iter()
+            .find(|face| face.entry == 0 && face.face.normal[1] > 0.5)
+            .expect("the slab kept no upward face");
+        assert_eq!(top.label, f64::from(0.15_f32));
+        // and its own side faces, which rule (a) separates from that top,
+        // must have taken DIFFERENT labels rather than the anchor's
+        for face in plan.faces.iter().filter(|f| f.entry == 0) {
+            if face.class != top.class {
+                assert!(
+                    labels::separated(face.label, top.label),
+                    "a slab face at {} could not separate from its own anchored top",
+                    face.label
+                );
+            }
+        }
+    }
+
+    /// The anchor lands on the face it NAMES, and the direction is read
+    /// rather than assumed — the break this catches is a ceiling anchored
+    /// on its hidden top instead of the underside the room meets, which
+    /// would leave the surface overhead taking a palette label while a face
+    /// buried in the slab above carried `Role::Ceiling`.
+    ///
+    /// Discriminating on purpose: the entry is deliberately NOT a merge
+    /// singleton (a hatch is set flush into its upper face), because a
+    /// singleton folds all six faces into one class and would answer the
+    /// same label whichever direction was named.
+    #[test]
+    fn a_downward_anchor_lands_on_the_underside_not_the_top() {
+        let mut slab = box_entry([0.0, -0.05, 0.0], [10.0, 0.1, 10.0]);
+        slab.anchor = Some(FaceAnchor {
+            label: 0.90,
+            facing: [0.0, -1.0, 0.0],
+        });
+        let hatch = box_entry([0.0, -0.05, 0.0], [1.0, 0.1, 1.0]);
+
+        let plan =
+            plan(request(vec![slab, hatch])).expect("a flush prop must not abandon the plan");
+        let face_label = |normal_y: f64| {
+            plan.faces
+                .iter()
+                .find(|face| face.entry == 0 && (face.face.normal[1] - normal_y).abs() < 1.0e-9)
+                .map(|face| face.label)
+        };
+        assert_eq!(face_label(-1.0), Some(f64::from(0.90_f32)));
+        assert_ne!(face_label(1.0), Some(f64::from(0.90_f32)));
+    }
+
+    /// A slab's anchor direction comes off its own basis, so a level that
+    /// is tipped still anchors the face the room meets. The break this
+    /// catches is the world-up literal that stood here: rotate the shape a
+    /// quarter turn about Z and its local +Y is world -X, where a fixed
+    /// `[0, 1, 0]` would name a flank instead.
+    #[test]
+    fn a_tipped_shape_still_knows_which_way_is_up() {
+        let upright = Shape::Box3d {
+            center: [0.0; 3],
+            size: [4.0, 0.1, 4.0],
+            basis: IDENTITY,
+        };
+        assert_eq!(shape_up(&upright), [0.0, 1.0, 0.0]);
+        // a quarter turn about Z carries local +Y onto world -X
+        let tipped = Shape::Box3d {
+            center: [0.0; 3],
+            size: [4.0, 0.1, 4.0],
+            basis: [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        assert_eq!(shape_up(&tipped), [-1.0, 0.0, 0.0]);
+        // and a degenerate basis answers world up rather than a zero
+        // vector, which would be refused as an invalid anchor and cost the
+        // level every label it has
+        let broken = Shape::Box3d {
+            center: [0.0; 3],
+            size: [4.0, 0.1, 4.0],
+            basis: [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        };
+        assert_eq!(shape_up(&broken), [0.0, 1.0, 0.0]);
+        let nonfinite = Shape::Box3d {
+            center: [0.0; 3],
+            size: [4.0, 0.1, 4.0],
+            basis: [[1.0, 0.0, 0.0], [0.0, f64::NAN, 0.0], [0.0, 0.0, 1.0]],
+        };
+        assert_eq!(shape_up(&nonfinite), [0.0, 1.0, 0.0]);
+    }
+
+    /// A direction that two faces answer equally well must resolve the
+    /// same way on every machine, because the wasm build and the desktop
+    /// build have to colour one level identically or neither is
+    /// trustworthy. The documented rule is the earlier face in build order,
+    /// and `faces` builds a box -X, +X, -Y, +Y, -Z, +Z — so a diagonal
+    /// facing [1, 1, 0], which +X and +Y both answer with a dot of exactly
+    /// 1.0, must land on +X.
+    ///
+    /// Unreachable through the shipped slabs, which name [0, ±1, 0] and tie
+    /// with nothing. It is pinned because the API admits it and because a
+    /// tie broken by whichever comparison happened to be written is exactly
+    /// the class of nondeterminism this vocabulary refuses everywhere else.
+    #[test]
+    fn a_tied_anchor_direction_resolves_in_build_order_every_time() {
+        let anchored = |facing| {
+            let mut slab = box_entry([0.0, -0.05, 0.0], [10.0, 0.1, 10.0]);
+            slab.anchor = Some(FaceAnchor {
+                label: 0.15,
+                facing,
+            });
+            let hatch = box_entry([0.0, -0.05, 0.0], [1.0, 0.1, 1.0]);
+            let plan = plan(request(vec![slab, hatch])).expect("must plan");
+            plan.faces
+                .iter()
+                .filter(|face| face.entry == 0 && face.label == f64::from(0.15_f32))
+                .map(|face| face.face.normal)
+                .collect::<Vec<_>>()
+        };
+        // +X wins the tie against +Y, and holds it across repeated runs
+        let first = anchored([1.0, 1.0, 0.0]);
+        assert_eq!(first, vec![[1.0, 0.0, 0.0]]);
+        for _ in 0..8 {
+            assert_eq!(anchored([1.0, 1.0, 0.0]), first);
+        }
+        // and the rule is build order, not "X beats Y": tie -Z against +X
+        // and the EARLIER of those two in build order is +X again, while
+        // tying -X against -Z lands on -X
+        assert_eq!(anchored([1.0, 0.0, -1.0]), vec![[1.0, 0.0, 0.0]]);
+        assert_eq!(anchored([-1.0, 0.0, -1.0]), vec![[-1.0, 0.0, 0.0]]);
+    }
+
+    /// A degenerate anchor direction names no face and is refused at the
+    /// door rather than silently landing on whichever face happened to
+    /// sort first — the zero vector ties with every face at a dot product
+    /// of zero, and a NaN component compares false against everything.
+    #[test]
+    fn an_anchor_pointing_nowhere_is_an_explicit_error() {
+        for facing in [
+            [0.0, 0.0, 0.0],
+            [f64::NAN, 1.0, 0.0],
+            [0.0, f64::INFINITY, 0.0],
+        ] {
+            let mut slab = box_entry([0.0, -0.05, 0.0], [10.0, 0.1, 10.0]);
+            slab.anchor = Some(FaceAnchor {
+                label: 0.15,
+                facing,
+            });
+            assert_eq!(
+                plan(request(vec![slab])),
+                Err(PaintPlanError::InvalidAnchor { entry: 0 }),
+                "facing {facing:?} was accepted"
+            );
+        }
+    }
+
+    /// The band this module validates against is the ladder's own span,
+    /// not a transcription of it. The break this catches is a re-spacing
+    /// that moves the ladder while leaving the validator behind — which
+    /// would either accept anchors the palette can never separate from or
+    /// reject the very labels the level allocates.
+    #[test]
+    fn the_accepted_band_is_exactly_the_label_ladder() {
+        assert_eq!(LABEL_MIN, labels::ladder_rung(0).expect("first rung"));
+        assert_eq!(
+            LABEL_MAX,
+            labels::ladder_rung(labels::LADDER_RUNGS - 1).expect("last rung")
+        );
+        // and every rung between them is an acceptable anchor
+        for rung in 0..labels::LADDER_RUNGS {
+            let label = labels::ladder_rung(rung).expect("rung in range");
+            assert!(
+                valid_label(label),
+                "rung {rung} ({label}) is not a valid label"
+            );
+        }
+    }
+
+    /// Two DIFFERENT entries pinned to the SAME label, whose classes must
+    /// draw a seam between them, is a contradiction rather than an
+    /// agreement: the seam cannot be drawn at any label, so the planner
+    /// refuses instead of painting a join the merge law never sanctioned.
+    ///
+    /// Recorded because it is the one anchor failure that still costs the
+    /// whole request, and because it is UNREACHABLE from the shipped
+    /// vocabulary — only slabs carry anchors, a level builds exactly one
+    /// floor and one ceiling, and Floor 0.15 against Ceiling 0.87 clears
+    /// MIN_SEP nine times over. A second anchored role, or a second floor,
+    /// would put it back in play, and this is the test that would then
+    /// start describing real behaviour rather than a guarded edge.
+    #[test]
+    fn two_entries_pinned_to_one_label_across_a_seam_are_refused() {
+        let mut first = box_entry([0.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
+        first.anchor = Some(up_anchor(0.15));
+        let mut second = box_entry([2.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
+        second.anchor = Some(up_anchor(0.15));
+        assert!(matches!(
+            plan(request(vec![first, second])),
+            Err(PaintPlanError::AnchorSeparationConflict { .. })
+        ));
+        // ...while the shipped pair, a floor and a ceiling, is fine even
+        // when their classes separate: 0.87 - 0.15 clears MIN_SEP
+        let mut floor = box_entry([0.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
+        floor.anchor = Some(up_anchor(labels::role_label(labels::Role::Floor)));
+        let mut ceiling = box_entry([2.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
+        ceiling.anchor = Some(up_anchor(labels::role_label(labels::Role::Ceiling)));
+        assert!(plan(request(vec![floor, ceiling])).is_ok());
+    }
+
     /// Touching is derived from the shape itself, so two geometrically
     /// abutting solids cannot evade the fixed-label seam constraint.
     #[test]
     fn geometrically_abutting_shapes_enforce_their_seam() {
         let mut first = box_entry([0.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
-        first.anchor = Some(0.15);
+        first.anchor = Some(up_anchor(0.15));
         let mut second = box_entry([2.0, 0.0, 0.0], [2.0, 1.0, 2.0]);
-        second.anchor = Some(0.20);
+        second.anchor = Some(up_anchor(0.20));
 
         assert!(matches!(
             plan(request(vec![first, second])),

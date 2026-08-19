@@ -1,6 +1,7 @@
 //! The oscillating pedestal fan — a [`SoundSource`] with a body. Everything
-//! that makes it a source (kind-3 waves that pass walls muffled, the
-//! always-on-top acoustic image, the volume ladder, the cadence gate) it
+//! that makes it a source (kind-3 waves that stop dead at a wall like any
+//! other sound, the always-on-top acoustic image felt muffled through one,
+//! the volume ladder, the cadence gate) it
 //! shares with every other source through [`super::source`]; everything in
 //! this file is what makes it a FAN and nothing else:
 //!
@@ -379,7 +380,7 @@ impl SoundSource for SoundFan {
         sound(pulses, &voice, hub, aim, at);
     }
 
-    fn set_image(&mut self, image: f64) {
+    fn set_image(&mut self, image: render::reveal::SourceImage) {
         self.rig.set_image(image);
     }
 

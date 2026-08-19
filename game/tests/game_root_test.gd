@@ -399,9 +399,14 @@ func test_process_feeds_tick_sources_the_camera_not_the_body() -> void:
 	for s: Dictionary in game.observer.snapshot(game.now)["sources"]:
 		if s["name"] == str(fan.name):
 			fan_entry = s
-	var source_floor: float = fan_entry["source_floor"]
-	var volume: float = fan_entry["volume"]
-	assert_float(source_floor).is_equal_approx(volume * eye_muffle, 0.001)
+	# the muffle the level pushed must be measured from the EYE, not from
+	# the body: the fixture above proves the two differ, so a muffle taken
+	# from the wrong point reads body_muffle here and fails
+	var pushed_muffle: float = fan_entry["source_muffle"]
+	var pushed_volume: float = fan_entry["source_volume"]
+	var voice_volume: float = fan_entry["volume"]
+	assert_float(pushed_muffle).is_equal_approx(eye_muffle, 0.001)
+	assert_float(pushed_volume).is_equal_approx(voice_volume, 0.001)
 
 
 ## MUTATION GUARD: the apply loop (`WaveCore.tick` plus the u_count/u_ppos/

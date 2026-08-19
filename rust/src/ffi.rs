@@ -13,9 +13,11 @@ use godot::prelude::*;
 use crate::clustering::{self, RayHit};
 use crate::echo_queue::{ECHO_KIND, ECHO_MAX_R, ECHO_SPEED, EchoQueue, PendingEcho};
 use crate::flicker::Randf;
+use crate::level_plan;
 use crate::observe::reflect::ReflectionRequest;
 use crate::pulse_pool::{MAXP, PulsePool, REFUSAL_MESSAGE, SlotCapture};
 use crate::ray_fan;
+use crate::render;
 
 /// The flicker law's randomness adapter: Godot's `randf()` returns f32,
 /// widened to f64 at the exact point the GDScript law implicitly did (every
@@ -228,6 +230,235 @@ impl WaveCore {
     #[func]
     fn max_pulses(&self) -> i64 {
         MAXP as i64
+    }
+
+    /// Seconds a wave of `kind` keeps revealing a surface after its front
+    /// passed — the pool's own slot lifetime, and the end of the reveal
+    /// envelope (`render::reveal`).
+    ///
+    /// Exposed so a suite can hold `pulse_pool.gdshaderinc`'s
+    /// `pulse_fade_tail` chain against the Rust table branch by branch. The
+    /// GLSL is the copy that renders and Rust is the copy that reasons; the
+    /// two are joined by nothing else, and a shader-side edit to one arm of
+    /// that chain would otherwise silently give one kind of sound a
+    /// different life on screen than the CPU budgeted its slot for.
+    ///
+    /// Total over every i64, including the kinds `emit` cannot currently
+    /// pack: anything outside 0..=3 takes the tap's long tail, exactly as
+    /// the Rust `match`'s wildcard arm and the GLSL chain's fallthrough do.
+    #[func]
+    fn wave_fade_tail(&self, kind: i64) -> f64 {
+        render::reveal::reveal_tail(i32::try_from(kind).unwrap_or(i32::MAX))
+    }
+
+    /// The acoustic-image band's width, and the two derived numbers that
+    /// bracket it — exposed so a suite can hold the shipped GLSL literal
+    /// against `render::depth`'s derivation instead of against itself.
+    ///
+    /// The assertion these replace was `1.0e-5 < 1.0 - 0.999999 + 1.0e-5`,
+    /// which reduces to `x < 1e-6 + x` and is true for every x. It passed
+    /// happily while the band was a hundred times too narrow to order one
+    /// source's own limbs.
+    #[func]
+    fn source_band(&self) -> f64 {
+        render::depth::SOURCE_BAND
+    }
+
+    /// Metres of camera distance per distinguishable depth code inside the
+    /// band. Two source surfaces closer than this resolve by opaque draw
+    /// order rather than by distance.
+    #[func]
+    fn source_band_resolution(&self) -> f64 {
+        render::depth::band_resolution(render::depth::SOURCE_BAND, level_plan::DIST_PACK_RANGE)
+    }
+
+    /// The tightest gap between two surfaces of one shipped source that the
+    /// band must still order — the fan's guard-to-blade separation.
+    #[func]
+    fn min_source_limb_gap(&self) -> f64 {
+        render::depth::MIN_SOURCE_LIMB_GAP
+    }
+
+    /// How close to the eye a WORLD surface would have to stand before it
+    /// reached into the band. Beyond this distance nothing in the world can
+    /// compete with the acoustic image drawn over it.
+    #[func]
+    fn deepest_world_fragment_in_band(&self) -> f64 {
+        render::depth::deepest_world_fragment_in_band(
+            render::depth::SOURCE_BAND,
+            render::depth::CAM_NEAR,
+            render::depth::CAM_FAR,
+        )
+    }
+
+    /// The eye's near plane — the other half of the derivation above, and
+    /// the value `UnseeingPlayer` builds its camera with.
+    #[func]
+    fn camera_near(&self) -> f64 {
+        render::depth::CAM_NEAR
+    }
+
+    /// The whole role table, by name — `render::labels::role_label` served
+    /// to the suites so they read the one table instead of transcribing it.
+    ///
+    /// Every GDScript case that checks a baked label used to carry its own
+    /// copy of the number, which is how the table drifted out of its own
+    /// separation law and stayed there: the tests agreed with whatever it
+    /// said. Reading it here means a re-spacing moves one place and every
+    /// suite follows, while the law itself — that no two labels able to
+    /// share a frame land within MIN_SEP — is cargo-tested where the whole
+    /// label universe is visible at once.
+    #[func]
+    fn role_labels(&self) -> VarDictionary {
+        let mut table = VarDictionary::new();
+        for role in render::labels::ALL_ROLES {
+            table.set(
+                render::labels::role_name(role),
+                render::labels::role_label(role),
+            );
+        }
+        table
+    }
+
+    /// The palette every wall, prop and source instance is coloured from.
+    #[func]
+    fn world_palette(&self) -> PackedFloat64Array {
+        PackedFloat64Array::from(&render::labels::WORLD_PALETTE[..])
+    }
+
+    /// The reveal envelope at `since_front` seconds past the wavefront, for
+    /// a wave granted `tail` seconds — `render::reveal::flare`.
+    ///
+    /// Exposed so a suite can evaluate the SHAPE across its domain rather
+    /// than substring-match it. The four constants in
+    /// `data_core.gdshaderinc`'s `pulse_flare` are the whole look of the
+    /// game and a `contains()` assertion cannot tell 1.3 from 1.0 or a 3.0
+    /// time constant from a 4.0 one.
+    #[func]
+    fn wave_flare(&self, since_front: f64, tail: f64) -> f64 {
+        render::reveal::flare(since_front, tail)
+    }
+
+    /// The fraction of a wave's tail spent closing its envelope out —
+    /// `render::reveal::CLOSE_FRACTION`.
+    #[func]
+    fn wave_close_fraction(&self) -> f64 {
+        render::reveal::CLOSE_FRACTION
+    }
+
+    /// When a point `dist` metres from a sound of `kind` travelling at
+    /// `speed` stops being revealed by it, measured from the sound's birth.
+    ///
+    /// This is the one number that pins the shader's time coordinate. The
+    /// reveal law is written against seconds-since-the-front-passed
+    /// (`ga = age - dist / speed`), and nothing else in the tree asserts
+    /// that `ga` is that and not simply `age`: with `ga = age` the fan,
+    /// whose ring time is exactly its own 2.0 s tail, would stop revealing
+    /// the outer metre of its wash at the instant its front arrived there,
+    /// while the hearing pass kept drawing the ring — a ring in the air over
+    /// unlit surfaces, and every existing test still green.
+    ///
+    /// Total over every input: a non-positive or non-finite speed or a
+    /// negative distance answers [`f64::NAN`], which fails every assertion
+    /// rather than inventing a date.
+    #[func]
+    fn wave_death_time(&self, kind: i64, dist: f64, speed: f64) -> f64 {
+        if !dist.is_finite() || !speed.is_finite() || speed <= 0.0 || dist < 0.0 {
+            return f64::NAN;
+        }
+        dist / speed + render::reveal::reveal_tail(i32::try_from(kind).unwrap_or(i32::MAX))
+    }
+
+    /// A sound source's composed acoustic image — `render::reveal::source_image`,
+    /// the law `data_xray.gdshader` transliterates.
+    ///
+    /// The composition is a Rust law with a Godot caller rather than an
+    /// expression a suite reconstructs for itself: a test that multiplies
+    /// volume by muffle on its own asserts a product the shader may well
+    /// have stopped forming.
+    #[func]
+    fn compose_source_image(&self, wave: f64, volume: f64, muffle: f64) -> f64 {
+        render::reveal::source_image(wave, render::reveal::SourceImage { volume, muffle })
+    }
+
+    /// The crease knee the hearing pass fades a seam over, `(lo, hi)` —
+    /// `render::crease::CreaseKnee::shipped`, derived from `MIN_SEP`.
+    ///
+    /// Exposed so a suite can hold the pushed uniform against the
+    /// derivation rather than against a retyped literal: the allocator and
+    /// the renderer are the same law seen from two ends, and they used to
+    /// be two numbers that never met.
+    #[func]
+    fn crease_knee(&self) -> Vector2 {
+        let knee = render::crease::CreaseKnee::shipped();
+        Vector2::new(knee.lo() as f32, knee.hi() as f32)
+    }
+
+    /// The separation the shader's crease knee demands between two labels
+    /// that must draw a seam — `render::labels::MIN_SEP`.
+    #[func]
+    fn min_label_separation(&self) -> f64 {
+        render::labels::MIN_SEP
+    }
+
+    /// The silhouette knee, in METRES of depth step: `u_sil_knee`, derived by
+    /// `render::silhouette` and pushed by the composition root.
+    ///
+    /// In metres and not in channel units, which is the whole point of the
+    /// type: the pair used to be a GLSL literal that silently meant a
+    /// different depth step whenever `DIST_PACK_RANGE` moved.
+    #[func]
+    fn silhouette_knee(&self) -> Vector2 {
+        let knee = render::silhouette::SilhouetteKnee::shipped();
+        Vector2::new(knee.lo() as f32, knee.hi() as f32)
+    }
+
+    /// The bottom of the band camera distance is packed into —
+    /// `render::channel::SAFE_FLOOR`.
+    ///
+    /// Exposed for the reason [`Self::source_band`] is: the shipped GLSL
+    /// carries this number too, and a drift between the two would put the
+    /// write end and the read end of the channel on different affine maps —
+    /// every visible surface at the wrong distance, smoothly and plausibly.
+    #[func]
+    fn dist_safe_floor(&self) -> f64 {
+        render::channel::SAFE_FLOOR
+    }
+
+    /// One whole reconstruction gap at the shipped packing range — the bias
+    /// `probe_distance` pulls every reconstructed wall-test endpoint toward
+    /// the eye by, `render::channel::quantum(DIST_PACK_RANGE)`.
+    ///
+    /// Exposed so `shader_contract_test` can hold the GLSL twin's
+    /// `DIST_RECON_BIAS` derivation against the cargo one: a bias smaller
+    /// than the measured gap readmits the false wall crossing that flared a
+    /// fan through the wall it hides behind.
+    #[func]
+    fn dist_recon_bias(&self) -> f64 {
+        render::channel::quantum(level_plan::DIST_PACK_RANGE)
+    }
+
+    /// The composed reconstruction guard in nominal codes —
+    /// `render::channel::guard_codes` at the shipped range. The one number
+    /// `tap_error_probe` holds its live in-band error measurement against,
+    /// exposed so the probe gates on the derived guard instead of a pasted
+    /// literal that goes stale when the bias or the shrink is retuned.
+    #[func]
+    fn recon_guard_codes(&self) -> f64 {
+        render::channel::guard_codes(level_plan::DIST_PACK_RANGE)
+    }
+
+    /// The widest gap the data channel was measured to leave, as a fraction
+    /// of full scale — `WORST_STEP_CODES` over the nominal step count.
+    ///
+    /// Exposed for `game/tests/probe/channel_probe.gd`, which writes a pair
+    /// of values exactly this far apart and demands the screen texture keep
+    /// them distinct. The probe is a PLATFORM gate, so it has to hold the
+    /// hardware against the number the renderer derives its tolerance from,
+    /// not against a second copy of it that can drift.
+    #[func]
+    fn channel_worst_step(&self) -> f64 {
+        render::channel::WORST_STEP_CODES / f64::from(render::channel::CHANNEL_LEVELS - 1)
     }
 }
 

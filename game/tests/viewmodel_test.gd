@@ -15,6 +15,15 @@ var _hero: HeroBody
 var _now := 0.0
 
 
+## One label from the single role table (render::labels::role_label), read
+## rather than retyped — a suite carrying its own copy of a label agrees
+## with whatever the table says, and the table used to be wrong.
+func _role(name: String) -> float:
+	var table: Dictionary = WaveCore.new().role_labels()
+	assert_bool(table.has(name)).is_true()
+	return table.get(name, NAN)
+
+
 func before_test() -> void:
 	var pulses := Pulses.new()
 	_player = auto_free(UnseeingPlayer.new())
@@ -91,14 +100,15 @@ func _assert_mesh_winds_clockwise(mesh: ArrayMesh) -> void:
 	assert_int(witnessed).is_greater(0)
 
 
-## Both viewmodel layers carry their role label (HeroCane 0.96, HeroBody
-## 0.82 — render::labels::role_label, rust/src/render/labels.rs) on every
-## vertex of their baked mesh's CUSTOM0 — what the shader's G channel reads
-## directly, with no per-instance uniform standing between them.
+## Both viewmodel layers carry their role label on every vertex of their
+## baked mesh's CUSTOM0 — what the shader's G channel reads directly, with
+## no per-instance uniform standing between them. Read from
+## render::labels::role_label rather than retyped, so a re-spacing of the
+## label ladder moves one place and this follows.
 func test_viewmodel_layers_carry_their_role_labels() -> void:
 	_step(_walk_vel)
-	_assert_layer_labelled(_hero.cane_mesh(), 0.96)
-	_assert_layer_labelled(_hero.body_mesh(), 0.82)
+	_assert_layer_labelled(_hero.cane_mesh(), _role("HeroCane"))
+	_assert_layer_labelled(_hero.body_mesh(), _role("HeroBody"))
 	var layers: Array[MeshInstance3D] = []
 	for child: Node in _hero.get_children():
 		if child is MeshInstance3D:

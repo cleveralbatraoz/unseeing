@@ -3,9 +3,20 @@
 // pass to read from the screen texture:
 //   R — reveal: how recently/strongly a wave swept this point
 //   G — per-vertex face or semantic-role label: crease edge detection
-//   B — camera distance / DIST_PACK_RANGE (silhouette edges + wave occlusion)
-// Distance is packed here on purpose: the depth texture is unreliable on
-// WebGL2/Compatibility, and the web build is a first-class target.
+//   B — camera distance packed into [DIST_SAFE_FLOOR, 1] (silhouette edges +
+//       wave occlusion). NOT into [0, 1]: the pipeline destroys the bottom
+//       28 codes, so a wall one metre out used to read back as zero metres.
+//       See pack_distance in the pool include.
+// Distance is packed here on purpose, and the reason that used to be given
+// for it is gone. The depth texture IS live in desktop Compatibility —
+// game/tests/probe/depth_texture_probe.gd reads real reversed-Z depth out
+// of it, 0.0158 at three metres against an analytic 0.01585 — and it is
+// live on WebGL2 too, measured at 0.9490 against an analytic 0.9508 under
+// SwiftShader AND under a GPU-backed ANGLE/Apple-Metal driver. The old
+// blanket claim that it is unreliable was wrong on both targets. B carries
+// distance for the one reason that survives measurement: the outline pass
+// needs distance in a channel it can take a Laplacian of across five taps,
+// not a value it must unproject per sample.
 //
 // Skins differ only in render_mode, in their rasterized depth (the world
 // keeps true depth; the acoustic image rides always_on_top) and in the
@@ -31,58 +42,80 @@ varying float v_label;
 
 varying vec3 v_world;
 
-// The viewmodel depth hack, written from the FRAGMENT: DEPTH takes the
-// window depth of the near plane (~1.0 under Godot's reversed-Z), so
-// every fragment passes the GEQUAL depth test and opaque draw order
-// alone decides the pixel — the perceptual layering, as render_priority.
-// It must NOT be a vertex POSITION.z override: faking clip z defeats
-// near-plane clipping, and geometry crossing the camera plane (a source
-// walked up to) rasterizes as projective full-screen sheets, stamping
-// garbage data over the whole buffer.
-const float ALWAYS_ON_TOP = 0.999999;
-
-// ...but a CONSTANT depth only works while the world holds one source. Two
-// acoustic images writing the same value resolve against each other by
-// opaque draw order alone, and Godot sorts opaque surfaces near-to-far —
-// so the NEARER source draws first and the FARTHER one, passing GEQUAL on
-// an equal value, overwrites it. A dim, distant ghost would punch a hole
-// through a near, loud one.
-//
-// So the layer gets a BAND instead of a point: a source's depth is the
-// always-on-top value minus a hair proportional to its true distance. Every
-// source still beats every world fragment (a world surface would have to be
-// inside the near plane to reach this band), while sources — and a single
-// source's own overlapping limbs — resolve by distance like everything
-// else. The band is far narrower than any depth step the world can produce.
-const float SOURCE_BAND = 1.0e-5;
-
 // Where in the acoustic-image band a source fragment `dist` metres from the
 // eye writes its depth.
 float source_depth(float dist) {
 	return ALWAYS_ON_TOP - SOURCE_BAND * clamp(dist / DIST_PACK_RANGE, 0.0, 1.0);
 }
 
-// How much a wave of this kind still reveals `world`, given the WALLS
-// between it and its source (props are transparent to waves — only walls
-// obstruct). The wave flows through openings and lights the next room
-// through a doorway, but a wall stops it. EVERY wave obeys this, echoes
-// included: an echo is a reflected wave, and a reflection is stopped by a
-// wall like any sound — the reflection ray only decides where the echo is
-// BORN, never that its reveal may pass through a wall.
-//   - a cane tap, its echoes, and footsteps (0, 1, 2) are cut CRISP at a
-//     wall — a player sound does not pass, and their shells die at the
-//     world too;
-//   - a world SOURCE's wave (3 — the fan's hum, the radio) is MUFFLED,
-//     not silenced: HUM_THROUGH per wall,
-//     the same factor its shell passes by, so a far surface dims instead
-//     of turning black against a ring still travelling through the wall.
-// crossings_from skips the wall the source is born inside, so a tap or an
-// echo struck ON a wall still lights that wall's own near face.
-float source_reveal_vis(float typ, vec3 src, vec3 world) {
-	int blocked = wall_crossings_from(src, world);
-	if (blocked == 0) { return 1.0; }
-	if (typ > 2.5) { return pow(HUM_THROUGH, float(blocked)); }
-	return 0.0;  // tap, echo, footstep: cut crisp at a wall
+// How much a wave still reveals `world`, given the OCCLUDERS between it and
+// its source. Which solids those are is decided by GEOMETRY, never by node
+// class: `level_plan::spans_the_corridor` admits anything standing floor to
+// ceiling within SPAN_EPS and at least `2 * WALL_T` across, so seven of
+// level_01's pillars are in this table and its standpipes are not. This
+// comment used to say "props are transparent to waves — only walls
+// obstruct", and three separate places called that deliberate; it was never
+// a decision, only the shape of a census that had only ever walked the
+// walls. See `level_plan.rs` for the derivation. A
+// wall is a BARRIER, not a muffle: the wave flows through openings and
+// lights the next room through a doorway, and stops dead at a wall. Kind
+// does not enter — a cane tap, its echoes, a footstep and a world
+// source's hum are all cut crisp alike, which is why this takes no `typ`.
+// EVERY wave obeys it, echoes included: an echo is a reflected wave, and
+// a reflection is stopped by a wall like any sound — the reflection ray
+// only decides where the echo is BORN, never that its reveal may pass
+// through a wall.
+// wall_blocked_from skips the wall the source is born inside, so a tap or
+// an echo struck ON a wall still lights that wall's own near face.
+// rust/src/sight.rs::reveal_visibility is the cargo-pinned reference this
+// transliterates, over rust/src/sight.rs::blocked_from's verdict.
+// hearing_post.gdshader's shell loop asks the SAME predicate of the same
+// origin, so the ring in the air and the surfaces it lights stop at one
+// wall together.
+float source_reveal_vis(vec3 src, vec3 world) {
+	return wall_blocked_from(src, world) ? 0.0 : 1.0;
+}
+
+// How strongly a wave still reveals a point `since_front` seconds after its
+// own front passed there, given the tail its kind is granted.
+// rust/src/render/reveal.rs::flare is the cargo-pinned reference, and
+// game/tests/shader_contract_test.gd reads the four constants below straight
+// out of this text and evaluates them against it — a substring match cannot
+// tell 1.3 from 1.0, and this shape is the whole look of the game.
+//
+// The shape is a fast strike flash plus a slow lingering half. A sum of
+// exponentials never reaches zero, so on its own it left 0.068 of peak (a
+// tap) or 0.257 (a hum) on every surface a wave ever swept, for as long as
+// the pool slot lasted — the wave's visible end was decided by the slot
+// allocator.
+//
+// The CLOSING WINDOW ends it, and a window is the point rather than a
+// downward shift: the decay is the acoustic law and the tail is only the
+// budget. Subtracting the shape's own tail value would reach zero too, but
+// it would darken the whole curve by a kind-dependent amount and make a
+// cane tap and its own echo read differently on one surface at one age. The
+// window holds at 1.0 for the first three quarters of every wave's life —
+// so every kind decays by ONE law until then — and smoothsteps to exactly
+// zero at the tail.
+const float CLOSE_FRACTION = 0.25;
+
+// WHY THIS CARRIES NO NON-FINITE ARM, when its cargo-pinned reference
+// `render::reveal::flare` opens with one. `flare` is a pure function whose
+// declared domain is every f64, so totality obliges it. These arguments are
+// not open: `since_front` is `age - dist / d.z`, and every term comes from
+// the pulse pool, which refuses a non-finite origin, radius or speed at
+// `PulsePool::emit` — the boundary where a designer's `#[export]` actually
+// enters. Nothing here can manufacture a NaN either, unlike `wall_entry`,
+// whose min/max fold genuinely can and which therefore does carry a guard.
+// An arm no input can reach is the dead defence this renderer has been
+// removing, so the divergence is deliberate and recorded rather than an
+// oversight in the transliteration.
+float pulse_flare(float since_front, float tail) {
+	if (since_front < 0.0 || since_front >= tail) { return 0.0; }
+	float shape = 1.3 * exp(-since_front / 0.25) + 0.5 * exp(-since_front / 3.0);
+	float opens = tail * (1.0 - CLOSE_FRACTION);
+	float closing = 1.0 - smoothstep(opens, tail, since_front);
+	return clamp(shape * closing, 0.0, 1.0);
 }
 
 // How strongly the waves in flight reveal this world point: the struck
@@ -105,6 +138,22 @@ float reveal_at(vec3 world) {
 		float dist = distance(world, u_ppos[i]);
 		float radius = d.z * age;
 		if (dist > min(radius, d.y)) { continue; }
+		// Seconds since THIS pulse's front passed THIS point — the one
+		// coordinate the fade law is written against, so a surface at the
+		// wave's full reach fades exactly as the struck spot did, merely
+		// later. The radius gate above guarantees it is non-negative.
+		float ga = age - dist / d.z;
+		float tail = pulse_fade_tail(typ);
+		// The wave is OVER here. Not merely dim: gone, at the same moment
+		// the pool retires this pulse's slot. Hoisted above the cone gate
+		// and the exponentials because a dead pulse must cost one subtract
+		// and one compare, not a trace. Without it the loop had NO end
+		// condition at all: `dist > min(radius, d.y)` freezes into the
+		// static `dist > max_r` once the front has run its course, so every
+		// point the wave ever reached kept its reveal until the slot was
+		// reused — the visible life of a sound was a property of the slot
+		// allocator, not of the sound.
+		if (ga >= tail) { continue; }
 		vec3 to_src = (u_ppos[i] - world) / max(dist, 0.001);
 		// the beam gate comes first: a fragment outside a DIRECTED wash's
 		// cone reveals nothing, so skip the wall-occlusion loop there. This
@@ -120,24 +169,27 @@ float reveal_at(vec3 world) {
 		float cone = pulse_cone(u_pdir[i], -to_src);
 		if (cone <= 0.0) { continue; }
 		float atten = 1.0 / (1.0 + dist * dist * 0.06);
-		float ga = age - dist / d.z;
-		float flare = 1.3 * exp(-ga / 0.25) + 0.5 * exp(-ga / 3.0);
-		// EXACT early-out, and it is the loop's whole affordability. The
-		// accumulator is a max, and source_reveal_vis only ever returns a
-		// value in [0, 1] (1, 0, or HUM_THROUGH^walls) — so `bound` below,
-		// computed with that factor at its maximum, is an upper bound on
-		// what this pulse could contribute. A pulse that cannot beat what is
-		// already accumulated changes nothing, and is dropped BEFORE the
-		// wall loop rather than after it. No pixel differs; only the cost.
+		float flare = pulse_flare(ga, tail);
+		// EXACT early-out. The accumulator is a max, and source_reveal_vis
+		// only ever returns a value in [0, 1] (1 with a clear line, 0
+		// behind a wall) — so `bound` below, computed with that factor at
+		// its maximum, is an upper bound on what this pulse could
+		// contribute. A pulse that cannot beat what is already accumulated
+		// changes nothing, and is dropped BEFORE the wall loop rather than
+		// after it. No pixel differs; only the cost.
 		//
-		// This matters most for an EVEN source: a directed wash is thrown
-		// out by the cone gate above over most of the screen, but a radio's
-		// sphere passes the cone gate everywhere, so without this its
-		// permanently-live waves would each pay the full per-fragment wall
-		// walk in every direction, forever.
-		float bound = min(flare, 1.0) * atten * cone * gain * peak;
+		// It is NOT the loop's whole affordability, and the comment that
+		// said so was left behind by the barrier campaign: once
+		// source_reveal_vis became a 0/1 gate, `reveal` stays exactly 0.0
+		// on any fragment every in-range pulse is walled off from, and an
+		// early-out against 0 can never fire. The fragments that pay the
+		// full walk are precisely the ones in the room next door. What
+		// actually bounds this loop is the radius gate and the death gate
+		// above; this saves the walk only where something is already lit.
+		// pulse_flare already clamps to [0, 1], so no min() is needed here.
+		float bound = flare * atten * cone * gain * peak;
 		if (bound <= reveal) { continue; }
-		reveal = max(reveal, bound * source_reveal_vis(typ, u_ppos[i], world));
+		reveal = max(reveal, bound * source_reveal_vis(u_ppos[i], world));
 	}
 	return reveal;
 }
@@ -148,5 +200,18 @@ float reveal_at(vec3 world) {
 vec3 pack_data(float reveal, vec3 world, vec3 cam) {
 	float vd = length(world - cam);
 	reveal *= (0.9 + 0.1 * u_flick) * exp(-vd * 0.05);
-	return vec3(clamp(reveal, 0.0, 1.0), v_label, clamp(vd / DIST_PACK_RANGE, 0.0, 1.0));
+	// G is clamped like R and B. Every label a level ALLOCATES already lies
+	// in [0.15, 0.96], so this changes no shipped pixel — but the value
+	// reaching here is not always an allocated one: a solid whose paint pass
+	// was rejected keeps the placeholder ordinals nodes::solid::BOX_ORDINALS
+	// bakes at build time, which run 0..5 and leave the channel entirely.
+	// Writing those unclamped hands the target a value the rest of the
+	// pipeline has no defined reading of. It is still a broken picture — the
+	// deeper repair is a reserved in-band sentinel the hearing pass can
+	// RECOGNISE, so an unpainted world announces itself instead of merely
+	// looking seamless — but a broken picture with defined arithmetic.
+	return vec3(
+			clamp(reveal, 0.0, 1.0),
+			clamp(v_label, 0.0, 1.0),
+			pack_distance(vd));
 }

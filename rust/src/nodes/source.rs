@@ -3,9 +3,9 @@
 //!
 //! The world's own sounds (the ones the hero did NOT make) all behave the
 //! same way and differ only in their [`Voice`]: they are born as pulse kind
-//! [`SOURCE_KIND`], their waves pass walls muffled instead of dying at them,
-//! and they wear the always-on-top acoustic-image skin so their silhouette
-//! is felt through a wall as a dimmed ghost. A fan and a radio are two
+//! [`SOURCE_KIND`], their waves die at a wall like any other sound, and
+//! they wear the always-on-top acoustic-image skin so their silhouette is
+//! still felt through a wall as a dimmed ghost. A fan and a radio are two
 //! voices, not two systems.
 //!
 //! WHY A TRAIT AND NOT A BASE CLASS. gdext cannot derive one registered
@@ -34,13 +34,22 @@ use super::solid::mesh_first_label;
 use crate::render;
 use crate::sound_source::{Cadence, SOURCE_KIND, Voice};
 
-/// The per-instance shader parameter carrying a source's STANDING acoustic
-/// image: how strongly its silhouette is felt right now, volume times the
-/// muffle of every wall between it and the eye. It is an INSTANCE uniform,
-/// not a material uniform, because all sources share one acoustic-image
-/// material — a material uniform would make the quiet fan and the loud
-/// radio dim and brighten as one. `data_xray.gdshader` declares it.
-pub(crate) const IMAGE_PARAM: &str = "u_source_floor";
+/// The two per-instance shader parameters carrying a source's STANDING
+/// acoustic image. Both are INSTANCE uniforms, not material uniforms,
+/// because all sources share one acoustic-image material — a material
+/// uniform would make the quiet fan and the loud radio dim and brighten as
+/// one. `data_xray.gdshader` declares them.
+///
+/// A source's STANDING loudness before any wall is considered — its
+/// `Volume::image()`.
+pub(crate) const VOLUME_PARAM: &str = "u_source_volume";
+
+/// What survives of that image across the walls between the source and the
+/// EYE: `SOURCE_THROUGH` per crossing. The other half, and it is delivered
+/// separately on purpose — as one product it could only ever be a FLOOR
+/// under the source's own wave reveal, and a floor loses. See
+/// [`render::reveal::source_image`] for the law both halves now feed.
+pub(crate) const MUFFLE_PARAM: &str = "u_source_muffle";
 
 /// What the level needs of a sound source, whatever the thing actually is.
 /// Implemented by every source node through `#[godot_dyn]`, which is what
@@ -110,10 +119,19 @@ pub trait SoundSource {
         None
     }
 
-    /// Set how strongly this source's standing image is felt: its volume
-    /// attenuated by the walls between it and the eye, computed once per
-    /// frame by the level. Pushed to every limb as [`IMAGE_PARAM`].
-    fn set_image(&mut self, image: f64);
+    /// Set how strongly this source's standing image is felt: its own
+    /// volume and the muffle of the walls between it and the eye, computed
+    /// once per frame by the level and delivered SEPARATELY, as
+    /// [`VOLUME_PARAM`] and [`MUFFLE_PARAM`].
+    ///
+    /// Separately because their product is not what the skin needs. A
+    /// single pre-multiplied number can only enter the fragment as a floor
+    /// under the source's own wave reveal, and that floor always loses: a
+    /// source's hub is unwalled from its own body by construction, so the
+    /// wave washing it is near full strength however many walls stand
+    /// between it and the player. Kept apart, the muffle multiplies the
+    /// whole image instead of competing with half of it.
+    fn set_image(&mut self, image: render::reveal::SourceImage);
 
     /// Re-pin this source's beat appointment to a captured date. Called
     /// by the restorer AFTER the clock lands, so the jumped-clock law
@@ -237,12 +255,14 @@ impl SourceRig {
         })
     }
 
-    /// Push the standing acoustic image onto every limb this source built.
-    /// Per instance, not per material: the world's sources share one skin,
-    /// and each must dim by its OWN volume and its OWN walls.
-    pub(crate) fn set_image(&mut self, image: f64) {
+    /// Push the standing acoustic image onto every limb this source built,
+    /// as its two independent halves. Per instance, not per material: the
+    /// world's sources share one skin, and each must dim by its OWN volume
+    /// and its OWN walls.
+    pub(crate) fn set_image(&mut self, image: render::reveal::SourceImage) {
         for (limb, _) in &mut self.limbs {
-            limb.set_instance_shader_parameter(IMAGE_PARAM, &image.to_variant());
+            limb.set_instance_shader_parameter(VOLUME_PARAM, &image.volume.to_variant());
+            limb.set_instance_shader_parameter(MUFFLE_PARAM, &image.muffle.to_variant());
         }
     }
 

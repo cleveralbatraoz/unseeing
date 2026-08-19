@@ -36,6 +36,7 @@ use godot::obj::WithBaseField;
 use godot::prelude::*;
 
 use super::level::WaveLevel;
+use crate::level_plan;
 use crate::oid_palette;
 use crate::render;
 
@@ -111,6 +112,41 @@ pub trait WaveSolid {
     /// Take the world skin — the data-writing material the level deals to
     /// everything that renders at real depth.
     fn set_material(&mut self, mat: &Gd<Material>);
+
+    /// This solid's geometry in WORLD space — the one shape the derive-time
+    /// paint pass builds faces from and the occlusion-admission walk
+    /// measures. Any node transform is already folded in, so `render::faces`
+    /// never fights a basis stack.
+    ///
+    /// On the TRAIT rather than on each class because the level's two walks
+    /// over `census.solids` are class-agnostic by construction, and a
+    /// hand-written `try_cast` list is a second roster to keep in step. Both
+    /// walks used to carry one, each falling through to a silent `None`, so
+    /// a fifth solid class would have drawn, collided and reflected echoes
+    /// while never taking a superface label and never entering the occluder
+    /// table — with no fault, no warning and no failing test.
+    fn world_shape(&self) -> render::Shape;
+
+    /// Bake the paint pass's chosen per-face labels into this solid's own
+    /// mesh `CUSTOM0`, positionally by face ordinal. Same reason as
+    /// [`Self::world_shape`]: the level colours whatever the census found.
+    fn paint(&mut self, labels_by_ordinal: &[f32]);
+}
+
+/// Whether this shape stops sound, and why — the Inspector's answer.
+///
+/// The occluder-admission walk in `WaveLevel::derive` measures exactly this
+/// from exactly this shape, so a designer reading the Inspector and the
+/// engine building the table are asking one function. A shape with no
+/// describable bounds is [`level_plan::Barrier::Unmeasurable`] rather than a
+/// guess.
+pub(crate) fn barrier_of(shape: &render::Shape) -> level_plan::Barrier {
+    let Some(box3) = render::faces::bounds(shape) else {
+        return level_plan::Barrier::Unmeasurable;
+    };
+    let width = box3.max[0] - box3.min[0];
+    let depth = box3.max[2] - box3.min[2];
+    level_plan::barrier(box3.min[1], box3.max[1], width.min(depth))
 }
 
 /// The warnings a solid wears in the Scene dock: whatever its owning

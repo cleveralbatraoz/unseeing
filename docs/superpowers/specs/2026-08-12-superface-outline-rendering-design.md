@@ -51,7 +51,7 @@ wedge 5, a column 3 (two rims and the curved side as one face), a slab 6.
   17-wall network needs ~3 labels total.
 - **Labels** are assigned by the existing graph-colouring machinery over
   the superface graph, reusing the world palette (values stay in the
-  sRGB-safe band ≥ 0.25). The crease floors (0.04/0.08) and the hearing
+  sRGB-safe band). The crease floors (0.04/0.08) and the hearing
   shader's arithmetic do not move. The shipped map has 100 clusters:
   the wall network (17), one two-wall L, two bookcases (6 each), and 96
   singletons.
@@ -65,9 +65,41 @@ wedge 5, a column 3 (two rims and the curved side as one face), a slab 6.
   housing; the cat never melts into a wall it brushes. Their geometry is
   curved/limb-built; no same-facing flat-face contact with the world
   exists, so no fight class reopens.
-- **Slabs stay fixed labels** (floor 0.15, ceiling 0.90): walls ABUT the
+- **Slabs stay fixed labels** (floor and ceiling): walls ABUT the
   slabs (opposite-facing contact), so wall–floor and wall–ceiling seams
   keep drawing exactly as today.
+
+> **Superseded, 2026-08-18 — the numbers, not the design.** This page named
+> floor 0.15 / ceiling 0.90 and a palette starting at 0.25. Those values
+> broke their own separation law: `HeroBody` 0.82 against `Ceiling` 0.90
+> subtracts to 0.079999983 in the f32 the shader compares, and `Ceiling`
+> against `HeroCane` 0.96 is 0.06, half the knee — and the cane can reach
+> the ceiling. The repair could not be local, because ten labels must
+> coexist in one frame and nine gaps across the 0.81-wide band leave
+> exactly 0.09 each. Every shipped label is now a rung of one ladder,
+> `0.15 + 0.09k` for `k` in `0..9`, owned with the palette by
+> `rust/src/render/labels.rs`. The design on this page — graph colouring
+> over the superface graph, anchored slabs, exempt creatures — is
+> unchanged; only the arithmetic moved.
+>
+> **Also superseded, 2026-08-18 — the channel.** Anything on this page that
+> asserts a bit depth or a transfer function for the screen texture predates
+> its measurement. `rust/src/render/channel.rs` owns that fact now
+> (`CHANNEL_LEVELS = 1024`, RGB10_A2, gated by
+> `game/tests/probe/channel_probe.gd`), and the derivations that turn on it
+> — the B-channel reconstruction error and the range at which it stops
+> clearing `sight::RECT_SHRINK` — live there rather than here. The format is
+> only half of it: `WORST_STEP_CODES` records how many nominal codes the
+> pipeline actually needs to keep two values apart, measured at every base
+> of a swept column by `game/tests/probe/platform_probe.tscn` on desktop GL
+> and on two WebGL2 drivers.
+>
+> One correction to the design itself, same date: an anchor is a property
+> of a FACE, not of a solid. Written onto every class a slab owned, it
+> conflicted with itself the moment anything coplanar-merged with that slab
+> and rule (a) separated the slab's own faces — and the planner answered by
+> abandoning the whole level's paint. See
+> `docs/superpowers/handoffs/2026-08-18-rendering-design-audit-state.md`.
 
 ## The rendering subsystem (decoupling, user-directed)
 
@@ -140,9 +172,12 @@ bilinear tap at unlucky phase halves a diff onto the dead floor).
 
 ## Platform facts this design stands on (research, 2026-08-12)
 
-- The screen texture is **RGB10_A2** (10-bit per channel), identical on
-  desktop GL and WebGL2; the 3D backbuffer is blitted bit-exact and
-  sampled nearest by allocation.
+- The screen texture is **RGB10_A2** (10-bit per channel) on desktop GL and
+  WebGL2 alike; the 3D backbuffer is blitted bit-exact and sampled nearest
+  by allocation. *(Corrected 2026-08-18: the FORMAT is identical, what it
+  delivers is not. Swept densely, Mesa/AMD desktop GL needs 1.25 nominal
+  codes to keep two values apart where SwiftShader and ANGLE/Metal need
+  1.02 — a 23% difference in worst-case quantum between the two targets.)*
 - The engine's sRGB round trip is deterministic: identical inputs store
   identically (the melt guarantee); id-band deltas survive (worst pair
   stretches to 0.0845); values below ≈0.027 crush to zero — labels stay

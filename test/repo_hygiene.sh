@@ -479,4 +479,25 @@ else
   rm -rf "$X"
 fi
 
+# AGENTS.md's source policy: "Commit Godot `.import` and `.uid` sidecars."
+# Nothing enforced it. Godot mints a FRESH uid for a missing sidecar on every
+# machine that opens the project, so an omission is a per-clone identity: the
+# file shows as untracked churn on a clean checkout, and any `uid://`
+# reference to it resolves differently per developer. Three files reached
+# this branch without one.
+MISSING_UID="$(
+  git -C "$DIR" ls-files -- 'game/*.gd' 'game/*.gdshader' 'game/*.gdshaderinc' \
+    | grep -v '^game/addons/' \
+    | while IFS= read -r f; do
+        git -C "$DIR" ls-files --error-unmatch "$f.uid" >/dev/null 2>&1 || printf '%s\n' "$f"
+      done
+)"
+if [ -z "$MISSING_UID" ]; then
+  ok "every tracked script and shader carries its .uid sidecar"
+else
+  bad "tracked files are missing their Godot .uid sidecar:"
+  printf '%s\n' "$MISSING_UID" | sed 's/^/hygiene:      /'
+  echo "hygiene:      run: godot --headless --path game --import, then commit them"
+fi
+
 exit "$FAIL"
