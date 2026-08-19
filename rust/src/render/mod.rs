@@ -13,6 +13,11 @@
 //!   hearing pass's crease knee, derived from `labels::MIN_SEP` rather than
 //!   retyped in GLSL, so the law that ALLOCATES separations and the law
 //!   that DRAWS them cannot drift apart.
+//! - [`knee`] — the one `smoothstep` contract every rendered fade obeys:
+//!   finite as f32 and strictly ordered in the width the GPU will use. The
+//!   crease, detail and silhouette knees each wrap it in their own units, so
+//!   the argument is written once and a knee in metres cannot be pushed
+//!   where a knee in label differences belongs.
 //! - [`depth`] — the acoustic-image depth band: how a sound source's skin
 //!   rides over the world without losing its own front-to-back order, with
 //!   the band's width derived from the depth buffer's quantisation and the
@@ -44,6 +49,7 @@ pub mod depth;
 pub mod detail;
 pub mod faces;
 pub mod grain;
+pub mod knee;
 pub mod labels;
 pub mod paint;
 pub mod paint_plan;

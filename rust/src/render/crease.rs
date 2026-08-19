@@ -24,12 +24,12 @@
 //!
 //! # Why a validated type rather than a pair of floats
 //!
-//! GLSL's `smoothstep(lo, hi, x)` is `clamp((x - lo) / (hi - lo), 0, 1)`
-//! smoothed — undefined when `lo == hi`, and inverted when `lo > hi`. A
-//! knee is therefore not any two numbers, and [`CreaseKnee`] is the type
-//! that makes the bad ones unrepresentable rather than a comment asking
-//! callers to be careful.
+//! GLSL's `smoothstep(lo, hi, x)` divides by `hi - lo`, so a knee is not any
+//! two numbers. [`super::knee::Knee`] owns that contract and the reasoning
+//! behind it; [`CreaseKnee`] is what gives it UNITS, so a knee in metres
+//! cannot be pushed where a knee in label differences belongs.
 
+use super::knee::Knee;
 use super::labels;
 
 /// Where the knee opens, as a fraction of where it closes: a seam at half
@@ -42,33 +42,25 @@ use super::labels;
 pub const LOW_KNEE_RATIO: f64 = 0.5;
 
 /// The `smoothstep` knee the hearing pass fades a crease over: full
-/// strength at `hi`, gone below `lo`.
+/// strength at `hi`, gone below `lo`, both in units of a LABEL DIFFERENCE.
 ///
-/// Stored narrowed to f32, because f32 is what reaches the GPU — the same
-/// reason [`labels::separated`] compares narrowed lanes rather than the f64
-/// sources it was handed.
+/// Stored narrowed to f32 by the [`Knee`] inside it, because f32 is what
+/// reaches the GPU — the same reason [`labels::separated`] compares narrowed
+/// lanes rather than the f64 sources it was handed.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CreaseKnee {
-    lo: f32,
-    hi: f32,
-}
+pub struct CreaseKnee(Knee);
 
 impl CreaseKnee {
-    /// A knee, if these two numbers are one.
+    /// A crease knee, if these two label differences are one.
     ///
-    /// Total over every f64 pair. `None` unless both are finite as f32 and
-    /// strictly ordered AFTER narrowing: `lo == hi` makes GLSL's
-    /// `(x - lo) / (hi - lo)` a division by zero, and `lo > hi` inverts the
-    /// fade so a seam that should be bright goes dark. Narrowing first
-    /// matters — two f64s 1e-9 apart are strictly ordered until they land
-    /// in the same f32 lane, and then they are not.
+    /// Total over every f64 pair, by [`Knee::new`]'s contract.
     #[must_use]
     pub const fn new(lo: f64, hi: f64) -> Option<Self> {
-        let (lo, hi) = (lo as f32, hi as f32);
-        if lo.is_finite() && hi.is_finite() && lo < hi {
-            Some(Self { lo, hi })
-        } else {
-            None
+        // `Option::map` is not const, and this must be, so that SHIPPED is
+        // discharged by the compiler
+        match Knee::new(lo, hi) {
+            Some(knee) => Some(Self(knee)),
+            None => None,
         }
     }
 
@@ -106,17 +98,17 @@ impl CreaseKnee {
         Self::SHIPPED
     }
 
-    /// Where the fade begins.
+    /// Where the fade begins, as a label difference.
     #[must_use]
     pub fn lo(self) -> f64 {
-        f64::from(self.lo)
+        self.0.lo()
     }
 
     /// Where the seam reaches full strength — the separation
     /// [`labels::MIN_SEP`] demands.
     #[must_use]
     pub fn hi(self) -> f64 {
-        f64::from(self.hi)
+        self.0.hi()
     }
 }
 

@@ -73,35 +73,27 @@
 //! forbids. Two knees, two inputs, one composition in the shader.
 
 use super::crease::LOW_KNEE_RATIO;
+use super::knee::Knee;
 use crate::level_plan::SOURCE_THROUGH;
 
 /// Where a swept surface stops telling you *what* it is, while still
-/// telling you *that* it is there.
+/// telling you *that* it is there — a knee in units of REVEAL.
 ///
-/// A validated type for the same reason [`crease::CreaseKnee`] is one:
-/// GLSL's `smoothstep(lo, hi, x)` divides by `hi - lo`, so an equal pair is
-/// a division by zero and an inverted pair fades the wrong way. The bad
-/// ones are unrepresentable rather than commented against.
+/// A validated type over [`Knee`], which owns the reason: GLSL's
+/// `smoothstep` divides by `hi - lo`, so the bad pairs are unrepresentable
+/// rather than commented against.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DetailKnee {
-    lo: f32,
-    hi: f32,
-}
+pub struct DetailKnee(Knee);
 
 impl DetailKnee {
-    /// A knee, or `None` if the pair cannot fade.
+    /// A detail knee, or `None` if the pair cannot fade.
     ///
-    /// Narrowing to f32 happens BEFORE the ordering test, exactly as in
-    /// [`crease::CreaseKnee::new`]: two f64s a nanometre apart are strictly
-    /// ordered right up until they land in the same f32 lane, and the GPU
-    /// only ever sees the f32.
+    /// Total over every f64 pair, by [`Knee::new`]'s contract.
     #[must_use]
     pub const fn new(lo: f64, hi: f64) -> Option<Self> {
-        let (lo, hi) = (lo as f32, hi as f32);
-        if lo.is_finite() && hi.is_finite() && lo < hi {
-            Some(Self { lo, hi })
-        } else {
-            None
+        match Knee::new(lo, hi) {
+            Some(knee) => Some(Self(knee)),
+            None => None,
         }
     }
 
@@ -139,13 +131,13 @@ impl DetailKnee {
     /// on a once-walled source's reveal.
     #[must_use]
     pub fn lo(self) -> f64 {
-        f64::from(self.lo)
+        self.0.lo()
     }
 
     /// Where detail reads at full strength.
     #[must_use]
     pub fn hi(self) -> f64 {
-        f64::from(self.hi)
+        self.0.hi()
     }
 }
 
