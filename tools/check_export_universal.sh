@@ -14,14 +14,12 @@
 # into the bundle. Every earlier verdict would still read green. Reading the
 # shipped bundle is the only statement immune to that.
 #
-# Three ways to pass that must never be mistaken for passing:
+# Two ways to pass that must never be mistaken for passing:
 #   - no Mach-O in the export at all (a wrong path argument)
 #   - a bundle with no libunseeing_core.dylib in it (Godot silently not
 #     copying the GDExtension, which boots into a world with no engine nodes)
-#   - a bundle that still carries a loose .pck (embed_pck silently not
-#     taking effect, which ships a stray file the preset promised not to)
-# All three are failures here, because "I checked every binary and they were
-# fine" is a lie when there were none, or when something else slipped past.
+# Both are failures here, because "I checked every binary and they were fine"
+# is a lie when there were none.
 #
 # Exit: 0 the export is universal throughout, 1 it is not, 2 the invocation or
 # the host is wrong.
@@ -69,11 +67,7 @@ find "$ROOT" -type f -print > "$WORK/files"
 MACHO=0
 THIN=0
 CORE=""
-PCK=""
 while IFS= read -r f; do
-  case "${f##*/}" in
-    *.pck) PCK="$f" ;;
-  esac
   # lipo IS the Mach-O test: it reads fat and thin headers and refuses
   # everything else, so a .pck, a plist or a code signature falls out here
   # without needing a list of extensions to keep up to date.

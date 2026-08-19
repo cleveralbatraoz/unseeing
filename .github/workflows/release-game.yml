@@ -179,11 +179,20 @@ jobs:
           $url = "https://github.com/godotengine/godot-builds/releases/download/$version-stable/Godot_v$version-stable_win64.exe.zip"
           Invoke-WebRequest -Uri $url -OutFile godot.zip
           Expand-Archive -LiteralPath godot.zip -DestinationPath godot-bin
+      # Cached workspace-relative, not under ~/AppData -- Windows runners don't
+      # reliably put $HOME on the same drive as the workspace across runner
+      # instances, and actions/cache bakes absolute paths into the tarball at
+      # save time (tar -P). A cache saved by a C:-homed runner restores its
+      # files onto C: even on a run whose actual $HOME is on D:, landing
+      # nothing where Godot looks and failing with "No export template
+      # found" despite "Cache restored successfully". A workspace-relative
+      # path never has this problem: it's always relative to the checkout,
+      # which is unambiguous regardless of which drive that happens to be.
       - name: Cache Godot export templates
         id: cache-templates
         uses: actions/cache@v6.1.0
         with:
-          path: ~/AppData/Roaming/Godot/export_templates
+          path: godot-templates
           key: godot-templates-${{ steps.godot.outputs.version }}
       - name: Fetch Godot export templates
         if: steps.cache-templates.outputs.cache-hit != 'true'
@@ -191,10 +200,19 @@ jobs:
         run: |
           V="${{ steps.godot.outputs.version }}"
           curl -sL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_export_templates.tpz"
-          mkdir -p "$APPDATA/Godot/export_templates/${V}.stable"
+          mkdir -p "godot-templates/${V}.stable"
           python3 -m zipfile -e templates.tpz /tmp/godot-templates-extract
-          mv /tmp/godot-templates-extract/templates/* "$APPDATA/Godot/export_templates/${V}.stable/"
+          mv /tmp/godot-templates-extract/templates/* "godot-templates/${V}.stable/"
           rm -rf /tmp/godot-templates-extract templates.tpz
+      # Unconditional (cache hit or miss): a fast local copy from the
+      # workspace-relative cache into Godot's real, drive-correct user data
+      # dir for THIS job's actual $APPDATA, every run.
+      - name: Install export templates where Godot expects them
+        shell: bash
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          mkdir -p "$APPDATA/Godot/export_templates/${V}.stable"
+          cp -r "godot-templates/${V}.stable/." "$APPDATA/Godot/export_templates/${V}.stable/"
       - name: Cache cargo + rust target
         uses: actions/cache@v6.1.0
         with:
@@ -255,11 +273,15 @@ jobs:
           $url = "https://github.com/godotengine/godot-builds/releases/download/$version-stable/Godot_v$version-stable_windows_arm64.exe.zip"
           Invoke-WebRequest -Uri $url -OutFile godot.zip
           Expand-Archive -LiteralPath godot.zip -DestinationPath godot-bin
+      # See the matching comment on windows-x86_64's templates cache: cached
+      # workspace-relative, not under ~/AppData, so a drive mismatch between
+      # the runner that saved the cache and the runner that restores it can
+      # never leave the templates somewhere Godot won't look.
       - name: Cache Godot export templates
         id: cache-templates
         uses: actions/cache@v6.1.0
         with:
-          path: ~/AppData/Roaming/Godot/export_templates
+          path: godot-templates
           key: godot-templates-${{ steps.godot.outputs.version }}
       - name: Fetch Godot export templates
         if: steps.cache-templates.outputs.cache-hit != 'true'
@@ -267,10 +289,16 @@ jobs:
         run: |
           V="${{ steps.godot.outputs.version }}"
           curl -sL -o templates.tpz "https://github.com/godotengine/godot/releases/download/${V}-stable/Godot_v${V}-stable_export_templates.tpz"
-          mkdir -p "$APPDATA/Godot/export_templates/${V}.stable"
+          mkdir -p "godot-templates/${V}.stable"
           python3 -m zipfile -e templates.tpz /tmp/godot-templates-extract
-          mv /tmp/godot-templates-extract/templates/* "$APPDATA/Godot/export_templates/${V}.stable/"
+          mv /tmp/godot-templates-extract/templates/* "godot-templates/${V}.stable/"
           rm -rf /tmp/godot-templates-extract templates.tpz
+      - name: Install export templates where Godot expects them
+        shell: bash
+        run: |
+          V="${{ steps.godot.outputs.version }}"
+          mkdir -p "$APPDATA/Godot/export_templates/${V}.stable"
+          cp -r "godot-templates/${V}.stable/." "$APPDATA/Godot/export_templates/${V}.stable/"
       - name: Cache cargo + rust target
         uses: actions/cache@v6.1.0
         with:
