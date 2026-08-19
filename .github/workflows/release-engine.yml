@@ -1,7 +1,11 @@
 name: release-engine
 on:
   push:
-    branches: [main]
+    # TEMPORARY: designer-engine-bundle added only so this push can trigger
+    # a real verification run before this workflow exists on main (GitHub's
+    # workflow_dispatch only recognizes workflows already on the default
+    # branch). Reverted to [main] before this branch is done.
+    branches: [main, designer-engine-bundle]
   workflow_dispatch: {}
 concurrency:
   group: release-engine-main
