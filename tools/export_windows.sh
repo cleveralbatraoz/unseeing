@@ -57,7 +57,8 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 # game/build/ is gitignored and must stay out of Godot's resource scan.
 touch "$DIR/game/build/.gdignore"
-LOG="$OUT_DIR/export.log"
+# A sibling of OUT_DIR, not inside it -- see export_linux.sh's comment.
+LOG="$OUT_DIR.log"
 if ! "$GODOT" --headless --path "$DIR/game" \
   --export-release "$PRESET" "$EXPORT_REL" > "$LOG" 2>&1; then
   tail -20 "$LOG"
