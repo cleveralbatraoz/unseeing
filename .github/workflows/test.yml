@@ -106,7 +106,10 @@ jobs:
           chmod +x ci/pipeline.sh
           GODOT="$PWD/godot-bin/godot" ci/pipeline.sh
       - name: Upload the verified web build as a Pages artifact
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        # TEMPORARY: also allow designer-engine-bundle so the deploy job
+        # itself (not just the workflow trigger) can be verified for real
+        # before merging. Reverted to main-only before this branch is done.
+        if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/designer-engine-bundle') && github.event_name == 'push'
         uses: actions/upload-pages-artifact@v3
         with:
           path: game/build/web
