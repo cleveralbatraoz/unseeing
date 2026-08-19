@@ -25,18 +25,26 @@
 //! 310 (2014) 60-68; Milne, Goodale & Thaler, *Atten Percept Psychophys*
 //! 76(6) (2014) 1828-1837).
 //!
-//! # The knee's scope: the acoustic image, never the world
+//! # The knee's scope: what the eye sees through a wall, nothing else
 //!
+//! Two playtests narrowed the scope to exactly the theorem's precondition.
 //! The first shipped composition gated EVERY crease in the game on this
 //! knee, and a playtest rejected it in one sentence per symptom: a
 //! footstep's reveal peaks at 0.330 one metre out — under the knee's own
 //! 0.30 floor — so a walking hero swept a room whose corners, floor seams
 //! and face edges never drew, and a tap's crease field tore off at the
-//! 0.30 reveal contour mid-object. The theorem below is a statement about
-//! SOURCES, and a world surface behind a wall already reveals nothing at
-//! all (`source_reveal_vis` is a hard 0/1 gate), so the world-side fade
-//! bought no theorem and cost the whole picture. [`DetailKnee::gate`] is
-//! the scoped law and the shader's cargo twin.
+//! 0.30 reveal contour mid-object. The second cut gated everything the
+//! depth buffer calls an acoustic image, and a screenshot rejected that
+//! too: an UNWALLED source is an image, so a quiet radio in the open drew
+//! its chassis and antenna only inside a passing wave's wash and tore
+//! everywhere else, the tear's boundary tracking the wave's own rim.
+//!
+//! The theorem below says a source BEHIND A WALL cannot draw a crease.
+//! Behind a wall is the shader's `seen_walled` — the wall-table verdict on
+//! the eye's sight line — not "is an image": an unwalled source's muffle
+//! is 1 and needs no gating, and the world is never walled at all (a wall
+//! would hide it). [`DetailKnee::gate`] is the scoped law and the
+//! shader's cargo twin.
 //!
 //! That is where the borrowing stops. An earlier draft of this paragraph
 //! also quoted the aperture limit `λ/D` — "about 0.7 m of resolvable feature
@@ -155,30 +163,30 @@ impl DetailKnee {
 
     /// How much detail this fragment keeps — the Rust twin of the shader's
     /// composition, and the SCOPE of this whole module in one branch: the
-    /// knee fades the ACOUSTIC IMAGE's creases by its reveal, and leaves
-    /// the world's alone.
+    /// knee fades the creases of a surface the eye sees THROUGH A WALL —
+    /// `walled` is the shader's `seen_walled`, the wall-table verdict on
+    /// the eye's own sight line — and everything else passes untouched.
     ///
-    /// The scope is load-bearing and was learned on a screen. Gating every
-    /// crease in the game on reveal shipped first, and a playtest rejected
-    /// it in one sentence per symptom: a footstep's reveal peaks at 0.330
-    /// one metre out — under this knee's own 0.30 floor — so a walking
-    /// hero swept a room whose corners, floor seams and face edges never
-    /// drew, and a tap's crease field tore off at the 0.30 reveal contour
-    /// mid-object. The theorem the knee buys is about SOURCES; a world
-    /// surface behind a wall already reveals nothing at all
-    /// (`source_reveal_vis` is a hard 0/1 gate), so the world-side fade
-    /// bought no theorem and cost the picture.
+    /// The scope is the theorem's own precondition and it took two
+    /// playtests to land exactly there. Gating every crease in the game
+    /// shipped first: a footstep's reveal peaks at 0.330 one metre out —
+    /// under this knee's own 0.30 floor — so a walking hero swept a room
+    /// whose corners, floor seams and face edges never drew. The second
+    /// cut gated everything the depth buffer called an acoustic image, and
+    /// a second screenshot rejected that too: an UNWALLED source is an
+    /// image, so a quiet radio in the open drew its chassis and antenna
+    /// only inside a passing wave's wash and tore at the 0.30 reveal
+    /// contour — the tear's boundary tracked the wave's own rim. The
+    /// theorem says a source BEHIND A WALL cannot draw a crease; behind a
+    /// wall is `walled`, not "is an image", and an unwalled source's
+    /// muffle is 1, so nothing about it needs gating.
     ///
-    /// Total over every f64 reveal in both arms: the image arm has
+    /// Total over every f64 reveal in both arms: the walled arm has
     /// [`Knee::fade`]'s totality (a non-finite reveal draws nothing), and
-    /// the world arm never reads the reveal at all.
+    /// the clear arm never reads the reveal at all.
     #[must_use]
-    pub fn gate(self, acoustic_image: bool, reveal: f64) -> f64 {
-        if acoustic_image {
-            self.0.fade(reveal)
-        } else {
-            1.0
-        }
+    pub fn gate(self, walled: bool, reveal: f64) -> f64 {
+        if walled { self.0.fade(reveal) } else { 1.0 }
     }
 }
 
@@ -193,10 +201,8 @@ mod tests {
     /// knee's own 0.30 floor almost everywhere, so a walking hero swept a
     /// room whose corners, floor seams and face edges never drew, and a
     /// tap's crease field tore off at the 0.30 reveal contour mid-object.
-    /// The knee is the ACOUSTIC IMAGE's law: the theorem below is about
-    /// sources, and a world surface behind a wall already reveals nothing
-    /// at all (`source_reveal_vis` is a hard gate), so world-side gating
-    /// bought no theorem and cost the whole picture.
+    /// The world is never walled from the eye — a wall would hide it —
+    /// so under the scoped gate its creases pass untouched.
     #[test]
     fn a_footsteps_dim_sweep_keeps_the_worlds_creases() {
         let knee = DetailKnee::shipped();
@@ -206,23 +212,41 @@ mod tests {
             (knee.gate(false, step_reveal) - 1.0).abs() < f64::EPSILON,
             "the world's creases no longer pass the knee untouched"
         );
-        // ...while the same reveal on an acoustic image stays inside the
-        // fade: smoothstep(0.3, 0.6, 0.330) = 0.1^2 * (3 - 0.2) = 0.028
-        let image_detail = knee.gate(true, step_reveal);
+        // ...while the same reveal on a surface seen through a wall stays
+        // inside the fade: smoothstep(0.3, 0.6, 0.330) = 0.1^2 * (3 - 0.2)
+        let walled_detail = knee.gate(true, step_reveal);
         // 1e-6 and not 1e-12: the smoothstep evaluates through three f64
         // subtractions whose representation error reaches 2.4e-8; any real
         // retune of the knee moves this by whole percents.
         assert!(
-            (image_detail - 0.028).abs() < 1.0e-6,
-            "an image's fade moved: {image_detail}"
+            (walled_detail - 0.028).abs() < 1.0e-6,
+            "the walled fade moved: {walled_detail}"
+        );
+    }
+
+    /// THE BREAK: widening the gate's scope from "seen through a wall" to
+    /// "is an acoustic image", which shipped for one commit and tore the
+    /// second screenshot: an unwalled source is an image too, so a quiet
+    /// radio in the open drew its chassis, dial and antenna only inside a
+    /// passing wave's wash — bright inside the shell's rim, torn gaps
+    /// everywhere else. Its muffle is 1 and the theorem claims nothing
+    /// about it; its creases follow its reveal exactly like the world's.
+    #[test]
+    fn a_quiet_source_in_the_open_keeps_its_creases() {
+        let knee = DetailKnee::shipped();
+        // the radio's standing image at PRESENCE, far under the knee floor
+        let presence_reveal = 0.068;
+        assert!(
+            (knee.gate(false, presence_reveal) - 1.0).abs() < f64::EPSILON,
+            "an unwalled source's creases are gated again — the torn radio"
         );
     }
 
     /// Totality at the boundary the two arms share: a non-finite reveal
-    /// fades an image to nothing ([`Knee::fade`]'s contract) and leaves
-    /// the world's creases alone — the world arm never reads the reveal.
+    /// fades a walled surface to nothing ([`Knee::fade`]'s contract) and
+    /// leaves a clear one alone — the clear arm never reads the reveal.
     #[test]
-    fn a_non_finite_reveal_darkens_the_image_and_spares_the_world() {
+    fn a_non_finite_reveal_darkens_the_walled_and_spares_the_clear() {
         let knee = DetailKnee::shipped();
         assert_eq!(knee.gate(true, f64::NAN), 0.0);
         assert_eq!(knee.gate(true, f64::INFINITY), 0.0);
@@ -257,6 +281,13 @@ mod tests {
                      creases, so a walled radio becomes identifiable as a \
                      radio (wave {wave}, volume {volume})",
                     knee.lo()
+                );
+                // ...and the composed gate delivers the theorem exactly: a
+                // walled source's creases are not merely dim but ZERO
+                assert_eq!(
+                    knee.gate(true, lit),
+                    0.0,
+                    "the gate let a walled source draw at reveal {lit}"
                 );
             }
         }

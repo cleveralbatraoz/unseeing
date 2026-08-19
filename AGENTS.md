@@ -33,10 +33,13 @@ So: propagation is exact. Perception is authored, and says so.
   reveal — `render::detail::DetailKnee`, whose floor is derived as
   `SOURCE_THROUGH` so that a source behind a wall can never draw a crease for
   any wave or any volume. You always know a source is sounding in there. You
-  stop knowing it is a radio. The knee's scope is the acoustic image ONLY
-  (`DetailKnee::gate`): the world's creases follow reveal untouched — gating
-  them too shipped once and cost footsteps the whole picture, since a step's
-  reveal peaks under the knee's floor. Creatures and sound sources
+  stop knowing it is a radio. The knee's scope is exactly the theorem's
+  precondition — fragments the eye sees THROUGH A WALL (`seen_walled`,
+  `DetailKnee::gate`); everything else's creases follow reveal untouched.
+  Both wider scopes shipped once and failed a playtest each: gating the
+  world cost footsteps the whole picture (a step's reveal peaks under the
+  knee's floor), and gating every acoustic image tore the unwalled radio's
+  chassis outside each wave's wash. Creatures and sound sources
   never geometrically merge with the world; source semantic roles still join
   the separation graph so touching source copies cannot melt. Labels live in
   the sRGB-safe band `[0.15, 0.96]`, with one grandfathered standalone-preview

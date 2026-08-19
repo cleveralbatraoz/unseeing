@@ -440,23 +440,26 @@ func test_shape_and_detail_are_drawn_under_separate_laws() -> void:
 	assert_str(post).contains("float sil = smoothstep(u_sil_knee.x, u_sil_knee.y, lap);")
 	assert_str(post).contains("float crease = smoothstep(u_crease_knee.x, u_crease_knee.y, nrm);")
 	assert_str(post).contains("vec3 col = vec3(max(sil * reveal, crease * detail * reveal));")
-	# THE SCOPE IS THE LAW, learned from a playtest: the knee fades the
-	# ACOUSTIC IMAGE's creases only. Gating the world's too shipped first,
-	# and a footstep's reveal (peaking at 0.330 one metre out, under the
-	# knee's 0.30 floor) then swept rooms whose corners, floor seams and
-	# face edges never drew, while a tap's crease field tore off at the
-	# 0.30 reveal contour mid-object. A world surface behind a wall
-	# reveals nothing at all already, so world-side gating bought no
-	# theorem. rust/src/render/detail.rs::gate is the cargo twin.
+	# THE SCOPE IS THE LAW, and two playtests narrowed it to the theorem's
+	# own precondition: the knee fades ONLY what the eye sees THROUGH A
+	# WALL (seen_walled). Gating every crease shipped first — footsteps
+	# (reveal peaking at 0.330, under the 0.30 floor) swept rooms whose
+	# corners and face edges never drew. Gating every acoustic image
+	# shipped second — an unwalled source is an image too, so a quiet
+	# radio in the open drew its chassis and antenna only inside a wave's
+	# wash and tore everywhere else, the tear tracking the shell's rim.
+	# The theorem is about sources BEHIND WALLS; an unwalled source's
+	# muffle is 1 and the world is never walled at all.
+	# rust/src/render/detail.rs::gate is the cargo twin.
 	assert_str(post).contains(
-		"float detail = seen_image ? smoothstep(u_detail_knee.x, u_detail_knee.y, reveal) : 1.0;"
+		"float detail = seen_walled ? smoothstep(u_detail_knee.x, u_detail_knee.y, reveal) : 1.0;"
 	)
 	# and DETAIL must be gated on the reveal the x-ray cap has already
 	# lowered, not the one before it — otherwise a source keeps its creases
 	# BECAUSE it is being dimmed for standing behind a wall
 	assert_int(post.find("reveal = min(reveal, src_r);")).is_less(
 		post.find(
-			"float detail = seen_image ? smoothstep(u_detail_knee.x, u_detail_knee.y, reveal)"
+			"float detail = seen_walled ? smoothstep(u_detail_knee.x, u_detail_knee.y, reveal)"
 		)
 	)
 

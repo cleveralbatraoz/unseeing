@@ -41,15 +41,16 @@ uniform float u_breath = 1.0;
 // comment claimed the opposite — every seam at full strength — which is not
 // what the arithmetic does.
 uniform vec2 u_crease_knee = vec2(0.0, 1.0);
-// Where a swept ACOUSTIC IMAGE stops telling you WHAT it is while still
-// telling you THAT it is there — the knee applies to image fragments
-// only; the world's creases never pass through it (see the composition
-// below for the playtest that scoped it). Derived in Rust from the wall
-// factor (render::detail::DetailKnee::shipped) and pushed by the
-// composition root. Defaults to (0.0, 1.0) — a fade that runs the whole
-// range and so dims every source's creases — because an unpushed post
-// material must be visibly wrong rather than accidentally right, exactly
-// as u_crease_knee's default is.
+// Where a surface seen THROUGH A WALL stops telling you WHAT it is while
+// still telling you THAT it is there — the knee applies to seen_walled
+// fragments only, which is exactly the x-rayed sources; everything else's
+// creases never pass through it (see the composition below for the two
+// playtests that scoped it). Derived in Rust from the wall factor
+// (render::detail::DetailKnee::shipped) and pushed by the composition
+// root. Defaults to (0.0, 1.0) — a fade that runs the whole range and so
+// dims every walled source's creases — because an unpushed post material
+// must be visibly wrong rather than accidentally right, exactly as
+// u_crease_knee's default is.
 uniform vec2 u_detail_knee = vec2(0.0, 1.0);
 // The silhouette knee, in METRES of depth step: a break of u_sil_knee.y
 // draws a full outline and one below u_sil_knee.x draws none.
@@ -223,20 +224,27 @@ void fragment() {
 				|| wall_any_crossing(cam, cam + rd * probe_distance(c_d.b))) { src_r = max(src_r, c_d.r); }
 		if (src_r >= 0.0) { reveal = min(reveal, src_r); }
 	}
-	// DETAIL is the ACOUSTIC IMAGE's law, gated on the FINAL reveal, after
-	// the x-ray cap above has had its say. Both halves of that sentence are
-	// load-bearing and each was learned the hard way:
+	// DETAIL is the law of what the eye sees THROUGH A WALL, gated on the
+	// FINAL reveal, after the x-ray cap above has had its say. Both halves
+	// of that sentence are load-bearing and each was learned the hard way:
 	//
-	// THE SCOPE. The knee fades an IMAGE's creases only; the world's pass
-	// through at full strength. Gating every crease in the game shipped
-	// first, and a playtest rejected it in one sentence per symptom — a
-	// footstep's reveal peaks at 0.330 one metre out, under the knee's own
-	// 0.30 floor, so a walking hero swept a room whose corners, floor
-	// seams and face edges never drew, and a tap's crease field tore off
-	// at the 0.30 reveal contour mid-object. A world surface behind a wall
-	// already reveals NOTHING (source_reveal_vis is a hard gate), so
-	// world-side gating bought no theorem and cost the whole picture.
-	// rust/src/render/detail.rs::gate is the cargo-pinned twin.
+	// THE SCOPE, narrowed twice by playtests to the theorem's own
+	// precondition. The knee fades a fragment's creases only where
+	// seen_walled says a wall stands between the eye and the surface —
+	// which is exactly and only the x-rayed sources the theorem below is
+	// about. Gating every crease in the game shipped first: a footstep's
+	// reveal peaks at 0.330 one metre out, under the knee's own 0.30
+	// floor, so a walking hero swept a room whose corners, floor seams and
+	// face edges never drew. Gating everything the depth buffer calls an
+	// acoustic image shipped second, and a screenshot rejected that too:
+	// an UNWALLED source is an image as well, so a quiet radio in the open
+	// drew its chassis and antenna only inside a passing wave's wash and
+	// tore everywhere else — the tear's boundary tracked the shell's own
+	// rim. An unwalled source's muffle is 1 and the theorem claims nothing
+	// about it; the world is never walled at all (a wall would hide it).
+	// rust/src/render/detail.rs::gate is the cargo-pinned twin. Using
+	// seen_walled, not seen_image, also frees the gate of the depth read:
+	// it degrades nowhere on a driver with a dead depth texture.
 	//
 	// THE ORDERING. `reveal` is rewritten inside the cap block, so
 	// computing `detail` any earlier would gate identity on a number the
@@ -248,7 +256,7 @@ void fragment() {
 	// rather than a tuning: a source behind a wall CANNOT draw a crease.
 	// You always know it is sounding in there; you stop knowing it is a
 	// radio. rust/src/render/detail.rs::the_first_wall_takes_a_sources_identity.
-	float detail = seen_image ? smoothstep(u_detail_knee.x, u_detail_knee.y, reveal) : 1.0;
+	float detail = seen_walled ? smoothstep(u_detail_knee.x, u_detail_knee.y, reveal) : 1.0;
 	// With detail == 1 — every world fragment — this is
 	// max(sil, crease) * reveal, bit-for-bit the fused line it replaces.
 	vec3 col = vec3(max(sil * reveal, crease * detail * reveal));
