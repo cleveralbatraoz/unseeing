@@ -42,10 +42,6 @@ const float SOURCE_BAND = 1.0e-3;
 //     [0,1], so a near miss is legible instead of saturating
 uniform int u_mode = 0;
 
-void vertex() {
-	POSITION = vec4(VERTEX.xy * 2.0, 1.0, 1.0);
-}
-
 void fragment() {
 	float d = texture(depth_tex, vec2(0.5, 0.5)).r;
 	// Sampled where geometry certainly stands. Under Godot's reversed-Z
