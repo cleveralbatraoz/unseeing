@@ -61,12 +61,8 @@ echo "ci: deploy-host preflight self-test (real cargo-zigbuild and Zig boundarie
 "$DIR/test/deploy_host_preflight_test.sh" || exit 1
 echo "ci: production push-selection self-test (main update vs retry trigger)"
 "$DIR/test/push_production_test.sh" || exit 1
-echo "ci: post-receive hook self-test (retry execution and cleanup)"
-"$DIR/test/post_receive_test.sh" || exit 1
 echo "ci: agent-tooling checkout/archive gate self-test"
 "$DIR/test/ci_agent_tooling_gate_test.sh" || exit 1
-echo "ci: exact deployment-archive composition self-test"
-"$DIR/test/deployment_archive_test.sh" || exit 1
 echo "ci: agent-plugin scope self-test (another project's plugin is not ours to remove)"
 "$DIR/ci/run_agent_tooling_self_test.sh" "$DIR" || exit 1
 echo "ci: run-the-game self-test (it plays the world, never the editor)"

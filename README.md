@@ -139,8 +139,6 @@ artifacts.
   already names the commit after an earlier refused hook, the deploy sends a
   one-shot retry ref through that same pipeline. Only a matching live build
   stamp permits the final `git push origin`.
-- `infra/` — versioned copies of the droplet's hook and nginx config.
-
 ## License
 
 MIT — see [LICENSE](LICENSE). The name "Unseeing" and any future art/audio
