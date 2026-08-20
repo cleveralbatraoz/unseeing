@@ -95,12 +95,12 @@ is `gl_compatibility`, required for the Web export. The editor tour, the
 correct-worktree check, and the code-free level workflow are in
 [Opening and running Unseeing in Godot](docs/opening-in-godot.md).
 
-**Check everything:** `ci/pipeline.sh` — the same script CI and the droplet run.
-`SKIP_EXPORT=1` for checks only.
+**Check everything:** `ci/pipeline.sh` — the same script that runs locally and
+in CI. `SKIP_EXPORT=1` for checks only.
 
 Needed only for particular jobs, not for setup: Node 20+ (`tools/setup-mcp.sh`,
 the Godot editor bridge), Chrome or Chromium plus Python 3 (the web smoke test),
-`cargo-zigbuild` and emsdk (`deploy.sh`).
+emsdk (the wasm build).
 
 Claude Code and Codex App/CLI contributors should follow the pinned,
 repository-local setup and upgrade guide in [docs/agent-workflow.md](docs/agent-workflow.md).
@@ -118,9 +118,9 @@ artifacts.
   check, unit tests (`game/tests/`), the wasm core build, clean Web export,
   build stamping, precompression of every shipped artifact, and a browser
   smoke test that boots the exported wasm in headless Chrome and asserts it
-  renders. The same POSIX script runs locally, on the droplet, and in cloud
-  CI — and when it runs on prebuilt cores it refuses any whose recorded
-  commit is not the one being deployed.
+  renders. The same POSIX script runs locally and in
+  `.github/workflows/test.yml`; deployment itself is that workflow's job,
+  not this script's.
 - `game/addons/gdUnit4/` — the test framework. Godot resolves addons as
   project resources, so it lives in the tree rather than as a submodule
   (upstream ships no `.uid` sidecars; Godot mints 244 of them on import,
@@ -129,16 +129,13 @@ artifacts.
   `ci/vendor-gdunit4.sh update <tag>` — the only sanctioned way to change
   it. The pipeline verifies its fingerprint on every run, and its in-editor
   self-updater is switched off so a version bump is always a reviewed commit.
-- `deploy.sh` — refuses anything but a clean `main` first (the cores below
-  are compiled from the working tree while the push ships the branch, so
-  those have to be the same code), proves cargo-zigbuild and Zig separately,
-  runs local checks, then cross-builds the linux and wasm cores the 1.8 GB
-  droplet cannot compile itself and seeds them — with the commit they were
-  built from — over ssh. The droplet's post-receive hook runs the full
-  archive-mode pipeline and deploys only on green. If `production/main`
-  already names the commit after an earlier refused hook, the deploy sends a
-  one-shot retry ref through that same pipeline. Only a matching live build
-  stamp permits the final `git push origin`.
+- Deploy — automatic, on every push to `main`. `test.yml`'s `checks` job
+  builds and verifies the Web export exactly as above, uploads it as a Pages
+  artifact, and a `deploy` job ships it live via `actions/deploy-pages`, then
+  polls the live page for up to 90 seconds confirming it actually serves the
+  pushed commit's build stamp before the job is allowed to succeed. There is
+  no separate manual deploy step; the deliberate, human-triggered gate is the
+  decision to merge into `main`.
 ## License
 
 MIT — see [LICENSE](LICENSE). The name "Unseeing" and any future art/audio

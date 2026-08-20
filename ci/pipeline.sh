@@ -1,10 +1,12 @@
 #!/bin/sh
 # CI/CD for the Godot project — the single source of truth.
 # Stages: headless boot check -> unit tests -> clean Web export (strict) ->
-# build stamping -> precompression -> browser smoke test -> deploy + verify.
-# Pure POSIX sh; the same script runs on a laptop, the droplet, or cloud CI.
+# build stamping -> precompression -> browser smoke test. Deployment itself
+# is not this script's job: .github/workflows/test.yml's deploy job ships
+# this stage's verified game/build/web/ output to GitHub Pages.
+# Pure POSIX sh; the same script runs on a laptop or GitHub-hosted CI.
 # Env knobs: GODOT (binary), SKIP_EXPORT=1 (checks only, for CI without
-# export templates), SKIP_SMOKE=1, DEPLOY_DIR, CHECK_URL.
+# export templates), SKIP_SMOKE=1, BUILD_SHA.
 set -eu
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -57,10 +59,6 @@ echo "ci: engine-caller self-test (every script that runs Godot applies the pin)
 "$DIR/test/engine_callers_test.sh" || exit 1
 echo "ci: content-digest self-test (a missing hasher must refuse, not agree)"
 "$DIR/test/digest_test.sh" || exit 1
-echo "ci: deploy-host preflight self-test (real cargo-zigbuild and Zig boundaries)"
-"$DIR/test/deploy_host_preflight_test.sh" || exit 1
-echo "ci: production push-selection self-test (main update vs retry trigger)"
-"$DIR/test/push_production_test.sh" || exit 1
 echo "ci: agent-tooling checkout/archive gate self-test"
 "$DIR/test/ci_agent_tooling_gate_test.sh" || exit 1
 echo "ci: agent-plugin scope self-test (another project's plugin is not ours to remove)"
@@ -98,56 +96,33 @@ command -v cargo >/dev/null 2>&1 || {
   echo "ci: FAILED cargo not found (install rustup; rust-toolchain.toml pins the version)"
   exit 2
 }
-# Rust needs a C linker even for pure-Rust crates, and compiling godot-core
-# needs more RAM than the droplet has. PREBUILT_RUST=1 (or a missing linker)
-# switches to prebuilt artifacts, seeded by deploy.sh — loudly.
-if [ "${PREBUILT_RUST:-}" != "1" ] \
-  && { command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; }; then
-  (
-    cd "$DIR/rust"
-    cargo fmt --check || { echo "ci: rust format FAILED (run cargo fmt)"; exit 1; }
-    cargo clippy --all-targets -- -D warnings || { echo "ci: clippy FAILED"; exit 1; }
-    cargo test || { echo "ci: cargo test FAILED"; exit 1; }
-    # editor-docs is non-default (its register-docs docs would bloat a
-    # shipped binary), so nothing above compiles it. The focused feature test
-    # proves designer-facing class overviews actually enter Godot's XML; a
-    # compile-only check would accept an empty description.
-    cargo check --features editor-docs || { echo "ci: editor-docs feature build FAILED"; exit 1; }
-    cargo test --features editor-docs editor_docs || {
-      echo "ci: editor-docs descriptions FAILED"
-      exit 1
-    }
-    cargo build --release || { echo "ci: rust build FAILED"; exit 1; }
-  ) || exit 1
-  echo "ci: rust gates OK"
-else
-  echo "ci: running on PREBUILT rust artifacts (PREBUILT_RUST=1 or no C linker)"
-  NATIVE_LIB="$DIR/rust/target/release/libunseeing_core.so"
-  [ "$(uname)" = "Darwin" ] && NATIVE_LIB="$DIR/rust/target/release/libunseeing_core.dylib"
-  [ -f "$NATIVE_LIB" ] || {
-    echo "ci: FAILED no prebuilt native core at $NATIVE_LIB"
-    exit 2
+# Rust needs a C linker even for pure-Rust crates. The prebuilt-artifact
+# fallback this used to have existed only for the 1.8 GB droplet's own
+# limited toolchain; now that the droplet is retired, every remaining
+# caller (this dev host, every GitHub-hosted runner) has a real one, so a
+# missing linker is a genuine environment defect, not a case to route
+# around silently.
+command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || {
+  echo "ci: FAILED no C linker found (cc/gcc) -- Rust needs one even for pure-Rust crates"
+  exit 2
+}
+(
+  cd "$DIR/rust"
+  cargo fmt --check || { echo "ci: rust format FAILED (run cargo fmt)"; exit 1; }
+  cargo clippy --all-targets -- -D warnings || { echo "ci: clippy FAILED"; exit 1; }
+  cargo test || { echo "ci: cargo test FAILED"; exit 1; }
+  # editor-docs is non-default (its register-docs docs would bloat a
+  # shipped binary), so nothing above compiles it. The focused feature test
+  # proves designer-facing class overviews actually enter Godot's XML; a
+  # compile-only check would accept an empty description.
+  cargo check --features editor-docs || { echo "ci: editor-docs feature build FAILED"; exit 1; }
+  cargo test --features editor-docs editor_docs || {
+    echo "ci: editor-docs descriptions FAILED"
+    exit 1
   }
-  # A core that merely EXISTS proves nothing: cargo-target outlives every
-  # push, so a failed scp would leave the previous deploy's binaries in
-  # place and this run would ship them under the new commit's name. When the
-  # hook tells us which commit is being deployed, demand the cores say the
-  # same. (No BUILD_SHA means a hand-run local build — nothing to compare.)
-  if [ -n "${BUILD_SHA:-}" ]; then
-    STAMP="$DIR/rust/target/core.commit"
-    [ -f "$STAMP" ] || {
-      echo "ci: FAILED prebuilt cores carry no commit stamp (deploy.sh seeds core.commit)"
-      exit 2
-    }
-    BUILT="$(printf %.9s "$(cat "$STAMP")")"
-    [ "$BUILT" = "$BUILD_SHA" ] || {
-      echo "ci: FAILED prebuilt cores were built from $BUILT but $BUILD_SHA is being deployed"
-      exit 2
-    }
-    echo "ci: prebuilt cores stamped $BUILT — matches the pushed commit"
-  fi
-  echo "ci: rust gates SKIPPED (prebuilt native core present)"
-fi
+  cargo build --release || { echo "ci: rust build FAILED"; exit 1; }
+) || exit 1
+echo "ci: rust gates OK"
 
 echo "ci: gdscript format + lint"
 # GDFORMAT/GDLINT were resolved and gated at the top of this file.
@@ -230,14 +205,7 @@ if [ "${SKIP_EXPORT:-}" = "1" ]; then
 fi
 
 echo "ci: rust wasm build (the web export loads it)"
-if [ "${PREBUILT_RUST:-}" != "1" ] \
-  && { command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; }; then
-  "$DIR/rust/build-wasm.sh" || { echo "ci: wasm build FAILED"; exit 1; }
-else
-  WASM_LIB="$DIR/rust/target/wasm32-unknown-emscripten/release/unseeing_core.wasm"
-  [ -s "$WASM_LIB" ] || { echo "ci: FAILED no prebuilt wasm core at $WASM_LIB"; exit 2; }
-  echo "ci: wasm build SKIPPED (prebuilt core present)"
-fi
+"$DIR/rust/build-wasm.sh" || { echo "ci: wasm build FAILED"; exit 1; }
 
 echo "ci: exporting Web build (clean)"
 rm -rf "$DIR/game/build/web"
@@ -262,8 +230,10 @@ done
 echo "ci: export OK ($(wc -c < "$DIR/game/build/web/index.wasm" | tr -d ' ') bytes of wasm)"
 
 # stamp the build sha into the shell (head_include carries __BUILD__);
-# BUILD_SHA comes from the post-receive hook — its work tree is a tar
-# extract of the pushed commit, not a git repo, so rev-parse can't know
+# test.yml's checks job passes BUILD_SHA explicitly as printf %.9s of the
+# pushed commit, matching what the deploy job's own live-verify step
+# compares against. The git-rev-parse fallback below is for a hand-run
+# local build, where nothing needs to match anything.
 SHA="${BUILD_SHA:-$(git -C "$DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
 sed -i.bak "s/__BUILD__/$SHA/g" "$DIR/game/build/web/index.html" 2>/dev/null || \
   sed -i "s/__BUILD__/$SHA/g" "$DIR/game/build/web/index.html"
@@ -297,31 +267,4 @@ if [ "${SKIP_SMOKE:-}" != "1" ] && [ -x "$DIR/test/web_smoke.sh" ]; then
   "$DIR/test/web_smoke.sh" "$DIR/game/build/web" || { echo "ci: smoke test FAILED"; exit 1; }
 fi
 
-DEPLOY_DIR="${DEPLOY_DIR:-/var/www/unseeing}"
-if [ -d "$DEPLOY_DIR" ] && [ -w "$DEPLOY_DIR" ]; then
-  # near-atomic: copy to temp names, then rename per file (html last, so a
-  # mid-deploy visitor never gets new html referencing missing assets)
-  for f in "$DIR/game/build/web/"*; do
-    b="$(basename "$f")"
-    [ "$b" = "index.html" ] && continue
-    cp "$f" "$DEPLOY_DIR/.$b.new" && mv -f "$DEPLOY_DIR/.$b.new" "$DEPLOY_DIR/$b"
-  done
-  cp "$DIR/game/build/web/index.html" "$DEPLOY_DIR/.index.html.new"
-  mv -f "$DEPLOY_DIR/.index.html.new" "$DEPLOY_DIR/index.html"
-  echo "ci: deployed Web build -> $DEPLOY_DIR"
-  # verify against the server's own IP; -k because the TLS cert is issued
-  # for the site's hostname, which a bare-IP request does not present
-  URL="${CHECK_URL:-https://206.223.241.165/}"
-  TMP="$(mktemp)"
-  if curl -skL --max-time 15 "$URL" > "$TMP" && cmp -s "$TMP" "$DIR/game/build/web/index.html"; then
-    echo "ci: served bytes verified at $URL"
-    rm -f "$TMP"
-  else
-    rm -f "$TMP"
-    echo "ci: FAILED — served bytes do not match the build at $URL"
-    exit 1
-  fi
-else
-  echo "ci: no writable deploy dir at $DEPLOY_DIR — build-only run"
-fi
 echo "ci: OK"
