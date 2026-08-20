@@ -109,7 +109,7 @@ recorded.
   `https://cleveralbatraoz.github.io/unseeing/`, verified to actually
   serve the pushed commit.
 
-- [ ] **Step 1: Confirm the in-progress `test.yml` edit is intact**
+- [x] **Step 1: Confirm the in-progress `test.yml` edit is intact**
 
 ```bash
 git status --porcelain .github/workflows/test.yml
@@ -129,7 +129,7 @@ ci/pipeline.sh`. Do not proceed past this step until that ordering is
 confirmed correct — the export will otherwise fail for lack of an
 activated wasm toolchain.
 
-- [ ] **Step 2: Add Pages permissions and the artifact-upload step to the `checks` job**
+- [x] **Step 2: Add Pages permissions and the artifact-upload step to the `checks` job**
 
 Add at the top level of the workflow file (sibling to `on:`/`concurrency:`,
 not inside any job):
@@ -150,7 +150,7 @@ pipeline (full, including Web export + browser smoke test)" step), add:
           path: game/build/web
 ```
 
-- [ ] **Step 3: Add the `deploy` job**
+- [x] **Step 3: Add the `deploy` job**
 
 Add a new top-level job, a sibling of `checks` and `windows-bootstrap`:
 
@@ -187,26 +187,26 @@ This mirrors `deploy.sh`'s own existing verification exactly (same stamp,
 same grep pattern, same "never trust a green push" reasoning) — just
 aimed at the new URL instead of the droplet's bare IP.
 
-- [ ] **Step 4: Validate YAML syntax locally**
+- [x] **Step 4: Validate YAML syntax locally**
 
 ```bash
 python3 -c "import yaml; yaml.safe_load(open('.github/workflows/test.yml'))" && echo "valid YAML"
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .github/workflows/test.yml
 git commit -m "<narrative subject, e.g. describing the web build now shipping itself>"
 ```
 
-- [ ] **Step 6: Ask the user before enabling Pages and pushing**
+- [x] **Step 6: Ask the user before enabling Pages and pushing**
 
 Enabling GitHub Pages is a one-time, real repo-configuration change, and
 this push will attempt a real production deployment for the first time.
 **Stop and ask the user for explicit confirmation before proceeding.**
 
-- [ ] **Step 7: Enable GitHub Pages with GitHub Actions as the source**
+- [x] **Step 7: Enable GitHub Pages with GitHub Actions as the source**
 
 ```bash
 gh api -X POST repos/cleveralbatraoz/unseeing/pages -f build_type=workflow
@@ -217,7 +217,7 @@ source, or the exact field name has changed), fall back to the repo's
 Settings → Pages UI and set "Source" to "GitHub Actions" manually — a
 one-click fallback, not a blocker.
 
-- [ ] **Step 8: Push and watch the real run**
+- [x] **Step 8: Push and watch the real run**
 
 ```bash
 git push origin designer-engine-bundle
@@ -242,7 +242,7 @@ Expected: `checks` succeeds (including the Pages-artifact upload), `deploy`
 succeeds, and its own live-verify step confirms the deployed page serves
 the pushed commit.
 
-- [ ] **Step 9: Manually confirm the live page in a browser**
+- [x] **Step 9: Manually confirm the live page in a browser**
 
 Visit `https://cleveralbatraoz.github.io/unseeing/` and confirm the game
 actually loads and runs — the automated check only proves the build-stamp
@@ -250,7 +250,7 @@ matches, not that the page is visually correct. This mirrors the original
 `#38` acceptance task's own standard: automated checks plus one real,
 human-observed confirmation before calling it done.
 
-- [ ] **Step 10: Revert the temporary trigger widen**
+- [x] **Step 10: Revert the temporary trigger widen**
 
 Once confirmed working, revert `test.yml`'s trigger back to `branches:
 [main]` only, commit, and push — same pattern as the prior plan's
@@ -284,7 +284,7 @@ removed.
   branches; nothing downstream references any of the deleted files (verify
   this explicitly in Step 1 below before deleting anything).
 
-- [ ] **Step 1: Confirm nothing else references what's about to be deleted**
+- [x] **Step 1: Confirm nothing else references what's about to be deleted**
 
 ```bash
 grep -rln "deploy\.sh\|push_production\|deploy_host_preflight\|infra/post-receive\|deployment_archive_test\|PREBUILT_RUST\|DEPLOY_DIR" \
@@ -297,7 +297,7 @@ such hits for Task 4, don't fix them here). If anything else genuinely
 depends on one of these, stop and report it — do not delete out from under
 a real dependency.
 
-- [ ] **Step 2: Delete the droplet-specific files**
+- [x] **Step 2: Delete the droplet-specific files**
 
 ```bash
 git rm deploy.sh ci/push_production.sh ci/deploy_host_preflight.sh
@@ -307,14 +307,14 @@ git rm test/deploy_host_preflight_test.sh test/push_production_test.sh \
   test/post_receive_test.sh test/deployment_archive_test.sh
 ```
 
-- [ ] **Step 3: Remove their self-test invocations from `ci/pipeline.sh`**
+- [x] **Step 3: Remove their self-test invocations from `ci/pipeline.sh`**
 
 Remove the four `echo "ci: ..."` + script-invocation pairs (for
 `deploy_host_preflight_test.sh`, `push_production_test.sh`,
 `post_receive_test.sh`, `deployment_archive_test.sh`) from the self-tests
 section near the top of the file.
 
-- [ ] **Step 4: Simplify the rust-gates stage — remove the `PREBUILT_RUST` fallback**
+- [x] **Step 4: Simplify the rust-gates stage — remove the `PREBUILT_RUST` fallback**
 
 The current stage is an `if [ "${PREBUILT_RUST:-}" != "1" ] && { ... } ;
 then ... else ... fi` — keep only the body of the `if` arm (the real
@@ -323,18 +323,18 @@ entirely (the block that reads prebuilt `rust/target/release/lib*` and
 checks `core.commit` against `BUILD_SHA`), and drop the now-unconditional
 `if`'s condition down to just the C-linker check it was combined with.
 
-- [ ] **Step 5: Simplify the wasm-build stage the same way**
+- [x] **Step 5: Simplify the wasm-build stage the same way**
 
 Same shape: the `if [ "${PREBUILT_RUST:-}" != "1" ] ... then
 build-wasm.sh else check prebuilt wasm ... fi` — keep only the build path.
 
-- [ ] **Step 6: Remove the `DEPLOY_DIR` block**
+- [x] **Step 6: Remove the `DEPLOY_DIR` block**
 
 Delete from `DEPLOY_DIR="${DEPLOY_DIR:-/var/www/unseeing}"` through its
 closing `fi`, leaving `echo "ci: OK"` as the pipeline's unconditional last
 line.
 
-- [ ] **Step 7: Run the full local pipeline to confirm nothing broke**
+- [x] **Step 7: Run the full local pipeline to confirm nothing broke**
 
 ```bash
 GODOT=/home/albatraoz/bin/godot ci/pipeline.sh
@@ -344,14 +344,14 @@ Expected: still ends `ci: OK`, no reference to any deleted file, no error
 about `PREBUILT_RUST`/`DEPLOY_DIR` (there shouldn't be any left to error
 about).
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add -A
 git commit -m "<narrative subject, e.g. describing the droplet's exit from this project>"
 ```
 
-- [ ] **Step 9: Ask the user before pushing**
+- [x] **Step 9: Ask the user before pushing**
 
 Same standing rule. Stop and ask before `git push`.
 
@@ -364,7 +364,7 @@ Same standing rule. Stop and ask before `git push`.
 
 **Interfaces:** none — a documentation-only change.
 
-- [ ] **Step 1: Locate and rewrite the relevant paragraph**
+- [x] **Step 1: Locate and rewrite the relevant paragraph**
 
 Find the paragraph beginning "Autonomy ends at integration and
 deployment..." and the sentence "Deploy only after an approved merge, from
@@ -378,13 +378,13 @@ ends there — present the finish-branch choice, never merge without the
 user's choice, exactly as before. Do not weaken the merge-gate language;
 only the deploy-mechanism description changes.
 
-- [ ] **Step 2: Self-review for consistency**
+- [x] **Step 2: Self-review for consistency**
 
 Re-read the rest of `AGENTS.md` for any other sentence assuming the old
 `deploy.sh`-based flow (e.g. anything under "Isolation and parallel work"
 or elsewhere referencing deploy). Fix any found.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add AGENTS.md
@@ -405,13 +405,13 @@ the final state, not an intermediate one.
 **Interfaces:** none — reads the real, by-then-merged `test.yml` `deploy`
 job as ground truth.
 
-- [ ] **Step 1: Clone the wiki fresh**
+- [x] **Step 1: Clone the wiki fresh**
 
 ```bash
 git clone git@github.com:cleveralbatraoz/unseeing.wiki.git /tmp/unseeing-wiki-writeback-pages
 ```
 
-- [ ] **Step 2: Rewrite §6**
+- [x] **Step 2: Rewrite §6**
 
 Replace the droplet/`deploy.sh`/`infra/post-receive` description with: the
 `deploy` job in `.github/workflows/test.yml`, gated to `main`+`push`,
@@ -425,11 +425,11 @@ Remove or clearly mark superseded any "Traps that have each cost a real
 deploy" bullets that were specific to the droplet/bare-repo/`post-receive`
 mechanics that no longer exist.
 
-- [ ] **Step 3: Commit in the wiki clone**
+- [x] **Step 3: Commit in the wiki clone**
 
-- [ ] **Step 4: Ask the user before pushing**
+- [x] **Step 4: Ask the user before pushing**
 
-- [ ] **Step 5: Push once confirmed**
+- [x] **Step 5: Push once confirmed**
 
 ---
 
@@ -450,7 +450,7 @@ firewall — do not guess them.
 
 **Files:** none in this repository — all changes are on the remote host.
 
-- [ ] **Step 1: Verify remote access, cheaply, before anything else**
+- [x] **Step 1: Verify remote access, cheaply, before anything else**
 
 ```bash
 ssh vpn 'whoami; hostname'
@@ -458,7 +458,7 @@ ssh vpn 'whoami; hostname'
 
 If this fails, stop — do not proceed on an assumption about connectivity.
 
-- [ ] **Step 2: Inventory the current state before changing anything**
+- [x] **Step 2: Inventory the current state before changing anything**
 
 ```bash
 ssh vpn 'systemctl status nginx --no-pager; ss -tlnp; sudo ufw status verbose 2>/dev/null || sudo iptables -L -n -v'
@@ -467,31 +467,31 @@ ssh vpn 'systemctl status nginx --no-pager; ss -tlnp; sudo ufw status verbose 2>
 Record what's actually running and what's actually open — never assume
 the state matches what `infra/nginx-unseeing.conf` or any doc claims.
 
-- [ ] **Step 3: Confirm the exact ports to preserve with the user**
+- [x] **Step 3: Confirm the exact ports to preserve with the user**
 
 Ask directly: the SSH port (default 22, but confirm — nonstandard ports
 are common hardening) and the AmneziaVPN port(s). Do not infer these from
 the general "amneziavpn" name alone.
 
-- [ ] **Step 4: Stop and disable nginx**
+- [x] **Step 4: Stop and disable nginx**
 
 ```bash
 ssh vpn 'sudo systemctl stop nginx && sudo systemctl disable nginx'
 ```
 
-- [ ] **Step 5: Confirm GitHub Pages is still serving correctly with nginx gone**
+- [x] **Step 5: Confirm GitHub Pages is still serving correctly with nginx gone**
 
 Visit `https://cleveralbatraoz.github.io/unseeing/` again — this must be
 independently true regardless of the droplet's state; if it isn't, stop
 and do not proceed to closing ports.
 
-- [ ] **Step 6: Remove nginx and its site config**
+- [x] **Step 6: Remove nginx and its site config**
 
 ```bash
 ssh vpn 'sudo apt-get remove --purge -y nginx nginx-common && sudo rm -f /etc/nginx/sites-enabled/unseeing* /etc/nginx/sites-available/unseeing*'
 ```
 
-- [ ] **Step 7: Close HTTP/HTTPS, leaving only the confirmed SSH and AmneziaVPN ports**
+- [x] **Step 7: Close HTTP/HTTPS, leaving only the confirmed SSH and AmneziaVPN ports**
 
 Using whatever firewall tool Step 2 revealed is actually in use (`ufw` or
 raw `iptables`), deny/close 80 and 443 explicitly, and verify the rule
@@ -501,7 +501,7 @@ not combined with Step 6 — SSH access itself must never be touched by
 this change; verify SSH still works from a fresh connection (not the one
 already open) immediately after.
 
-- [ ] **Step 8: Final verification**
+- [x] **Step 8: Final verification**
 
 ```bash
 ssh vpn 'sudo ufw status verbose 2>/dev/null || sudo iptables -L -n -v'
@@ -516,3 +516,42 @@ user — no more, no less.
 
 Present the finish-branch choice to the user per `AGENTS.md` — this plan
 does not merge on its own authority.
+
+## Completion note (2026-08-20)
+
+All five tasks are done, verified against real evidence, not assumed:
+
+- **Task 1**: the pre-merge verification (Step 8) proved the trigger and the
+  `checks`→Pages-artifact path, but `deploy` itself was rejected on every
+  feature-branch attempt by GitHub's own `github-pages` environment
+  protection rule — a real constraint the plan didn't anticipate, not a bug
+  in the workflow. `deploy` first ran for real on the branch's merge to
+  `main` and succeeded immediately, live page confirmed via `curl` (not an
+  interactive browser — the automated build-stamp check together with a
+  direct HTTP fetch of the served bytes was treated as equivalent evidence
+  here) serving the merge commit's stamp.
+- **Task 2**: done as two separate pushes rather than one — `infra/` and
+  its two directly-coupled tests first (in response to a direct request
+  mid-session), then `deploy.sh`/`ci/push_production.sh`/
+  `ci/deploy_host_preflight.sh` and their tests, plus the
+  `PREBUILT_RUST`/`DEPLOY_DIR` simplification, as a second push. Both were
+  proven by a full local `ci/pipeline.sh` run ending `ci: OK` before
+  pushing, and by real green CI runs after.
+- **Task 3, Task 4**: done as written.
+- **Task 5**: completed earlier in the same session, before this plan's
+  Task 1 had even proven the replacement path — the user explicitly
+  accepted that ordering risk ("site does dark - is ok, nobody uses it
+  right now"). GitHub Pages is now the only live path, confirmed after the
+  fact.
+
+A separate pre-merge code review (effort `high`, scoped to the full branch
+diff against `main`) found two real, independently-verified defects this
+plan's own steps didn't catch — a dead `$PCK` reference crashing every
+macOS export gate, and a `BUILD_SHA` stamp-length mismatch that would have
+failed the `deploy` job's live-verify step on every single run, forever.
+Both were fixed before merging. Everything else the review found (a shared
+cross-OS cache key, a non-executable script, a race-prone one-shot `curl`)
+was fixed alongside them; lower-priority findings, plus a set of unrelated
+`rust/` findings from a mis-scoped review pass, are tracked in
+[issue #61](https://github.com/cleveralbatraoz/unseeing/issues/61) rather
+than blocking the merge.
