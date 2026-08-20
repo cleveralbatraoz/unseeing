@@ -108,10 +108,12 @@ platforms, the two
 code layers below, commit rules, and attribution ban. Commit steps state that
 a commit is made but do not prescribe a literal commit message.
 
-Autonomy ends at integration and deployment. Present the finish-branch choice;
-never merge, push, or deploy without the user's choice. Deploy only after an
-approved merge, from clean `main`, because `deploy.sh` pushes `main` and its
-compiled cores must match that exact tree.
+Autonomy ends at integration. Present the finish-branch choice; never merge
+or push without the user's choice. The web build deploys automatically —
+`.github/workflows/test.yml`'s `deploy` job ships `main`'s HEAD to GitHub
+Pages on every push, with no separate manual deploy step and no `deploy.sh`.
+The deliberate, human-triggered gate is therefore the decision to merge into
+`main`, not a distinct deploy action after it.
 
 Write specs to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and plans
 to `docs/superpowers/plans/YYYY-MM-DD-<feature>.md`. Keep durable project
