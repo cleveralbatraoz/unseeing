@@ -73,6 +73,8 @@
 //! - [`source_shape`] — the one generated shape a sound source's limbs
 //!   need beyond a box or [`prop_shape::column_triangles`]: a torus, for
 //!   the fan's guard ring and the radio's speaker grille.
+//! - [`support_motion`] — the shared finite support, fall, landing, queued
+//!   contact, and restore law for controlled player and cat bodies.
 //!
 //! Determinism is construction, not luck: no hashed iteration anywhere
 //! near an output (ordered containers only), no system time, no
@@ -110,5 +112,6 @@ pub mod settings_menu;
 pub mod sight;
 pub mod sound_source;
 pub mod source_shape;
+pub mod support_motion;
 mod temporal;
 pub mod viewmodel;
