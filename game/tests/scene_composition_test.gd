@@ -160,20 +160,23 @@ func test_inherited_override_and_added_radio_reach_retained_sources_once() -> vo
 ## transform, or a retained-table slot that drifts away from its wall/source.
 func test_composed_and_flat_fixtures_share_hand_anchored_world_outputs() -> void:
 	var composed := _enter_fixture(COMPOSED_SCENE)
-	var flat := _enter_fixture(FLAT_SCENE)
-	if composed == null or flat == null:
+	if composed == null:
 		return
 	var group := _path_node(composed, COMPOSED_PATHS, "group") as Node3D
 	if group == null:
+		fail("composed plain grouping node did not resolve to a Node3D")
 		return
-	_assert_transform_matches(
+	var group_is_anchored := _assert_transform_matches(
 		group.global_transform,
 		Transform3D(Vector3.FORWARD, Vector3.UP, Vector3.RIGHT, Vector3(2, 0, 12)),
 		"composed plain grouping frame"
 	)
 	var composed_outputs := _assert_hand_anchored_world_outputs(composed, COMPOSED_PATHS)
-	if composed_outputs.is_empty():
+	if not group_is_anchored or composed_outputs.is_empty():
 		fail("composed fixture did not satisfy every hand-derived world anchor")
+		return
+	var flat := _enter_fixture(FLAT_SCENE)
+	if flat == null:
 		return
 	var flat_outputs := _assert_hand_anchored_world_outputs(flat, FLAT_PATHS)
 	if flat_outputs.is_empty():
@@ -338,6 +341,7 @@ func _assert_hand_anchored_world_outputs(level: WaveLevel, paths: Dictionary) ->
 	var rows := _complete_wall_rows(level, paths)
 	if rows.is_empty():
 		return {}
+	var literals_are_anchored := true
 	for key: String in WALL_KEYS:
 		var row: Dictionary = rows[key]
 		var expected: Dictionary = EXPECTED_WALLS[key]
@@ -347,18 +351,33 @@ func _assert_hand_anchored_world_outputs(level: WaveLevel, paths: Dictionary) ->
 		var expected_rect: Vector4 = expected["rect"]
 		var span: Vector2 = row["span"]
 		var expected_span: Vector2 = expected["span"]
-		_assert_vector4_approx(segment, expected_segment, WORLD_EPS_M, "%s centerline" % key)
-		_assert_vector4_approx(rect, expected_rect, WORLD_EPS_M, "%s occluder" % key)
+		var segment_is_anchored := _assert_vector4_approx(
+			segment, expected_segment, WORLD_EPS_M, "%s centerline" % key
+		)
+		var rect_is_anchored := _assert_vector4_approx(
+			rect, expected_rect, WORLD_EPS_M, "%s occluder" % key
+		)
 		assert_vector(span).is_equal_approx(expected_span, Vector2.ONE * WORLD_EPS_M)
 		var raw_path: String = str(paths[key])
 		assert_str(row["path"]).is_equal(raw_path)
+		var span_is_anchored := _is_vector2_approx(span, expected_span, WORLD_EPS_M)
+		var path_is_anchored: bool = row["path"] == raw_path
+		literals_are_anchored = (
+			segment_is_anchored
+			and rect_is_anchored
+			and span_is_anchored
+			and path_is_anchored
+			and literals_are_anchored
+		)
 
 	var creatures_and_sources := _anchored_sources_and_cats(level, paths)
 	var props := _anchored_prop_aabbs(level, paths)
+	var spawn_is_anchored := _assert_spawn_anchor(level, paths)
 	if (
-		creatures_and_sources.is_empty()
+		not literals_are_anchored
+		or creatures_and_sources.is_empty()
 		or props.is_empty()
-		or not _assert_spawn_anchor(level, paths)
+		or not spawn_is_anchored
 	):
 		return {}
 	return {
@@ -393,11 +412,14 @@ func _anchored_sources_and_cats(level: WaveLevel, paths: Dictionary) -> Dictiona
 	if not anchored:
 		return {}
 	assert_float(fan.volume).is_equal(0.6)
+	if fan.volume != 0.6:
+		return {}
 	return {"sources": sources, "cats": cats}
 
 
 func _anchored_prop_aabbs(level: WaveLevel, paths: Dictionary) -> Dictionary:
 	var props := {}
+	var aabbs_are_anchored := true
 	for key: String in PROP_KEYS:
 		var prop := _path_node(level, paths, key) as Node3D
 		if prop == null:
@@ -410,7 +432,14 @@ func _anchored_prop_aabbs(level: WaveLevel, paths: Dictionary) -> Dictionary:
 		var expected: AABB = EXPECTED_PROP_AABBS[key]
 		assert_vector(actual.position).is_equal_approx(expected.position, Vector3.ONE * WORLD_EPS_M)
 		assert_vector(actual.size).is_equal_approx(expected.size, Vector3.ONE * WORLD_EPS_M)
+		aabbs_are_anchored = (
+			_is_vector3_approx(actual.position, expected.position, WORLD_EPS_M)
+			and _is_vector3_approx(actual.size, expected.size, WORLD_EPS_M)
+			and aabbs_are_anchored
+		)
 		props[key] = actual
+	if not aabbs_are_anchored:
+		return {}
 	return props
 
 
@@ -420,7 +449,10 @@ func _assert_spawn_anchor(level: WaveLevel, paths: Dictionary) -> bool:
 		return false
 	assert_vector(level.spawn_pos()).is_equal_approx(Vector3(4, 0.9, 9), Vector3.ONE * WORLD_EPS_M)
 	assert_float(level.spawn_yaw()).is_equal_approx(PI * 0.5, YAW_EPS_RAD)
-	return true
+	return (
+		_is_vector3_approx(level.spawn_pos(), Vector3(4, 0.9, 9), WORLD_EPS_M)
+		and absf(level.spawn_yaw() - PI * 0.5) <= YAW_EPS_RAD
+	)
 
 
 func _assert_node_anchor(
@@ -432,7 +464,10 @@ func _assert_node_anchor(
 		return false
 	assert_vector(node.global_position).is_equal_approx(origin, Vector3.ONE * WORLD_EPS_M)
 	assert_float(node.global_rotation.y).is_equal_approx(yaw, YAW_EPS_RAD)
-	return true
+	return (
+		_is_vector3_approx(node.global_position, origin, WORLD_EPS_M)
+		and absf(node.global_rotation.y - yaw) <= YAW_EPS_RAD
+	)
 
 
 func _world_aabb(node: Node3D) -> AABB:
@@ -1046,11 +1081,11 @@ func _box_skin(node: Node) -> MeshInstance3D:
 	return skin
 
 
-func _assert_matching_transform(actual: Transform3D, expected: Transform3D) -> void:
-	_assert_transform_matches(actual, expected, "normalized fixture transform")
+func _assert_matching_transform(actual: Transform3D, expected: Transform3D) -> bool:
+	return _assert_transform_matches(actual, expected, "normalized fixture transform")
 
 
-func _assert_transform_matches(actual: Transform3D, expected: Transform3D, label: String) -> void:
+func _assert_transform_matches(actual: Transform3D, expected: Transform3D, label: String) -> bool:
 	var basis_epsilon := Vector3.ONE * BASIS_EPS
 	var world_epsilon := Vector3.ONE * WORLD_EPS_M
 	assert_vector(actual.basis.x).append_failure_message(label).is_equal_approx(
@@ -1065,12 +1100,36 @@ func _assert_transform_matches(actual: Transform3D, expected: Transform3D, label
 	assert_vector(actual.origin).append_failure_message(label).is_equal_approx(
 		expected.origin, world_epsilon
 	)
+	return (
+		_is_vector3_approx(actual.basis.x, expected.basis.x, BASIS_EPS)
+		and _is_vector3_approx(actual.basis.y, expected.basis.y, BASIS_EPS)
+		and _is_vector3_approx(actual.basis.z, expected.basis.z, BASIS_EPS)
+		and _is_vector3_approx(actual.origin, expected.origin, WORLD_EPS_M)
+	)
 
 
 func _assert_vector4_approx(
 	actual: Vector4, expected: Vector4, epsilon: float, label: String
-) -> void:
+) -> bool:
 	assert_float(actual.x).append_failure_message(label).is_equal_approx(expected.x, epsilon)
 	assert_float(actual.y).append_failure_message(label).is_equal_approx(expected.y, epsilon)
 	assert_float(actual.z).append_failure_message(label).is_equal_approx(expected.z, epsilon)
 	assert_float(actual.w).append_failure_message(label).is_equal_approx(expected.w, epsilon)
+	return (
+		absf(actual.x - expected.x) <= epsilon
+		and absf(actual.y - expected.y) <= epsilon
+		and absf(actual.z - expected.z) <= epsilon
+		and absf(actual.w - expected.w) <= epsilon
+	)
+
+
+func _is_vector2_approx(actual: Vector2, expected: Vector2, epsilon: float) -> bool:
+	return absf(actual.x - expected.x) <= epsilon and absf(actual.y - expected.y) <= epsilon
+
+
+func _is_vector3_approx(actual: Vector3, expected: Vector3, epsilon: float) -> bool:
+	return (
+		absf(actual.x - expected.x) <= epsilon
+		and absf(actual.y - expected.y) <= epsilon
+		and absf(actual.z - expected.z) <= epsilon
+	)
