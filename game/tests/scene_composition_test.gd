@@ -289,19 +289,48 @@ func _assert_observer_membership(level: WaveLevel, paths: Dictionary) -> bool:
 	var observer: WaveObserver = auto_free(WaveObserver.new())
 	observer.inject(level, null)
 	var explained: Dictionary = observer.explain_oids()
-	if not explained.has("superfaces"):
-		fail("observer refused the injected fixture census: %s" % explained)
+	if not explained.has("superfaces") or not explained["superfaces"] is Array:
+		fail("observer refused with malformed superfaces: %s" % explained)
 		return false
+	var raw_superfaces := explained["superfaces"] as Array
 	var members := {}
-	for superface: Dictionary in explained["superfaces"]:
-		for value: Variant in superface.get("members", []):
-			var path := str(value)
+	for superface_value: Variant in raw_superfaces:
+		var normalized := _superface_member_paths(superface_value)
+		if normalized.is_empty():
+			return false
+		var class_members := {}
+		for path: String in normalized["members"]:
 			if not reverse.has(path):
 				fail("observer member '%s' is absent from the fixture map" % path)
 				return false
 			var key: String = str(reverse[path])
+			if class_members.has(key):
+				fail("observer superface duplicates semantic key '%s'" % key)
+				return false
+			class_members[key] = true
 			members[key] = true
 	return _has_exact_keys(members, PAINTED_KEYS, "observer membership")
+
+
+func _superface_member_paths(superface_value: Variant) -> Dictionary:
+	if not superface_value is Dictionary:
+		fail("observer superface entry is not a Dictionary")
+		return {}
+	var superface: Dictionary = superface_value
+	if not superface.has("members"):
+		fail("observer superface entry omits members")
+		return {}
+	var raw_members: Variant = superface["members"]
+	if not raw_members is Array:
+		fail("observer superface members are not an Array")
+		return {}
+	var paths: Array[String] = []
+	for value: Variant in raw_members:
+		if not value is String:
+			fail("observer member is not a String")
+			return {}
+		paths.append(str(value))
+	return {"members": paths}
 
 
 func _reverse_paths(paths: Dictionary) -> Dictionary:
