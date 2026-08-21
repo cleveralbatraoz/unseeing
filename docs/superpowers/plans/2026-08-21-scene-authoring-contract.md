@@ -492,7 +492,7 @@ accepted findings before Task 2.
 ### Task 2: Prove world equivalence, collision, superfaces, mesh bytes, and silence
 
 **Files:**
-- Modify: `game/tests/scene_composition_test.gd` (add four cases and the
+- Modify: `game/tests/scene_composition_test.gd` (add five cases and the
   geometry/observer helpers)
 
 **Implementer brief — mandatory:** Re-read `AGENTS.md`, the spec, Global
@@ -682,7 +682,7 @@ ci/run_gdunit.sh "$PWD/game" "$GODOT_BIN" --headless --path "$PWD/game" \
   -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd --ignoreHeadlessMode -c -a tests
 ```
 
-Expected focused: 1/1 suite, 6/6 cases. Expected full: 33/33 suites, 360/360
+Expected focused: 1/1 suite, 7/7 cases. Expected full: 33/33 suites, 361/361
 cases, zero errors/failures/skips. Inspect `git diff --check` and ensure no
 production diff exists. Commit the completed runtime contract, then request
 and resolve a fresh review before Task 3.
@@ -926,7 +926,7 @@ GODOT="$GODOT_BIN" tools/probe_editor_prefabs.sh
   --ignoreHeadlessMode -c -a res://tests/scene_composition_test.gd
 ```
 
-Expected: editor mode proved and `PASS (36 checks)`. Run the six-case runtime
+Expected: editor mode proved and `PASS (36 checks)`. Run the seven-case runtime
 suite in the block to prove the probe did not perturb fixtures. Inspect for the
 unique temp file, `game/override.cfg`, imports, reports, or generated content;
 none may remain. Commit the editor persistence behavior, then request and
@@ -985,7 +985,7 @@ if child.get_name() == "PlainGroup" {
 
 Expected: `test_plain_groups_do_not_hide_or_duplicate_nested_gameplay` fails
 because composed walls, props, sources, cat, and spawn disappear. Reverse the
-patch, rebuild, and require 6/6 green.
+patch, rebuild, and require 7/7 green.
 
 - [ ] **Mutation 2 — ignore the ancestor transform at the wall boundary.** In
   `WaveWall::segment`, temporarily replace:
@@ -1001,7 +1001,7 @@ let placed = self.base().get_transform();
 ```
 
 Expected: the hand-anchored composed wall/occluder comparison fails while the
-flat oracle remains correct. Reverse exactly, rebuild, and require 6/6 green.
+flat oracle remains correct. Reverse exactly, rebuild, and require 7/7 green.
 
 - [ ] **Mutation 3 — serialize a generated run wall.** In
   `WaveRun::rebuild`, immediately after `self.base_mut().add_child(&wall);`,
@@ -1027,7 +1027,7 @@ if child.get_name() == "InheritedRoomVariant" {
 ```
 
 Expected: the first two runtime cases fail on missing inherited base children,
-Fan, and Radio. Reverse, rebuild, require 6/6 green.
+Fan, and Radio. Reverse, rebuild, require 7/7 green.
 
 - [ ] **Mutation 4b — double the inherited variant.** Immediately after the
   normal `collect(&child, census);`, temporarily add:
@@ -1039,7 +1039,7 @@ if child.get_name() == "InheritedRoomVariant" {
 ```
 
 Expected: retained multiplicities, walls, sources, cats, or duplicate-spawn
-warning assertions fail. Reverse, rebuild, require 6/6 and editor 36/36 green.
+warning assertions fail. Reverse, rebuild, require 7/7 and editor 36/36 green.
 
 - [ ] **Step 6: Prove every mutation is gone.**
 
@@ -1169,7 +1169,7 @@ assistant attribution. Then run:
 GODOT="$GODOT_BIN" tools/probe_editor_prefabs.sh
 ```
 
-Require 6/6 runtime cases and 36/36 editor checks so docs never land over a red
+Require 7/7 runtime cases and 36/36 editor checks so docs never land over a red
 contract. Commit the documentation, then request and resolve a fresh review.
 
 ---

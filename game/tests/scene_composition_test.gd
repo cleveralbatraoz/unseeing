@@ -332,6 +332,152 @@ func test_mesh_oracle_rejects_malformed_or_non_finite_godot_faces() -> void:
 		. is_true()
 	)
 
+	var healthy_arrays := _validated_box_arrays(source.surface_get_arrays(0), "healthy direct mesh")
+	if healthy_arrays.is_empty():
+		return
+	var healthy_mesh_data := {
+		"skin": skin,
+		"vertices": healthy_arrays["vertices"],
+		"custom": healthy_arrays["custom"],
+	}
+	var healthy_request := {
+		"axis": 0,
+		"plane": -1.0,
+		"normal": Vector3.LEFT,
+		"path": "direct matching",
+	}
+
+	var missing_custom := healthy_mesh_data.duplicate()
+	missing_custom.erase("custom")
+	var reject_missing_custom := func() -> Dictionary:
+		return _matching_face_lanes(missing_custom, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_missing_custom, "face mesh data omits custom", "missing mesh-data key"
+	)
+
+	var wrong_vertex_field := healthy_mesh_data.duplicate()
+	wrong_vertex_field["vertices"] = PackedFloat32Array()
+	var reject_wrong_vertices := func() -> Dictionary:
+		return _matching_face_lanes(wrong_vertex_field, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_wrong_vertices,
+		"face mesh data vertices is not a PackedVector3Array",
+		"wrong mesh-data field type"
+	)
+
+	var missing_normal := healthy_request.duplicate()
+	missing_normal.erase("normal")
+	var reject_missing_normal := func() -> Dictionary:
+		return _matching_face_lanes(healthy_mesh_data, missing_normal)
+	_assert_helper_rejects_empty(
+		reject_missing_normal, "face request omits normal", "missing request key"
+	)
+
+	var wrong_axis := healthy_request.duplicate()
+	wrong_axis["axis"] = "zero"
+	var reject_wrong_axis := func() -> Dictionary:
+		return _matching_face_lanes(healthy_mesh_data, wrong_axis)
+	_assert_helper_rejects_empty(
+		reject_wrong_axis, "face request axis is not an int", "wrong request field type"
+	)
+
+	var short_custom: PackedFloat32Array = (
+		(healthy_arrays["custom"] as PackedFloat32Array).duplicate()
+	)
+	short_custom.resize(23)
+	var short_mesh_data := healthy_mesh_data.duplicate()
+	short_mesh_data["custom"] = short_custom
+	var reject_short_custom := func() -> Dictionary:
+		return _matching_face_lanes(short_mesh_data, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_short_custom,
+		"direct matching must carry exactly 24 vertices and 24 CUSTOM0 lanes",
+		"short matching CUSTOM0 array"
+	)
+
+	var non_finite_plane := healthy_request.duplicate()
+	non_finite_plane["plane"] = NAN
+	var reject_non_finite_plane := func() -> Dictionary:
+		return _matching_face_lanes(healthy_mesh_data, non_finite_plane)
+	_assert_helper_rejects_empty(
+		reject_non_finite_plane,
+		"direct matching face plane is not finite",
+		"non-finite direct plane"
+	)
+
+	var degenerate_normal := healthy_request.duplicate()
+	degenerate_normal["normal"] = Vector3.ZERO
+	var reject_degenerate_normal := func() -> Dictionary:
+		return _matching_face_lanes(healthy_mesh_data, degenerate_normal)
+	_assert_helper_rejects_empty(
+		reject_degenerate_normal,
+		"direct matching requested face normal is degenerate",
+		"degenerate direct normal"
+	)
+
+	var non_finite_custom: PackedFloat32Array = (
+		(healthy_arrays["custom"] as PackedFloat32Array).duplicate()
+	)
+	non_finite_custom[0] = NAN
+	var non_finite_mesh_data := healthy_mesh_data.duplicate()
+	non_finite_mesh_data["custom"] = non_finite_custom
+	var reject_non_finite_custom := func() -> Dictionary:
+		return _matching_face_lanes(non_finite_mesh_data, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_non_finite_custom,
+		"direct matching CUSTOM0 lane 0 is not finite",
+		"non-finite direct CUSTOM0 lane"
+	)
+
+	var healthy_vertices: PackedVector3Array = healthy_arrays["vertices"]
+	var reject_negative_offset := func() -> Dictionary:
+		return _world_face_geometry(Transform3D.IDENTITY, healthy_vertices, -1, "direct geometry")
+	_assert_helper_rejects_empty(
+		reject_negative_offset, "direct geometry face offset -1 is negative", "negative face offset"
+	)
+	var reject_unaligned_offset := func() -> Dictionary:
+		return _world_face_geometry(Transform3D.IDENTITY, healthy_vertices, 1, "direct geometry")
+	_assert_helper_rejects_empty(
+		reject_unaligned_offset,
+		"direct geometry face offset 1 is not aligned to four-vertex faces",
+		"unaligned face offset"
+	)
+	var reject_out_of_range_offset := func() -> Dictionary:
+		return _world_face_geometry(Transform3D.IDENTITY, healthy_vertices, 24, "direct geometry")
+	_assert_helper_rejects_empty(
+		reject_out_of_range_offset,
+		"direct geometry face offset 24 has no complete four-vertex face in 24 vertices",
+		"out-of-range face offset"
+	)
+
+
+func _assert_helper_rejects_empty(
+	callable: Callable, expected_message: String, label: String
+) -> void:
+	var observed := {}
+	var reject := func() -> void: observed["verdict"] = callable.call()
+	assert_failure(reject).has_message(expected_message)
+	(
+		assert_bool(observed.has("verdict"))
+		. append_failure_message("%s did not return a defined verdict" % label)
+		. is_true()
+	)
+	if not observed.has("verdict"):
+		return
+	var verdict: Variant = observed["verdict"]
+	(
+		assert_bool(verdict is Dictionary)
+		. append_failure_message("%s returned a non-Dictionary verdict" % label)
+		. is_true()
+	)
+	if not verdict is Dictionary:
+		return
+	(
+		assert_bool((verdict as Dictionary).is_empty())
+		. append_failure_message("%s returned a non-empty verdict" % label)
+		. is_true()
+	)
+
 
 ## Injecting before tree entry is the one supported construction path: it lets
 ## WaveLevel deliver source and solid materials before each node builds limbs.
@@ -837,46 +983,138 @@ func _normalized_request_normal(normal: Vector3, node_path: String) -> Dictionar
 
 
 func _matching_face_lanes(mesh_data: Dictionary, request: Dictionary) -> Dictionary:
+	var field_error := ""
+	if not mesh_data.has("skin"):
+		field_error = "face mesh data omits skin"
+	elif not mesh_data["skin"] is MeshInstance3D:
+		field_error = "face mesh data skin is not a MeshInstance3D"
+	elif not mesh_data.has("vertices"):
+		field_error = "face mesh data omits vertices"
+	elif not mesh_data["vertices"] is PackedVector3Array:
+		field_error = "face mesh data vertices is not a PackedVector3Array"
+	elif not mesh_data.has("custom"):
+		field_error = "face mesh data omits custom"
+	elif not mesh_data["custom"] is PackedFloat32Array:
+		field_error = "face mesh data custom is not a PackedFloat32Array"
+	elif not request.has("path"):
+		field_error = "face request omits path"
+	elif not request["path"] is String:
+		field_error = "face request path is not a String"
+	elif not request.has("axis"):
+		field_error = "face request omits axis"
+	elif not request["axis"] is int:
+		field_error = "face request axis is not an int"
+	elif not request.has("plane"):
+		field_error = "face request omits plane"
+	elif not request["plane"] is float:
+		field_error = "face request plane is not a float"
+	elif not request.has("normal"):
+		field_error = "face request omits normal"
+	elif not request["normal"] is Vector3:
+		field_error = "face request normal is not a Vector3"
+	if not field_error.is_empty():
+		fail(field_error)
+		return {}
+
 	var skin: MeshInstance3D = mesh_data["skin"]
 	var vertices: PackedVector3Array = mesh_data["vertices"]
 	var custom: PackedFloat32Array = mesh_data["custom"]
 	var node_path: String = request["path"]
+	var axis: int = request["axis"]
+	var plane: float = request["plane"]
+	var requested_normal: Vector3 = request["normal"]
+	var value_error := ""
 	if not is_instance_valid(skin):
-		fail("%s WaveSkin was freed before face selection" % node_path)
+		value_error = "%s WaveSkin was freed before face selection" % node_path
+	elif vertices.size() != 24 or custom.size() != 24:
+		value_error = "%s must carry exactly 24 vertices and 24 CUSTOM0 lanes" % node_path
+	elif axis < 0 or axis > 2:
+		value_error = "%s face axis %d is outside the Vector3 domain" % [node_path, axis]
+	elif not is_finite(plane):
+		value_error = "%s face plane is not finite" % node_path
+	elif not requested_normal.is_finite():
+		value_error = "%s requested face normal is not finite" % node_path
+	if not value_error.is_empty():
+		fail(value_error)
 		return {}
-	var world_transform := skin.global_transform
-	if not world_transform.is_finite():
-		fail("%s WaveSkin global transform is not finite" % node_path)
+	if not _box_arrays_are_finite(vertices, custom, node_path):
+		return {}
+	var normalized := _normalized_request_normal(requested_normal, node_path)
+	if normalized.is_empty():
+		return {}
+	requested_normal = normalized["normal"]
+	var transform_error := ""
+	var world_transform := Transform3D.IDENTITY
+	if not skin.is_inside_tree():
+		transform_error = "%s WaveSkin is outside the scene tree" % node_path
+	else:
+		world_transform = skin.global_transform
+		if not world_transform.is_finite():
+			transform_error = "%s WaveSkin global transform is not finite" % node_path
+	if not transform_error.is_empty():
+		fail(transform_error)
 		return {}
 	var matches: Array[PackedFloat32Array] = []
+	var scan_failed := false
 	for first: int in range(0, vertices.size(), 4):
 		var geometry := _world_face_geometry(world_transform, vertices, first, node_path)
 		if geometry.is_empty():
-			return {}
+			scan_failed = true
+			break
 		var centroid: Vector3 = geometry["centroid"]
 		var geometric_normal: Vector3 = geometry["normal"]
-		var axis: int = request["axis"]
-		var plane: float = request["plane"]
 		if absf(centroid[axis] - plane) > WORLD_EPS_M:
 			continue
-		var requested_normal: Vector3 = request["normal"]
 		var alignment := geometric_normal.dot(requested_normal)
 		if not is_finite(alignment):
 			fail("%s face %d normal alignment is not finite" % [node_path, first / 4])
-			return {}
+			scan_failed = true
+			break
 		if alignment < 1.0 - BASIS_EPS:
 			continue
 		matches.append(custom.slice(first, first + 4))
-	return {"matches": matches}
+	var result := {}
+	if not scan_failed:
+		result["matches"] = matches
+	return result
 
 
 func _world_face_geometry(
 	world_transform: Transform3D, vertices: PackedVector3Array, first: int, node_path: String
 ) -> Dictionary:
-	var a := world_transform * vertices[first]
-	var b := world_transform * vertices[first + 1]
-	var c := world_transform * vertices[first + 2]
-	var d := world_transform * vertices[first + 3]
+	var precondition_error := ""
+	if first < 0:
+		precondition_error = "%s face offset %d is negative" % [node_path, first]
+	elif first % 4 != 0:
+		precondition_error = (
+			"%s face offset %d is not aligned to four-vertex faces" % [node_path, first]
+		)
+	elif vertices.size() < 4 or first > vertices.size() - 4:
+		precondition_error = (
+			"%s face offset %d has no complete four-vertex face in %d vertices"
+			% [node_path, first, vertices.size()]
+		)
+	elif not world_transform.is_finite():
+		precondition_error = "%s face world transform is not finite" % node_path
+	if not precondition_error.is_empty():
+		fail(precondition_error)
+		return {}
+	var local_a := vertices[first]
+	var local_b := vertices[first + 1]
+	var local_c := vertices[first + 2]
+	var local_d := vertices[first + 3]
+	if (
+		not local_a.is_finite()
+		or not local_b.is_finite()
+		or not local_c.is_finite()
+		or not local_d.is_finite()
+	):
+		fail("%s face %d has a non-finite local vertex" % [node_path, first / 4])
+		return {}
+	var a := world_transform * local_a
+	var b := world_transform * local_b
+	var c := world_transform * local_c
+	var d := world_transform * local_d
 	var centroid := (a + b + c + d) * 0.25
 	var cross := (b - a).cross(c - a)
 	var cross_length_squared := cross.length_squared()
