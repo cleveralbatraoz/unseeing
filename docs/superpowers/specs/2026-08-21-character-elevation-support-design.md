@@ -113,10 +113,14 @@ recent move; it is `None` whenever that move had no accepted support.
 
 `Controlled` means that designer/player intent may command planar motion and
 that the next move is allowed to establish or retain support. It also serves
-as the first-tick probe after construction or explicit relocation: an actor
-authored over empty space gets one zero-Y discovery move, then becomes
-`Airborne` with the actual planar trajectory it achieved. This avoids a third
-ambient engine phase and preserves the existing first controlled tick.
+as the first-tick probe after construction: an actor authored over empty space
+gets one zero-Y discovery move, then becomes `Airborne` with the actual planar
+trajectory it achieved. The existing explicit player-relocation door also
+resets the player to this probe state. Cats have no general runtime teleport
+API in this version: scene construction initializes them and capture restore
+installs their exact captured phase. This avoids a third ambient engine phase
+and preserves the existing first controlled tick without inventing a new cat
+behavior.
 
 `Airborne` owns the launch trajectory. The player adapter does not replace it
 with current input. The cat adapter does not advance `CatBrain` to obtain a new
@@ -125,13 +129,46 @@ next stored trajectory, so a wall removes its blocked component without a
 bounce.
 
 All motion operations consume validated finite scalar/vector types. Raw Godot
-`Vector3` values are checked at the adapter boundary. Raw `dt` enters through
+positions are narrowed through `ActorPosition`, whose finite world-coordinate
+domain is `[-1_000_000, 1_000_000] m` on every lane; raw headings use an
+`ActorYaw` that is finite and representable in Godot's f32 rotation lane, and
+non-negative distance/speed observations use a validated measure. The coordinate envelope is a numerical safety boundary, not a level
+or perception constant: it leaves more than five orders of magnitude beyond
+the shipped level while proving that offsets and differences in the cat pose
+law cannot overflow an f32 lane. Derived gait, skeleton, and tail points use a
+separate `PosePoint` envelope of `±1_000_002 m`, reserving more than the proved
+sub-1 m maximum authored cat offset around an extreme valid root. Captured
+gait/pose/tail points are validated against that derived-point door before
+restore. Raw `dt` enters through
 the pure total constructor `StepDuration::from_raw(f64)`: zero, negative, NaN,
 and infinite values become a zero-duration step, while a finite positive value
 is capped at `MAX_ACCEL_DT_S = 1.0 / 15.0 s`. `prepare` accepts only that
 validated `StepDuration`, so a stalled debugger cannot create a non-finite
-velocity. Acceleration is downward and terminal speed is a magnitude; invalid
-configuration produces an explicit validation error, never a panic or NaN.
+velocity. Acceleration is downward and terminal speed is a magnitude. The
+configured terminal is narrowed once to an effective positive f32 lane; both
+integration and restore validation use that same lane, so a decimal such as
+`0.6 m/s` cannot produce a state that its own restore door rejects. Invalid
+configuration or actor samples produce an explicit validation error, never a
+panic or NaN.
+
+An adapter validates its complete pre-move global `Transform3D` (origin and
+all nine basis lanes), complete Euler rotation, stored prior position, and
+desired physical vector before advancing any pure actor state or mutating the
+scene. It validates the complete post-move transform and rotation, velocity,
+and collision facts before advancing gait, pose, or sound. A poisoned
+post-move result restores the exact saved transform bits rather than
+reconstructing position/yaw, zeros velocity, disables processing, and emits
+one error. Disabling processing makes the report one-shot without adding an
+uncaptured “already reported” latch. Capture refuses a runtime actor disabled
+by this boundary; it never serializes the actor as if it were healthy.
+
+Player visual code is transactional too. It validates one complete render
+sample, advances a copy of the `Viewmodel`, computes both triangle buffers,
+both shoe points, bob/sweep commands, the optional footstep request, and the
+next `FootstepSuppression` value off to the side. Only a completely valid
+`HeroVisualNext` is installed; a refusal retains the prior VM, mesh buffers,
+shoes, bob, queue, cane request, and suppression bit. No partial brain, gait,
+tail, visual, wave, or landing state is installed on any boundary error path.
 
 ### Two-phase tick
 
@@ -160,9 +197,8 @@ The pure output contains data, not effects:
 
 ```rust
 struct LandingEvent {
-    impact_speed_mps: FiniteSpeed,
-    support_point: FinitePoint,
-    support_normal: FiniteDirection,
+    impact_speed: FiniteSpeed,
+    support: SupportContact,
 }
 ```
 
@@ -193,15 +229,19 @@ airborne actor makes the pair ignore each other symmetrically. A centred fall
 passes through instead of balancing, and only non-actor world geometry can
 produce accepted support or a landing event.
 
-The support adapter rejects any floor collision whose collider occupies either
-named actor layer; every other floor collision remains geometry-classified by
-the explicit slope settings below. The adapter derives its own layer and mask
-entirely from captured `MotionPhase`: construction applies the controlled pair
-before the first move; explicit relocation changes the phase and collision
-pair synchronously before it returns; every reconciliation and restore applies
-the pair for the resulting phase. The boundary writes layer/mask only when the
-derived pair differs from the current one, avoiding needless broadphase churn.
-They are not additional mutable state.
+The support adapter validates each floor point and normal, then reads the
+collider's collision layer from the collision RID through `PhysicsServer3D`.
+It rejects a floor collision whose layer occupies either named actor bit;
+every other valid floor collision remains geometry-classified by the explicit
+slope settings below, including server-backed geometry whose collider object
+cannot be cast to `CollisionObject3D`. An invalid RID or poisoned floor fact is
+an explicit adapter refusal, not an invented edge. The adapter derives its own
+layer and mask entirely from captured `MotionPhase`: construction applies the
+controlled pair before the first move; explicit player relocation changes the
+phase and collision pair synchronously before it returns; every reconciliation
+and restore applies the pair for the resulting phase. The boundary writes
+layer/mask only when the derived pair differs from the current one, avoiding
+needless broadphase churn. They are not additional mutable state.
 Default all-layer ray queries, including touch/cane observation, can still see
 both named actor layers. A future actor-to-actor airborne response must replace
 this explicit layer contract rather than add an order-dependent second move.
@@ -223,10 +263,16 @@ defaults:
 | maximum slides | `MAX_SLIDES = 6` | preserves Godot 4.7.1's current default |
 | stop on slope | `FLOOR_STOP_ON_SLOPE = true` | no gravity-driven creep while controlled |
 | constant slope speed | `FLOOR_CONSTANT_SPEED = false` | preserves current walk response |
+| motion mode | `MotionMode::GROUNDED` | floor and wall classification uses world up |
+| platform floor layers | `0` | no ambient moving-floor following enters the actor |
+| platform wall layers | `0` | no ambient moving-wall following enters the actor |
+| platform on leave | `PlatformOnLeave::DO_NOTHING` | Godot never injects platform velocity into the held trajectory |
 
 Moving-platform following is not introduced by this change. Future moving
 support must enter `MotionOutcome` as explicit captured data rather than rely
-on Godot's ambient platform history.
+on Godot's ambient platform history. The zero platform-layer masks and
+`DO_NOTHING` leave policy make that absence an explicit solver setting rather
+than an assumption about the kinds of bodies present in today's level.
 
 ## Physical and visual coordinate law
 
@@ -262,12 +308,29 @@ While airborne, the viewmodel receives zero walking speed for pose/footstep
 purposes. It may settle through its existing neutral easing; no new fall pose
 is introduced. Looking and cane animation remain live.
 
+A render frame can queue a shoe contact while the actor is still controlled,
+then the next physics move can leave the edge before that request is drained.
+The queue therefore carries an explicit captured `QueuedWaveGate`:
+`Always` for the existing demo/general requests and `ControlledContact` for a
+shoe step. After reconciliation, a controlled-contact request emits only when
+both the pre-move and post-move phases are controlled and no landing occurred;
+otherwise it is consumed silently. This is provenance carried as data, not a
+guess based on pulse kind or numeric voice constants, and it prevents a
+one-frame-old shoe request from sounding in air or on the landing tick.
+
+`QueuedWaveGate::allows(before, after, landing)` is a pure total policy shared
+by queued shoes and immediate cat-paw contacts. The Godot adapters only apply
+its emit-or-suppress answer; neither reimplements the transition as callback
+logic.
+
 Physics can run more than once before `HeroBody::update()` renders. A
 one-physics-tick flag could therefore disappear before the viewmodel consumes
-it. Instead the player sets a captured `footstep_suppression_pending` latch on
-every airborne-to-controlled transition. `HeroBody` consumes and clears it
-through one narrow method when it next evaluates footsteps, passing
-`moving = false` to the existing cadence for that frame. The latch persists
+it. Instead the player owns a captured pure `FootstepSuppression` value. Its
+`on_transition` operation sets the pending bit on every
+airborne-to-controlled transition, and its `acknowledge` operation returns the
+old bit plus the cleared next value. `HeroBody` acknowledges it through one
+narrow method when it next evaluates footsteps, passing `moving = false` to
+the existing cadence for that frame. The latch persists
 across any number of physics ticks, cannot emit a wave itself, and prevents a
 regular footstep from doubling the landing voice.
 
@@ -277,13 +340,17 @@ regular footstep from doubling the landing voice.
 capsule centre moves from local Y = 0.19 m to 0.17 m, placing its bottom at the
 root. The editor blueprint and runtime collider use the same named constant.
 
-The cat's support elevation is simply its world root Y. `CatGait` stores that
-single scalar beside its existing world-space `planted` and `aim` arrays. At
-the start of every gait advance it computes
-`delta_y = new_root_y - prior_support_y`, adds exactly that delta to every
-stored planted paw and swing aim, then records `new_root_y`. `anchor`, swing,
-and `settle` use the stored support Y instead of world zero. This is a uniform
-vertical transport, not per-paw terrain sampling.
+The cat's support elevation is simply its validated world root Y. `CatGait`
+stores that single scalar beside its existing world-space `planted` and `aim`
+arrays. At the start of every gait advance it computes the bounded
+`delta_y = new_root_y - prior_support_y` for tail transport, assigns every
+stored planted-paw and swing-aim Y lane directly to the exact new root-Y bits,
+then records those same bits as `new_root_y`. X/Z lanes are untouched.
+`anchor`, swing, and `settle` use the stored support Y instead of world zero.
+This is a uniform vertical transport, not per-paw terrain sampling. Direct Y
+assignment also makes the temporary format-1 datum exactly recoverable from a
+planted point; subtraction/addition rounding cannot create a one-ULP restore
+shift before format 2 begins carrying the scalar explicitly.
 
 The remaining consumers use the same transport:
 
@@ -297,8 +364,11 @@ The remaining consumers use the same transport:
 - the presence origin uses root Y + `PRESENCE_HEIGHT`.
 
 No per-paw terrain IK is added. On a ramp all four paw baselines follow the
-single actor support elevation. When `delta_y` is positive zero, the existing
-flat arithmetic path and outputs remain bit-for-bit unchanged.
+single actor support elevation. When the validated new Y is the existing
+positive zero, the assignment writes the same bits and every flat output
+remains bit-for-bit unchanged. Public gait restoration validates every stored
+point and its recoverable/explicit support datum before constructing state, so
+malformed capture data cannot poison the transport.
 
 When airborne, `CatBrain` is not advanced and yaw is not replaced. Its state is
 preserved exactly until accepted support returns. `last_pos` is maintained so
@@ -309,6 +379,26 @@ fall pose or resetting planted state. Gait contacts produced in air or on the
 landing tick are withheld from the pulse pool; the next controlled tick
 resumes ordinary paw voice. Tail animation and presence cadence continue as
 they do today.
+
+The cat's pure owners accept typed inputs rather than trusting the node:
+`CatBrain` consumes `ActorPosition`, `ActorYaw`, `StepDuration`, and a finite
+non-negative progress measure; `CatGait` consumes those same motion values;
+`CatPose`, `Skeleton`, and `Tail` validate every derived/captured point through
+`PosePoint`. A zero-duration cat tick takes an explicit zero-speed branch and
+performs no division. The airborne branch produces no yaw command at all, so
+the adapter does not invoke a yaw setter merely to write the old value back.
+
+`RoamRect` is a validated value. `try_around` computes all four min/max edges
+in f64, requires finite positive authored extents in `1.0..=30.0 m`, and
+rejects a rectangle whose edge would leave the `ActorPosition` coordinate
+envelope. Restore validates the same edges/order and requires a captured roam
+target to remain inside the raw stored rectangle and the actor coordinate
+envelope. It deliberately does not reapply the pre-rounding wall-margin
+interval: target selection samples there and then rounds to the 0.1 m grid, so
+a lawful self-produced rounded target can sit just outside that inner interval
+while remaining inside the raw rectangle. A cat spawned at the last exactly
+safe centre is valid; the adjacent f32 centre that would put an edge outside
+the envelope is not.
 
 ## Authored falling and landing voice
 
@@ -336,14 +426,29 @@ constructs a validated pure configuration and injects it through a typed Rust
 method before adding the player to the tree. This keeps the Inspector usable
 and makes the runtime dependency explicit.
 
+Every exported scalar has an explicit initializer equal to the table default;
+the tool class never inherits numeric zero from `#[class(init)]`. Each actor
+also exposes a read-only six-f64 active-configuration snapshot in constructor
+order for tests and observability. That snapshot proves which validated config
+the running adapter uses; reading the root's staged Inspector fields is not
+accepted as proof of injection.
+
 All ranges carry the unit suffix shown in the table. No custom Resource,
 singleton, or configuration file is introduced. Programmatic values are still
-validated because Inspector ranges do not narrow the runtime type domain. A
-property setter rejects a non-finite or cross-field-invalid value, retains the
-last valid value, and reports the error; the pure configuration constructor
-independently validates the complete set. Invalid input is therefore explicit
-without freezing an otherwise valid actor or silently installing a different
-designer value.
+validated because Inspector ranges do not narrow the runtime type domain.
+Each setter rejects and retains the prior value for a non-finite or
+out-of-range scalar. The silent/full pair is different: Godot deserializes
+properties one at a time, and no fixed assignment order can load both a valid
+pair above the defaults and a valid pair below them. Therefore each
+range-valid scalar is staged as authored data; the complete six-field value is
+validated atomically before actor construction and whenever a staged edit
+again forms a valid pair. During a cross-field-invalid intermediate edit, an
+already-running cat keeps its last valid active `SupportMotionConfig`; a game
+that reaches `ready` with an invalid final pair refuses before constructing the
+player, and a cat that reaches runtime `ready` with one refuses before enabling
+motion. The error names both thresholds. Packed-scene round-trip tests cover
+valid pairs on both sides of the defaults so serialization order cannot reject
+valid authored content.
 
 For impact speed `v`, pure landing severity is:
 
@@ -385,9 +490,11 @@ That event remains available until another landing replaces it; only a fresh
 airborne-to-controlled transition returns a new wave command, so restoring an
 old observation can never re-emit an already captured wave.
 
-The player capture also carries `footstep_suppression_pending`. Cat capture
-carries the gait's support Y with its planted/aim state. Physical position and
-body velocity remain captured as boundary observations. Compatibility is
+The player capture also carries the pending bit of `FootstepSuppression`, and every
+queued wave carries its `QueuedWaveGate`, so a restored airborne out-tray
+cannot turn a suppressed shoe contact into a general wave. Cat capture carries
+the gait's support Y with its planted/aim state. Physical position and body
+velocity remain captured as boundary observations. Compatibility is
 phase-specific rather than an invalid blanket equality:
 
 - every physical and pure scalar/vector must be finite;
@@ -405,13 +512,44 @@ footstep latch has only its explicit one-consumer suppression effect. A
 malformed or contradictory blob returns an explicit transaction error before
 the scene tree is mutated.
 
+That read-only preflight is complete rather than actor-only: it parses and
+domain-validates the environment clock/demo/flicker state without invoking a
+repairing setter, validates the exact stored 16-hex hash against the parsed
+canonical state, resolves all live targets, validates every actor and
+configuration contract, and checks the cat lockstep invariant that captured
+body position and `CatPose.pos` have identical X/Y/Z f32 bits and that
+`CatGait.support_y` has the same Y bits. Only
+the prepared native values may then be committed. An invalid environment or
+hash therefore cannot warn, repair, or partly write the pool before refusal;
+the old post-write “good restore, bad label” exception is removed.
+
 The reproduction blob encoder, parser, equality/diff surface, snapshot hash,
 and mutation fixtures move together, including the required
 `FORMAT_VERSION` bump for the changed canonical byte layout. A normal restore
-never silently converts an airborne actor to controlled. A deliberate
+never silently converts an airborne actor to controlled. A deliberate player
 relocation starts controlled so the following move probes authored support.
 
-The observer adds structured actor motion facts:
+Format 2 lands before the new behavior. In that independently green schema
+commit, both live actors still capture only `Controlled`/unsupported motion,
+player suppression is clear, every live queued wave is `Always`, and gait
+support is the existing common planted/aim Y datum. The parser and pure blob
+fixtures already understand the final variants, but restore rejects a
+non-dormant live value until the task owning that behavior activates it. The
+wire layout and version do not change again as player motion, player effects,
+cat pose, and cat motion are enabled in separate green commits.
+
+Restore validation is delegated to the owners of the laws. Pulse-pool slots,
+echo appointments, viewmodel state, cat brain/gait/pose/tail, cadence/source
+appointments, renderer time, demo schedule, and flicker state each expose a
+checked prepared constructor. `PreparedRestore` contains those validated
+native values plus exact live targets, prepared environment, and the verified
+stored hash. The restorer does not duplicate their bounds or call a repairing,
+clamping, narrowing, or fallible constructor after the first write. Applying
+the environment and committing every owner are infallible installs of the
+prepared values; the final recapture/hash is an internal postcondition, not a
+late artifact-validation path.
+
+The observer adds structured actor motion facts from one validated source:
 
 - phase (`controlled` or `airborne`);
 - actual velocity and held airborne trajectory;
@@ -425,6 +563,15 @@ the pure transition, so behavior cannot depend on unstable instance IDs. The
 observer lets a fixture prove what Rust accepted as support; mesh-vertex and
 wave-queue reads independently prove that the visible/perception boundaries
 received the same elevation.
+
+`ActorMotionObservation` stores one validated `MotionState`, one checked
+physical velocity, and optional transient collider identity. Its phase,
+support, and last landing are projections of that one state, never copied raw
+fields that can contradict it. Hero and cat positions are checked
+`ActorPosition` values; the existing hero velocity dictionary key, retained
+for compatibility, is projected from the same checked velocity as
+`hero.motion.actual_velocity`. Any invalid live position/velocity refuses the
+whole snapshot instead of publishing a partial actor entry.
 
 ## TDD and verification
 
@@ -466,9 +613,10 @@ values, not mirrors of production constants.
 - A normal ramp in both directions stays supported and emits no landing wave.
 - Airborne movement input and cat-brain time do not steer; look/cane and cat
   presence remain active.
-- Paw/footstep queues stay empty in air and on the landing tick. Exactly one
-  landing wave has the correct origin, kind, strength, range, and cap; the
-  player reflection uses the observed normal while the cat remains
+- Paw contacts and queued shoe contacts produce no pulse in air or on the
+  landing tick, including a shoe request queued just before edge departure.
+  Exactly one landing wave has the correct origin, kind, strength, range, and
+  cap; the player reflection uses the observed normal while the cat remains
   omnidirectional.
 - Multiple physics ticks before one `HeroBody::update()` cannot lose the
   pending footstep suppression or duplicate a landing voice.
@@ -485,6 +633,14 @@ The retained fixture is test content under `game/tests/`, not a shipped level.
 Movie-maker frames provide final visual evidence for flat, elevated, airborne,
 and landed actor/collider alignment. Structured state remains the primary
 diagnostic.
+
+Numeric assertions name their precision contract. Canonical/capture lanes and
+positive zero compare by `to_bits`; pure f32 translations and authored static
+datums permit at most one f32 ULP at the hand-written expected magnitude;
+settled `CharacterBody3D` contact permits `SAFE_MARGIN_M` plus that one ULP;
+and terminal velocity permits one ULP of the effective f32 terminal lane. No
+test uses an unnamed `is_equal_approx` or a decimal epsilon copied from
+production.
 
 ### Mutation evidence
 
