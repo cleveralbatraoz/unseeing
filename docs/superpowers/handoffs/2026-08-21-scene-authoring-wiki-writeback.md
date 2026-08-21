@@ -185,25 +185,34 @@ repaired derive count for three observed frames. The count is a change-and-
 settle witness only; no absolute number of derivations is part of the contract.
 Both ready and warning polls are bounded and add no arbitrary sleep.
 
-### Target: replace the exact Ctrl+D sentence in §6 Stage 0 once
+### Target: replace the complete §6 Stage 0 paragraph
 
-Replace this exact live sentence fragment in §6 Stage 0:
+Replace this complete current paragraph once:
 
-> rewrite step 3, which recommends Ctrl+D (the one gesture that doubles
-> engine-built geometry: `original 2 → after add 4`, knob then drives only the
-> newest pair) and describes a law that is invisible all session;
+> **Stage 0 — corrections that cost nothing (½ day).** Delete the false
+> `game/README.md:46-48` warning ("never open scenes before this build, or the
+> editor will strip the engine node types") — measured false, and it is actively
+> keeping a designer out of the editor; rewrite step 3, which recommends Ctrl+D
+> (the one gesture that doubles engine-built geometry: `original 2 → after add 4`,
+> knob then drives only the newest pair) and describes a law that is invisible
+> all session; skip the `lid` slab under `is_editor_hint()`; make the tool
+> `ready()`s idempotent.
 
-Replace it once with this measured block:
+Paste this complete replacement paragraph in its place:
 
-> **Instantiation-preserving duplication rebuilds one generated set.** In the
-> tracked composed fixture on Godot 4.7.1,
+> **Stage 0 — corrections that cost nothing (½ day).** Delete the false
+> `game/README.md:46-48` warning ("never open scenes before this build, or the
+> editor will strip the engine node types") — measured false, and it is actively
+> keeping a designer out of the editor; replace the old duplication instruction
+> with the measured contract: in the tracked composed fixture on Godot 4.7.1,
 > `Node.duplicate(Node.DUPLICATE_USE_INSTANTIATION)` settles from 48 ownerless
-> generated descendants to 48, with exactly one floor, one ceiling, and one
-> generated run wall. A doubled set is a regression, not the supported
-> behavior. `game/tests/probe/editor_prefab_probe.gd` measures the complete
-> inventory after tree entry; it does not infer the result from a screenshot
-> or an internal walk count. This regression does not exercise GUI Ctrl+D, so
-> no Ctrl+D behavior is claimed.
+> generated descendants to 48, with exactly one `WaveFloor`, one `WaveCeiling`,
+> and one `RunSeg1`. A doubled set is a regression, not the supported behavior.
+> `game/tests/probe/editor_prefab_probe.gd` measures the complete inventory
+> after tree entry rather than inferring it from a screenshot or an internal
+> walk count. This regression does not exercise GUI Ctrl+D, so no Ctrl+D
+> behavior is claimed; skip the `lid` slab under `is_editor_hint()`; make the
+> tool `ready()`s idempotent.
 
 ### Target: delete the exact Ctrl+D bullet in §7
 
