@@ -1,0 +1,1646 @@
+extends GdUnitTestSuite
+# The seven-case contract and its private semantic/mesh oracle intentionally
+# stay together as one integration suite.
+# gdlint: disable=max-file-lines
+
+const COMPOSED_SCENE := preload("res://tests/fixtures/scene_composition/composed_level.tscn")
+const FLAT_SCENE := preload("res://tests/fixtures/scene_composition/flat_level.tscn")
+
+const COMPOSED_PATHS := {
+	"group": "PlainGroup",
+	"room": "PlainGroup/InheritedRoomVariant",
+	"run": "PlainGroup/InheritedRoomVariant/BoundaryRun",
+	"run_wall": "PlainGroup/InheritedRoomVariant/BoundaryRun/RunSeg1",
+	"cross_wall": "PlainGroup/InheritedRoomVariant/CrossWall",
+	"fan": "PlainGroup/InheritedRoomVariant/Fan",
+	"cat": "PlainGroup/InheritedRoomVariant/Cat",
+	"spawn": "PlainGroup/InheritedRoomVariant/Spawn",
+	"prop_root": "PlainGroup/InheritedRoomVariant/NestedProp",
+	"merge_shelf": "PlainGroup/InheritedRoomVariant/NestedProp/MergeShelf",
+	"merge_crate": "PlainGroup/InheritedRoomVariant/NestedProp/MergeCrate",
+	"seam_left": "PlainGroup/InheritedRoomVariant/NestedProp/SeamLeft",
+	"seam_right": "PlainGroup/InheritedRoomVariant/NestedProp/SeamRight",
+	"radio": "PlainGroup/InheritedRoomVariant/Radio",
+}
+
+const FLAT_PATHS := {
+	"run": "BoundaryRun",
+	"run_wall": "BoundaryRun/RunSeg1",
+	"cross_wall": "CrossWall",
+	"fan": "Fan",
+	"cat": "Cat",
+	"spawn": "Spawn",
+	"merge_shelf": "MergeShelf",
+	"merge_crate": "MergeCrate",
+	"seam_left": "SeamLeft",
+	"seam_right": "SeamRight",
+	"radio": "Radio",
+}
+
+const COMPOSED_TYPES := {
+	"group": "Node3D",
+	"room": "Node3D",
+	"run": "WaveRun",
+	"run_wall": "WaveWall",
+	"cross_wall": "WaveWall",
+	"fan": "SoundFan",
+	"cat": "WaveCat",
+	"spawn": "WaveSpawn",
+	"prop_root": "Node3D",
+	"merge_shelf": "WaveProp",
+	"merge_crate": "WaveProp",
+	"seam_left": "WaveProp",
+	"seam_right": "WaveProp",
+	"radio": "SoundRadio",
+}
+
+const FLAT_TYPES := {
+	"run": "WaveRun",
+	"run_wall": "WaveWall",
+	"cross_wall": "WaveWall",
+	"fan": "SoundFan",
+	"cat": "WaveCat",
+	"spawn": "WaveSpawn",
+	"merge_shelf": "WaveProp",
+	"merge_crate": "WaveProp",
+	"seam_left": "WaveProp",
+	"seam_right": "WaveProp",
+	"radio": "SoundRadio",
+}
+
+const PAINTED_KEYS := [
+	"run_wall",
+	"cross_wall",
+	"merge_shelf",
+	"merge_crate",
+	"seam_left",
+	"seam_right",
+	"floor",
+	"ceiling",
+]
+const WALL_KEYS := ["run_wall", "cross_wall"]
+const SOURCE_KEYS := ["fan", "radio"]
+const CAT_KEYS := ["cat"]
+const PROP_KEYS := ["merge_shelf", "merge_crate", "seam_left", "seam_right"]
+
+## Metres: Godot's retained world transforms and AABB values make one f32
+## round trip at the GDExtension boundary.
+const WORLD_EPS_M := 0.0001
+## Metres: the physics server's contact point makes a second, narrower f32
+## round trip through its ray-query result.
+const PHYSICS_EPS_M := 0.00001
+## Dimensionless: basis columns and geometric normals are unit-vector lanes.
+const BASIS_EPS := 0.0001
+## Dimensionless: the independently authored minimum label gap that makes a
+## separate touching seam retain its full crease in the shipped contract.
+const MIN_SEP := 0.08
+## Radians: authored quarter-turn yaw survives one Godot transform round trip.
+const YAW_EPS_RAD := 0.0001
+
+const EXPECTED_WALLS := {
+	"run_wall":
+	{
+		"segment": Vector4(6, 4, 6, 10),
+		"rect": Vector4(5.9, 3.9, 6.1, 10.1),
+		"span": Vector2(0, 3),
+	},
+	"cross_wall":
+	{
+		"segment": Vector4(6, 7, 9, 7),
+		"rect": Vector4(5.9, 6.9, 9.1, 7.1),
+		"span": Vector2(0, 3),
+	},
+}
+
+const EXPECTED_PROP_AABBS := {
+	"merge_shelf": AABB(Vector3(10.5, 0, 8), Vector3(1, 1, 2)),
+	"merge_crate": AABB(Vector3(10.7, 0, 8.1), Vector3(0.8, 1, 1)),
+	"seam_left": AABB(Vector3(10.5, 0, 5.5), Vector3.ONE),
+	"seam_right": AABB(Vector3(10.5, 0, 4.5), Vector3.ONE),
+}
+
+
+## This catches a collector which returns when it meets an untyped Node3D,
+## or counts a nested/inherited typed node more than once.
+func test_plain_groups_do_not_hide_or_duplicate_nested_gameplay() -> void:
+	var composed := _enter_fixture(COMPOSED_SCENE)
+	var flat := _enter_fixture(FLAT_SCENE)
+	if composed == null or flat == null:
+		return
+	assert_bool(_assert_live_inventory(composed, COMPOSED_PATHS, COMPOSED_TYPES)).is_true()
+	assert_bool(_assert_live_inventory(flat, FLAT_PATHS, FLAT_TYPES)).is_true()
+
+
+## This catches a recursive census which skips the inherited override/addition,
+## or injects source meshes after the scene has entered the tree.
+func test_inherited_override_and_added_radio_reach_retained_sources_once() -> void:
+	var composed := _enter_fixture(COMPOSED_SCENE)
+	var flat := _enter_fixture(FLAT_SCENE)
+	if composed == null or flat == null:
+		return
+	var composed_fan := _path_node(composed, COMPOSED_PATHS, "fan") as SoundFan
+	var composed_radio := _path_node(composed, COMPOSED_PATHS, "radio") as SoundRadio
+	if composed_fan == null or composed_radio == null:
+		return
+	assert_float(composed_fan.volume).is_equal(0.6)
+	assert_bool(composed_radio is SoundRadio).is_true()
+	assert_object(_blueprint_mesh_limb(composed_fan)).is_not_null()
+	assert_object(_blueprint_mesh_limb(composed_radio)).is_not_null()
+
+	var composed_sources := _retained_transforms(composed, composed.sources(), COMPOSED_PATHS)
+	var flat_sources := _retained_transforms(flat, flat.sources(), FLAT_PATHS)
+	if composed_sources.is_empty() or flat_sources.is_empty():
+		return
+	assert_int(composed_sources.size()).is_equal(2)
+	assert_int(flat_sources.size()).is_equal(2)
+	for key: String in SOURCE_KEYS:
+		if not composed_sources.has(key) or not flat_sources.has(key):
+			fail("the retained source tables omit semantic key '%s'" % key)
+			return
+		var composed_transform: Transform3D = composed_sources[key]
+		var flat_transform: Transform3D = flat_sources[key]
+		_assert_matching_transform(composed_transform, flat_transform)
+
+
+## This catches a world-space derivation that reads an inherited room's local
+## transform, or a retained-table slot that drifts away from its wall/source.
+func test_composed_and_flat_fixtures_share_hand_anchored_world_outputs() -> void:
+	var composed := _enter_fixture(COMPOSED_SCENE)
+	if composed == null:
+		return
+	var group := _path_node(composed, COMPOSED_PATHS, "group") as Node3D
+	if group == null:
+		fail("composed plain grouping node did not resolve to a Node3D")
+		return
+	var group_is_anchored := _assert_transform_matches(
+		group.global_transform,
+		Transform3D(Vector3.FORWARD, Vector3.UP, Vector3.RIGHT, Vector3(2, 0, 12)),
+		"composed plain grouping frame"
+	)
+	var composed_outputs := _assert_hand_anchored_world_outputs(composed, COMPOSED_PATHS)
+	if not group_is_anchored or composed_outputs.is_empty():
+		fail("composed fixture did not satisfy every hand-derived world anchor")
+		return
+	var flat := _enter_fixture(FLAT_SCENE)
+	if flat == null:
+		return
+	var flat_outputs := _assert_hand_anchored_world_outputs(flat, FLAT_PATHS)
+	if flat_outputs.is_empty():
+		fail("flat fixture did not satisfy every hand-derived world anchor")
+		return
+	_assert_matching_world_outputs(composed_outputs, flat_outputs)
+
+
+## This catches a wall which paints/collides in its inherited container frame
+## rather than the normalized world frame retained by its flat equivalent.
+func test_inherited_cross_wall_keeps_the_flat_collision_and_physics_verdict() -> void:
+	var composed := _entered_cross_wall(COMPOSED_SCENE, COMPOSED_PATHS)
+	if composed.is_empty():
+		return
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var composed_body := composed["body"] as StaticBody3D
+	var composed_wall := composed["wall"] as WaveWall
+	if (
+		composed_body == null
+		or composed_wall == null
+		or not _assert_cross_wall_ray(composed_body, composed_wall)
+	):
+		return
+	remove_child(composed["level"] as WaveLevel)
+	await get_tree().physics_frame
+	var flat := _entered_cross_wall(FLAT_SCENE, FLAT_PATHS)
+	if flat.is_empty():
+		return
+	var composed_snapshot: Dictionary = composed["snapshot"]
+	var flat_snapshot: Dictionary = flat["snapshot"]
+	_assert_matching_wall_snapshots(composed_snapshot, flat_snapshot)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	_assert_cross_wall_ray(flat["body"] as StaticBody3D, flat["wall"] as WaveWall)
+
+
+func _entered_cross_wall(scene: PackedScene, paths: Dictionary) -> Dictionary:
+	var level := _enter_fixture(scene)
+	if level == null:
+		return {}
+	var wall := _path_node(level, paths, "cross_wall") as WaveWall
+	if wall == null:
+		return {}
+	var snapshot := _private_wall_snapshot(wall)
+	var body := snapshot.get("body") as StaticBody3D
+	if snapshot.is_empty() or body == null:
+		fail("CrossWall snapshot omitted its private body")
+		return {}
+	return {"level": level, "wall": wall, "snapshot": snapshot, "body": body}
+
+
+## This catches a face-class map which loses a nested member, assigns a fresh
+## label to a genuine overlap, or lets two face-to-face seam labels melt.
+func test_nested_merges_and_touching_seams_survive_semantic_normalization() -> void:
+	var composed := _enter_fixture(COMPOSED_SCENE)
+	var flat := _enter_fixture(FLAT_SCENE)
+	if composed == null or flat == null:
+		return
+	var composed_classes := _semantic_superfaces(composed, COMPOSED_PATHS)
+	var flat_classes := _semantic_superfaces(flat, FLAT_PATHS)
+	if composed_classes.is_empty() or flat_classes.is_empty():
+		fail("semantic superface normalisation produced no usable classes")
+		return
+	assert_array(composed_classes).is_equal(flat_classes)
+	assert_bool(composed_classes.has("cross_wall+run_wall")).is_true()
+	assert_bool(composed_classes.has("merge_crate+merge_shelf")).is_true()
+	assert_bool(flat_classes.has("cross_wall+run_wall")).is_true()
+	assert_bool(flat_classes.has("merge_crate+merge_shelf")).is_true()
+	_assert_fixture_mesh_labels(composed, COMPOSED_PATHS)
+	_assert_fixture_mesh_labels(flat, FLAT_PATHS)
+
+
+## This catches a healthy nested or inherited authoring path that silently
+## loses its floor, mesh build, warning forwarding, or paint census.
+func test_composed_and_flat_fixtures_derive_without_faults() -> void:
+	var composed := _enter_fixture(COMPOSED_SCENE)
+	var flat := _enter_fixture(FLAT_SCENE)
+	if composed == null or flat == null:
+		return
+	_assert_fixture_is_healthy(composed, COMPOSED_PATHS)
+	_assert_fixture_is_healthy(flat, FLAT_PATHS)
+
+
+## This catches a mesh oracle which lets a non-finite vertex pass its plane
+## and normal comparisons because every comparison against NAN is false.
+func test_mesh_oracle_rejects_malformed_or_non_finite_godot_faces() -> void:
+	var source := WaveLevel.debug_labelled_box(
+		Vector3(2, 2, 2), Vector3.ZERO, PackedFloat32Array([0.24, 0.33, 0.42, 0.51, 0.60, 0.69])
+	)
+	var arrays := source.surface_get_arrays(0)
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	vertices[3] = Vector3(NAN, vertices[3].y, vertices[3].z)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	var malformed := ArrayMesh.new()
+	malformed.add_surface_from_arrays(
+		Mesh.PRIMITIVE_TRIANGLES, arrays, [], {}, source.surface_get_format(0)
+	)
+	var root: Node3D = auto_free(Node3D.new())
+	root.name = "NonFiniteFace"
+	var skin := MeshInstance3D.new()
+	skin.name = "WaveSkin"
+	skin.mesh = malformed
+	root.add_child(skin)
+	add_child(root)
+
+	var observed := {}
+	var reject_non_finite_face := func() -> void:
+		observed["selected"] = _face_at_plane_and_normal(root, 0, -1.0, Vector3.LEFT)
+	assert_failure(reject_non_finite_face).has_message(
+		"/root/scene_composition_test/NonFiniteFace WaveSkin vertex 3 is not finite"
+	)
+	assert_bool(observed.has("selected")).is_true()
+	var selected: Dictionary = observed["selected"]
+	(
+		assert_bool(selected.is_empty())
+		. append_failure_message(
+			"the geometric face oracle accepted an ArrayMesh face containing NAN"
+		)
+		. is_true()
+	)
+
+	var malformed_slots: Array = []
+	malformed_slots.resize(Mesh.ARRAY_MAX)
+	var wrong_vertices := PackedFloat32Array()
+	wrong_vertices.resize(24)
+	var finite_labels := PackedFloat32Array()
+	finite_labels.resize(24)
+	finite_labels.fill(0.24)
+	malformed_slots[Mesh.ARRAY_VERTEX] = wrong_vertices
+	malformed_slots[Mesh.ARRAY_CUSTOM0] = finite_labels
+	var malformed_observed := {}
+	var reject_malformed_slots := func() -> void:
+		malformed_observed["validated"] = _validated_box_arrays(
+			malformed_slots, "malformed dynamic slots"
+		)
+	assert_failure(reject_malformed_slots).has_message(
+		"malformed dynamic slots vertex slot is not a PackedVector3Array"
+	)
+	assert_bool(malformed_observed.has("validated")).is_true()
+	var validated: Dictionary = malformed_observed["validated"]
+	(
+		assert_bool(validated.is_empty())
+		. append_failure_message(
+			"the mesh-array boundary accepted a non-PackedVector3Array vertex slot"
+		)
+		. is_true()
+	)
+
+	var healthy_arrays := _validated_box_arrays(source.surface_get_arrays(0), "healthy direct mesh")
+	if healthy_arrays.is_empty():
+		return
+	var healthy_mesh_data := {
+		"skin": skin,
+		"vertices": healthy_arrays["vertices"],
+		"custom": healthy_arrays["custom"],
+	}
+	var healthy_request := {
+		"axis": 0,
+		"plane": -1.0,
+		"normal": Vector3.LEFT,
+		"path": "direct matching",
+	}
+
+	var missing_skin := healthy_mesh_data.duplicate()
+	missing_skin.erase("skin")
+	var reject_missing_skin := func() -> Dictionary:
+		return _matching_face_lanes(missing_skin, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_missing_skin, "face mesh data omits skin", "missing mesh skin"
+	)
+
+	var non_object_skin := healthy_mesh_data.duplicate()
+	non_object_skin["skin"] = 42
+	var reject_non_object_skin := func() -> Dictionary:
+		return _matching_face_lanes(non_object_skin, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_non_object_skin,
+		"face mesh data skin is not a MeshInstance3D",
+		"non-object mesh skin"
+	)
+
+	var wrong_class_skin := healthy_mesh_data.duplicate()
+	wrong_class_skin["skin"] = auto_free(Node3D.new())
+	var reject_wrong_class_skin := func() -> Dictionary:
+		return _matching_face_lanes(wrong_class_skin, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_wrong_class_skin,
+		"face mesh data skin is not a MeshInstance3D",
+		"wrong-class mesh skin"
+	)
+
+	var freed_skin := MeshInstance3D.new()
+	var freed_skin_data := healthy_mesh_data.duplicate()
+	freed_skin_data["skin"] = freed_skin
+	freed_skin.free()
+	var reject_freed_skin := func() -> Dictionary:
+		return _matching_face_lanes(freed_skin_data, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_freed_skin,
+		"direct matching WaveSkin was freed before face selection",
+		"freed mesh skin"
+	)
+
+	var missing_custom := healthy_mesh_data.duplicate()
+	missing_custom.erase("custom")
+	var reject_missing_custom := func() -> Dictionary:
+		return _matching_face_lanes(missing_custom, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_missing_custom, "face mesh data omits custom", "missing mesh-data key"
+	)
+
+	var wrong_vertex_field := healthy_mesh_data.duplicate()
+	wrong_vertex_field["vertices"] = PackedFloat32Array()
+	var reject_wrong_vertices := func() -> Dictionary:
+		return _matching_face_lanes(wrong_vertex_field, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_wrong_vertices,
+		"face mesh data vertices is not a PackedVector3Array",
+		"wrong mesh-data field type"
+	)
+
+	var missing_normal := healthy_request.duplicate()
+	missing_normal.erase("normal")
+	var reject_missing_normal := func() -> Dictionary:
+		return _matching_face_lanes(healthy_mesh_data, missing_normal)
+	_assert_helper_rejects_empty(
+		reject_missing_normal, "face request omits normal", "missing request key"
+	)
+
+	var wrong_axis := healthy_request.duplicate()
+	wrong_axis["axis"] = "zero"
+	var reject_wrong_axis := func() -> Dictionary:
+		return _matching_face_lanes(healthy_mesh_data, wrong_axis)
+	_assert_helper_rejects_empty(
+		reject_wrong_axis, "face request axis is not an int", "wrong request field type"
+	)
+
+	var short_custom: PackedFloat32Array = (
+		(healthy_arrays["custom"] as PackedFloat32Array).duplicate()
+	)
+	short_custom.resize(23)
+	var short_mesh_data := healthy_mesh_data.duplicate()
+	short_mesh_data["custom"] = short_custom
+	var reject_short_custom := func() -> Dictionary:
+		return _matching_face_lanes(short_mesh_data, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_short_custom,
+		"direct matching must carry exactly 24 vertices and 24 CUSTOM0 lanes",
+		"short matching CUSTOM0 array"
+	)
+
+	var non_finite_plane := healthy_request.duplicate()
+	non_finite_plane["plane"] = NAN
+	var reject_non_finite_plane := func() -> Dictionary:
+		return _matching_face_lanes(healthy_mesh_data, non_finite_plane)
+	_assert_helper_rejects_empty(
+		reject_non_finite_plane,
+		"direct matching face plane is not finite",
+		"non-finite direct plane"
+	)
+
+	var degenerate_normal := healthy_request.duplicate()
+	degenerate_normal["normal"] = Vector3.ZERO
+	var reject_degenerate_normal := func() -> Dictionary:
+		return _matching_face_lanes(healthy_mesh_data, degenerate_normal)
+	_assert_helper_rejects_empty(
+		reject_degenerate_normal,
+		"direct matching requested face normal is degenerate",
+		"degenerate direct normal"
+	)
+
+	var non_finite_custom: PackedFloat32Array = (
+		(healthy_arrays["custom"] as PackedFloat32Array).duplicate()
+	)
+	non_finite_custom[0] = NAN
+	var non_finite_mesh_data := healthy_mesh_data.duplicate()
+	non_finite_mesh_data["custom"] = non_finite_custom
+	var reject_non_finite_custom := func() -> Dictionary:
+		return _matching_face_lanes(non_finite_mesh_data, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_non_finite_custom,
+		"direct matching CUSTOM0 lane 0 is not finite",
+		"non-finite direct CUSTOM0 lane"
+	)
+
+	var healthy_vertices: PackedVector3Array = healthy_arrays["vertices"]
+	var reject_negative_offset := func() -> Dictionary:
+		return _world_face_geometry(Transform3D.IDENTITY, healthy_vertices, -1, "direct geometry")
+	_assert_helper_rejects_empty(
+		reject_negative_offset, "direct geometry face offset -1 is negative", "negative face offset"
+	)
+	var reject_unaligned_offset := func() -> Dictionary:
+		return _world_face_geometry(Transform3D.IDENTITY, healthy_vertices, 1, "direct geometry")
+	_assert_helper_rejects_empty(
+		reject_unaligned_offset,
+		"direct geometry face offset 1 is not aligned to four-vertex faces",
+		"unaligned face offset"
+	)
+	var reject_out_of_range_offset := func() -> Dictionary:
+		return _world_face_geometry(Transform3D.IDENTITY, healthy_vertices, 24, "direct geometry")
+	_assert_helper_rejects_empty(
+		reject_out_of_range_offset,
+		"direct geometry face offset 24 has no complete four-vertex face in 24 vertices",
+		"out-of-range face offset"
+	)
+
+
+func _assert_helper_rejects_empty(
+	callable: Callable, expected_message: String, label: String
+) -> void:
+	var observed := {}
+	var reject := func() -> void: observed["verdict"] = callable.call()
+	assert_failure(reject).has_message(expected_message)
+	(
+		assert_bool(observed.has("verdict"))
+		. append_failure_message("%s did not return a defined verdict" % label)
+		. is_true()
+	)
+	if not observed.has("verdict"):
+		return
+	var verdict: Variant = observed["verdict"]
+	(
+		assert_bool(verdict is Dictionary)
+		. append_failure_message("%s returned a non-Dictionary verdict" % label)
+		. is_true()
+	)
+	if not verdict is Dictionary:
+		return
+	(
+		assert_bool((verdict as Dictionary).is_empty())
+		. append_failure_message("%s returned a non-empty verdict" % label)
+		. is_true()
+	)
+
+
+## Injecting before tree entry is the one supported construction path: it lets
+## WaveLevel deliver source and solid materials before each node builds limbs.
+func _enter_fixture(scene: PackedScene) -> WaveLevel:
+	if scene == null:
+		fail("fixture PackedScene is null")
+		return null
+	var level := scene.instantiate() as WaveLevel
+	if level == null:
+		fail("fixture did not instantiate as WaveLevel")
+		return null
+	level = auto_free(level) as WaveLevel
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), Pulses.new())
+	add_child(level)
+	return level
+
+
+## Normalize the retained wall table through the explicit fixture paths. An
+## unrecognized path or duplicate semantic key invalidates the whole result.
+func _wall_rows(level: WaveLevel, paths: Dictionary) -> Dictionary:
+	var reverse := _reverse_paths(paths)
+	if reverse.is_empty():
+		return {}
+	var names := level.call("wall_names") as PackedStringArray
+	var segments := level.wall_segments()
+	if names.size() != segments.size():
+		fail("retained wall names and segments differ in length")
+		return {}
+	var rows := {}
+	for index: int in names.size():
+		var path: String = names[index]
+		if not reverse.has(path):
+			fail("retained wall path '%s' is absent from the fixture map" % path)
+			return {}
+		var key: String = str(reverse[path])
+		if rows.has(key):
+			fail("retained walls duplicate semantic key '%s'" % key)
+			return {}
+		rows[key] = {"path": path, "segment": segments[index]}
+	return rows
+
+
+## Read all four retained wall arrays as one row. A row is invalid when any
+## parallel array is malformed: accepting a partial table would hide a shader
+## slot drift behind matching centerlines.
+func _complete_wall_rows(level: WaveLevel, paths: Dictionary) -> Dictionary:
+	var reverse := _reverse_paths(paths)
+	if reverse.is_empty():
+		return {}
+	var names := level.call("wall_names") as PackedStringArray
+	var segments := level.wall_segments()
+	var rects := level.wall_rects()
+	var spans := level.wall_spans()
+	if names.size() != 2 or segments.size() != 2 or rects.size() != 2 or spans.size() != 2:
+		fail("retained wall arrays must each contain the two authored wall rows")
+		return {}
+	var rows := {}
+	for index: int in names.size():
+		var path: String = names[index]
+		if not reverse.has(path) or not EXPECTED_WALLS.has(str(reverse.get(path, ""))):
+			fail("retained wall path '%s' is not one of the two semantic wall paths" % path)
+			return {}
+		var key: String = str(reverse[path])
+		if rows.has(key):
+			fail("retained walls duplicate semantic key '%s'" % key)
+			return {}
+		var segment: Vector4 = segments[index]
+		var rect: Vector4 = rects[index]
+		var span: Vector2 = spans[index]
+		rows[key] = {"path": path, "segment": segment, "rect": rect, "span": span}
+	if not _has_exact_keys(rows, WALL_KEYS, "complete retained walls"):
+		return {}
+	return rows
+
+
+## This total helper returns no partial output after an unknown, duplicate, or
+## malformed retained member.
+func _assert_hand_anchored_world_outputs(level: WaveLevel, paths: Dictionary) -> Dictionary:
+	var rows := _complete_wall_rows(level, paths)
+	if rows.is_empty():
+		return {}
+	var literals_are_anchored := true
+	for key: String in WALL_KEYS:
+		var row: Dictionary = rows[key]
+		var expected: Dictionary = EXPECTED_WALLS[key]
+		var segment: Vector4 = row["segment"]
+		var expected_segment: Vector4 = expected["segment"]
+		var rect: Vector4 = row["rect"]
+		var expected_rect: Vector4 = expected["rect"]
+		var span: Vector2 = row["span"]
+		var expected_span: Vector2 = expected["span"]
+		var segment_is_anchored := _assert_vector4_approx(
+			segment, expected_segment, WORLD_EPS_M, "%s centerline" % key
+		)
+		var rect_is_anchored := _assert_vector4_approx(
+			rect, expected_rect, WORLD_EPS_M, "%s occluder" % key
+		)
+		assert_vector(span).is_equal_approx(expected_span, Vector2.ONE * WORLD_EPS_M)
+		var raw_path: String = str(paths[key])
+		assert_str(row["path"]).is_equal(raw_path)
+		var span_is_anchored := _is_vector2_approx(span, expected_span, WORLD_EPS_M)
+		var path_is_anchored: bool = row["path"] == raw_path
+		literals_are_anchored = (
+			segment_is_anchored
+			and rect_is_anchored
+			and span_is_anchored
+			and path_is_anchored
+			and literals_are_anchored
+		)
+
+	var creatures_and_sources := _anchored_sources_and_cats(level, paths)
+	var props := _anchored_prop_aabbs(level, paths)
+	var spawn_is_anchored := _assert_spawn_anchor(level, paths)
+	if (
+		not literals_are_anchored
+		or creatures_and_sources.is_empty()
+		or props.is_empty()
+		or not spawn_is_anchored
+	):
+		return {}
+	return {
+		"walls": rows,
+		"sources": creatures_and_sources["sources"],
+		"cats": creatures_and_sources["cats"],
+		"props": props,
+		"spawn": level.spawn_pos(),
+		"spawn_yaw": level.spawn_yaw(),
+	}
+
+
+func _anchored_sources_and_cats(level: WaveLevel, paths: Dictionary) -> Dictionary:
+	var sources := _retained_transforms(level, level.sources(), paths)
+	var cats := _retained_transforms(level, level.cats(), paths)
+	if sources.is_empty() or cats.is_empty():
+		fail("retained source/cat output is empty")
+		return {}
+	var expected := _has_exact_keys(sources, SOURCE_KEYS, "retained sources")
+	expected = _has_exact_keys(cats, CAT_KEYS, "retained cats") and expected
+	if not expected:
+		return {}
+	var fan := _path_node(level, paths, "fan") as SoundFan
+	var radio := _path_node(level, paths, "radio") as Node3D
+	var cat := _path_node(level, paths, "cat") as Node3D
+	if fan == null or radio == null or cat == null:
+		fail("retained source/cat anchors resolved to malformed fixture nodes")
+		return {}
+	var anchored := _assert_node_anchor(level, paths, "fan", Vector3(8, 0, 9), PI * 0.5)
+	anchored = _assert_node_anchor(level, paths, "radio", Vector3(9, 0, 5), PI * 0.5) and anchored
+	anchored = _assert_node_anchor(level, paths, "cat", Vector3(4, 0, 5), PI * 0.5) and anchored
+	if not anchored:
+		return {}
+	assert_float(fan.volume).is_equal(0.6)
+	if fan.volume != 0.6:
+		return {}
+	return {"sources": sources, "cats": cats}
+
+
+func _anchored_prop_aabbs(level: WaveLevel, paths: Dictionary) -> Dictionary:
+	var props := {}
+	var aabbs_are_anchored := true
+	for key: String in PROP_KEYS:
+		var prop := _path_node(level, paths, key) as Node3D
+		if prop == null:
+			fail("prop anchor '%s' did not resolve to a Node3D" % key)
+			return {}
+		var actual := _world_aabb(prop)
+		if actual.size == Vector3.ZERO:
+			fail("%s produced a zero-sized world AABB" % prop.get_path())
+			return {}
+		var expected: AABB = EXPECTED_PROP_AABBS[key]
+		assert_vector(actual.position).is_equal_approx(expected.position, Vector3.ONE * WORLD_EPS_M)
+		assert_vector(actual.size).is_equal_approx(expected.size, Vector3.ONE * WORLD_EPS_M)
+		aabbs_are_anchored = (
+			_is_vector3_approx(actual.position, expected.position, WORLD_EPS_M)
+			and _is_vector3_approx(actual.size, expected.size, WORLD_EPS_M)
+			and aabbs_are_anchored
+		)
+		props[key] = actual
+	if not aabbs_are_anchored:
+		return {}
+	return props
+
+
+func _assert_spawn_anchor(level: WaveLevel, paths: Dictionary) -> bool:
+	if not _path_node(level, paths, "spawn") is WaveSpawn:
+		fail("spawn anchor did not resolve to a WaveSpawn")
+		return false
+	assert_vector(level.spawn_pos()).is_equal_approx(Vector3(4, 0.9, 9), Vector3.ONE * WORLD_EPS_M)
+	assert_float(level.spawn_yaw()).is_equal_approx(PI * 0.5, YAW_EPS_RAD)
+	return (
+		_is_vector3_approx(level.spawn_pos(), Vector3(4, 0.9, 9), WORLD_EPS_M)
+		and absf(level.spawn_yaw() - PI * 0.5) <= YAW_EPS_RAD
+	)
+
+
+func _assert_node_anchor(
+	level: WaveLevel, paths: Dictionary, key: String, origin: Vector3, yaw: float
+) -> bool:
+	var node := _path_node(level, paths, key) as Node3D
+	if node == null:
+		fail("transform anchor '%s' did not resolve to a Node3D" % key)
+		return false
+	assert_vector(node.global_position).is_equal_approx(origin, Vector3.ONE * WORLD_EPS_M)
+	assert_float(node.global_rotation.y).is_equal_approx(yaw, YAW_EPS_RAD)
+	return (
+		_is_vector3_approx(node.global_position, origin, WORLD_EPS_M)
+		and absf(node.global_rotation.y - yaw) <= YAW_EPS_RAD
+	)
+
+
+func _world_aabb(node: Node3D) -> AABB:
+	var skin := _box_skin(node)
+	if skin == null or skin.mesh == null:
+		fail("%s has no world mesh AABB" % node.get_path())
+		return AABB()
+	return skin.global_transform * skin.mesh.get_aabb()
+
+
+func _assert_matching_world_outputs(composed: Dictionary, flat: Dictionary) -> void:
+	for key: String in WALL_KEYS:
+		var composed_row: Dictionary = composed["walls"][key]
+		var flat_row: Dictionary = flat["walls"][key]
+		var composed_segment: Vector4 = composed_row["segment"]
+		var flat_segment: Vector4 = flat_row["segment"]
+		var composed_rect: Vector4 = composed_row["rect"]
+		var flat_rect: Vector4 = flat_row["rect"]
+		var composed_span: Vector2 = composed_row["span"]
+		var flat_span: Vector2 = flat_row["span"]
+		_assert_vector4_approx(composed_segment, flat_segment, WORLD_EPS_M, "%s centerline" % key)
+		_assert_vector4_approx(composed_rect, flat_rect, WORLD_EPS_M, "%s occluder" % key)
+		assert_vector(composed_span).is_equal_approx(flat_span, Vector2.ONE * WORLD_EPS_M)
+	for key: String in SOURCE_KEYS:
+		var composed_source: Transform3D = composed["sources"][key]
+		var flat_source: Transform3D = flat["sources"][key]
+		_assert_matching_transform(composed_source, flat_source)
+	for key: String in CAT_KEYS:
+		var composed_cat: Transform3D = composed["cats"][key]
+		var flat_cat: Transform3D = flat["cats"][key]
+		_assert_matching_transform(composed_cat, flat_cat)
+	for key: String in PROP_KEYS:
+		var composed_box: AABB = composed["props"][key]
+		var flat_box: AABB = flat["props"][key]
+		assert_vector(composed_box.position).is_equal_approx(
+			flat_box.position, Vector3.ONE * WORLD_EPS_M
+		)
+		assert_vector(composed_box.size).is_equal_approx(flat_box.size, Vector3.ONE * WORLD_EPS_M)
+	var composed_spawn: Vector3 = composed["spawn"]
+	var flat_spawn: Vector3 = flat["spawn"]
+	assert_vector(composed_spawn).is_equal_approx(flat_spawn, Vector3.ONE * WORLD_EPS_M)
+	var composed_spawn_yaw: float = composed["spawn_yaw"]
+	var flat_spawn_yaw: float = flat["spawn_yaw"]
+	assert_float(composed_spawn_yaw).is_equal_approx(flat_spawn_yaw, YAW_EPS_RAD)
+
+
+func _private_wall_snapshot(wall: WaveWall) -> Dictionary:
+	var bodies: Array[StaticBody3D] = []
+	for child: Node in wall.get_children():
+		if (
+			child is StaticBody3D
+			and child.has_meta("_unseeing_wave_wall_body")
+			and child.get_meta("_unseeing_wave_wall_body") == true
+		):
+			bodies.append(child as StaticBody3D)
+	if bodies.size() != 1:
+		fail("CrossWall must own exactly one private StaticBody3D")
+		return {}
+	var body := bodies[0]
+	if body.owner != null:
+		fail("CrossWall private StaticBody3D must remain ownerless")
+		return {}
+	var skins := body.find_children("WaveSkin", "MeshInstance3D", true, false)
+	var colliders := body.find_children("WaveCollider", "CollisionShape3D", true, false)
+	if skins.size() != 1 or colliders.size() != 1:
+		fail("CrossWall private body must have exactly one WaveSkin and one WaveCollider")
+		return {}
+	var skin := skins[0] as MeshInstance3D
+	var collider := colliders[0] as CollisionShape3D
+	if (
+		skin == null
+		or collider == null
+		or skin.mesh == null
+		or skin.owner != null
+		or collider.owner != null
+	):
+		fail("CrossWall private limbs are malformed or have an authored owner")
+		return {}
+	var shape := collider.shape as BoxShape3D
+	if shape == null:
+		fail("CrossWall WaveCollider must carry a BoxShape3D")
+		return {}
+	var paint_frame: Transform3D = wall.call("paint_frame")
+	var expected_body := Transform3D(Vector3.LEFT, Vector3.UP, Vector3.FORWARD, Vector3(7.5, 0, 7))
+	var expected_frame := Transform3D(
+		Vector3.LEFT, Vector3.UP, Vector3.FORWARD, Vector3(7.5, 1.5, 7)
+	)
+	_assert_transform_matches(body.global_transform, expected_body, "CrossWall private body")
+	_assert_transform_matches(skin.global_transform, expected_frame, "CrossWall WaveSkin")
+	_assert_transform_matches(collider.global_transform, expected_frame, "CrossWall WaveCollider")
+	_assert_transform_matches(paint_frame, expected_frame, "CrossWall paint_frame")
+	assert_vector(skin.mesh.get_aabb().size).is_equal_approx(
+		Vector3(3.3, 3, 0.3), Vector3.ONE * WORLD_EPS_M
+	)
+	assert_vector(shape.size).is_equal_approx(Vector3(3.3, 3, 0.3), Vector3.ONE * WORLD_EPS_M)
+	return {
+		"body": body,
+		"body_transform": body.global_transform,
+		"skin_transform": skin.global_transform,
+		"collider_transform": collider.global_transform,
+		"paint_frame": paint_frame,
+		"mesh_size": skin.mesh.get_aabb().size,
+		"shape_size": shape.size,
+	}
+
+
+func _assert_matching_wall_snapshots(composed: Dictionary, flat: Dictionary) -> void:
+	for key: String in ["body_transform", "skin_transform", "collider_transform", "paint_frame"]:
+		var composed_frame: Transform3D = composed[key]
+		var flat_frame: Transform3D = flat[key]
+		_assert_transform_matches(composed_frame, flat_frame, "CrossWall %s" % key)
+	var composed_mesh_size: Vector3 = composed["mesh_size"]
+	var flat_mesh_size: Vector3 = flat["mesh_size"]
+	var composed_shape_size: Vector3 = composed["shape_size"]
+	var flat_shape_size: Vector3 = flat["shape_size"]
+	assert_vector(composed_mesh_size).is_equal_approx(flat_mesh_size, Vector3.ONE * WORLD_EPS_M)
+	assert_vector(composed_shape_size).is_equal_approx(flat_shape_size, Vector3.ONE * WORLD_EPS_M)
+
+
+func _assert_cross_wall_ray(body: StaticBody3D, wall: WaveWall) -> bool:
+	if body == null:
+		fail("CrossWall physics body is null")
+		return false
+	var query := PhysicsRayQueryParameters3D.create(Vector3(8, 1.5, 6), Vector3(8, 1.5, 8))
+	var hit := get_viewport().world_3d.direct_space_state.intersect_ray(query)
+	if not hit.has("collider") or not hit.has("position") or not hit.has("normal"):
+		fail("CrossWall ray produced no complete real-physics hit")
+		return false
+	var collider := hit["collider"] as StaticBody3D
+	if collider == null:
+		fail("CrossWall ray collider is not a StaticBody3D")
+		return false
+	assert_object(collider).is_same(body)
+	assert_object(collider.get_parent()).is_same(wall)
+	var position: Vector3 = hit["position"]
+	var normal: Vector3 = hit["normal"]
+	assert_vector(position).is_equal_approx(Vector3(8, 1.5, 6.85), Vector3.ONE * PHYSICS_EPS_M)
+	assert_vector(normal).is_equal_approx(Vector3.FORWARD, Vector3.ONE * BASIS_EPS)
+	return true
+
+
+## Normalise class membership, never its numeric id or label: independently
+## authored fixture order is allowed to choose a different lawful palette.
+func _semantic_superfaces(level: WaveLevel, paths: Dictionary) -> Array[String]:
+	var reverse := _reverse_paths(paths)
+	if reverse.is_empty():
+		return []
+	reverse["Floor"] = "floor"
+	reverse["Ceiling"] = "ceiling"
+	var observer: WaveObserver = auto_free(WaveObserver.new())
+	observer.inject(level, null)
+	var explained: Dictionary = observer.explain_oids()
+	if (
+		explained.has("unavailable")
+		or not explained.has("superfaces")
+		or not explained["superfaces"] is Array
+	):
+		fail("observer refused or malformed semantic superfaces: %s" % explained)
+		return []
+	var classes: Array[String] = []
+	for value: Variant in explained["superfaces"]:
+		var raw := _superface_member_paths(value)
+		if raw.is_empty():
+			return []
+		var members: Array[String] = []
+		var seen := {}
+		for path: String in raw["members"]:
+			if not reverse.has(path):
+				fail("observer member '%s' is absent from the fixture map" % path)
+				return []
+			var key: String = str(reverse[path])
+			if seen.has(key):
+				fail("observer superface duplicates semantic key '%s'" % key)
+				return []
+			seen[key] = true
+			members.append(key)
+		members.sort()
+		classes.append(_encode_members(members))
+	classes.sort()
+	return classes
+
+
+func _encode_members(members: Array[String]) -> String:
+	if members.is_empty():
+		fail("observer superface has no semantic members")
+		return ""
+	var encoded := members[0]
+	for index: int in range(1, members.size()):
+		encoded += "+%s" % members[index]
+	return encoded
+
+
+func _assert_fixture_mesh_labels(level: WaveLevel, paths: Dictionary) -> void:
+	var run_wall := _path_node(level, paths, "run_wall") as Node3D
+	var cross_wall := _path_node(level, paths, "cross_wall") as Node3D
+	var shelf := _path_node(level, paths, "merge_shelf") as Node3D
+	var crate := _path_node(level, paths, "merge_crate") as Node3D
+	var seam_left := _path_node(level, paths, "seam_left") as Node3D
+	var seam_right := _path_node(level, paths, "seam_right") as Node3D
+	if (
+		run_wall == null
+		or cross_wall == null
+		or shelf == null
+		or crate == null
+		or seam_left == null
+		or seam_right == null
+	):
+		fail("fixture mesh-label selection could not resolve every named box")
+		return
+	var run_label := _face_at_plane_and_normal(run_wall, 0, 5.85, Vector3.LEFT)
+	var cross_label := _face_at_plane_and_normal(cross_wall, 0, 5.85, Vector3.LEFT)
+	var shelf_top := _face_at_plane_and_normal(shelf, 1, 1.0, Vector3.UP)
+	var crate_top := _face_at_plane_and_normal(crate, 1, 1.0, Vector3.UP)
+	var shelf_side := _face_at_plane_and_normal(shelf, 0, 11.5, Vector3.RIGHT)
+	var crate_side := _face_at_plane_and_normal(crate, 0, 11.5, Vector3.RIGHT)
+	var left_seam := _face_at_plane_and_normal(seam_left, 2, 5.5, Vector3.FORWARD)
+	var right_seam := _face_at_plane_and_normal(seam_right, 2, 5.5, Vector3.BACK)
+	if (
+		run_label.is_empty()
+		or cross_label.is_empty()
+		or shelf_top.is_empty()
+		or crate_top.is_empty()
+		or shelf_side.is_empty()
+		or crate_side.is_empty()
+		or left_seam.is_empty()
+		or right_seam.is_empty()
+	):
+		return
+	_assert_face_labels_match(run_label, cross_label, "run-wall/cross-wall merge")
+	_assert_face_labels_match(shelf_top, crate_top, "nested shelf/crate top merge")
+	_assert_face_labels_match(shelf_side, crate_side, "nested shelf/crate side merge")
+	var left_label: float = left_seam["label"]
+	var right_label: float = right_seam["label"]
+	assert_float(absf(left_label - right_label)).is_greater_equal(MIN_SEP)
+
+
+## The plane coordinate is a hand-derived world coordinate (0=x, 1=y, 2=z).
+## The face is selected before CUSTOM0 is read, so an ordinal or label write
+## cannot steer its own test toward a convenient face.
+func _face_at_plane_and_normal(
+	node: Node3D, axis: int, plane: float, normal: Vector3
+) -> Dictionary:
+	var request := _validated_face_request(node, axis, plane, normal)
+	if request.is_empty():
+		return {}
+	var mesh_data := _box_mesh_arrays(node)
+	if mesh_data.is_empty():
+		return {}
+	var scanned := _matching_face_lanes(mesh_data, request)
+	if scanned.is_empty():
+		return {}
+	var matches: Array[PackedFloat32Array] = scanned["matches"]
+	var node_path: String = request["path"]
+	if matches.size() != 1:
+		fail("%s has %d faces at the requested plane/normal" % [node_path, matches.size()])
+		return {}
+	return _validated_face_lanes(node_path, matches[0])
+
+
+func _validated_face_request(node: Node3D, axis: int, plane: float, normal: Vector3) -> Dictionary:
+	if not is_instance_valid(node):
+		fail("face mesh target is null or freed")
+		return {}
+	var node_path := str(node.get_path())
+	if axis < 0 or axis > 2:
+		fail("face plane axis %d is outside the Vector3 domain" % axis)
+		return {}
+	if not is_finite(plane):
+		fail("%s face plane is not finite" % node_path)
+		return {}
+	var normalized := _normalized_request_normal(normal, node_path)
+	if normalized.is_empty():
+		return {}
+	return {
+		"axis": axis,
+		"plane": plane,
+		"normal": normalized["normal"],
+		"path": node_path,
+	}
+
+
+func _normalized_request_normal(normal: Vector3, node_path: String) -> Dictionary:
+	if not normal.is_finite():
+		fail("%s requested face normal is not finite" % node_path)
+		return {}
+	var normal_length_squared := normal.length_squared()
+	if not is_finite(normal_length_squared) or normal_length_squared <= 0.0:
+		fail("%s requested face normal is degenerate" % node_path)
+		return {}
+	var requested_normal := normal.normalized()
+	if not requested_normal.is_finite():
+		fail("%s normalized requested face normal is not finite" % node_path)
+		return {}
+	return {"normal": requested_normal}
+
+
+func _matching_face_lanes(mesh_data: Dictionary, request: Dictionary) -> Dictionary:
+	var field_error := ""
+	var skin_value: Variant = null
+	var skin_was_freed := false
+	if not mesh_data.has("skin"):
+		field_error = "face mesh data omits skin"
+	else:
+		skin_value = mesh_data["skin"]
+		if typeof(skin_value) != TYPE_OBJECT:
+			field_error = "face mesh data skin is not a MeshInstance3D"
+		elif not is_instance_valid(skin_value):
+			skin_was_freed = true
+		elif not skin_value is MeshInstance3D:
+			field_error = "face mesh data skin is not a MeshInstance3D"
+	if field_error.is_empty() and not mesh_data.has("vertices"):
+		field_error = "face mesh data omits vertices"
+	elif field_error.is_empty() and not mesh_data["vertices"] is PackedVector3Array:
+		field_error = "face mesh data vertices is not a PackedVector3Array"
+	elif field_error.is_empty() and not mesh_data.has("custom"):
+		field_error = "face mesh data omits custom"
+	elif field_error.is_empty() and not mesh_data["custom"] is PackedFloat32Array:
+		field_error = "face mesh data custom is not a PackedFloat32Array"
+	elif field_error.is_empty() and not request.has("path"):
+		field_error = "face request omits path"
+	elif field_error.is_empty() and not request["path"] is String:
+		field_error = "face request path is not a String"
+	elif field_error.is_empty() and not request.has("axis"):
+		field_error = "face request omits axis"
+	elif field_error.is_empty() and not request["axis"] is int:
+		field_error = "face request axis is not an int"
+	elif field_error.is_empty() and not request.has("plane"):
+		field_error = "face request omits plane"
+	elif field_error.is_empty() and not request["plane"] is float:
+		field_error = "face request plane is not a float"
+	elif field_error.is_empty() and not request.has("normal"):
+		field_error = "face request omits normal"
+	elif field_error.is_empty() and not request["normal"] is Vector3:
+		field_error = "face request normal is not a Vector3"
+	if field_error.is_empty() and skin_was_freed:
+		field_error = "%s WaveSkin was freed before face selection" % request["path"]
+	if not field_error.is_empty():
+		fail(field_error)
+		return {}
+
+	var vertices: PackedVector3Array = mesh_data["vertices"]
+	var custom: PackedFloat32Array = mesh_data["custom"]
+	var node_path: String = request["path"]
+	var skin: MeshInstance3D = skin_value
+	var axis: int = request["axis"]
+	var plane: float = request["plane"]
+	var requested_normal: Vector3 = request["normal"]
+	var value_error := ""
+	if vertices.size() != 24 or custom.size() != 24:
+		value_error = "%s must carry exactly 24 vertices and 24 CUSTOM0 lanes" % node_path
+	elif axis < 0 or axis > 2:
+		value_error = "%s face axis %d is outside the Vector3 domain" % [node_path, axis]
+	elif not is_finite(plane):
+		value_error = "%s face plane is not finite" % node_path
+	elif not requested_normal.is_finite():
+		value_error = "%s requested face normal is not finite" % node_path
+	if not value_error.is_empty():
+		fail(value_error)
+		return {}
+	if not _box_arrays_are_finite(vertices, custom, node_path):
+		return {}
+	var normalized := _normalized_request_normal(requested_normal, node_path)
+	if normalized.is_empty():
+		return {}
+	requested_normal = normalized["normal"]
+	var transform_error := ""
+	var world_transform := Transform3D.IDENTITY
+	if not skin.is_inside_tree():
+		transform_error = "%s WaveSkin is outside the scene tree" % node_path
+	else:
+		world_transform = skin.global_transform
+		if not world_transform.is_finite():
+			transform_error = "%s WaveSkin global transform is not finite" % node_path
+	if not transform_error.is_empty():
+		fail(transform_error)
+		return {}
+	var matches: Array[PackedFloat32Array] = []
+	var scan_failed := false
+	for first: int in range(0, vertices.size(), 4):
+		var geometry := _world_face_geometry(world_transform, vertices, first, node_path)
+		if geometry.is_empty():
+			scan_failed = true
+			break
+		var centroid: Vector3 = geometry["centroid"]
+		var geometric_normal: Vector3 = geometry["normal"]
+		if absf(centroid[axis] - plane) > WORLD_EPS_M:
+			continue
+		var alignment := geometric_normal.dot(requested_normal)
+		if not is_finite(alignment):
+			fail("%s face %d normal alignment is not finite" % [node_path, first / 4])
+			scan_failed = true
+			break
+		if alignment < 1.0 - BASIS_EPS:
+			continue
+		matches.append(custom.slice(first, first + 4))
+	var result := {}
+	if not scan_failed:
+		result["matches"] = matches
+	return result
+
+
+func _world_face_geometry(
+	world_transform: Transform3D, vertices: PackedVector3Array, first: int, node_path: String
+) -> Dictionary:
+	var precondition_error := ""
+	if first < 0:
+		precondition_error = "%s face offset %d is negative" % [node_path, first]
+	elif first % 4 != 0:
+		precondition_error = (
+			"%s face offset %d is not aligned to four-vertex faces" % [node_path, first]
+		)
+	elif vertices.size() < 4 or first > vertices.size() - 4:
+		precondition_error = (
+			"%s face offset %d has no complete four-vertex face in %d vertices"
+			% [node_path, first, vertices.size()]
+		)
+	elif not world_transform.is_finite():
+		precondition_error = "%s face world transform is not finite" % node_path
+	if not precondition_error.is_empty():
+		fail(precondition_error)
+		return {}
+	var local_a := vertices[first]
+	var local_b := vertices[first + 1]
+	var local_c := vertices[first + 2]
+	var local_d := vertices[first + 3]
+	if (
+		not local_a.is_finite()
+		or not local_b.is_finite()
+		or not local_c.is_finite()
+		or not local_d.is_finite()
+	):
+		fail("%s face %d has a non-finite local vertex" % [node_path, first / 4])
+		return {}
+	var a := world_transform * local_a
+	var b := world_transform * local_b
+	var c := world_transform * local_c
+	var d := world_transform * local_d
+	var centroid := (a + b + c + d) * 0.25
+	var cross := (b - a).cross(c - a)
+	var cross_length_squared := cross.length_squared()
+	if (
+		not a.is_finite()
+		or not b.is_finite()
+		or not c.is_finite()
+		or not d.is_finite()
+		or not centroid.is_finite()
+		or not cross.is_finite()
+		or not is_finite(cross_length_squared)
+		or cross_length_squared <= 0.0
+	):
+		fail("%s face %d has malformed or degenerate world geometry" % [node_path, first / 4])
+		return {}
+	var geometric_normal := cross.normalized()
+	if not geometric_normal.is_finite():
+		fail("%s face %d normalized normal is not finite" % [node_path, first / 4])
+		return {}
+	return {"centroid": centroid, "normal": geometric_normal}
+
+
+func _validated_face_lanes(node_path: String, lanes: PackedFloat32Array) -> Dictionary:
+	if lanes.size() != 4:
+		fail("%s selected face does not carry four CUSTOM0 lanes" % node_path)
+		return {}
+	var label: float = lanes[0]
+	for lane: float in lanes:
+		if lane != label:
+			fail("%s selected face CUSTOM0 lanes are not bit-equal" % node_path)
+			return {}
+	if label < 0.15 or label > 0.96:
+		fail("%s selected face label %.8f is outside the sRGB-safe band" % [node_path, label])
+		return {}
+	return {"label": label, "lanes": lanes}
+
+
+func _box_mesh_arrays(node: Node3D) -> Dictionary:
+	if not is_instance_valid(node):
+		fail("box mesh target is null or freed")
+		return {}
+	var skin := _box_skin(node)
+	if not is_instance_valid(skin):
+		return {}
+	var mesh_value := skin.mesh
+	if not is_instance_valid(mesh_value) or not mesh_value is ArrayMesh:
+		fail("%s has no ArrayMesh WaveSkin" % node.get_path())
+		return {}
+	var mesh := mesh_value as ArrayMesh
+	if mesh.get_surface_count() != 1:
+		fail("%s WaveSkin must expose exactly one surface" % node.get_path())
+		return {}
+	var arrays := mesh.surface_get_arrays(0)
+	var validated := _validated_box_arrays(arrays, "%s WaveSkin" % node.get_path())
+	if validated.is_empty():
+		return {}
+	validated["skin"] = skin
+	return validated
+
+
+func _validated_box_arrays(arrays: Array, label: String) -> Dictionary:
+	if arrays.size() <= Mesh.ARRAY_CUSTOM0:
+		fail("%s omits mesh arrays" % label)
+		return {}
+	var vertex_slot: Variant = arrays[Mesh.ARRAY_VERTEX]
+	if not vertex_slot is PackedVector3Array:
+		fail("%s vertex slot is not a PackedVector3Array" % label)
+		return {}
+	var custom_slot: Variant = arrays[Mesh.ARRAY_CUSTOM0]
+	if not custom_slot is PackedFloat32Array:
+		fail("%s CUSTOM0 slot is not a PackedFloat32Array" % label)
+		return {}
+	var vertices: PackedVector3Array = vertex_slot
+	var custom: PackedFloat32Array = custom_slot
+	if vertices.size() != 24 or custom.size() != 24:
+		fail("%s must carry exactly 24 vertices and 24 CUSTOM0 lanes" % label)
+		return {}
+	if not _box_arrays_are_finite(vertices, custom, label):
+		return {}
+	return {"vertices": vertices, "custom": custom}
+
+
+func _box_arrays_are_finite(
+	vertices: PackedVector3Array, custom: PackedFloat32Array, label: String
+) -> bool:
+	for index: int in vertices.size():
+		if not vertices[index].is_finite():
+			fail("%s vertex %d is not finite" % [label, index])
+			return false
+	for index: int in custom.size():
+		if not is_finite(custom[index]):
+			fail("%s CUSTOM0 lane %d is not finite" % [label, index])
+			return false
+	return true
+
+
+func _assert_face_labels_match(a: Dictionary, b: Dictionary, label: String) -> void:
+	var a_lanes: PackedFloat32Array = a["lanes"]
+	var b_lanes: PackedFloat32Array = b["lanes"]
+	if a_lanes.size() != 4 or b_lanes.size() != 4:
+		fail("%s lacks four selected CUSTOM0 lanes" % label)
+		return
+	for index: int in 4:
+		assert_float(a_lanes[index]).append_failure_message(label).is_equal(b_lanes[index])
+
+
+func _assert_fixture_is_healthy(level: WaveLevel, paths: Dictionary) -> void:
+	if not is_instance_valid(level):
+		fail("healthy fixture level is null or freed")
+		return
+	assert_int(level.unfloored_solids()).is_equal(0)
+	assert_int(level.sunken_solids()).is_equal(0)
+	assert_array(level.get_configuration_warnings()).is_empty()
+	for key: String in [
+		"run",
+		"run_wall",
+		"cross_wall",
+		"merge_shelf",
+		"merge_crate",
+		"seam_left",
+		"seam_right",
+		"fan",
+		"radio",
+		"spawn",
+	]:
+		var node: Node = _path_node(level, paths, key)
+		if not is_instance_valid(node):
+			fail("warning-forwarder target '%s' is missing or freed" % key)
+			return
+		var warnings := _typed_configuration_warnings(node)
+		assert_array(warnings).append_failure_message("%s warning forwarder" % key).is_empty()
+	var cats := _retained_transforms(level, level.cats(), paths)
+	if cats.is_empty() or not _has_exact_keys(cats, CAT_KEYS, "healthy retained cats"):
+		fail("healthy fixture omitted its retained cat")
+		return
+	var cat := _path_node(level, paths, "cat") as WaveCat
+	if cat == null:
+		fail("healthy fixture cat did not resolve to WaveCat")
+		return
+	var retained_cat: Transform3D = cats["cat"]
+	_assert_matching_transform(retained_cat, cat.global_transform)
+	assert_object(_blueprint_mesh_limb(cat)).is_not_null()
+	var observer: WaveObserver = auto_free(WaveObserver.new())
+	observer.inject(level, null)
+	var explained: Dictionary = observer.explain_oids()
+	if (
+		explained.has("unavailable")
+		or not explained.has("faults")
+		or not explained["faults"] is Array
+	):
+		fail("observer refused healthy fault census: %s" % explained)
+		return
+	assert_array(explained["faults"]).is_empty()
+
+
+func _typed_configuration_warnings(node: Node) -> PackedStringArray:
+	if not is_instance_valid(node):
+		fail("warning-forwarder target is null or freed")
+		return PackedStringArray()
+	var warnings := PackedStringArray()
+	if node is WaveRun:
+		warnings = (node as WaveRun).get_configuration_warnings()
+	elif node is WaveWall:
+		warnings = (node as WaveWall).get_configuration_warnings()
+	elif node is WaveProp:
+		warnings = (node as WaveProp).get_configuration_warnings()
+	elif node is SoundFan:
+		warnings = (node as SoundFan).get_configuration_warnings()
+	elif node is SoundRadio:
+		warnings = (node as SoundRadio).get_configuration_warnings()
+	elif node is WaveSpawn:
+		warnings = (node as WaveSpawn).get_configuration_warnings()
+	else:
+		fail("warning-forwarder target '%s' has no typed warning boundary" % node.get_path())
+	return warnings
+
+
+## Normalize retained Node3D arrays by fixture path. Returning an empty map on
+## a bad row stops a caller from accepting a partial census as a valid one.
+func _retained_transforms(level: WaveLevel, retained: Array, paths: Dictionary) -> Dictionary:
+	var reverse := _reverse_paths(paths)
+	if reverse.is_empty():
+		return {}
+	var out := {}
+	for value: Variant in retained:
+		var node := value as Node3D
+		if node == null:
+			fail("retained output contains a non-Node3D value")
+			return {}
+		var path := str(level.get_path_to(node))
+		if not reverse.has(path):
+			fail("retained node path '%s' is absent from the fixture map" % path)
+			return {}
+		var key: String = str(reverse[path])
+		if out.has(key):
+			fail("retained nodes duplicate semantic key '%s'" % key)
+			return {}
+		out[key] = node.global_transform
+	return out
+
+
+## The fixture inventory deliberately comes from literal paths and classes,
+## never from a discovery helper that could bless the census it is meant to
+## check.
+func _assert_live_inventory(level: WaveLevel, paths: Dictionary, types: Dictionary) -> bool:
+	if not _assert_recursive_counts(level):
+		return false
+	if not _assert_authored_nodes(level, paths, types):
+		return false
+	if not _assert_retained_inventory(level, paths):
+		return false
+	return _assert_observer_membership(level, paths)
+
+
+func _assert_authored_nodes(level: WaveLevel, paths: Dictionary, types: Dictionary) -> bool:
+	for key: String in paths:
+		var node := _path_node(level, paths, key)
+		if node == null:
+			return false
+		var expected_type: String = str(types.get(key, ""))
+		if expected_type.is_empty() or not _is_expected_type(node, expected_type):
+			fail(
+				(
+					"fixture path '%s' does not resolve to %s"
+					% [paths[key], types.get(key, "a known type")]
+				)
+			)
+			return false
+		if key == "run_wall":
+			if node.owner != null:
+				fail("generated RunSeg1 must remain ownerless")
+				return false
+		elif node.owner == null:
+			fail("authored fixture node '%s' has no owner" % paths[key])
+			return false
+	return true
+
+
+func _assert_retained_inventory(level: WaveLevel, paths: Dictionary) -> bool:
+	var walls := _wall_rows(level, paths)
+	var sources := _retained_transforms(level, level.sources(), paths)
+	var cats := _retained_transforms(level, level.cats(), paths)
+	if walls.is_empty() or sources.is_empty() or cats.is_empty():
+		return false
+	var has_expected_keys := _has_exact_keys(walls, WALL_KEYS, "walls")
+	has_expected_keys = _has_exact_keys(sources, SOURCE_KEYS, "sources") and has_expected_keys
+	has_expected_keys = _has_exact_keys(cats, CAT_KEYS, "cats") and has_expected_keys
+	if not has_expected_keys:
+		return false
+	var spawn := _path_node(level, paths, "spawn") as WaveSpawn
+	if spawn == null:
+		return false
+	var expected_spawn := spawn.global_position + Vector3(0.0, 0.9, 0.0)
+	if not level.spawn_pos().is_equal_approx(expected_spawn):
+		fail("selected spawn output did not retain the authored WaveSpawn")
+		return false
+	return true
+
+
+func _assert_recursive_counts(level: WaveLevel) -> bool:
+	var counts := {"run": 0, "wall": 0, "prop": 0, "fan": 0, "radio": 0, "cat": 0, "spawn": 0}
+	_count_gameplay_nodes(level, counts)
+	var expected := {"run": 1, "wall": 2, "prop": 4, "fan": 1, "radio": 1, "cat": 1, "spawn": 1}
+	for key: String in expected:
+		if counts[key] != expected[key]:
+			fail(
+				(
+					"recursive census expected %d %s node(s), found %d"
+					% [expected[key], key, counts[key]]
+				)
+			)
+			return false
+	return true
+
+
+func _count_gameplay_nodes(node: Node, counts: Dictionary) -> void:
+	for child: Node in node.get_children():
+		if child is WaveRun:
+			counts["run"] += 1
+		elif child is WaveWall:
+			counts["wall"] += 1
+		elif child is WaveProp:
+			counts["prop"] += 1
+		elif child is SoundFan:
+			counts["fan"] += 1
+		elif child is SoundRadio:
+			counts["radio"] += 1
+		elif child is WaveCat:
+			counts["cat"] += 1
+		elif child is WaveSpawn:
+			counts["spawn"] += 1
+		_count_gameplay_nodes(child, counts)
+
+
+func _assert_observer_membership(level: WaveLevel, paths: Dictionary) -> bool:
+	var reverse := _reverse_paths(paths)
+	if reverse.is_empty():
+		return false
+	reverse["Floor"] = "floor"
+	reverse["Ceiling"] = "ceiling"
+	var observer: WaveObserver = auto_free(WaveObserver.new())
+	observer.inject(level, null)
+	var explained: Dictionary = observer.explain_oids()
+	if not explained.has("superfaces") or not explained["superfaces"] is Array:
+		fail("observer refused with malformed superfaces: %s" % explained)
+		return false
+	var raw_superfaces := explained["superfaces"] as Array
+	var members := {}
+	for superface_value: Variant in raw_superfaces:
+		var normalized := _superface_member_paths(superface_value)
+		if normalized.is_empty():
+			return false
+		var class_members := {}
+		for path: String in normalized["members"]:
+			if not reverse.has(path):
+				fail("observer member '%s' is absent from the fixture map" % path)
+				return false
+			var key: String = str(reverse[path])
+			if class_members.has(key):
+				fail("observer superface duplicates semantic key '%s'" % key)
+				return false
+			class_members[key] = true
+			members[key] = true
+	return _has_exact_keys(members, PAINTED_KEYS, "observer membership")
+
+
+func _superface_member_paths(superface_value: Variant) -> Dictionary:
+	if not superface_value is Dictionary:
+		fail("observer superface entry is not a Dictionary")
+		return {}
+	var superface: Dictionary = superface_value
+	if not superface.has("members"):
+		fail("observer superface entry omits members")
+		return {}
+	var raw_members: Variant = superface["members"]
+	if not raw_members is Array:
+		fail("observer superface members are not an Array")
+		return {}
+	var paths: Array[String] = []
+	for value: Variant in raw_members:
+		if not value is String:
+			fail("observer member is not a String")
+			return {}
+		paths.append(str(value))
+	return {"members": paths}
+
+
+func _reverse_paths(paths: Dictionary) -> Dictionary:
+	var reverse := {}
+	for key: String in paths:
+		var path: String = paths[key]
+		if reverse.has(path):
+			fail("fixture paths duplicate '%s' for %s and %s" % [path, reverse[path], key])
+			return {}
+		reverse[path] = key
+	return reverse
+
+
+func _path_node(level: WaveLevel, paths: Dictionary, key: String) -> Node:
+	if not paths.has(key):
+		fail("fixture map has no semantic key '%s'" % key)
+		return null
+	var path: String = str(paths[key])
+	var node := level.get_node_or_null(NodePath(path))
+	if node == null:
+		fail("fixture path '%s' is missing" % path)
+		return null
+	return node
+
+
+func _is_expected_type(node: Node, expected: String) -> bool:
+	var matches := false
+	match expected:
+		"Node3D":
+			matches = node is Node3D
+		"WaveRun":
+			matches = node is WaveRun
+		"WaveWall":
+			matches = node is WaveWall
+		"WaveProp":
+			matches = node is WaveProp
+		"SoundFan":
+			matches = node is SoundFan
+		"SoundRadio":
+			matches = node is SoundRadio
+		"WaveCat":
+			matches = node is WaveCat
+		"WaveSpawn":
+			matches = node is WaveSpawn
+		_:
+			fail("unknown expected fixture type '%s'" % expected)
+	return matches
+
+
+func _has_exact_keys(actual: Dictionary, expected: Array, label: String) -> bool:
+	if actual.size() != expected.size():
+		fail("%s expected %d semantic entries, found %d" % [label, expected.size(), actual.size()])
+		return false
+	for key: String in expected:
+		if not actual.has(key):
+			fail("%s omit semantic key '%s'" % [label, key])
+			return false
+	return true
+
+
+## Sources and creatures intentionally have multiple blueprint limbs; this is
+## only an existence witness and must never select box geometry for labels.
+func _blueprint_mesh_limb(node: Node) -> MeshInstance3D:
+	for limb: Node in node.find_children("*", "MeshInstance3D", true, false):
+		return limb as MeshInstance3D
+	fail("%s did not build a mesh limb" % node.get_path())
+	return null
+
+
+## A box has exactly one named skin. The mesh-label and world-AABB oracles
+## reject zero or several candidates rather than reading arbitrary descendant
+## bytes when a blueprint grows another mesh limb.
+func _box_skin(node: Node) -> MeshInstance3D:
+	var skins := node.find_children("WaveSkin", "MeshInstance3D", true, false)
+	if skins.size() != 1:
+		fail("%s must have exactly one named WaveSkin, found %d" % [node.get_path(), skins.size()])
+		return null
+	var skin := skins[0] as MeshInstance3D
+	if skin == null:
+		fail("%s named WaveSkin is not a MeshInstance3D" % node.get_path())
+		return null
+	return skin
+
+
+func _assert_matching_transform(actual: Transform3D, expected: Transform3D) -> bool:
+	return _assert_transform_matches(actual, expected, "normalized fixture transform")
+
+
+func _assert_transform_matches(actual: Transform3D, expected: Transform3D, label: String) -> bool:
+	var basis_epsilon := Vector3.ONE * BASIS_EPS
+	var world_epsilon := Vector3.ONE * WORLD_EPS_M
+	assert_vector(actual.basis.x).append_failure_message(label).is_equal_approx(
+		expected.basis.x, basis_epsilon
+	)
+	assert_vector(actual.basis.y).append_failure_message(label).is_equal_approx(
+		expected.basis.y, basis_epsilon
+	)
+	assert_vector(actual.basis.z).append_failure_message(label).is_equal_approx(
+		expected.basis.z, basis_epsilon
+	)
+	assert_vector(actual.origin).append_failure_message(label).is_equal_approx(
+		expected.origin, world_epsilon
+	)
+	return (
+		_is_vector3_approx(actual.basis.x, expected.basis.x, BASIS_EPS)
+		and _is_vector3_approx(actual.basis.y, expected.basis.y, BASIS_EPS)
+		and _is_vector3_approx(actual.basis.z, expected.basis.z, BASIS_EPS)
+		and _is_vector3_approx(actual.origin, expected.origin, WORLD_EPS_M)
+	)
+
+
+func _assert_vector4_approx(
+	actual: Vector4, expected: Vector4, epsilon: float, label: String
+) -> bool:
+	assert_float(actual.x).append_failure_message(label).is_equal_approx(expected.x, epsilon)
+	assert_float(actual.y).append_failure_message(label).is_equal_approx(expected.y, epsilon)
+	assert_float(actual.z).append_failure_message(label).is_equal_approx(expected.z, epsilon)
+	assert_float(actual.w).append_failure_message(label).is_equal_approx(expected.w, epsilon)
+	return (
+		absf(actual.x - expected.x) <= epsilon
+		and absf(actual.y - expected.y) <= epsilon
+		and absf(actual.z - expected.z) <= epsilon
+		and absf(actual.w - expected.w) <= epsilon
+	)
+
+
+func _is_vector2_approx(actual: Vector2, expected: Vector2, epsilon: float) -> bool:
+	return absf(actual.x - expected.x) <= epsilon and absf(actual.y - expected.y) <= epsilon
+
+
+func _is_vector3_approx(actual: Vector3, expected: Vector3, epsilon: float) -> bool:
+	return (
+		absf(actual.x - expected.x) <= epsilon
+		and absf(actual.y - expected.y) <= epsilon
+		and absf(actual.z - expected.z) <= epsilon
+	)

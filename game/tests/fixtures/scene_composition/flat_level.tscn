@@ -1,0 +1,43 @@
+[gd_scene format=3]
+
+[node name="FlatLevel" type="WaveLevel"]
+extents = Vector2(14, 14)
+
+[node name="BoundaryRun" type="WaveRun" parent="."]
+from = Vector2(6, 4)
+to = Vector2(6, 10)
+
+[node name="CrossWall" type="WaveWall" parent="."]
+length = 3.0
+transform = Transform3D(-1, 0, 0, 0, 1, 0, 0, 0, -1, 7.5, 0, 7)
+
+[node name="Fan" type="SoundFan" parent="."]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 8, 0, 9)
+volume = 0.6
+
+[node name="Cat" type="WaveCat" parent="."]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 4, 0, 5)
+seed = 11
+roam_size = Vector2(1.5, 1.5)
+
+[node name="Spawn" type="WaveSpawn" parent="."]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 4, 0, 9)
+
+[node name="MergeShelf" type="WaveProp" parent="."]
+size = Vector3(2, 1, 1)
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 11, 0.5, 9)
+
+[node name="MergeCrate" type="WaveProp" parent="."]
+size = Vector3(1, 1, 0.8)
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 11.1, 0.5, 8.6)
+
+[node name="SeamLeft" type="WaveProp" parent="."]
+size = Vector3(1, 1, 1)
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 11, 0.5, 6)
+
+[node name="SeamRight" type="WaveProp" parent="."]
+size = Vector3(1, 1, 1)
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 11, 0.5, 5)
+
+[node name="Radio" type="SoundRadio" parent="."]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 9, 0, 5)

@@ -1,0 +1,11 @@
+[gd_scene format=3]
+
+[ext_resource type="PackedScene" path="res://tests/fixtures/scene_composition/inherited_room_variant.tscn" id="1_room"]
+
+[node name="ComposedLevel" type="WaveLevel"]
+extents = Vector2(14, 14)
+
+[node name="PlainGroup" type="Node3D" parent="."]
+transform = Transform3D(0, 0, 1, 0, 1, 0, -1, 0, 0, 2, 0, 12)
+
+[node name="InheritedRoomVariant" parent="PlainGroup" instance=ExtResource("1_room")]
