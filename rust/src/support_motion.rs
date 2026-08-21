@@ -1278,20 +1278,19 @@ mod tests {
 
     #[test]
     fn threshold_order_reports_both_supplied_values() {
-        let error = config_with([9.8, 20.0, 4.0, 4.0, 0.85, 5.0]).unwrap_err();
+        let error = config_with([9.8, 20.0, 4.0, 3.0, 0.85, 5.0]).unwrap_err();
         assert_eq!(
             error,
             MotionConfigError::ThresholdOrder {
                 silent_speed_mps: 4.0,
-                full_speed_mps: 4.0,
+                full_speed_mps: 3.0,
             }
         );
         assert_eq!(error.field(), None);
-        let message = error.to_string();
-        assert!(message.contains("4"));
-        assert!(message.contains("silent"));
-        assert!(message.contains("full"));
-        assert!(message.contains("greater"));
+        assert_eq!(
+            error.to_string(),
+            "landing full speed 3 m/s must be greater than silent speed 4 m/s"
+        );
     }
 
     #[test]
@@ -1447,6 +1446,186 @@ mod tests {
     }
 
     #[test]
+    fn pose_point_and_support_elevation_reject_exact_malformed_and_outside_lanes() {
+        let outside = f32::from_bits(1_000_002.0_f32.to_bits() + 1);
+        for lane in 0..3 {
+            for (value, problem) in [
+                (f32::NAN, MotionValueProblem::NonFinite),
+                (f32::INFINITY, MotionValueProblem::NonFinite),
+                (f32::NEG_INFINITY, MotionValueProblem::NonFinite),
+                (outside, MotionValueProblem::OutOfRange),
+                (-outside, MotionValueProblem::OutOfRange),
+            ] {
+                let mut lanes = [0.0, 0.0, 0.0];
+                lanes[lane] = value;
+                let error =
+                    PosePoint::try_new(Vector3::new(lanes[0], lanes[1], lanes[2])).unwrap_err();
+                assert_eq!(
+                    (error.field(), error.problem()),
+                    (
+                        ["pose_point.x", "pose_point.y", "pose_point.z"][lane],
+                        problem
+                    )
+                );
+            }
+        }
+        let boundary = Vector3::new(-1_000_002.0, 1_000_002.0, -0.0);
+        let accepted = PosePoint::try_new(boundary).unwrap().world();
+        assert_eq!(
+            [
+                accepted.x.to_bits(),
+                accepted.y.to_bits(),
+                accepted.z.to_bits()
+            ],
+            [
+                boundary.x.to_bits(),
+                boundary.y.to_bits(),
+                boundary.z.to_bits()
+            ]
+        );
+
+        for (value, problem) in [
+            (f32::NAN, MotionValueProblem::NonFinite),
+            (f32::INFINITY, MotionValueProblem::NonFinite),
+            (f32::NEG_INFINITY, MotionValueProblem::NonFinite),
+            (outside, MotionValueProblem::OutOfRange),
+            (-outside, MotionValueProblem::OutOfRange),
+        ] {
+            let error = SupportElevation::try_new(value).unwrap_err();
+            assert_eq!(
+                (error.field(), error.problem()),
+                ("support_elevation", problem)
+            );
+        }
+        for boundary in [-1_000_002.0_f32, 1_000_002.0_f32] {
+            assert_eq!(
+                SupportElevation::try_new(boundary).unwrap().y().to_bits(),
+                boundary.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn support_contact_rejects_each_poisoned_point_or_normal_lane_and_preserves_bits() {
+        for lane in 0..3 {
+            for poison in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let mut point = [1.0, 2.0, 3.0];
+                point[lane] = poison;
+                let error = SupportContact::try_new(
+                    Vector3::new(point[0], point[1], point[2]),
+                    Vector3::UP,
+                )
+                .unwrap_err();
+                assert_eq!(
+                    (error.field(), error.problem()),
+                    (
+                        ["support.point.x", "support.point.y", "support.point.z"][lane],
+                        MotionValueProblem::NonFinite
+                    )
+                );
+
+                let mut normal = [1.0, 2.0, 3.0];
+                normal[lane] = poison;
+                let error = SupportContact::try_new(
+                    Vector3::ZERO,
+                    Vector3::new(normal[0], normal[1], normal[2]),
+                )
+                .unwrap_err();
+                assert_eq!(
+                    (error.field(), error.problem()),
+                    (
+                        ["support.normal.x", "support.normal.y", "support.normal.z"][lane],
+                        MotionValueProblem::NonFinite
+                    )
+                );
+            }
+        }
+        let point = Vector3::new(-f32::MAX, f32::MAX, -0.0);
+        let normal = Vector3::new(f32::from_bits(1), -f32::MAX, -0.0);
+        let accepted = SupportContact::try_new(point, normal).unwrap();
+        assert_eq!(
+            [
+                accepted.point().x.to_bits(),
+                accepted.point().y.to_bits(),
+                accepted.point().z.to_bits(),
+                accepted.normal().x.to_bits(),
+                accepted.normal().y.to_bits(),
+                accepted.normal().z.to_bits(),
+            ],
+            [
+                point.x.to_bits(),
+                point.y.to_bits(),
+                point.z.to_bits(),
+                normal.x.to_bits(),
+                normal.y.to_bits(),
+                normal.z.to_bits(),
+            ]
+        );
+    }
+
+    #[test]
+    fn velocity_value_doors_reject_exact_poison_and_preserve_boundary_bits() {
+        for (x, z, field) in [
+            (f32::NAN, 0.0, "planar_velocity.x"),
+            (f32::INFINITY, 0.0, "planar_velocity.x"),
+            (f32::NEG_INFINITY, 0.0, "planar_velocity.x"),
+            (0.0, f32::NAN, "planar_velocity.z"),
+            (0.0, f32::INFINITY, "planar_velocity.z"),
+            (0.0, f32::NEG_INFINITY, "planar_velocity.z"),
+        ] {
+            let error = PlanarVelocity::try_new(x, z).unwrap_err();
+            assert_eq!(
+                (error.field(), error.problem()),
+                (field, MotionValueProblem::NonFinite)
+            );
+        }
+        let planar = PlanarVelocity::try_new(-0.0, f32::MAX).unwrap();
+        assert_eq!(planar.x_mps().to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(planar.z_mps().to_bits(), f32::MAX.to_bits());
+
+        for poison in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let error = FiniteVelocity::try_new(poison).unwrap_err();
+            assert_eq!(
+                (error.field(), error.problem()),
+                ("vertical_velocity_mps", MotionValueProblem::NonFinite)
+            );
+            let error = FiniteSpeed::try_new(poison).unwrap_err();
+            assert_eq!(
+                (error.field(), error.problem()),
+                ("impact_speed_mps", MotionValueProblem::NonFinite)
+            );
+            let error = LandingEvent::try_new(poison, support()).unwrap_err();
+            assert_eq!(
+                (error.field(), error.problem()),
+                ("impact_speed_mps", MotionValueProblem::NonFinite)
+            );
+        }
+        assert_eq!(
+            FiniteVelocity::try_new(-0.0).unwrap().mps().to_bits(),
+            (-0.0_f32).to_bits()
+        );
+        assert_eq!(
+            FiniteSpeed::try_new(-0.0).unwrap().mps().to_bits(),
+            (-0.0_f32).to_bits()
+        );
+        for negative in [-f32::from_bits(1), -1.0] {
+            let speed_error = FiniteSpeed::try_new(negative).unwrap_err();
+            assert_eq!(
+                (speed_error.field(), speed_error.problem()),
+                ("impact_speed_mps", MotionValueProblem::Negative)
+            );
+            let event_error = LandingEvent::try_new(negative, support()).unwrap_err();
+            assert_eq!(
+                (event_error.field(), event_error.problem()),
+                ("impact_speed_mps", MotionValueProblem::Negative)
+            );
+        }
+        let event = LandingEvent::try_new(-0.0, support()).unwrap();
+        assert_eq!(event.impact_speed().mps().to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(event.support(), support());
+    }
+
+    #[test]
     fn actor_velocity_rejects_each_poisoned_lane() {
         for lane in 0..3 {
             for poison in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
@@ -1480,9 +1659,18 @@ mod tests {
 
     #[test]
     fn controlled_support_never_creates_a_landing() {
+        let prior_support =
+            SupportContact::try_new(Vector3::new(-5.0, -4.0, -3.0), Vector3::UP).unwrap();
+        let prior_landing = LandingEvent::try_new(0.5, prior_support).unwrap();
+        let prior = MotionState::restore(
+            MotionPhase::Controlled,
+            Some(prior_support),
+            Some(prior_landing),
+        )
+        .unwrap();
         let desired = PlanarVelocity::try_new(2.0, -3.0).unwrap();
         let prepared = prepare(
-            MotionState::initial(),
+            prior,
             desired,
             StepDuration::from_raw(1.0 / 60.0),
             SupportMotionConfig::PLAYER_DEFAULT,
@@ -1501,13 +1689,22 @@ mod tests {
         assert_eq!(transition.landing, None);
         assert_eq!(transition.state.phase(), MotionPhase::Controlled);
         assert_eq!(transition.state.support(), Some(support()));
-        assert_eq!(transition.state.last_landing(), None);
+        assert_eq!(transition.state.last_landing(), Some(prior_landing));
     }
 
     #[test]
     fn an_edge_captures_actual_trajectory_and_air_ignores_new_intent() {
+        let prior_support =
+            SupportContact::try_new(Vector3::new(-2.0, -1.0, 0.0), Vector3::UP).unwrap();
+        let prior_landing = LandingEvent::try_new(0.75, prior_support).unwrap();
+        let prior = MotionState::restore(
+            MotionPhase::Controlled,
+            Some(prior_support),
+            Some(prior_landing),
+        )
+        .unwrap();
         let prepared = prepare(
-            MotionState::initial(),
+            prior,
             PlanarVelocity::try_new(3.0, -4.0).unwrap(),
             StepDuration::from_raw(0.01),
             SupportMotionConfig::PLAYER_DEFAULT,
@@ -1519,6 +1716,7 @@ mod tests {
                 None,
             ),
         );
+        assert_eq!(edge.landing, None);
         assert_eq!(
             edge.state.phase(),
             MotionPhase::Airborne {
@@ -1526,6 +1724,8 @@ mod tests {
                 vertical_velocity_mps: FiniteVelocity::try_new(-0.0).unwrap(),
             }
         );
+        assert_eq!(edge.state.support(), None);
+        assert_eq!(edge.state.last_landing(), Some(prior_landing));
         assert!(!edge.state.accepts_control());
         let air = prepare(
             edge.state,
@@ -1540,13 +1740,16 @@ mod tests {
 
     #[test]
     fn a_wall_keeps_the_collision_adjusted_planar_trajectory() {
+        let history_support =
+            SupportContact::try_new(Vector3::new(8.0, 7.0, 6.0), Vector3::UP).unwrap();
+        let prior_landing = LandingEvent::try_new(1.25, history_support).unwrap();
         let state = MotionState::restore(
             MotionPhase::Airborne {
                 planar_velocity_mps: PlanarVelocity::try_new(2.0, -3.0).unwrap(),
                 vertical_velocity_mps: FiniteVelocity::try_new(-1.0).unwrap(),
             },
             None,
-            None,
+            Some(prior_landing),
         )
         .unwrap();
         let prepared = prepare(
@@ -1570,17 +1773,22 @@ mod tests {
             }
         );
         assert_eq!(transition.landing, None);
+        assert_eq!(transition.state.support(), None);
+        assert_eq!(transition.state.last_landing(), Some(prior_landing));
     }
 
     #[test]
     fn landing_changes_phase_once_and_keeps_the_event_as_observation() {
+        let old_support =
+            SupportContact::try_new(Vector3::new(9.0, 8.0, 7.0), Vector3::UP).unwrap();
+        let old_landing = LandingEvent::try_new(0.25, old_support).unwrap();
         let airborne = MotionState::restore(
             MotionPhase::Airborne {
                 planar_velocity_mps: PlanarVelocity::try_new(1.0, 2.0).unwrap(),
                 vertical_velocity_mps: FiniteVelocity::try_new(-3.0).unwrap(),
             },
             None,
-            None,
+            Some(old_landing),
         )
         .unwrap();
         let prepared = prepare(
@@ -1599,6 +1807,7 @@ mod tests {
         let expected = LandingEvent::try_new(3.0, support()).unwrap();
         assert_eq!(landed.landing, Some(expected));
         assert_eq!(landed.state.phase(), MotionPhase::Controlled);
+        assert_eq!(landed.state.support(), Some(support()));
         assert_eq!(landed.state.last_landing(), Some(expected));
 
         let controlled = prepare(
@@ -1615,6 +1824,8 @@ mod tests {
             ),
         );
         assert_eq!(still_supported.landing, None);
+        assert_eq!(still_supported.state.phase(), MotionPhase::Controlled);
+        assert_eq!(still_supported.state.support(), Some(support()));
         assert_eq!(still_supported.state.last_landing(), Some(expected));
     }
 
@@ -1741,6 +1952,14 @@ mod tests {
             ),
             Err(MotionRestoreError::AirbornePlanarMismatch { axis: "x" })
         );
+        assert_eq!(
+            validate_restore(
+                state,
+                ActorVelocity::try_new(Vector3::new(-0.0, 91.0, -0.0)).unwrap(),
+                SupportMotionConfig::PLAYER_DEFAULT,
+            ),
+            Err(MotionRestoreError::AirbornePlanarMismatch { axis: "z" })
+        );
     }
 
     #[test]
@@ -1808,16 +2027,20 @@ mod tests {
             vertical_velocity_mps: FiniteVelocity::try_new(-1.0).unwrap(),
         };
         let landing = Some(LandingEvent::try_new(2.0, support()).unwrap());
-        for (before, after, event, expected) in [
-            (controlled, controlled, None, true),
-            (air, controlled, None, false),
-            (controlled, air, None, false),
-            (controlled, controlled, landing, false),
+        for (before, after, event, always, controlled_contact) in [
+            (controlled, controlled, None, true, true),
+            (controlled, controlled, landing, true, false),
+            (controlled, air, None, true, false),
+            (controlled, air, landing, true, false),
+            (air, controlled, None, true, false),
+            (air, controlled, landing, true, false),
+            (air, air, None, true, false),
+            (air, air, landing, true, false),
         ] {
-            assert!(QueuedWaveGate::Always.allows(before, after, event));
+            assert_eq!(QueuedWaveGate::Always.allows(before, after, event), always);
             assert_eq!(
                 QueuedWaveGate::ControlledContact.allows(before, after, event),
-                expected
+                controlled_contact
             );
         }
     }
