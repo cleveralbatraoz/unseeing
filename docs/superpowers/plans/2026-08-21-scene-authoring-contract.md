@@ -91,7 +91,7 @@ debugging and a design/plan amendment before any production fix.
 
 Baseline measured at the approved-spec commit is 568 Cargo tests, 32 gdUnit
 suites / 354 cases, and 16 editor-prefab checks. The implementation adds no
-Cargo tests, six gdUnit cases (33 / 360), and 20 editor-prefab checks (36).
+Cargo tests, seven gdUnit cases (33 / 361), and 20 editor-prefab checks (36).
 
 ---
 
@@ -107,9 +107,10 @@ Cargo tests, six gdUnit cases (33 / 360), and 20 editor-prefab checks (36).
   `WaveLevel` with a nonidentity plain ancestor and the inherited instance.
 - `game/tests/fixtures/scene_composition/flat_level.tscn` (new) — independent
   hand-flattened oracle, with no grouping, nesting, or inheritance.
-- `game/tests/scene_composition_test.gd` (new) — six-case runtime contract over
-  retained outputs, absolute anchors, collision, superfaces, actual mesh bytes,
-  and fault-free derivation.
+- `game/tests/scene_composition_test.gd` (new) — seven-case runtime contract:
+  six scene-behavior cases over retained outputs, absolute anchors, collision,
+  superfaces, actual mesh bytes, and fault-free derivation, plus one
+  oracle-integrity case for malformed or non-finite mesh inputs.
 - `game/tests/scene_composition_test.gd.uid` (new, Godot-generated) — tracked
   stable UID sidecar for the new suite; keep it after import.
 - `game/tests/probe/editor_prefab_probe.gd` (modify) — inheritance state,
@@ -627,10 +628,18 @@ two fixture multisets agree and each contains a class with
 
 - [ ] **Step 4b: Select faces geometrically from the real mesh arrays.**
 
-Create `_face_at_plane_and_normal`: require one ArrayMesh surface, 24 vertices,
-and 24 float `ARRAY_CUSTOM0` lanes; select exactly one four-vertex face from its
-world centroid and transformed geometric normal, never from `CUSTOM0`; require
-all four label bits equal and the label in `[0.15, 0.96]`.
+Create `_face_at_plane_and_normal` behind a total Variant-validation boundary.
+Require a live target and skin, exactly one ArrayMesh surface, exact dynamic
+slot types `PackedVector3Array` / `PackedFloat32Array`, and exactly 24 vertices
+and 24 `ARRAY_CUSTOM0` lanes. Reject every non-finite vertex or label, invalid
+axis, non-finite plane, non-finite or degenerate requested normal, non-finite
+global transform, world vertex, centroid, cross, cross length, normalized
+normal, or alignment before indexing or comparison. Select exactly one
+four-vertex face from its world centroid and transformed geometric normal,
+never from `CUSTOM0`; require all four label bits equal and the label in
+`[0.15, 0.96]`. Every rejection must fail loudly and return an empty/false
+verdict. Pin this totality with a separately named seventh oracle-integrity case
+using a real non-finite `ArrayMesh` plus malformed dynamic slot types.
 
 - [ ] **Step 4c: Assert the named merges and separate seam within each fixture.**
 
@@ -641,11 +650,14 @@ For each fixture pin:
 | run wall + cross wall | `x = 5.85`, both `Vector3.LEFT` | labels bit-equal |
 | merge shelf + crate top | `y = 1.0`, both `Vector3.UP` | labels bit-equal |
 | merge shelf + crate side | `x = 11.5`, both `Vector3.RIGHT` | labels bit-equal |
-| seam left / right | `z = 5.5`, `FORWARD` / `BACK` | absolute gap at least `WaveCore.new().min_label_separation()` |
+| seam left / right | `z = 5.5`, `FORWARD` / `BACK` | absolute gap at least the test-owned dimensionless `MIN_SEP := 0.08` literal |
 
 Never compare a composed numeric label to a flat numeric label. Do not assert
 legacy `explain_oids()["violations"]`; it is the documented first-face,
 solid-granularity compatibility bridge, not this face-level oracle.
+The seam literal is independently authored so a coordinated production
+threshold/palette drift cannot teach the oracle to accept the same regression;
+do not add a constant-equality or change-detector assertion.
 
 - [ ] **Step 5: Prove healthy silence and total helpers.**
 
@@ -1225,7 +1237,7 @@ GODOT="$GODOT_BIN" tools/probe_editor_slabs.sh
 ```
 
 Require 568 Cargo tests or more without shrink, 33/33 gdUnit suites and
-360/360 cases, 36/36 prefab checks, and every other probe's existing exact
+361/361 cases, 36/36 prefab checks, and every other probe's existing exact
 PASS contract. Re-run any failure after diagnosing it; do not quote stale
 earlier output as proof.
 

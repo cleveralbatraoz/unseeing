@@ -1,4 +1,7 @@
 extends GdUnitTestSuite
+# The seven-case contract and its private semantic/mesh oracle intentionally
+# stay together as one integration suite.
+# gdlint: disable=max-file-lines
 
 const COMPOSED_SCENE := preload("res://tests/fixtures/scene_composition/composed_level.tscn")
 const FLAT_SCENE := preload("res://tests/fixtures/scene_composition/flat_level.tscn")
@@ -88,6 +91,9 @@ const WORLD_EPS_M := 0.0001
 const PHYSICS_EPS_M := 0.00001
 ## Dimensionless: basis columns and geometric normals are unit-vector lanes.
 const BASIS_EPS := 0.0001
+## Dimensionless: the independently authored minimum label gap that makes a
+## separate touching seam retain its full crease in the shipped contract.
+const MIN_SEP := 0.08
 ## Radians: authored quarter-turn yaw survives one Godot transform round trip.
 const YAW_EPS_RAD := 0.0001
 
@@ -259,6 +265,72 @@ func test_composed_and_flat_fixtures_derive_without_faults() -> void:
 		return
 	_assert_fixture_is_healthy(composed, COMPOSED_PATHS)
 	_assert_fixture_is_healthy(flat, FLAT_PATHS)
+
+
+## This catches a mesh oracle which lets a non-finite vertex pass its plane
+## and normal comparisons because every comparison against NAN is false.
+func test_mesh_oracle_rejects_malformed_or_non_finite_godot_faces() -> void:
+	var source := WaveLevel.debug_labelled_box(
+		Vector3(2, 2, 2), Vector3.ZERO, PackedFloat32Array([0.24, 0.33, 0.42, 0.51, 0.60, 0.69])
+	)
+	var arrays := source.surface_get_arrays(0)
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	vertices[3] = Vector3(NAN, vertices[3].y, vertices[3].z)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	var malformed := ArrayMesh.new()
+	malformed.add_surface_from_arrays(
+		Mesh.PRIMITIVE_TRIANGLES, arrays, [], {}, source.surface_get_format(0)
+	)
+	var root: Node3D = auto_free(Node3D.new())
+	root.name = "NonFiniteFace"
+	var skin := MeshInstance3D.new()
+	skin.name = "WaveSkin"
+	skin.mesh = malformed
+	root.add_child(skin)
+	add_child(root)
+
+	var observed := {}
+	var reject_non_finite_face := func() -> void:
+		observed["selected"] = _face_at_plane_and_normal(root, 0, -1.0, Vector3.LEFT)
+	assert_failure(reject_non_finite_face).has_message(
+		"/root/scene_composition_test/NonFiniteFace WaveSkin vertex 3 is not finite"
+	)
+	assert_bool(observed.has("selected")).is_true()
+	var selected: Dictionary = observed["selected"]
+	(
+		assert_bool(selected.is_empty())
+		. append_failure_message(
+			"the geometric face oracle accepted an ArrayMesh face containing NAN"
+		)
+		. is_true()
+	)
+
+	var malformed_slots: Array = []
+	malformed_slots.resize(Mesh.ARRAY_MAX)
+	var wrong_vertices := PackedFloat32Array()
+	wrong_vertices.resize(24)
+	var finite_labels := PackedFloat32Array()
+	finite_labels.resize(24)
+	finite_labels.fill(0.24)
+	malformed_slots[Mesh.ARRAY_VERTEX] = wrong_vertices
+	malformed_slots[Mesh.ARRAY_CUSTOM0] = finite_labels
+	var malformed_observed := {}
+	var reject_malformed_slots := func() -> void:
+		malformed_observed["validated"] = _validated_box_arrays(
+			malformed_slots, "malformed dynamic slots"
+		)
+	assert_failure(reject_malformed_slots).has_message(
+		"malformed dynamic slots vertex slot is not a PackedVector3Array"
+	)
+	assert_bool(malformed_observed.has("validated")).is_true()
+	var validated: Dictionary = malformed_observed["validated"]
+	(
+		assert_bool(validated.is_empty())
+		. append_failure_message(
+			"the mesh-array boundary accepted a non-PackedVector3Array vertex slot"
+		)
+		. is_true()
+	)
 
 
 ## Injecting before tree entry is the one supported construction path: it lets
@@ -701,9 +773,7 @@ func _assert_fixture_mesh_labels(level: WaveLevel, paths: Dictionary) -> void:
 	_assert_face_labels_match(shelf_side, crate_side, "nested shelf/crate side merge")
 	var left_label: float = left_seam["label"]
 	var right_label: float = right_seam["label"]
-	assert_float(absf(left_label - right_label)).is_greater_equal(
-		WaveCore.new().min_label_separation()
-	)
+	assert_float(absf(left_label - right_label)).is_greater_equal(MIN_SEP)
 
 
 ## The plane coordinate is a hand-derived world coordinate (0=x, 1=y, 2=z).
@@ -712,65 +782,195 @@ func _assert_fixture_mesh_labels(level: WaveLevel, paths: Dictionary) -> void:
 func _face_at_plane_and_normal(
 	node: Node3D, axis: int, plane: float, normal: Vector3
 ) -> Dictionary:
-	if axis < 0 or axis > 2:
-		fail("face plane axis %d is outside the Vector3 domain" % axis)
+	var request := _validated_face_request(node, axis, plane, normal)
+	if request.is_empty():
 		return {}
 	var mesh_data := _box_mesh_arrays(node)
 	if mesh_data.is_empty():
 		return {}
+	var scanned := _matching_face_lanes(mesh_data, request)
+	if scanned.is_empty():
+		return {}
+	var matches: Array[PackedFloat32Array] = scanned["matches"]
+	var node_path: String = request["path"]
+	if matches.size() != 1:
+		fail("%s has %d faces at the requested plane/normal" % [node_path, matches.size()])
+		return {}
+	return _validated_face_lanes(node_path, matches[0])
+
+
+func _validated_face_request(node: Node3D, axis: int, plane: float, normal: Vector3) -> Dictionary:
+	if not is_instance_valid(node):
+		fail("face mesh target is null or freed")
+		return {}
+	var node_path := str(node.get_path())
+	if axis < 0 or axis > 2:
+		fail("face plane axis %d is outside the Vector3 domain" % axis)
+		return {}
+	if not is_finite(plane):
+		fail("%s face plane is not finite" % node_path)
+		return {}
+	var normalized := _normalized_request_normal(normal, node_path)
+	if normalized.is_empty():
+		return {}
+	return {
+		"axis": axis,
+		"plane": plane,
+		"normal": normalized["normal"],
+		"path": node_path,
+	}
+
+
+func _normalized_request_normal(normal: Vector3, node_path: String) -> Dictionary:
+	if not normal.is_finite():
+		fail("%s requested face normal is not finite" % node_path)
+		return {}
+	var normal_length_squared := normal.length_squared()
+	if not is_finite(normal_length_squared) or normal_length_squared <= 0.0:
+		fail("%s requested face normal is degenerate" % node_path)
+		return {}
+	var requested_normal := normal.normalized()
+	if not requested_normal.is_finite():
+		fail("%s normalized requested face normal is not finite" % node_path)
+		return {}
+	return {"normal": requested_normal}
+
+
+func _matching_face_lanes(mesh_data: Dictionary, request: Dictionary) -> Dictionary:
 	var skin: MeshInstance3D = mesh_data["skin"]
 	var vertices: PackedVector3Array = mesh_data["vertices"]
 	var custom: PackedFloat32Array = mesh_data["custom"]
+	var node_path: String = request["path"]
+	if not is_instance_valid(skin):
+		fail("%s WaveSkin was freed before face selection" % node_path)
+		return {}
+	var world_transform := skin.global_transform
+	if not world_transform.is_finite():
+		fail("%s WaveSkin global transform is not finite" % node_path)
+		return {}
 	var matches: Array[PackedFloat32Array] = []
 	for first: int in range(0, vertices.size(), 4):
-		var a := skin.global_transform * vertices[first]
-		var b := skin.global_transform * vertices[first + 1]
-		var c := skin.global_transform * vertices[first + 2]
-		var d := skin.global_transform * vertices[first + 3]
-		var centroid := (a + b + c + d) * 0.25
-		var geometric_normal := (b - a).cross(c - a).normalized()
+		var geometry := _world_face_geometry(world_transform, vertices, first, node_path)
+		if geometry.is_empty():
+			return {}
+		var centroid: Vector3 = geometry["centroid"]
+		var geometric_normal: Vector3 = geometry["normal"]
+		var axis: int = request["axis"]
+		var plane: float = request["plane"]
 		if absf(centroid[axis] - plane) > WORLD_EPS_M:
 			continue
-		if geometric_normal.dot(normal) < 1.0 - BASIS_EPS:
+		var requested_normal: Vector3 = request["normal"]
+		var alignment := geometric_normal.dot(requested_normal)
+		if not is_finite(alignment):
+			fail("%s face %d normal alignment is not finite" % [node_path, first / 4])
+			return {}
+		if alignment < 1.0 - BASIS_EPS:
 			continue
-		var lanes := PackedFloat32Array()
-		for index: int in range(first, first + 4):
-			lanes.append(custom[index])
-		matches.append(lanes)
-	if matches.size() != 1:
-		fail("%s has %d faces at the requested plane/normal" % [node.get_path(), matches.size()])
+		matches.append(custom.slice(first, first + 4))
+	return {"matches": matches}
+
+
+func _world_face_geometry(
+	world_transform: Transform3D, vertices: PackedVector3Array, first: int, node_path: String
+) -> Dictionary:
+	var a := world_transform * vertices[first]
+	var b := world_transform * vertices[first + 1]
+	var c := world_transform * vertices[first + 2]
+	var d := world_transform * vertices[first + 3]
+	var centroid := (a + b + c + d) * 0.25
+	var cross := (b - a).cross(c - a)
+	var cross_length_squared := cross.length_squared()
+	if (
+		not a.is_finite()
+		or not b.is_finite()
+		or not c.is_finite()
+		or not d.is_finite()
+		or not centroid.is_finite()
+		or not cross.is_finite()
+		or not is_finite(cross_length_squared)
+		or cross_length_squared <= 0.0
+	):
+		fail("%s face %d has malformed or degenerate world geometry" % [node_path, first / 4])
 		return {}
-	var lanes := matches[0]
+	var geometric_normal := cross.normalized()
+	if not geometric_normal.is_finite():
+		fail("%s face %d normalized normal is not finite" % [node_path, first / 4])
+		return {}
+	return {"centroid": centroid, "normal": geometric_normal}
+
+
+func _validated_face_lanes(node_path: String, lanes: PackedFloat32Array) -> Dictionary:
+	if lanes.size() != 4:
+		fail("%s selected face does not carry four CUSTOM0 lanes" % node_path)
+		return {}
 	var label: float = lanes[0]
 	for lane: float in lanes:
 		if lane != label:
-			fail("%s selected face CUSTOM0 lanes are not bit-equal" % node.get_path())
+			fail("%s selected face CUSTOM0 lanes are not bit-equal" % node_path)
 			return {}
 	if label < 0.15 or label > 0.96:
-		fail("%s selected face label %.8f is outside the sRGB-safe band" % [node.get_path(), label])
+		fail("%s selected face label %.8f is outside the sRGB-safe band" % [node_path, label])
 		return {}
 	return {"label": label, "lanes": lanes}
 
 
 func _box_mesh_arrays(node: Node3D) -> Dictionary:
+	if not is_instance_valid(node):
+		fail("box mesh target is null or freed")
+		return {}
 	var skin := _box_skin(node)
-	if skin == null or not skin.mesh is ArrayMesh:
+	if not is_instance_valid(skin):
+		return {}
+	var mesh_value := skin.mesh
+	if not is_instance_valid(mesh_value) or not mesh_value is ArrayMesh:
 		fail("%s has no ArrayMesh WaveSkin" % node.get_path())
 		return {}
-	var mesh := skin.mesh as ArrayMesh
+	var mesh := mesh_value as ArrayMesh
 	if mesh.get_surface_count() != 1:
 		fail("%s WaveSkin must expose exactly one surface" % node.get_path())
 		return {}
 	var arrays := mesh.surface_get_arrays(0)
+	var validated := _validated_box_arrays(arrays, "%s WaveSkin" % node.get_path())
+	if validated.is_empty():
+		return {}
+	validated["skin"] = skin
+	return validated
+
+
+func _validated_box_arrays(arrays: Array, label: String) -> Dictionary:
 	if arrays.size() <= Mesh.ARRAY_CUSTOM0:
-		fail("%s WaveSkin omits mesh arrays" % node.get_path())
+		fail("%s omits mesh arrays" % label)
 		return {}
-	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
-	var custom: PackedFloat32Array = arrays[Mesh.ARRAY_CUSTOM0]
+	var vertex_slot: Variant = arrays[Mesh.ARRAY_VERTEX]
+	if not vertex_slot is PackedVector3Array:
+		fail("%s vertex slot is not a PackedVector3Array" % label)
+		return {}
+	var custom_slot: Variant = arrays[Mesh.ARRAY_CUSTOM0]
+	if not custom_slot is PackedFloat32Array:
+		fail("%s CUSTOM0 slot is not a PackedFloat32Array" % label)
+		return {}
+	var vertices: PackedVector3Array = vertex_slot
+	var custom: PackedFloat32Array = custom_slot
 	if vertices.size() != 24 or custom.size() != 24:
-		fail("%s WaveSkin must carry 24 vertices and 24 CUSTOM0 lanes" % node.get_path())
+		fail("%s must carry exactly 24 vertices and 24 CUSTOM0 lanes" % label)
 		return {}
-	return {"skin": skin, "vertices": vertices, "custom": custom}
+	if not _box_arrays_are_finite(vertices, custom, label):
+		return {}
+	return {"vertices": vertices, "custom": custom}
+
+
+func _box_arrays_are_finite(
+	vertices: PackedVector3Array, custom: PackedFloat32Array, label: String
+) -> bool:
+	for index: int in vertices.size():
+		if not vertices[index].is_finite():
+			fail("%s vertex %d is not finite" % [label, index])
+			return false
+	for index: int in custom.size():
+		if not is_finite(custom[index]):
+			fail("%s CUSTOM0 lane %d is not finite" % [label, index])
+			return false
+	return true
 
 
 func _assert_face_labels_match(a: Dictionary, b: Dictionary, label: String) -> void:
@@ -784,6 +984,9 @@ func _assert_face_labels_match(a: Dictionary, b: Dictionary, label: String) -> v
 
 
 func _assert_fixture_is_healthy(level: WaveLevel, paths: Dictionary) -> void:
+	if not is_instance_valid(level):
+		fail("healthy fixture level is null or freed")
+		return
 	assert_int(level.unfloored_solids()).is_equal(0)
 	assert_int(level.sunken_solids()).is_equal(0)
 	assert_array(level.get_configuration_warnings()).is_empty()
@@ -799,11 +1002,11 @@ func _assert_fixture_is_healthy(level: WaveLevel, paths: Dictionary) -> void:
 		"radio",
 		"spawn",
 	]:
-		var node := _path_node(level, paths, key)
-		if node == null:
-			fail("warning-forwarder target '%s' is missing" % key)
+		var node: Node = _path_node(level, paths, key)
+		if not is_instance_valid(node):
+			fail("warning-forwarder target '%s' is missing or freed" % key)
 			return
-		var warnings: PackedStringArray = node.call("get_configuration_warnings")
+		var warnings := _typed_configuration_warnings(node)
 		assert_array(warnings).append_failure_message("%s warning forwarder" % key).is_empty()
 	var cats := _retained_transforms(level, level.cats(), paths)
 	if cats.is_empty() or not _has_exact_keys(cats, CAT_KEYS, "healthy retained cats"):
@@ -827,6 +1030,28 @@ func _assert_fixture_is_healthy(level: WaveLevel, paths: Dictionary) -> void:
 		fail("observer refused healthy fault census: %s" % explained)
 		return
 	assert_array(explained["faults"]).is_empty()
+
+
+func _typed_configuration_warnings(node: Node) -> PackedStringArray:
+	if not is_instance_valid(node):
+		fail("warning-forwarder target is null or freed")
+		return PackedStringArray()
+	var warnings := PackedStringArray()
+	if node is WaveRun:
+		warnings = (node as WaveRun).get_configuration_warnings()
+	elif node is WaveWall:
+		warnings = (node as WaveWall).get_configuration_warnings()
+	elif node is WaveProp:
+		warnings = (node as WaveProp).get_configuration_warnings()
+	elif node is SoundFan:
+		warnings = (node as SoundFan).get_configuration_warnings()
+	elif node is SoundRadio:
+		warnings = (node as SoundRadio).get_configuration_warnings()
+	elif node is WaveSpawn:
+		warnings = (node as WaveSpawn).get_configuration_warnings()
+	else:
+		fail("warning-forwarder target '%s' has no typed warning boundary" % node.get_path())
+	return warnings
 
 
 ## Normalize retained Node3D arrays by fixture path. Returning an empty map on

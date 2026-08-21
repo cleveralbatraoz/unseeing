@@ -69,12 +69,15 @@ artifacts:
 
 `game/tests/scene_composition_test.gd` compares the composed and flat scenes by
 explicit semantic path maps, not instance IDs or matching leaf names. Its six
-runtime cases prove that the explicit wall, generated run wall, four props,
-two sources, cat, and spawn reach their relevant live and retained outputs
-exactly once while the grouping roots contribute none. They pin world-space
-wall centerlines and occluder rectangles/spans, source and cat transforms,
-prop AABBs, spawn pose, the inherited volume override and Radio addition, the
-authored wall's private body/mesh/collider frame, and a real physics-ray hit.
+scene-behavior cases prove that the explicit wall, generated run wall, four
+props, two sources, cat, and spawn reach their relevant live and retained
+outputs exactly once while the grouping roots contribute none. They pin
+world-space wall centerlines and occluder rectangles/spans, source and cat
+transforms, prop AABBs, spawn pose, the inherited volume override and Radio
+addition, the authored wall's private body/mesh/collider frame, and a real
+physics-ray hit.
+The seventh oracle-integrity case rejects malformed dynamic mesh-array slots
+and non-finite real `ArrayMesh` faces, making this a seven-case final suite.
 
 The suite compares semantic superface membership and then reads actual
 `Mesh.ARRAY_CUSTOM0` bytes. The named run/cross-wall and shelf/crate
@@ -226,7 +229,8 @@ time and do not leave the old Ctrl+D claim behind:
 ## Post-integration publication checklist
 
 - Confirm the feature branch has been integrated and the integrated commit is
-  the one whose six-case runtime suite and 36-check editor probe passed.
+  the one whose seven-case runtime suite (six scene-behavior cases plus one
+  oracle-integrity case) and 36-check editor probe passed.
 - Open the separate wiki repository without modifying this game repository;
   apply only the paste-ready prose above to the named pages and headings.
 - Diff the wiki clone and verify that the `Mechanics — Level and Objects` and
