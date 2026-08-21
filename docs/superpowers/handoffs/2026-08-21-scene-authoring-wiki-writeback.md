@@ -185,11 +185,15 @@ repaired derive count for three observed frames. The count is a change-and-
 settle witness only; no absolute number of derivations is part of the contract.
 Both ready and warning polls are bounded and add no arbitrary sleep.
 
-### Target: replace the Ctrl+D bullets in §6 and §7
+### Target: replace the exact Ctrl+D sentence in §6 Stage 0 once
 
-Delete the claim that Ctrl+D necessarily doubles generated limbs. The tracked
-probe measures the underlying instantiation-preserving duplication operation;
-do not keep a separate GUI-only claim. Paste this measured statement:
+Replace this exact live sentence fragment in §6 Stage 0:
+
+> rewrite step 3, which recommends Ctrl+D (the one gesture that doubles
+> engine-built geometry: `original 2 → after add 4`, knob then drives only the
+> newest pair) and describes a law that is invisible all session;
+
+Replace it once with this measured block:
 
 > **Instantiation-preserving duplication rebuilds one generated set.** In the
 > tracked composed fixture on Godot 4.7.1,
@@ -198,7 +202,15 @@ do not keep a separate GUI-only claim. Paste this measured statement:
 > generated run wall. A doubled set is a regression, not the supported
 > behavior. `game/tests/probe/editor_prefab_probe.gd` measures the complete
 > inventory after tree entry; it does not infer the result from a screenshot
-> or an internal walk count.
+> or an internal walk count. This regression does not exercise GUI Ctrl+D, so
+> no Ctrl+D behavior is claimed.
+
+### Target: delete the exact Ctrl+D bullet in §7
+
+Delete this exact live bullet from §7; do not paste the §6 replacement a second
+time and do not leave the old Ctrl+D claim behind:
+
+> - **"Reparenting doubles geometry."** False — the trigger is **Ctrl+D**.
 
 ---
 

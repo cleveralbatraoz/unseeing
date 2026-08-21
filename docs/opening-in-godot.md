@@ -427,15 +427,20 @@ variant changes Inspector values or adds gameplay objects:
    roots, typed gameplay nodes, and their exported properties. Never edit or
    take ownership of `RunSeg*`, `WaveBody`, `WaveSkin`, `WaveCollider`, source
    or cat blueprint limbs, `WaveFloor`, or `WaveCeiling`.
-7. After duplication, reload, or play, expect Rust to remove stale generated
-   limbs and rebuild one ownerless set from the authored data.
+7. The measured duplication contract is
+   `Node.duplicate(Node.DUPLICATE_USE_INSTANTIATION)`: after that programmatic
+   operation, reload, or play, expect Rust to remove stale generated limbs and
+   rebuild one ownerless set from the authored data. GUI **Ctrl+D** is not
+   covered by this regression and is not claimed here.
 
-The ownership boundary is deliberate. Authored nodes have a scene owner and
-survive saving. Generated nodes are live engine data with no scene owner, so
-Godot omits them from the saved `SceneState`; seeing them in the viewport does
-not make them authored content. `rust/src/nodes/level.rs::collect` owns the
-recursive live discovery through plain groups, nested scene instances, and
-inherited scenes. `WaveRun`, the wall/solid/source/cat builders, and
+The ownership boundary is deliberate. Every non-root authored node has a scene
+owner and survives saving. Each authored scene root anchors its own scene
+artifact and is saved as that artifact's root even though its `Node.owner` is
+null. Generated nodes are live engine data with no scene owner, so Godot omits
+them from the saved `SceneState`; seeing them in the viewport does not make
+them authored content. `rust/src/nodes/level.rs::collect` owns the recursive
+live discovery through plain groups, nested scene instances, and inherited
+scenes. `WaveRun`, the wall/solid/source/cat builders, and
 `WaveLevel::build_slabs` own their generated limbs. The executable regression
 contract lives in `game/tests/scene_composition_test.gd` and
 `game/tests/probe/editor_prefab_probe.gd`.
