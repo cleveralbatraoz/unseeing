@@ -178,19 +178,19 @@ func _wait_legacy() -> bool:
 	_judge_legacy()
 	_clear_legacy()
 	var inherited := ResourceLoader.load(INHERITED_PATH, "PackedScene") as PackedScene
-	if inherited == null:
+	if not is_instance_valid(inherited):
 		_abort("the inherited fixture loads for MAIN instantiation")
 		return true
 	var state: SceneState = inherited.get_state()
-	var base: SceneState = state.get_base_scene_state() if state != null else null
+	var base: SceneState = state.get_base_scene_state() if is_instance_valid(state) else null
 	_check(
 		"the inherited state keeps its base and every exact fixture-local record count",
-		base != null and _fixture_state_counts_are_exact()
+		is_instance_valid(base) and _fixture_state_counts_are_exact()
 	)
 	_check(
 		"the inherited base keeps NestedProp as one ordinary owned scene instance",
 		(
-			base != null
+			is_instance_valid(base)
 			and _state_instance_path(base, NodePath("./NestedProp")) == NESTED_PATH
 			and _state_owner_equals(base, NodePath("./NestedProp"), NodePath("."))
 		)
@@ -198,7 +198,7 @@ func _wait_legacy() -> bool:
 	_check(
 		"the inherited local Fan record carries the authored volume override",
 		(
-			state != null
+			is_instance_valid(state)
 			and state.get_node_count() == 3
 			and _state_property_equals(state, NodePath("./Fan"), &"volume", 0.6)
 		)
@@ -206,14 +206,14 @@ func _wait_legacy() -> bool:
 	_check(
 		"the inherited local Radio record is owned by the inherited root",
 		(
-			state != null
+			is_instance_valid(state)
 			and state.get_node_count() == 3
 			and _state_node_index(state, NodePath("./Radio")) >= 0
 			and _state_owner_equals(state, NodePath("./Radio"), NodePath("."))
 		)
 	)
 	_variant = inherited.instantiate(PackedScene.GEN_EDIT_STATE_MAIN) as Node3D
-	if _variant == null:
+	if not is_instance_valid(_variant):
 		_abort("the inherited fixture instantiates with GEN_EDIT_STATE_MAIN")
 		return true
 	root.add_child(_variant)
@@ -223,13 +223,12 @@ func _wait_legacy() -> bool:
 
 
 func _wait_variant_ready() -> bool:
-	if _variant == null:
+	if not is_instance_valid(_variant):
 		_abort("the inherited MAIN remains available while its previews settle")
 		return true
-	var ready := (
-		_variant.get_node_or_null("Fan/FanPedestal") != null
-		and _variant.get_node_or_null("Radio/RadioCase") != null
-	)
+	var pedestal := _variant.get_node_or_null("Fan/FanPedestal")
+	var radio_case := _variant.get_node_or_null("Radio/RadioCase")
+	var ready := is_instance_valid(pedestal) and is_instance_valid(radio_case)
 	if not ready and _frames < READY_FRAMES:
 		return false
 	var fan := _variant.get_node_or_null("Fan") as SoundFan
@@ -238,8 +237,8 @@ func _wait_variant_ready() -> bool:
 		"the inherited MAIN instance exposes its override, Radio, and authored transforms",
 		(
 			ready
-			and fan != null
-			and radio != null
+			and is_instance_valid(fan)
+			and is_instance_valid(radio)
 			and _variant.global_transform == Transform3D.IDENTITY
 			and fan.volume == 0.6
 			and fan.global_position == Vector3(3, 0, 6)
@@ -249,11 +248,11 @@ func _wait_variant_ready() -> bool:
 	_remove_and_free(_variant)
 	_variant = null
 	var composed_scene := ResourceLoader.load(COMPOSED_PATH, "PackedScene") as PackedScene
-	if composed_scene == null:
+	if not is_instance_valid(composed_scene):
 		_abort("the composed fixture loads for MAIN instantiation")
 		return true
 	_composed = composed_scene.instantiate(PackedScene.GEN_EDIT_STATE_MAIN) as WaveLevel
-	if _composed == null:
+	if not is_instance_valid(_composed):
 		_abort("the composed fixture instantiates with GEN_EDIT_STATE_MAIN")
 		return true
 	root.add_child(_composed)
@@ -263,7 +262,7 @@ func _wait_variant_ready() -> bool:
 
 
 func _wait_composed_ready() -> bool:
-	if _composed == null:
+	if not is_instance_valid(_composed):
 		_abort("the composed MAIN remains available while its inventory settles")
 		return true
 	var generated := _generated_inventory_is_exact(_composed)
@@ -283,14 +282,14 @@ func _wait_composed_ready() -> bool:
 	)
 	_duplicate = _composed.duplicate(Node.DUPLICATE_USE_INSTANTIATION) as WaveLevel
 	var entered := false
-	if _duplicate != null:
+	if is_instance_valid(_duplicate):
 		root.add_child(_duplicate)
 		entered = _duplicate.is_inside_tree()
 	_check(
 		"instantiation-preserving duplication returns a live tree-entered level",
-		_duplicate != null and entered
+		is_instance_valid(_duplicate) and entered
 	)
-	if _duplicate == null:
+	if not is_instance_valid(_duplicate):
 		_abort("the duplicated level exists for settlement")
 		return true
 	_frames = 0
@@ -299,7 +298,7 @@ func _wait_composed_ready() -> bool:
 
 
 func _wait_duplicate_ready() -> bool:
-	if _duplicate == null:
+	if not is_instance_valid(_duplicate):
 		_abort("the duplicate remains available while its inventory settles")
 		return true
 	var generated := _generated_inventory_is_exact(_duplicate)
@@ -340,8 +339,8 @@ func _wait_duplicate_ready() -> bool:
 		if save_error == OK
 		else null
 	)
-	_check("deep-cache reload returns a PackedScene", loaded != null)
-	if loaded == null:
+	_check("deep-cache reload returns a PackedScene", is_instance_valid(loaded))
+	if not is_instance_valid(loaded):
 		_abort("the saved PackedScene reloads for state and warning checks")
 		return true
 	_check(
@@ -349,7 +348,7 @@ func _wait_duplicate_ready() -> bool:
 		_fixture_state_counts_are_exact() and _roundtrip_links_are_exact(loaded.get_state())
 	)
 	_roundtrip = loaded.instantiate(PackedScene.GEN_EDIT_STATE_MAIN) as WaveLevel
-	if _roundtrip == null:
+	if not is_instance_valid(_roundtrip):
 		_abort("the reloaded scene instantiates with GEN_EDIT_STATE_MAIN")
 		return true
 	root.add_child(_roundtrip)
@@ -359,7 +358,7 @@ func _wait_duplicate_ready() -> bool:
 
 
 func _wait_roundtrip_ready() -> bool:
-	if _roundtrip == null:
+	if not is_instance_valid(_roundtrip):
 		_abort("the reloaded MAIN remains available while its inventory settles")
 		return true
 	var generated := _generated_inventory_is_exact(_roundtrip)
@@ -374,7 +373,7 @@ func _wait_roundtrip_ready() -> bool:
 			and _fixture_state_counts_are_exact()
 			and _authored_nodes_are_owned(_roundtrip, COMPOSED_AUTHORED)
 			and _composed_authored_owners_are_exact(_roundtrip)
-			and fan != null
+			and is_instance_valid(fan)
 			and fan.volume == 0.6
 			and radio is SoundRadio
 		)
@@ -387,15 +386,18 @@ func _wait_roundtrip_ready() -> bool:
 		"the complete saved SceneState graph contains no generated name",
 		(
 			_fixture_state_counts_are_exact()
-			and loaded_scene != null
+			and is_instance_valid(loaded_scene)
 			and not _state_graph_has_forbidden(loaded_scene.get_state(), {})
 		)
 	)
 	var seam := _roundtrip.get_node_or_null(SEAM_RIGHT) as Node3D
-	if seam == null:
+	if not is_instance_valid(seam):
 		_abort("the nested SeamRight exists for warning watching")
 		return true
 	var before := _derive_count(_roundtrip)
+	if before == INVALID_DERIVE_COUNT:
+		_abort("derive_count is valid before sinking nested SeamRight")
+		return true
 	seam.position.y = 0.0
 	_begin_settle(_roundtrip, before + 1)
 	_frames = 0
@@ -404,13 +406,13 @@ func _wait_roundtrip_ready() -> bool:
 
 
 func _wait_invalid_warning() -> bool:
-	if _roundtrip == null:
+	if not is_instance_valid(_roundtrip):
 		_abort("the reloaded MAIN remains available while its warning settles")
 		return true
 	var seam := _roundtrip.get_node_or_null(SEAM_RIGHT)
 	var warnings := _warning_snapshot(seam)
 	var changed := (
-		seam != null
+		is_instance_valid(seam)
 		and _warning_snapshot_is_valid(warnings)
 		and _settle_minimum != INVALID_DERIVE_COUNT
 		and _derive_count(_roundtrip) >= _settle_minimum
@@ -427,7 +429,7 @@ func _wait_invalid_warning() -> bool:
 
 
 func _wait_invalid_settle() -> bool:
-	if _roundtrip == null:
+	if not is_instance_valid(_roundtrip):
 		_abort("the reloaded MAIN remains available during invalid settlement")
 		return true
 	var stable := _settled(_roundtrip)
@@ -435,10 +437,13 @@ func _wait_invalid_settle() -> bool:
 		return false
 	_check("the invalid authored state holds one derive count for three frames", stable)
 	var seam := _roundtrip.get_node_or_null(SEAM_RIGHT) as Node3D
-	if seam == null:
+	if not is_instance_valid(seam):
 		_abort("the nested SeamRight remains available for repair")
 		return true
 	var before := _derive_count(_roundtrip)
+	if before == INVALID_DERIVE_COUNT:
+		_abort("derive_count is valid before repairing nested SeamRight")
+		return true
 	seam.position.y = 0.5
 	_begin_settle(_roundtrip, before + 1)
 	_frames = 0
@@ -447,13 +452,13 @@ func _wait_invalid_settle() -> bool:
 
 
 func _wait_repair() -> bool:
-	if _roundtrip == null:
+	if not is_instance_valid(_roundtrip):
 		_abort("the reloaded MAIN remains available while its repair settles")
 		return true
 	var seam := _roundtrip.get_node_or_null(SEAM_RIGHT)
 	var warnings := _warning_snapshot(seam)
 	var repaired := (
-		seam != null
+		is_instance_valid(seam)
 		and _warning_snapshot_is_valid(warnings)
 		and _settle_minimum != INVALID_DERIVE_COUNT
 		and _derive_count(_roundtrip) >= _settle_minimum
@@ -470,6 +475,9 @@ func _wait_repair() -> bool:
 
 
 func _wait_repair_settle() -> bool:
+	if not is_instance_valid(_roundtrip):
+		_abort("the reloaded MAIN remains available during repaired settlement")
+		return true
 	var stable := _settled(_roundtrip)
 	if not stable and _frames < WATCH_FRAMES:
 		return false
@@ -501,7 +509,7 @@ func _judge_legacy() -> void:
 	var back_box := AABB()
 	var seat_touch_label := NAN
 	var back_touch_label := NAN
-	var skins_exist := seat_skin != null and back_skin != null
+	var skins_exist := is_instance_valid(seat_skin) and is_instance_valid(back_skin)
 	if skins_exist:
 		seat_box = seat_skin.global_transform * seat_skin.get_aabb()
 		back_box = back_skin.global_transform * back_skin.get_aabb()
@@ -553,7 +561,7 @@ func _judge_legacy() -> void:
 
 
 func _state_node_index(state: SceneState, path: NodePath) -> int:
-	if state == null:
+	if not is_instance_valid(state):
 		return -1
 	for index: int in range(state.get_node_count()):
 		if state.get_node_path(index) == path:
@@ -565,7 +573,7 @@ func _state_property_equals(
 	state: SceneState, path: NodePath, property: StringName, expected: Variant
 ) -> bool:
 	var index := _state_node_index(state, path)
-	if index < 0:
+	if not is_instance_valid(state) or index < 0:
 		return false
 	for property_index: int in range(state.get_node_property_count(index)):
 		if state.get_node_property_name(index, property_index) == property:
@@ -575,14 +583,15 @@ func _state_property_equals(
 
 func _state_instance_path(state: SceneState, path: NodePath) -> String:
 	var index := _state_node_index(state, path)
-	if index < 0:
+	if not is_instance_valid(state) or index < 0:
 		return ""
 	var instance: Variant = state.get_node_instance(index)
-	return instance.resource_path if instance is PackedScene else ""
+	var packed := instance as PackedScene if instance is PackedScene else null
+	return packed.resource_path if is_instance_valid(packed) else ""
 
 
 func _state_graph_has_forbidden(state: SceneState, seen: Dictionary) -> bool:
-	if state == null:
+	if not is_instance_valid(state):
 		return true
 	var state_id := state.get_instance_id()
 	if seen.has(state_id):
@@ -596,10 +605,13 @@ func _state_graph_has_forbidden(state: SceneState, seen: Dictionary) -> bool:
 		var instance: Variant = state.get_node_instance(index)
 		if instance is PackedScene:
 			var packed := instance as PackedScene
-			if _state_graph_has_forbidden(packed.get_state(), seen):
+			if (
+				not is_instance_valid(packed)
+				or _state_graph_has_forbidden(packed.get_state(), seen)
+			):
 				return true
 	var base: SceneState = state.get_base_scene_state()
-	return base != null and _state_graph_has_forbidden(base, seen)
+	return base != null and (not is_instance_valid(base) or _state_graph_has_forbidden(base, seen))
 
 
 func _is_forbidden_generated_name(name: String) -> bool:
@@ -607,39 +619,43 @@ func _is_forbidden_generated_name(name: String) -> bool:
 
 
 func _authored_nodes_are_owned(node: Node, paths: Array[NodePath]) -> bool:
-	if node == null:
+	if not is_instance_valid(node):
 		return false
 	for path: NodePath in paths:
 		var authored := node.get_node_or_null(path)
-		if authored == null or authored.owner == null:
+		if not is_instance_valid(authored) or not is_instance_valid(authored.owner):
 			return false
 	return true
 
 
 func _generated_subtrees_are_ownerless(node: Node, paths: Array[NodePath]) -> bool:
-	if node == null:
+	if not is_instance_valid(node):
 		return false
 	var count := 0
 	for path: NodePath in paths:
 		var generated := node.get_node_or_null(path)
-		if generated == null:
+		if not is_instance_valid(generated):
 			return false
 		var subtree: Array[Node] = [generated]
 		while not subtree.is_empty():
 			var current: Node = subtree.pop_back()
+			if not is_instance_valid(current):
+				return false
 			if current.owner != null:
 				return false
 			count += 1
 			subtree.append_array(current.get_children())
 	var every_ownerless := 0
 	for descendant: Node in node.find_children("*", "", true, false):
+		if not is_instance_valid(descendant):
+			return false
 		if descendant.owner == null:
 			every_ownerless += 1
 	return count == 48 and every_ownerless == 48
 
 
 func _generated_inventory_is_exact(node: Node) -> bool:
-	if node == null or not _generated_subtrees_are_ownerless(node, GENERATED_ROOTS):
+	if not is_instance_valid(node) or not _generated_subtrees_are_ownerless(node, GENERATED_ROOTS):
 		return false
 	var run_segments := 0
 	for descendant: Node in node.find_children("*", "", true, false):
@@ -658,7 +674,7 @@ func _warning_has(node: Node, needle: String) -> bool:
 
 
 func _warning_snapshot(node: Node) -> Dictionary:
-	if node == null or not node.has_method("get_configuration_warnings"):
+	if not is_instance_valid(node) or not node.has_method("get_configuration_warnings"):
 		return {}
 	var result: Variant = node.call("get_configuration_warnings")
 	return {"warnings": result} if result is PackedStringArray else {}
@@ -713,7 +729,7 @@ func _settled(level: WaveLevel) -> bool:
 
 
 func _derive_count(level: WaveLevel) -> int:
-	if level == null or not level.has_method("derive_count"):
+	if not is_instance_valid(level) or not level.has_method("derive_count"):
 		return INVALID_DERIVE_COUNT
 	var result: Variant = level.call("derive_count")
 	if not result is int or result < 0:
@@ -741,19 +757,19 @@ func _fixture_state_counts_are_exact() -> bool:
 	}
 	for path: String in expected:
 		var scene := ResourceLoader.load(path, "PackedScene") as PackedScene
-		var state: SceneState = scene.get_state() if scene != null else null
-		if state == null or state.get_node_count() != expected[path]:
+		var state: SceneState = scene.get_state() if is_instance_valid(scene) else null
+		if not is_instance_valid(state) or state.get_node_count() != expected[path]:
 			return false
 	return true
 
 
 func _state_owner_equals(state: SceneState, path: NodePath, expected: NodePath) -> bool:
 	var index := _state_node_index(state, path)
-	return index >= 0 and state.get_node_owner_path(index) == expected
+	return is_instance_valid(state) and index >= 0 and state.get_node_owner_path(index) == expected
 
 
 func _roundtrip_links_are_exact(state: SceneState) -> bool:
-	if state == null or state.get_node_count() != 3:
+	if not is_instance_valid(state) or state.get_node_count() != 3:
 		return false
 	var room_index := _state_node_index(state, NodePath("./PlainGroup/InheritedRoomVariant"))
 	if room_index < 0:
@@ -762,27 +778,27 @@ func _roundtrip_links_are_exact(state: SceneState) -> bool:
 	if not room_variant is PackedScene:
 		return false
 	var room := room_variant as PackedScene
-	if room.resource_path != INHERITED_PATH:
+	if not is_instance_valid(room) or room.resource_path != INHERITED_PATH:
 		return false
 	var room_state: SceneState = room.get_state()
-	if room_state == null:
+	if not is_instance_valid(room_state):
 		return false
 	var base: SceneState = room_state.get_base_scene_state()
 	return (
 		room_state.get_node_count() == 3
-		and base != null
+		and is_instance_valid(base)
 		and base.get_node_count() == 7
 		and _state_instance_path(base, NodePath("./NestedProp")) == NESTED_PATH
 	)
 
 
 func _composed_authored_owners_are_exact(node: Node) -> bool:
-	if node == null:
+	if not is_instance_valid(node):
 		return false
 	var group := node.get_node_or_null("PlainGroup")
 	var room := node.get_node_or_null("PlainGroup/InheritedRoomVariant")
 	var nested := node.get_node_or_null("PlainGroup/InheritedRoomVariant/NestedProp")
-	if group == null or room == null or nested == null:
+	if not is_instance_valid(group) or not is_instance_valid(room) or not is_instance_valid(nested):
 		return false
 	if group.owner != node or room.owner != node:
 		return false
@@ -790,20 +806,22 @@ func _composed_authored_owners_are_exact(node: Node) -> bool:
 		"BoundaryRun", "CrossWall", "Fan", "Cat", "Spawn", "NestedProp", "Radio"
 	]:
 		var child := room.get_node_or_null(child_name)
-		if child == null or child.owner != room:
+		if not is_instance_valid(child) or child.owner != room:
 			return false
 	for prop_name: String in ["MergeShelf", "MergeCrate", "SeamLeft", "SeamRight"]:
 		var prop := nested.get_node_or_null(prop_name)
-		if prop == null or prop.owner != nested:
+		if not is_instance_valid(prop) or prop.owner != nested:
 			return false
 	return true
 
 
 func _named_descendant_count(node: Node, wanted: String) -> int:
-	if node == null:
+	if not is_instance_valid(node):
 		return 0
 	var count := 0
 	for descendant: Node in node.find_children("*", "", true, false):
+		if not is_instance_valid(descendant):
+			return 0
 		if descendant.name == wanted:
 			count += 1
 	return count
@@ -821,40 +839,49 @@ func _clear_legacy() -> void:
 
 
 func _remove_and_free(node: Node) -> void:
-	if node == null:
+	if not is_instance_valid(node):
 		return
-	if node.get_parent() != null:
-		node.get_parent().remove_child(node)
+	var parent := node.get_parent()
+	if is_instance_valid(parent):
+		parent.remove_child(node)
 	node.free()
 
 
 func _pieces(node: Node) -> Array[Node]:
+	if not is_instance_valid(node):
+		return []
 	return node.find_children("*", "WaveProp", true, false)
 
 
 func _built_pieces(node: Node) -> int:
 	var built := 0
 	for piece: Node in _pieces(node):
-		if piece.get_child_count() == 2:
+		if is_instance_valid(piece) and piece.get_child_count() == 2:
 			built += 1
 	return built
 
 
 func _limbs_are_ownerless(node: Node) -> bool:
 	for piece: Node in _pieces(node):
+		if not is_instance_valid(piece):
+			return false
 		for limb: Node in piece.get_children():
+			if not is_instance_valid(limb):
+				return false
 			if limb.owner != null:
 				return false
 	return true
 
 
 func _piece_has_no_limbs(piece: Node) -> bool:
-	return piece.get_child_count() == 0
+	return is_instance_valid(piece) and piece.get_child_count() == 0
 
 
 func _skin(piece: Node) -> MeshInstance3D:
+	if not is_instance_valid(piece):
+		return null
 	for child: Node in piece.get_children():
-		if child is MeshInstance3D:
+		if is_instance_valid(child) and child is MeshInstance3D:
 			return child as MeshInstance3D
 	return null
 
@@ -868,9 +895,10 @@ func _positive_overlap(a_min: float, a_max: float, b_min: float, b_max: float) -
 ## block makes the seam assertion fail instead of accidentally reading a
 ## neighbouring face or accepting one good vertex.
 func _uniform_face_label(skin: MeshInstance3D, face: int) -> float:
-	if skin == null or skin.mesh == null or skin.mesh.get_surface_count() == 0:
+	var mesh := skin.mesh if is_instance_valid(skin) else null
+	if not is_instance_valid(skin) or not is_instance_valid(mesh) or mesh.get_surface_count() == 0:
 		return NAN
-	var arrays := skin.mesh.surface_get_arrays(0)
+	var arrays := mesh.surface_get_arrays(0)
 	if arrays.size() <= Mesh.ARRAY_CUSTOM0:
 		return NAN
 	var encoded: Variant = arrays[Mesh.ARRAY_CUSTOM0]
