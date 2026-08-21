@@ -347,6 +347,46 @@ func test_mesh_oracle_rejects_malformed_or_non_finite_godot_faces() -> void:
 		"path": "direct matching",
 	}
 
+	var missing_skin := healthy_mesh_data.duplicate()
+	missing_skin.erase("skin")
+	var reject_missing_skin := func() -> Dictionary:
+		return _matching_face_lanes(missing_skin, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_missing_skin, "face mesh data omits skin", "missing mesh skin"
+	)
+
+	var non_object_skin := healthy_mesh_data.duplicate()
+	non_object_skin["skin"] = 42
+	var reject_non_object_skin := func() -> Dictionary:
+		return _matching_face_lanes(non_object_skin, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_non_object_skin,
+		"face mesh data skin is not a MeshInstance3D",
+		"non-object mesh skin"
+	)
+
+	var wrong_class_skin := healthy_mesh_data.duplicate()
+	wrong_class_skin["skin"] = auto_free(Node3D.new())
+	var reject_wrong_class_skin := func() -> Dictionary:
+		return _matching_face_lanes(wrong_class_skin, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_wrong_class_skin,
+		"face mesh data skin is not a MeshInstance3D",
+		"wrong-class mesh skin"
+	)
+
+	var freed_skin := MeshInstance3D.new()
+	var freed_skin_data := healthy_mesh_data.duplicate()
+	freed_skin_data["skin"] = freed_skin
+	freed_skin.free()
+	var reject_freed_skin := func() -> Dictionary:
+		return _matching_face_lanes(freed_skin_data, healthy_request)
+	_assert_helper_rejects_empty(
+		reject_freed_skin,
+		"direct matching WaveSkin was freed before face selection",
+		"freed mesh skin"
+	)
+
 	var missing_custom := healthy_mesh_data.duplicate()
 	missing_custom.erase("custom")
 	var reject_missing_custom := func() -> Dictionary:
@@ -984,49 +1024,57 @@ func _normalized_request_normal(normal: Vector3, node_path: String) -> Dictionar
 
 func _matching_face_lanes(mesh_data: Dictionary, request: Dictionary) -> Dictionary:
 	var field_error := ""
+	var skin_value: Variant = null
+	var skin_was_freed := false
 	if not mesh_data.has("skin"):
 		field_error = "face mesh data omits skin"
-	elif not mesh_data["skin"] is MeshInstance3D:
-		field_error = "face mesh data skin is not a MeshInstance3D"
-	elif not mesh_data.has("vertices"):
+	else:
+		skin_value = mesh_data["skin"]
+		if typeof(skin_value) != TYPE_OBJECT:
+			field_error = "face mesh data skin is not a MeshInstance3D"
+		elif not is_instance_valid(skin_value):
+			skin_was_freed = true
+		elif not skin_value is MeshInstance3D:
+			field_error = "face mesh data skin is not a MeshInstance3D"
+	if field_error.is_empty() and not mesh_data.has("vertices"):
 		field_error = "face mesh data omits vertices"
-	elif not mesh_data["vertices"] is PackedVector3Array:
+	elif field_error.is_empty() and not mesh_data["vertices"] is PackedVector3Array:
 		field_error = "face mesh data vertices is not a PackedVector3Array"
-	elif not mesh_data.has("custom"):
+	elif field_error.is_empty() and not mesh_data.has("custom"):
 		field_error = "face mesh data omits custom"
-	elif not mesh_data["custom"] is PackedFloat32Array:
+	elif field_error.is_empty() and not mesh_data["custom"] is PackedFloat32Array:
 		field_error = "face mesh data custom is not a PackedFloat32Array"
-	elif not request.has("path"):
+	elif field_error.is_empty() and not request.has("path"):
 		field_error = "face request omits path"
-	elif not request["path"] is String:
+	elif field_error.is_empty() and not request["path"] is String:
 		field_error = "face request path is not a String"
-	elif not request.has("axis"):
+	elif field_error.is_empty() and not request.has("axis"):
 		field_error = "face request omits axis"
-	elif not request["axis"] is int:
+	elif field_error.is_empty() and not request["axis"] is int:
 		field_error = "face request axis is not an int"
-	elif not request.has("plane"):
+	elif field_error.is_empty() and not request.has("plane"):
 		field_error = "face request omits plane"
-	elif not request["plane"] is float:
+	elif field_error.is_empty() and not request["plane"] is float:
 		field_error = "face request plane is not a float"
-	elif not request.has("normal"):
+	elif field_error.is_empty() and not request.has("normal"):
 		field_error = "face request omits normal"
-	elif not request["normal"] is Vector3:
+	elif field_error.is_empty() and not request["normal"] is Vector3:
 		field_error = "face request normal is not a Vector3"
+	if field_error.is_empty() and skin_was_freed:
+		field_error = "%s WaveSkin was freed before face selection" % request["path"]
 	if not field_error.is_empty():
 		fail(field_error)
 		return {}
 
-	var skin: MeshInstance3D = mesh_data["skin"]
 	var vertices: PackedVector3Array = mesh_data["vertices"]
 	var custom: PackedFloat32Array = mesh_data["custom"]
 	var node_path: String = request["path"]
+	var skin: MeshInstance3D = skin_value
 	var axis: int = request["axis"]
 	var plane: float = request["plane"]
 	var requested_normal: Vector3 = request["normal"]
 	var value_error := ""
-	if not is_instance_valid(skin):
-		value_error = "%s WaveSkin was freed before face selection" % node_path
-	elif vertices.size() != 24 or custom.size() != 24:
+	if vertices.size() != 24 or custom.size() != 24:
 		value_error = "%s must carry exactly 24 vertices and 24 CUSTOM0 lanes" % node_path
 	elif axis < 0 or axis > 2:
 		value_error = "%s face axis %d is outside the Vector3 domain" % [node_path, axis]

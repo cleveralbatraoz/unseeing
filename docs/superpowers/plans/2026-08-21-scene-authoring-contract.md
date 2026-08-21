@@ -511,7 +511,7 @@ attribution, then request fresh read-only review.
   `wall_spans`, `sources`, `cats`, `spawn_pos`, `spawn_yaw`, warning
   forwarders, private wall children, actual meshes, and
   `WaveObserver.explain_oids`.
-- Produces: four more cases, completing the 33-suite / 360-case runtime gate.
+- Produces: five more cases, completing the 33-suite / 361-case runtime gate.
   It does not expose `face_census`, typed handles, or any new Rust API.
 
 - [ ] **Step 0: Resolve the repository-pinned Godot for this task.**
