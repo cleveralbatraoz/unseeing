@@ -375,6 +375,7 @@ func _wait_roundtrip_ready() -> bool:
 			and _composed_authored_owners_are_exact(_roundtrip)
 			and is_instance_valid(fan)
 			and fan.volume == 0.6
+			and is_instance_valid(radio)
 			and radio is SoundRadio
 		)
 	)
