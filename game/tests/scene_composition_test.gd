@@ -88,6 +88,8 @@ const WORLD_EPS_M := 0.0001
 const PHYSICS_EPS_M := 0.00001
 ## Dimensionless: basis columns and geometric normals are unit-vector lanes.
 const BASIS_EPS := 0.0001
+## Radians: authored quarter-turn yaw survives one Godot transform round trip.
+const YAW_EPS_RAD := 0.0001
 
 const EXPECTED_WALLS := {
 	"run_wall":
@@ -136,8 +138,8 @@ func test_inherited_override_and_added_radio_reach_retained_sources_once() -> vo
 		return
 	assert_float(composed_fan.volume).is_equal(0.6)
 	assert_bool(composed_radio is SoundRadio).is_true()
-	assert_object(_mesh_limb(composed_fan)).is_not_null()
-	assert_object(_mesh_limb(composed_radio)).is_not_null()
+	assert_object(_blueprint_mesh_limb(composed_fan)).is_not_null()
+	assert_object(_blueprint_mesh_limb(composed_radio)).is_not_null()
 
 	var composed_sources := _retained_transforms(composed, composed.sources(), COMPOSED_PATHS)
 	var flat_sources := _retained_transforms(flat, flat.sources(), FLAT_PATHS)
@@ -170,8 +172,12 @@ func test_composed_and_flat_fixtures_share_hand_anchored_world_outputs() -> void
 		"composed plain grouping frame"
 	)
 	var composed_outputs := _assert_hand_anchored_world_outputs(composed, COMPOSED_PATHS)
+	if composed_outputs.is_empty():
+		fail("composed fixture did not satisfy every hand-derived world anchor")
+		return
 	var flat_outputs := _assert_hand_anchored_world_outputs(flat, FLAT_PATHS)
-	if composed_outputs.is_empty() or flat_outputs.is_empty():
+	if flat_outputs.is_empty():
+		fail("flat fixture did not satisfy every hand-derived world anchor")
 		return
 	_assert_matching_world_outputs(composed_outputs, flat_outputs)
 
@@ -230,6 +236,7 @@ func test_nested_merges_and_touching_seams_survive_semantic_normalization() -> v
 	var composed_classes := _semantic_superfaces(composed, COMPOSED_PATHS)
 	var flat_classes := _semantic_superfaces(flat, FLAT_PATHS)
 	if composed_classes.is_empty() or flat_classes.is_empty():
+		fail("semantic superface normalisation produced no usable classes")
 		return
 	assert_array(composed_classes).is_equal(flat_classes)
 	assert_bool(composed_classes.has("cross_wall+run_wall")).is_true()
@@ -360,6 +367,7 @@ func _assert_hand_anchored_world_outputs(level: WaveLevel, paths: Dictionary) ->
 		"cats": creatures_and_sources["cats"],
 		"props": props,
 		"spawn": level.spawn_pos(),
+		"spawn_yaw": level.spawn_yaw(),
 	}
 
 
@@ -367,6 +375,7 @@ func _anchored_sources_and_cats(level: WaveLevel, paths: Dictionary) -> Dictiona
 	var sources := _retained_transforms(level, level.sources(), paths)
 	var cats := _retained_transforms(level, level.cats(), paths)
 	if sources.is_empty() or cats.is_empty():
+		fail("retained source/cat output is empty")
 		return {}
 	var expected := _has_exact_keys(sources, SOURCE_KEYS, "retained sources")
 	expected = _has_exact_keys(cats, CAT_KEYS, "retained cats") and expected
@@ -376,13 +385,14 @@ func _anchored_sources_and_cats(level: WaveLevel, paths: Dictionary) -> Dictiona
 	var radio := _path_node(level, paths, "radio") as Node3D
 	var cat := _path_node(level, paths, "cat") as Node3D
 	if fan == null or radio == null or cat == null:
+		fail("retained source/cat anchors resolved to malformed fixture nodes")
 		return {}
 	var anchored := _assert_node_anchor(level, paths, "fan", Vector3(8, 0, 9), PI * 0.5)
 	anchored = _assert_node_anchor(level, paths, "radio", Vector3(9, 0, 5), PI * 0.5) and anchored
 	anchored = _assert_node_anchor(level, paths, "cat", Vector3(4, 0, 5), PI * 0.5) and anchored
 	if not anchored:
 		return {}
-	assert_float(fan.volume).is_equal_approx(0.6, WORLD_EPS_M)
+	assert_float(fan.volume).is_equal(0.6)
 	return {"sources": sources, "cats": cats}
 
 
@@ -391,9 +401,11 @@ func _anchored_prop_aabbs(level: WaveLevel, paths: Dictionary) -> Dictionary:
 	for key: String in PROP_KEYS:
 		var prop := _path_node(level, paths, key) as Node3D
 		if prop == null:
+			fail("prop anchor '%s' did not resolve to a Node3D" % key)
 			return {}
 		var actual := _world_aabb(prop)
 		if actual.size == Vector3.ZERO:
+			fail("%s produced a zero-sized world AABB" % prop.get_path())
 			return {}
 		var expected: AABB = EXPECTED_PROP_AABBS[key]
 		assert_vector(actual.position).is_equal_approx(expected.position, Vector3.ONE * WORLD_EPS_M)
@@ -404,9 +416,10 @@ func _anchored_prop_aabbs(level: WaveLevel, paths: Dictionary) -> Dictionary:
 
 func _assert_spawn_anchor(level: WaveLevel, paths: Dictionary) -> bool:
 	if not _path_node(level, paths, "spawn") is WaveSpawn:
+		fail("spawn anchor did not resolve to a WaveSpawn")
 		return false
 	assert_vector(level.spawn_pos()).is_equal_approx(Vector3(4, 0.9, 9), Vector3.ONE * WORLD_EPS_M)
-	assert_float(level.spawn_yaw()).is_equal_approx(PI * 0.5, WORLD_EPS_M)
+	assert_float(level.spawn_yaw()).is_equal_approx(PI * 0.5, YAW_EPS_RAD)
 	return true
 
 
@@ -415,14 +428,15 @@ func _assert_node_anchor(
 ) -> bool:
 	var node := _path_node(level, paths, key) as Node3D
 	if node == null:
+		fail("transform anchor '%s' did not resolve to a Node3D" % key)
 		return false
 	assert_vector(node.global_position).is_equal_approx(origin, Vector3.ONE * WORLD_EPS_M)
-	assert_float(node.global_rotation.y).is_equal_approx(yaw, WORLD_EPS_M)
+	assert_float(node.global_rotation.y).is_equal_approx(yaw, YAW_EPS_RAD)
 	return true
 
 
 func _world_aabb(node: Node3D) -> AABB:
-	var skin := _mesh_limb(node)
+	var skin := _box_skin(node)
 	if skin == null or skin.mesh == null:
 		fail("%s has no world mesh AABB" % node.get_path())
 		return AABB()
@@ -460,6 +474,9 @@ func _assert_matching_world_outputs(composed: Dictionary, flat: Dictionary) -> v
 	var composed_spawn: Vector3 = composed["spawn"]
 	var flat_spawn: Vector3 = flat["spawn"]
 	assert_vector(composed_spawn).is_equal_approx(flat_spawn, Vector3.ONE * WORLD_EPS_M)
+	var composed_spawn_yaw: float = composed["spawn_yaw"]
+	var flat_spawn_yaw: float = flat["spawn_yaw"]
+	assert_float(composed_spawn_yaw).is_equal_approx(flat_spawn_yaw, YAW_EPS_RAD)
 
 
 func _private_wall_snapshot(wall: WaveWall) -> Dictionary:
@@ -623,6 +640,7 @@ func _assert_fixture_mesh_labels(level: WaveLevel, paths: Dictionary) -> void:
 		or seam_left == null
 		or seam_right == null
 	):
+		fail("fixture mesh-label selection could not resolve every named box")
 		return
 	var run_label := _face_at_plane_and_normal(run_wall, 0, 5.85, Vector3.LEFT)
 	var cross_label := _face_at_plane_and_normal(cross_wall, 0, 5.85, Vector3.LEFT)
@@ -700,7 +718,7 @@ func _face_at_plane_and_normal(
 
 
 func _box_mesh_arrays(node: Node3D) -> Dictionary:
-	var skin := _mesh_limb(node)
+	var skin := _box_skin(node)
 	if skin == null or not skin.mesh is ArrayMesh:
 		fail("%s has no ArrayMesh WaveSkin" % node.get_path())
 		return {}
@@ -748,18 +766,21 @@ func _assert_fixture_is_healthy(level: WaveLevel, paths: Dictionary) -> void:
 	]:
 		var node := _path_node(level, paths, key)
 		if node == null:
+			fail("warning-forwarder target '%s' is missing" % key)
 			return
 		var warnings: PackedStringArray = node.call("get_configuration_warnings")
 		assert_array(warnings).append_failure_message("%s warning forwarder" % key).is_empty()
 	var cats := _retained_transforms(level, level.cats(), paths)
 	if cats.is_empty() or not _has_exact_keys(cats, CAT_KEYS, "healthy retained cats"):
+		fail("healthy fixture omitted its retained cat")
 		return
 	var cat := _path_node(level, paths, "cat") as WaveCat
 	if cat == null:
+		fail("healthy fixture cat did not resolve to WaveCat")
 		return
 	var retained_cat: Transform3D = cats["cat"]
 	_assert_matching_transform(retained_cat, cat.global_transform)
-	assert_object(_mesh_limb(cat)).is_not_null()
+	assert_object(_blueprint_mesh_limb(cat)).is_not_null()
 	var observer: WaveObserver = auto_free(WaveObserver.new())
 	observer.inject(level, null)
 	var explained: Dictionary = observer.explain_oids()
@@ -1001,11 +1022,28 @@ func _has_exact_keys(actual: Dictionary, expected: Array, label: String) -> bool
 	return true
 
 
-func _mesh_limb(node: Node) -> MeshInstance3D:
+## Sources and creatures intentionally have multiple blueprint limbs; this is
+## only an existence witness and must never select box geometry for labels.
+func _blueprint_mesh_limb(node: Node) -> MeshInstance3D:
 	for limb: Node in node.find_children("*", "MeshInstance3D", true, false):
 		return limb as MeshInstance3D
 	fail("%s did not build a mesh limb" % node.get_path())
 	return null
+
+
+## A box has exactly one named skin. The mesh-label and world-AABB oracles
+## reject zero or several candidates rather than reading arbitrary descendant
+## bytes when a blueprint grows another mesh limb.
+func _box_skin(node: Node) -> MeshInstance3D:
+	var skins := node.find_children("WaveSkin", "MeshInstance3D", true, false)
+	if skins.size() != 1:
+		fail("%s must have exactly one named WaveSkin, found %d" % [node.get_path(), skins.size()])
+		return null
+	var skin := skins[0] as MeshInstance3D
+	if skin == null:
+		fail("%s named WaveSkin is not a MeshInstance3D" % node.get_path())
+		return null
+	return skin
 
 
 func _assert_matching_transform(actual: Transform3D, expected: Transform3D) -> void:
