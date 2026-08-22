@@ -33,8 +33,11 @@ use crate::render::{self, Role};
 use crate::reproduce::RestoreValueError;
 use crate::reproduce::blob::CatCapture;
 use crate::sound_source::{Cadence, PreparedCadence};
-use crate::support_motion::{ActorPosition, ActorVelocity, GodotRotation, MotionState};
-use crate::temporal::PreparedTime;
+use crate::support_motion::{
+    ActorPosition, ActorTransform, ActorVelocity, ActorYaw, FiniteMeasure, FiniteRotation,
+    GodotRotation, MotionState, MotionValueError, PosePoint, StepDuration,
+};
+use crate::temporal::{PreparedTime, prepare_time};
 
 /// Collider radius — small enough to slip between furniture legs.
 const COL_RADIUS: f32 = 0.11;
@@ -128,6 +131,286 @@ pub struct WaveCat {
     base: Base<CharacterBody3D>,
 }
 
+/// The complete runtime facts which must narrow successfully before a cat
+/// constructs either a child or a pure owner.
+struct PreparedCatReady {
+    transform: ActorTransform,
+    rotation: FiniteRotation,
+    rect: RoamRect,
+}
+
+fn prepare_cat_ready(
+    transform: Transform3D,
+    rotation: Vector3,
+    roam_size: Vector2,
+) -> Result<PreparedCatReady, MotionValueError> {
+    let transform = ActorTransform::try_new(transform)?;
+    let rotation = FiniteRotation::try_new(rotation)?;
+    let rect = RoamRect::try_around(transform.position(), roam_size)?;
+    Ok(PreparedCatReady {
+        transform,
+        rotation,
+        rect,
+    })
+}
+
+/// The narrow physical capability used by the controlled cat tick. The
+/// production adapter and the deterministic fault-injection fake execute the
+/// same coordinator; no test-only copy of the boundary transaction exists.
+trait CatMotionPort {
+    fn read_global_transform(&mut self) -> Transform3D;
+    fn read_global_rotation(&mut self) -> Vector3;
+    fn read_velocity(&mut self) -> Vector3;
+    fn write_global_rotation(&mut self, rotation: Vector3);
+    fn write_velocity(&mut self, velocity: Vector3);
+    fn move_and_slide_once(&mut self);
+    fn write_global_transform(&mut self, transform: Transform3D);
+    fn disable_processing(&mut self);
+    fn emit_cat_wave(&mut self, at: Vector3, range: f64, gain: f64, now: f64);
+}
+
+impl CatMotionPort for WaveCat {
+    fn read_global_transform(&mut self) -> Transform3D {
+        self.base().get_global_transform()
+    }
+
+    fn read_global_rotation(&mut self) -> Vector3 {
+        self.base().get_global_rotation()
+    }
+
+    fn read_velocity(&mut self) -> Vector3 {
+        self.base().get_velocity()
+    }
+
+    fn write_global_rotation(&mut self, rotation: Vector3) {
+        self.base_mut().set_global_rotation(rotation);
+    }
+
+    fn write_velocity(&mut self, velocity: Vector3) {
+        self.base_mut().set_velocity(velocity);
+    }
+
+    fn move_and_slide_once(&mut self) {
+        self.base_mut().move_and_slide();
+    }
+
+    fn write_global_transform(&mut self, transform: Transform3D) {
+        self.base_mut().set_global_transform(transform);
+    }
+
+    fn disable_processing(&mut self) {
+        self.base_mut().set_physics_process(false);
+        self.base_mut().set_process(false);
+    }
+
+    fn emit_cat_wave(&mut self, at: Vector3, range: f64, gain: f64, now: f64) {
+        self.emit_wave(at, range, gain, now);
+    }
+}
+
+#[derive(Clone)]
+struct CatControlledState {
+    brain: CatBrain,
+    gait: CatGait,
+    tail: Tail,
+    presence: Cadence,
+    sit: f64,
+    sim_t: f64,
+    last_pos: Vector3,
+}
+
+struct CatTickSuccess {
+    state: CatControlledState,
+    pose: CatPose,
+    frame: cat_gait::GaitFrame,
+}
+
+#[derive(Debug)]
+struct CatTickFault {
+    phase: &'static str,
+    error: MotionValueError,
+}
+
+fn refuse_before_move<P: CatMotionPort>(
+    port: &mut P,
+    phase: &'static str,
+    error: MotionValueError,
+) -> CatTickFault {
+    port.disable_processing();
+    CatTickFault { phase, error }
+}
+
+fn rollback_after_move<P: CatMotionPort>(
+    port: &mut P,
+    saved_transform: Transform3D,
+    phase: &'static str,
+    error: MotionValueError,
+) -> CatTickFault {
+    // Order is part of the transaction: reinstate the complete body pose,
+    // stop every commanded lane, then make the refusal inert.
+    port.write_global_transform(saved_transform);
+    port.write_velocity(Vector3::ZERO);
+    port.disable_processing();
+    CatTickFault { phase, error }
+}
+
+fn controlled_cat_tick<P: CatMotionPort>(
+    port: &mut P,
+    prior: &CatControlledState,
+    raw_dt: f64,
+    now: f64,
+) -> Result<CatTickSuccess, CatTickFault> {
+    let saved_transform = port.read_global_transform();
+    let pre_transform = ActorTransform::try_new(saved_transform)
+        .map_err(|error| refuse_before_move(port, "physics transform", error))?;
+    let pre_rotation = FiniteRotation::try_new(port.read_global_rotation())
+        .map_err(|error| refuse_before_move(port, "physics rotation", error))?;
+    ActorVelocity::try_new(port.read_velocity())
+        .map_err(|error| refuse_before_move(port, "physics velocity", error))?;
+    let last_pos = ActorPosition::try_new(prior.last_pos)
+        .map_err(|error| refuse_before_move(port, "physics prior position", error))?;
+    if !prior.sit.is_finite() {
+        return Err(refuse_before_move(
+            port,
+            "physics sit",
+            MotionValueError::non_finite("cat.sit"),
+        ));
+    }
+    if !(0.0..=1.0).contains(&prior.sit) {
+        return Err(refuse_before_move(
+            port,
+            "physics sit",
+            MotionValueError::out_of_range("cat.sit"),
+        ));
+    }
+    FiniteMeasure::try_new(prior.sim_t, "cat.sim_t")
+        .map_err(|error| refuse_before_move(port, "physics simulation time", error))?;
+    let now = prepare_time(now)
+        .map_err(|_| {
+            let error = if now.is_finite() {
+                MotionValueError::out_of_range("cat.now")
+            } else {
+                MotionValueError::non_finite("cat.now")
+            };
+            refuse_before_move(port, "physics clock", error)
+        })?
+        .value();
+    // The raw engine callback is narrowed before any owner advances. Invalid,
+    // negative and oversized values become the law's bounded zero/capped step.
+    let step = StepDuration::from_raw(raw_dt);
+    let pre_position = pre_transform.position();
+    let progress = pre_position.planar_distance(last_pos);
+
+    let mut next = prior.clone();
+    let drive = next
+        .brain
+        .advance(step, pre_position, progress)
+        .map_err(|error| refuse_before_move(port, "brain advance", error))?;
+
+    // Ordinary motion preserves the live X/Z rotation lanes verbatim. The
+    // restore-only GodotRotation canonicalizer must never repair this path.
+    let mut commanded_rotation = pre_rotation.world();
+    commanded_rotation.y = drive.yaw.godot_lane();
+    FiniteRotation::try_new(commanded_rotation)
+        .map_err(|error| refuse_before_move(port, "commanded rotation", error))?;
+    let commanded_velocity = forward(drive.yaw.radians()) * (drive.speed.value() as f32);
+    ActorVelocity::try_new(commanded_velocity)
+        .map_err(|error| refuse_before_move(port, "commanded velocity", error))?;
+    port.write_global_rotation(commanded_rotation);
+    port.write_velocity(commanded_velocity);
+    port.move_and_slide_once();
+
+    let post_transform =
+        ActorTransform::try_new(port.read_global_transform()).map_err(|error| {
+            rollback_after_move(port, saved_transform, "post-move transform", error)
+        })?;
+    FiniteRotation::try_new(port.read_global_rotation())
+        .map_err(|error| rollback_after_move(port, saved_transform, "post-move rotation", error))?;
+    ActorVelocity::try_new(port.read_velocity())
+        .map_err(|error| rollback_after_move(port, saved_transform, "post-move velocity", error))?;
+
+    let post_position = post_transform.position();
+    let moved = post_position.planar_distance(pre_position);
+    let actual_speed = if step.seconds() > 0.0 {
+        FiniteMeasure::try_new(moved.value() / step.seconds(), "cat.actual_speed")
+            .map_err(|error| rollback_after_move(port, saved_transform, "post-move speed", error))?
+    } else {
+        FiniteMeasure::ZERO
+    };
+    let frame = next
+        .gait
+        .advance(step, post_position, drive.yaw, actual_speed)
+        .map_err(|error| rollback_after_move(port, saved_transform, "gait advance", error))?;
+
+    let next_sit = prior.sit
+        + ((if drive.sitting { 1.0 } else { 0.0 }) - prior.sit)
+            * (step.seconds() * SIT_EASE).min(1.0);
+    let next_sim_t = prior.sim_t + step.seconds();
+    let sway = 0.22 * (frame.phase * std::f64::consts::TAU).sin() * frame.amp
+        + 0.10 * (next_sim_t * 0.9).sin() * (1.0 - frame.amp);
+    let pose = CatPose::try_from_gait(post_position, drive.yaw, &frame, next_sit)
+        .map_err(|error| rollback_after_move(port, saved_transform, "pose", error))?;
+    let skeleton = cat_body::skeleton(&pose)
+        .map_err(|error| rollback_after_move(port, saved_transform, "skeleton", error))?;
+    let tail_root = PosePoint::try_new(skeleton.tail_root)
+        .map_err(|error| rollback_after_move(port, saved_transform, "tail root", error))?;
+    next.tail
+        .transport_y(frame.support_delta_y)
+        .map_err(|error| {
+            rollback_after_move(port, saved_transform, "tail support transport", error)
+        })?;
+    next.tail
+        .advance(
+            step,
+            tail_root,
+            drive.yaw,
+            post_position.elevation(),
+            next_sit,
+            sway,
+        )
+        .map_err(|error| rollback_after_move(port, saved_transform, "tail advance", error))?;
+
+    next.sit = next_sit;
+    next.sim_t = next_sim_t;
+    // The next progress sample spans exactly this move: retain the position
+    // sampled before move_and_slide, never its post-move endpoint.
+    next.last_pos = pre_position.world();
+
+    // All engine and pure outputs have now been checked. Only this final
+    // section is permitted to mutate cadence or cross the wave boundary.
+    for contact in frame
+        .contacts
+        .iter()
+        .filter(|contact| cat_gait::paw_sounds(contact.leg))
+    {
+        port.emit_cat_wave(
+            Vector3::new(contact.at.x, contact.at.y + 0.02, contact.at.z),
+            cat_gait::PAW_RANGE,
+            cat_gait::PAW_GAIN,
+            now,
+        );
+    }
+    if next.presence.beat(now).is_some() {
+        let raw_post = post_position.world();
+        port.emit_cat_wave(
+            Vector3::new(
+                raw_post.x,
+                raw_post.y + cat_gait::PRESENCE_HEIGHT as f32,
+                raw_post.z,
+            ),
+            cat_gait::PRESENCE_RANGE,
+            cat_gait::PRESENCE_GAIN,
+            now,
+        );
+    }
+
+    Ok(CatTickSuccess {
+        state: next,
+        pose,
+        frame,
+    })
+}
+
 #[godot_api]
 impl ICharacterBody3D for WaveCat {
     fn ready(&mut self) {
@@ -153,6 +436,24 @@ impl ICharacterBody3D for WaveCat {
             self.base_mut().set_process(false);
             return;
         }
+
+        // Narrow every designer/scene-owned motion fact before constructing a
+        // child or a mind. A poisoned transform must leave no half-built cat.
+        let prepared = match prepare_cat_ready(
+            self.base().get_global_transform(),
+            self.base().get_global_rotation(),
+            self.roam_size,
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.disable_after_motion_error("ready inputs", error);
+                return;
+            }
+        };
+        let pos = prepared.transform.position();
+        let raw_pos = pos.world();
+        let yaw = prepared.rotation.yaw();
+
         let mut col = CollisionShape3D::new_alloc();
         col.set_name("CatCollider");
         let mut capsule = CapsuleShape3D::new_gd();
@@ -177,113 +478,114 @@ impl ICharacterBody3D for WaveCat {
         self.base_mut().add_child(&mi);
 
         // the brain, gait and mesh all work in WORLD space (the roam rect
-        // and velocity are world), so read the world heading — a cat under
-        // a rotated room or grouping folder still faces where the designer
-        // aimed it
-        let pos = self.base().get_global_position();
-        let yaw = f64::from(self.base().get_global_rotation().y);
-        let rect = RoamRect::around(
-            pos,
-            f64::from(self.roam_size.x),
-            f64::from(self.roam_size.y),
-        );
-        self.brain = Some(CatBrain::new(self.seed as u64, rect, yaw));
-        let mut gait = CatGait::new(pos, yaw);
-        let frame = gait.advance(0.0, pos, yaw, 0.0);
-        let pose = CatPose::from_gait(pos, yaw, &frame, 0.0);
-        let sk = cat_body::skeleton(&pose);
-        let tail = Tail::new(sk.tail_root, sk.tail_back, rightward(yaw));
+        // and velocity are world), so the prepared world heading remains
+        // correct under a rotated room or grouping folder.
+        self.brain = Some(CatBrain::new(self.seed as u64, prepared.rect, yaw));
+        let mut gait = match CatGait::new(pos, yaw) {
+            Ok(gait) => gait,
+            Err(error) => {
+                self.brain = None;
+                self.disable_after_motion_error("ready gait", error);
+                return;
+            }
+        };
+        let frame = match gait.advance(StepDuration::from_raw(0.0), pos, yaw, FiniteMeasure::ZERO) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.brain = None;
+                self.disable_after_motion_error("ready gait frame", error);
+                return;
+            }
+        };
+        let pose = match CatPose::try_from_gait(pos, yaw, &frame, 0.0) {
+            Ok(pose) => pose,
+            Err(error) => {
+                self.brain = None;
+                self.disable_after_motion_error("ready pose", error);
+                return;
+            }
+        };
+        let sk = match cat_body::skeleton(&pose) {
+            Ok(skeleton) => skeleton,
+            Err(error) => {
+                self.brain = None;
+                self.disable_after_motion_error("ready skeleton", error);
+                return;
+            }
+        };
+        let tail_root = match PosePoint::try_new(sk.tail_root) {
+            Ok(root) => root,
+            Err(error) => {
+                self.brain = None;
+                self.disable_after_motion_error("ready tail root", error);
+                return;
+            }
+        };
+        let tail = match Tail::new(tail_root, yaw, pos.elevation()) {
+            Ok(tail) => tail,
+            Err(error) => {
+                self.brain = None;
+                self.disable_after_motion_error("ready tail", error);
+                return;
+            }
+        };
         self.tail = Some(tail);
         self.gait = Some(gait);
         self.pose = Some(pose);
         self.presence = Cadence::every(cat_gait::PRESENCE_EVERY);
-        self.last_pos = pos;
+        self.last_pos = raw_pos;
         // built HERE rather than left for the first process() tick: the
         // mesh's CUSTOM0 is the shader's own G-channel source now (no
         // per-instance uniform to carry the label in the meantime), so a
         // census or an observer reading this cat before a frame has ever
         // ticked must already find a real, painted silhouette.
-        self.build_mesh(&pose, &tail);
+        if let Err(error) = self.build_mesh(&pose, &tail) {
+            self.brain = None;
+            self.gait = None;
+            self.tail = None;
+            self.pose = None;
+            self.disable_after_motion_error("ready mesh pose", error);
+            return;
+        }
         self.mesh_dirty = false;
     }
 
     fn physics_process(&mut self, dt: f64) {
-        let (Some(mut brain), Some(mut gait), Some(mut tail)) =
-            (self.brain.take(), self.gait.take(), self.tail.take())
+        let (Some(brain), Some(gait), Some(tail)) = (self.brain, self.gait.as_ref(), self.tail)
         else {
             return; // _ready refused: nothing to think with
         };
-        let pos = self.base().get_global_position();
-        // progress = |pos_now - pos_at_last_tick_start| = the planar
-        // distance actually covered last tick (last_pos is stored PRE-move
-        // below), so a wall-blocked cat honestly reads as making none
-        let progress =
-            f64::from(Vector2::new(pos.x - self.last_pos.x, pos.z - self.last_pos.z).length());
-        self.last_pos = pos;
-        let drive = brain.advance(dt, pos, progress);
-
-        // command a WORLD heading: velocity and the world-space silhouette
-        // both read drive.yaw as world, so the body's yaw must be world too
-        let mut grot = self.base().get_global_rotation();
-        grot.y = drive.yaw as f32;
-        self.base_mut().set_global_rotation(grot);
-        let fw = forward(drive.yaw);
-        self.base_mut().set_velocity(fw * (drive.speed as f32));
-        self.base_mut().move_and_slide();
-
-        let new_pos = self.base().get_global_position();
-        let moved = f64::from(Vector2::new(new_pos.x - pos.x, new_pos.z - pos.z).length());
-        let actual_speed = if dt > 0.0 { moved / dt } else { 0.0 };
-        let frame = gait.advance(dt, new_pos, drive.yaw, actual_speed);
-
-        self.sit += ((if drive.sitting { 1.0 } else { 0.0 }) - self.sit) * (dt * SIT_EASE).min(1.0);
-        self.sim_t += dt;
-        // tail sway: riding the stride while walking, a slow breath while
-        // still
-        let sway = 0.22 * (frame.phase * std::f64::consts::TAU).sin() * frame.amp
-            + 0.10 * (self.sim_t * 0.9).sin() * (1.0 - frame.amp);
-
-        let pose = CatPose::from_gait(new_pos, drive.yaw, &frame, self.sit);
-        let sk = cat_body::skeleton(&pose);
-        tail.advance(
-            dt,
-            sk.tail_root,
-            sk.tail_back,
-            rightward(drive.yaw),
-            self.sit,
-            sway,
-        );
-
-        // the lead fore paw speaks each stride; the others are silent
+        let prior = CatControlledState {
+            brain,
+            gait: gait.clone(),
+            tail,
+            presence: self.presence,
+            sit: self.sit,
+            sim_t: self.sim_t,
+            last_pos: self.last_pos,
+        };
         let now = self.now;
-        for c in frame
-            .contacts
-            .iter()
-            .filter(|c| cat_gait::paw_sounds(c.leg))
-        {
-            self.emit_wave(
-                Vector3::new(c.at.x, 0.02, c.at.z),
-                cat_gait::PAW_RANGE,
-                cat_gait::PAW_GAIN,
-                now,
-            );
-        }
-        // the idle heartbeat: a faint bloom from the chest on a slow beat,
-        // walking or still, so the hero can always find the cat
-        if self.presence.beat(now).is_some() {
-            let chest = Vector3::new(new_pos.x, cat_gait::PRESENCE_HEIGHT as f32, new_pos.z);
-            self.emit_wave(
-                chest,
-                cat_gait::PRESENCE_RANGE,
-                cat_gait::PRESENCE_GAIN,
-                now,
-            );
-        }
+        let success = match controlled_cat_tick(self, &prior, dt, now) {
+            Ok(success) => success,
+            Err(fault) => {
+                godot_error!("WaveCat: {} refused: {}", fault.phase, fault.error);
+                return;
+            }
+        };
 
+        let CatTickSuccess { state, pose, frame } = success;
+        // The frame has already driven tail and voice commands inside the
+        // transaction; consuming it here makes that one-frame output's
+        // lifetime explicit for the future physical adapter.
+        let _validated_frame = frame;
         self.pose = Some(pose);
-        self.brain = Some(brain);
-        self.gait = Some(gait);
-        self.tail = Some(tail);
+        self.brain = Some(state.brain);
+        self.gait = Some(state.gait);
+        self.tail = Some(state.tail);
+        self.presence = state.presence;
+        self.sit = state.sit;
+        self.sim_t = state.sim_t;
+        self.last_pos = state.last_pos;
         self.mesh_dirty = true;
     }
 
@@ -294,7 +596,10 @@ impl ICharacterBody3D for WaveCat {
         let (Some(pose), Some(tail)) = (self.pose, self.tail) else {
             return; // no physics tick yet: nothing to draw
         };
-        self.build_mesh(&pose, &tail);
+        if let Err(error) = self.build_mesh(&pose, &tail) {
+            self.disable_after_motion_error("mesh pose", error);
+            return;
+        }
         self.mesh_dirty = false;
     }
 }
@@ -467,6 +772,12 @@ impl WaveCat {
                 ));
             }
         }
+        if capture.position.y.to_bits() != capture.gait.support_y.to_bits() {
+            return Err(RestoreValueError::new(
+                "gait.support_y",
+                "must match the captured body Y bit-for-bit",
+            ));
+        }
         if !capture.sit.is_finite() || !(0.0..=1.0).contains(&capture.sit) {
             return Err(RestoreValueError::new("sit", "must be finite and in 0..=1"));
         }
@@ -568,14 +879,40 @@ impl WaveCat {
         mi.set_mesh(&self.mesh.clone());
         self.base_mut().add_child(&mi);
 
-        let pos = Vector3::ZERO;
-        let yaw = 0.0_f64;
-        let mut gait = CatGait::new(pos, yaw);
-        let frame = gait.advance(0.0, pos, yaw, 0.0);
-        let pose = CatPose::from_gait(pos, yaw, &frame, 0.0);
-        let sk = cat_body::skeleton(&pose);
-        let tail = Tail::new(sk.tail_root, sk.tail_back, rightward(yaw));
-        self.build_mesh(&pose, &tail);
+        let raw_pos = Vector3::ZERO;
+        let raw_yaw = 0.0_f64;
+        let Ok(pos) = ActorPosition::try_new(raw_pos) else {
+            return;
+        };
+        let Ok(yaw) = ActorYaw::try_new(raw_yaw) else {
+            return;
+        };
+        let Ok(mut gait) = CatGait::new(pos, yaw) else {
+            return;
+        };
+        let Ok(frame) = gait.advance(StepDuration::from_raw(0.0), pos, yaw, FiniteMeasure::ZERO)
+        else {
+            return;
+        };
+        let Ok(pose) = CatPose::try_from_gait(pos, yaw, &frame, 0.0) else {
+            return;
+        };
+        let Ok(sk) = cat_body::skeleton(&pose) else {
+            return;
+        };
+        let Ok(root) = PosePoint::try_new(sk.tail_root) else {
+            return;
+        };
+        let Ok(tail) = Tail::new(root, yaw, pos.elevation()) else {
+            return;
+        };
+        let _ = self.build_mesh(&pose, &tail);
+    }
+
+    fn disable_after_motion_error(&mut self, phase: &str, error: MotionValueError) {
+        godot_error!("WaveCat: {phase} refused: {error}");
+        self.base_mut().set_physics_process(false);
+        self.base_mut().set_process(false);
     }
 
     /// The whole silhouette, rebuilt for this frame's skeleton: torso
@@ -590,8 +927,8 @@ impl WaveCat {
     /// mesh instance. `tri_buf` is cleared and refilled here rather than
     /// rebuilt fresh, so a cat that has been alive a few frames allocates
     /// nothing more to keep drawing itself.
-    fn build_mesh(&mut self, pose: &CatPose, tail: &Tail) {
-        let sk = cat_body::skeleton(pose);
+    fn build_mesh(&mut self, pose: &CatPose, tail: &Tail) -> Result<(), MotionValueError> {
+        let sk = cat_body::skeleton(pose)?;
         let label = render::role_label(Role::Cat) as f32;
         self.tri_buf.clear();
         // the torso line, chest proud of hip — the big shapes stay full-res
@@ -625,6 +962,7 @@ impl WaveCat {
             prev = *node;
         }
         render::paint::resize_triangle_surface(&mut self.mesh, &self.tri_buf);
+        Ok(())
     }
 }
 
@@ -698,14 +1036,541 @@ fn forward(yaw: f64) -> Vector3 {
     Vector3::new((-yaw.sin()) as f32, 0.0, (-yaw.cos()) as f32)
 }
 
-/// The heading's right vector.
-fn rightward(yaw: f64) -> Vector3 {
-    Vector3::new(yaw.cos() as f32, 0.0, (-yaw.sin()) as f32)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum MotionTrace {
+        ReadTransform,
+        ReadRotation,
+        ReadVelocity,
+        SetRotation(Vector3),
+        SetVelocity(Vector3),
+        MoveAndSlide,
+        SetTransform(Transform3D),
+        Disable,
+        EmitWave {
+            at: Vector3,
+            range: f64,
+            gain: f64,
+            now: f64,
+        },
+    }
+
+    #[derive(Clone)]
+    struct FakeCatMotionPort {
+        pre_transform: Transform3D,
+        pre_rotation: Vector3,
+        pre_velocity: Vector3,
+        post_transform: Transform3D,
+        post_rotation: Vector3,
+        post_velocity: Vector3,
+        moved: bool,
+        trace: Vec<MotionTrace>,
+    }
+
+    impl FakeCatMotionPort {
+        fn valid() -> Self {
+            let rotation = Vector3::new(0.125, -0.25, 0.0625);
+            let transform = Transform3D::new(
+                Basis::from_euler(EulerOrder::YXZ, rotation),
+                Vector3::new(1.25, 0.75, -2.5),
+            );
+            Self {
+                pre_transform: transform,
+                pre_rotation: rotation,
+                pre_velocity: Vector3::new(0.125, 0.0, -0.25),
+                post_transform: Transform3D::new(
+                    transform.basis,
+                    Vector3::new(1.265_625, 0.75, -2.531_25),
+                ),
+                post_rotation: rotation,
+                post_velocity: Vector3::new(0.125, 0.0, -0.25),
+                moved: false,
+                trace: Vec::new(),
+            }
+        }
+    }
+
+    impl CatMotionPort for FakeCatMotionPort {
+        fn read_global_transform(&mut self) -> Transform3D {
+            self.trace.push(MotionTrace::ReadTransform);
+            if self.moved {
+                self.post_transform
+            } else {
+                self.pre_transform
+            }
+        }
+
+        fn read_global_rotation(&mut self) -> Vector3 {
+            self.trace.push(MotionTrace::ReadRotation);
+            if self.moved {
+                self.post_rotation
+            } else {
+                self.pre_rotation
+            }
+        }
+
+        fn read_velocity(&mut self) -> Vector3 {
+            self.trace.push(MotionTrace::ReadVelocity);
+            if self.moved {
+                self.post_velocity
+            } else {
+                self.pre_velocity
+            }
+        }
+
+        fn write_global_rotation(&mut self, rotation: Vector3) {
+            self.trace.push(MotionTrace::SetRotation(rotation));
+            self.pre_rotation = rotation;
+        }
+
+        fn write_velocity(&mut self, velocity: Vector3) {
+            self.trace.push(MotionTrace::SetVelocity(velocity));
+            if self.moved {
+                self.post_velocity = velocity;
+            } else {
+                self.pre_velocity = velocity;
+            }
+        }
+
+        fn move_and_slide_once(&mut self) {
+            self.trace.push(MotionTrace::MoveAndSlide);
+            self.moved = true;
+        }
+
+        fn write_global_transform(&mut self, transform: Transform3D) {
+            self.trace.push(MotionTrace::SetTransform(transform));
+            self.post_transform = transform;
+        }
+
+        fn disable_processing(&mut self) {
+            self.trace.push(MotionTrace::Disable);
+        }
+
+        fn emit_cat_wave(&mut self, at: Vector3, range: f64, gain: f64, now: f64) {
+            self.trace.push(MotionTrace::EmitWave {
+                at,
+                range,
+                gain,
+                now,
+            });
+        }
+    }
+
+    fn poison_transform_lane(value: Transform3D, lane: usize) -> Transform3D {
+        let mut columns = [
+            value.basis.col_a(),
+            value.basis.col_b(),
+            value.basis.col_c(),
+        ];
+        let mut origin = value.origin;
+        if lane < 9 {
+            let column = lane / 3;
+            let row = lane % 3;
+            match row {
+                0 => columns[column].x = f32::NAN,
+                1 => columns[column].y = f32::NAN,
+                _ => columns[column].z = f32::NAN,
+            }
+        } else {
+            match lane - 9 {
+                0 => origin.x = f32::NAN,
+                1 => origin.y = f32::NAN,
+                _ => origin.z = f32::NAN,
+            }
+        }
+        Transform3D::new(Basis::from_cols(columns[0], columns[1], columns[2]), origin)
+    }
+
+    fn poison_vector_lane(mut value: Vector3, lane: usize) -> Vector3 {
+        match lane {
+            0 => value.x = f32::NAN,
+            1 => value.y = f32::NAN,
+            _ => value.z = f32::NAN,
+        }
+        value
+    }
+
+    fn assert_transform_bits_eq(actual: Transform3D, expected: Transform3D) {
+        for (actual_lane, expected_lane) in [
+            (actual.basis.col_a().x, expected.basis.col_a().x),
+            (actual.basis.col_a().y, expected.basis.col_a().y),
+            (actual.basis.col_a().z, expected.basis.col_a().z),
+            (actual.basis.col_b().x, expected.basis.col_b().x),
+            (actual.basis.col_b().y, expected.basis.col_b().y),
+            (actual.basis.col_b().z, expected.basis.col_b().z),
+            (actual.basis.col_c().x, expected.basis.col_c().x),
+            (actual.basis.col_c().y, expected.basis.col_c().y),
+            (actual.basis.col_c().z, expected.basis.col_c().z),
+            (actual.origin.x, expected.origin.x),
+            (actual.origin.y, expected.origin.y),
+            (actual.origin.z, expected.origin.z),
+        ] {
+            assert_eq!(actual_lane.to_bits(), expected_lane.to_bits());
+        }
+    }
+
+    fn ordered_f32_bits(value: f32) -> u32 {
+        let bits = value.to_bits();
+        if bits & 0x8000_0000 == 0 {
+            bits | 0x8000_0000
+        } else {
+            !bits
+        }
+    }
+
+    fn controlled_state(port: &FakeCatMotionPort) -> CatControlledState {
+        let pos = ActorPosition::try_new(port.pre_transform.origin).unwrap();
+        let yaw = ActorYaw::try_new(f64::from(port.pre_rotation.y)).unwrap();
+        let rect = RoamRect::try_around(pos, Vector2::new(6.0, 6.0)).unwrap();
+        let brain = CatBrain::new(7, rect, yaw);
+        let mut gait = CatGait::new(pos, yaw).unwrap();
+        let frame = gait
+            .advance(StepDuration::from_raw(0.0), pos, yaw, FiniteMeasure::ZERO)
+            .unwrap();
+        let pose = CatPose::try_from_gait(pos, yaw, &frame, 0.0).unwrap();
+        let skeleton = cat_body::skeleton(&pose).unwrap();
+        let tail = Tail::new(
+            PosePoint::try_new(skeleton.tail_root).unwrap(),
+            yaw,
+            pos.elevation(),
+        )
+        .unwrap();
+        CatControlledState {
+            brain,
+            gait,
+            tail,
+            presence: Cadence::every(cat_gait::PRESENCE_EVERY),
+            sit: 0.0,
+            sim_t: 0.0,
+            last_pos: port.pre_transform.origin,
+        }
+    }
+
+    fn assert_state_bits_eq(actual: &CatControlledState, expected: &CatControlledState) {
+        assert_eq!(actual.brain.capture(), expected.brain.capture());
+        assert_eq!(actual.gait.capture(), expected.gait.capture());
+        assert_eq!(actual.tail.nodes(), expected.tail.nodes());
+        assert_eq!(actual.presence.next_at(), expected.presence.next_at());
+        assert_eq!(actual.sit.to_bits(), expected.sit.to_bits());
+        assert_eq!(actual.sim_t.to_bits(), expected.sim_t.to_bits());
+        for (actual_lane, expected_lane) in [
+            (actual.last_pos.x, expected.last_pos.x),
+            (actual.last_pos.y, expected.last_pos.y),
+            (actual.last_pos.z, expected.last_pos.z),
+        ] {
+            assert_eq!(actual_lane.to_bits(), expected_lane.to_bits());
+        }
+    }
+
+    #[test]
+    fn cat_ready_rejects_poisoned_position_yaw_and_roam_size_before_brain_construction() {
+        let port = FakeCatMotionPort::valid();
+        let mut rejected = Vec::new();
+        for lane in 0..12 {
+            rejected.push(prepare_cat_ready(
+                poison_transform_lane(port.pre_transform, lane),
+                port.pre_rotation,
+                Vector2::new(6.0, 6.0),
+            ));
+        }
+        for lane in 0..3 {
+            rejected.push(prepare_cat_ready(
+                port.pre_transform,
+                poison_vector_lane(port.pre_rotation, lane),
+                Vector2::new(6.0, 6.0),
+            ));
+        }
+        for roam_size in [
+            Vector2::new(f32::NAN, 6.0),
+            Vector2::new(6.0, f32::NAN),
+            Vector2::new(0.5, 6.0),
+            Vector2::new(6.0, 30.5),
+        ] {
+            rejected.push(prepare_cat_ready(
+                port.pre_transform,
+                port.pre_rotation,
+                roam_size,
+            ));
+        }
+
+        let mut brain_constructions = 0;
+        for prepared in rejected {
+            if prepared.is_ok() {
+                brain_constructions += 1;
+            }
+        }
+        assert_eq!(brain_constructions, 0);
+    }
+
+    #[test]
+    fn cat_physics_refuses_clock_outside_renderer_horizon_before_owner_or_engine_advance() {
+        let valid = FakeCatMotionPort::valid();
+        let prior = controlled_state(&valid);
+
+        for (now, problem) in [
+            (-0.25, crate::support_motion::MotionValueProblem::OutOfRange),
+            (
+                262_144.000_000_000_06,
+                crate::support_motion::MotionValueProblem::OutOfRange,
+            ),
+            (
+                f64::INFINITY,
+                crate::support_motion::MotionValueProblem::NonFinite,
+            ),
+            (
+                f64::NAN,
+                crate::support_motion::MotionValueProblem::NonFinite,
+            ),
+        ] {
+            let mut port = valid.clone();
+            let before = prior.clone();
+            let Err(error) = controlled_cat_tick(&mut port, &prior, 1.0 / 60.0, now) else {
+                panic!("an invalid renderer-visible clock must be refused");
+            };
+
+            assert_eq!(error.phase, "physics clock");
+            assert_eq!(error.error.field(), "cat.now");
+            assert_eq!(error.error.problem(), problem);
+            assert_state_bits_eq(&prior, &before);
+            assert_eq!(
+                port.trace,
+                [
+                    MotionTrace::ReadTransform,
+                    MotionTrace::ReadRotation,
+                    MotionTrace::ReadVelocity,
+                    MotionTrace::Disable,
+                ],
+                "clock {now:?} crossed the movement boundary"
+            );
+        }
+    }
+
+    #[test]
+    fn cat_physics_rejects_poisoned_pre_or_post_move_sample_without_advancing_brain_gait_tail_or_waves()
+     {
+        let valid = FakeCatMotionPort::valid();
+        let prior = controlled_state(&valid);
+
+        for lane in 0..12 {
+            let mut port = valid.clone();
+            port.pre_transform = poison_transform_lane(port.pre_transform, lane);
+            let before = prior.clone();
+            let result = controlled_cat_tick(&mut port, &prior, 1.0 / 60.0, 2.0);
+            assert!(result.is_err(), "pre transform lane {lane} was accepted");
+            assert_state_bits_eq(&prior, &before);
+            assert_eq!(
+                port.trace,
+                [MotionTrace::ReadTransform, MotionTrace::Disable]
+            );
+        }
+        for lane in 0..3 {
+            let mut port = valid.clone();
+            port.pre_rotation = poison_vector_lane(port.pre_rotation, lane);
+            let before = prior.clone();
+            let result = controlled_cat_tick(&mut port, &prior, 1.0 / 60.0, 2.0);
+            assert!(result.is_err(), "pre rotation lane {lane} was accepted");
+            assert_state_bits_eq(&prior, &before);
+            assert_eq!(
+                port.trace,
+                [
+                    MotionTrace::ReadTransform,
+                    MotionTrace::ReadRotation,
+                    MotionTrace::Disable,
+                ]
+            );
+        }
+        for lane in 0..3 {
+            let mut port = valid.clone();
+            port.pre_velocity = poison_vector_lane(port.pre_velocity, lane);
+            let before = prior.clone();
+            let result = controlled_cat_tick(&mut port, &prior, 1.0 / 60.0, 2.0);
+            assert!(result.is_err(), "pre velocity lane {lane} was accepted");
+            assert_state_bits_eq(&prior, &before);
+            assert_eq!(
+                port.trace,
+                [
+                    MotionTrace::ReadTransform,
+                    MotionTrace::ReadRotation,
+                    MotionTrace::ReadVelocity,
+                    MotionTrace::Disable,
+                ]
+            );
+        }
+        for lane in 0..3 {
+            let mut poisoned_state = prior.clone();
+            poisoned_state.last_pos = poison_vector_lane(poisoned_state.last_pos, lane);
+            let before = poisoned_state.clone();
+            let mut port = valid.clone();
+            let result = controlled_cat_tick(&mut port, &poisoned_state, 1.0 / 60.0, 2.0);
+            assert!(result.is_err(), "prior position lane {lane} was accepted");
+            assert_state_bits_eq(&poisoned_state, &before);
+            assert_eq!(
+                port.trace,
+                [
+                    MotionTrace::ReadTransform,
+                    MotionTrace::ReadRotation,
+                    MotionTrace::ReadVelocity,
+                    MotionTrace::Disable,
+                ]
+            );
+        }
+
+        for kind in 0..3 {
+            let lanes = if kind == 0 { 12 } else { 3 };
+            for lane in 0..lanes {
+                let mut port = valid.clone();
+                match kind {
+                    0 => port.post_transform = poison_transform_lane(port.post_transform, lane),
+                    1 => port.post_rotation = poison_vector_lane(port.post_rotation, lane),
+                    _ => port.post_velocity = poison_vector_lane(port.post_velocity, lane),
+                }
+                let saved = port.pre_transform;
+                let before = prior.clone();
+                let result = controlled_cat_tick(&mut port, &prior, 1.0 / 60.0, 2.0);
+                assert!(
+                    result.is_err(),
+                    "post sample kind {kind} lane {lane} was accepted"
+                );
+                assert_state_bits_eq(&prior, &before);
+                let mut expected = vec![
+                    MotionTrace::ReadTransform,
+                    MotionTrace::ReadRotation,
+                    MotionTrace::ReadVelocity,
+                    MotionTrace::SetRotation(valid.pre_rotation),
+                    MotionTrace::SetVelocity(Vector3::ZERO),
+                    MotionTrace::MoveAndSlide,
+                    MotionTrace::ReadTransform,
+                ];
+                if kind >= 1 {
+                    expected.push(MotionTrace::ReadRotation);
+                }
+                if kind >= 2 {
+                    expected.push(MotionTrace::ReadVelocity);
+                }
+                expected.extend([
+                    MotionTrace::SetTransform(saved),
+                    MotionTrace::SetVelocity(Vector3::ZERO),
+                    MotionTrace::Disable,
+                ]);
+                assert_eq!(port.trace, expected);
+                let rollback = &port.trace[port.trace.len() - 3..];
+                let MotionTrace::SetTransform(restored) = rollback[0] else {
+                    panic!("rollback must restore the saved full transform first");
+                };
+                assert_transform_bits_eq(restored, saved);
+                assert_eq!(rollback[1], MotionTrace::SetVelocity(Vector3::ZERO));
+                assert_eq!(rollback[2], MotionTrace::Disable);
+            }
+        }
+
+        let mut successful_port = valid.clone();
+        let success = controlled_cat_tick(&mut successful_port, &prior, 1.0 / 60.0, 2.0)
+            .expect("a completely finite tick must commit");
+        assert_eq!(
+            successful_port
+                .trace
+                .iter()
+                .filter(|event| **event == MotionTrace::MoveAndSlide)
+                .count(),
+            1
+        );
+        let emitted: Vec<Vector3> = successful_port
+            .trace
+            .iter()
+            .filter_map(|event| match event {
+                MotionTrace::EmitWave { at, .. } => Some(*at),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            emitted.iter().any(|at| {
+                at.x.to_bits() == 1.265_625_f32.to_bits()
+                    && at.y.to_bits() == 0.93_f32.to_bits()
+                    && at.z.to_bits() == (-2.531_25_f32).to_bits()
+            }),
+            "the elevated presence voice must follow the post-move root"
+        );
+        for (actual, expected) in [
+            (success.state.last_pos.x, valid.pre_transform.origin.x),
+            (success.state.last_pos.y, valid.pre_transform.origin.y),
+            (success.state.last_pos.z, valid.pre_transform.origin.z),
+        ] {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+        let commanded_rotation = successful_port
+            .trace
+            .iter()
+            .find_map(|event| match event {
+                MotionTrace::SetRotation(rotation) => Some(*rotation),
+                _ => None,
+            })
+            .expect("a successful tick must set its ordinary world yaw");
+        assert_eq!(
+            commanded_rotation.x.to_bits(),
+            valid.pre_rotation.x.to_bits()
+        );
+        assert_eq!(
+            commanded_rotation.z.to_bits(),
+            valid.pre_rotation.z.to_bits()
+        );
+
+        let mut raised_port = valid.clone();
+        raised_port.post_transform.origin.y = 1.5;
+        let raised = controlled_cat_tick(&mut raised_port, &prior, 1.0 / 60.0, 2.0)
+            .expect("a uniform elevated post-move sample must commit");
+        assert_eq!(raised.frame.support_delta_y.to_bits(), 0.75_f32.to_bits());
+        assert_eq!(raised.pose.pos.y.to_bits(), 1.5_f32.to_bits());
+        for (flat, elevated) in success
+            .state
+            .tail
+            .nodes()
+            .iter()
+            .zip(raised.state.tail.nodes())
+        {
+            assert!(
+                ordered_f32_bits(flat.x).abs_diff(ordered_f32_bits(elevated.x)) <= 1,
+                "one support transport must preserve tail X"
+            );
+            assert!(
+                ordered_f32_bits(flat.z).abs_diff(ordered_f32_bits(elevated.z)) <= 1,
+                "one support transport must preserve tail Z"
+            );
+            assert!(
+                ((elevated.y - flat.y) - 0.75).abs() <= f32::EPSILON,
+                "one support transport must lift every tail node exactly once"
+            );
+        }
+
+        let mut contact_prior = prior.clone();
+        let position = ActorPosition::try_new(valid.pre_transform.origin).unwrap();
+        let yaw = ActorYaw::try_new(f64::from(valid.pre_rotation.y)).unwrap();
+        for _ in 0..7 {
+            contact_prior
+                .gait
+                .advance(
+                    StepDuration::from_raw(1.0 / 60.0),
+                    position,
+                    yaw,
+                    FiniteMeasure::try_new(0.6, "test.speed").unwrap(),
+                )
+                .unwrap();
+        }
+        assert!(contact_prior.gait.capture().in_swing[0]);
+        let mut contact_port = valid.clone();
+        controlled_cat_tick(&mut contact_port, &contact_prior, 1.0 / 60.0, 2.0)
+            .expect("the elevated touchdown tick must commit");
+        assert!(
+            contact_port.trace.iter().any(|event| matches!(
+                event,
+                MotionTrace::EmitWave { at, .. } if at.y.to_bits() == 0.77_f32.to_bits()
+            )),
+            "the elevated paw voice must follow its contact support: {:?}",
+            contact_port.trace
+        );
+    }
 
     #[test]
     fn copied_cat_state_requires_the_exact_producer_relationships() {

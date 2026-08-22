@@ -19,9 +19,12 @@ use godot::builtin::Vector3;
 
 use crate::cat_gait::{self, GaitFrame, LEGS};
 use crate::reproduce::RestoreValueError;
-use crate::support_motion::MAX_POSE_COORD_M;
+use crate::support_motion::{
+    ActorPosition, ActorYaw, MAX_POSE_COORD_M, MotionValueError, PosePoint, StepDuration,
+    SupportElevation,
+};
 
-/// Chest-line height above the floor while standing, meters.
+/// Chest-line height above the current support while standing, meters.
 pub const CHEST_H: f64 = cat_gait::BODY_H;
 
 /// Hip-line height while standing — a cat's rump rides a touch higher.
@@ -105,7 +108,7 @@ pub struct Skeleton {
 /// the eased sit blend the node owns.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CatPose {
-    /// Body center on the floor.
+    /// Body center on the current support.
     pub pos: Vector3,
     /// Heading, radians.
     pub yaw: f64,
@@ -129,7 +132,6 @@ impl CatPose {
             validate_restore_point(&format!("pose.paws[{index}]"), paw)?;
         }
         for (field, value) in [
-            ("yaw", capture.yaw),
             ("bob", capture.bob),
             ("amp", capture.amp),
             ("sit", capture.sit),
@@ -141,6 +143,9 @@ impl CatPose {
                 ));
             }
         }
+        ActorYaw::try_new(capture.yaw).map_err(|_| {
+            RestoreValueError::new("pose.yaw", "must narrow to a finite Godot rotation lane")
+        })?;
         if capture.bob.abs() > cat_gait::BOB_AMP {
             return Err(RestoreValueError::new(
                 "pose.bob",
@@ -163,28 +168,107 @@ impl CatPose {
         capture.0
     }
 
-    /// A pose straight off a gait frame — the node adds its eased sit.
-    #[must_use]
-    pub fn from_gait(pos: Vector3, yaw: f64, frame: &GaitFrame, sit: f64) -> Self {
-        Self {
-            pos,
-            yaw,
+    /// A pose straight off a fully checked gait frame — the node adds its
+    /// eased sit after validating that public frame's complete domain.
+    pub fn try_from_gait(
+        pos: ActorPosition,
+        yaw: ActorYaw,
+        frame: &GaitFrame,
+        sit: f64,
+    ) -> Result<Self, MotionValueError> {
+        validate_gait_frame(frame)?;
+        validate_unit_interval(sit, "cat_pose.sit")?;
+        let pose = Self {
+            pos: pos.world(),
+            yaw: yaw.radians(),
             paws: frame.paws,
             bob: frame.bob,
             amp: frame.amp,
             sit,
-        }
+        };
+        validate_pose(&pose)?;
+        Ok(pose)
     }
 }
 
-/// The whole skeleton for one frame — total over any pose: every joint
-/// finite, every segment length preserved.
-#[must_use]
-pub fn skeleton(pose: &CatPose) -> Skeleton {
+fn validate_gait_frame(frame: &GaitFrame) -> Result<(), MotionValueError> {
+    for paw in frame.paws {
+        PosePoint::try_new(paw)?;
+    }
+    if frame.contacts.len() > LEGS {
+        return Err(MotionValueError::out_of_range("cat_pose.contacts"));
+    }
+    for contact in &frame.contacts {
+        if contact.leg >= LEGS {
+            return Err(MotionValueError::out_of_range("cat_pose.contact.leg"));
+        }
+        PosePoint::try_new(contact.at)?;
+    }
+    validate_half_open_phase(frame.phase, "cat_pose.phase")?;
+    validate_unit_interval(frame.amp, "cat_pose.amp")?;
+    if !frame.bob.is_finite() {
+        return Err(MotionValueError::non_finite("cat_pose.bob"));
+    }
+    if frame.bob.abs() > cat_gait::BOB_AMP {
+        return Err(MotionValueError::out_of_range("cat_pose.bob"));
+    }
+    if !frame.support_delta_y.is_finite() {
+        return Err(MotionValueError::non_finite("cat_pose.support_delta_y"));
+    }
+    Ok(())
+}
+
+fn validate_pose(pose: &CatPose) -> Result<(), MotionValueError> {
+    PosePoint::try_new(pose.pos)?;
+    ActorYaw::try_new(pose.yaw)?;
+    for paw in pose.paws {
+        PosePoint::try_new(paw)?;
+    }
+    if !pose.bob.is_finite() {
+        return Err(MotionValueError::non_finite("cat_pose.bob"));
+    }
+    if pose.bob.abs() > cat_gait::BOB_AMP {
+        return Err(MotionValueError::out_of_range("cat_pose.bob"));
+    }
+    validate_unit_interval(pose.amp, "cat_pose.amp")?;
+    validate_unit_interval(pose.sit, "cat_pose.sit")?;
+    Ok(())
+}
+
+fn validate_half_open_phase(value: f64, field: &'static str) -> Result<(), MotionValueError> {
+    if !value.is_finite() {
+        return Err(MotionValueError::non_finite(field));
+    }
+    if !(0.0..1.0).contains(&value) {
+        return Err(MotionValueError::out_of_range(field));
+    }
+    Ok(())
+}
+
+fn validate_unit_interval(value: f64, field: &'static str) -> Result<(), MotionValueError> {
+    if !value.is_finite() {
+        return Err(MotionValueError::non_finite(field));
+    }
+    if !(0.0..=1.0).contains(&value) {
+        return Err(MotionValueError::out_of_range(field));
+    }
+    Ok(())
+}
+
+/// The whole skeleton for one frame — total over the still-public wire pose:
+/// malformed lanes refuse before arithmetic and every derived joint is
+/// checked against the pose envelope before it leaves this pure law.
+pub fn skeleton(pose: &CatPose) -> Result<Skeleton, MotionValueError> {
+    validate_pose(pose)?;
     let fw = forward(pose.yaw);
     let rv = rightward(pose.yaw);
+    let support_y = pose.pos.y;
     let ground = Vector3::new(pose.pos.x, 0.0, pose.pos.z);
-    let sit = pose.sit.clamp(0.0, 1.0);
+    let mut local_paws = pose.paws;
+    for paw in &mut local_paws {
+        paw.y = (f64::from(paw.y) - f64::from(support_y)) as f32;
+    }
+    let sit = pose.sit;
 
     // the torso line: chest and hip ride their standing heights, then the
     // sit folds the haunches to the floor and lifts the chest proud
@@ -241,11 +325,11 @@ pub fn skeleton(pose: &CatPose) -> Skeleton {
             (hip + rv * (0.055 * side), HIND_UPPER, HIND_LOWER)
         };
         let sit_paw = if fore {
-            Vector3::new(chest.x, 0.0, chest.z) + rv * (0.048 * side) + fw * 0.02
+            Vector3::new(chest.x, ground.y, chest.z) + rv * (0.048 * side) + fw * 0.02
         } else {
-            Vector3::new(hip.x, 0.0, hip.z) + rv * (0.07 * side) + fw * 0.06
+            Vector3::new(hip.x, ground.y, hip.z) + rv * (0.07 * side) + fw * 0.06
         };
-        let paw = pose.paws[leg].lerp(sit_paw, sit as f32);
+        let paw = local_paws[leg].lerp(sit_paw, sit as f32);
         // the seated hind pair folds its hock UP, not down through the
         // floor: a deep sit drops the hip low, and on the plain backward
         // hint the long hind leg — folded nearly double — bulged its knee
@@ -267,7 +351,7 @@ pub fn skeleton(pose: &CatPose) -> Skeleton {
 
     let tail_root = hip - fw * 0.065 + up(0.03);
 
-    Skeleton {
+    let mut skeleton = Skeleton {
         chest,
         hip,
         neck,
@@ -278,7 +362,67 @@ pub fn skeleton(pose: &CatPose) -> Skeleton {
         legs,
         tail_root,
         tail_back: -fw,
+    };
+    translate_skeleton_y(&mut skeleton, support_y);
+    validate_skeleton(&skeleton)?;
+    Ok(skeleton)
+}
+
+fn translate_skeleton_y(skeleton: &mut Skeleton, delta_y: f32) {
+    if delta_y == 0.0 {
+        return;
     }
+    for point in [
+        &mut skeleton.chest,
+        &mut skeleton.hip,
+        &mut skeleton.neck,
+        &mut skeleton.head,
+        &mut skeleton.muzzle,
+        &mut skeleton.tail_root,
+    ] {
+        point.y += delta_y;
+    }
+    for (base, tip) in &mut skeleton.ears {
+        base.y += delta_y;
+        tip.y += delta_y;
+    }
+    for (root, tip) in &mut skeleton.whiskers {
+        root.y += delta_y;
+        tip.y += delta_y;
+    }
+    for leg in &mut skeleton.legs {
+        leg.root.y += delta_y;
+        leg.mid.y += delta_y;
+        leg.paw.y += delta_y;
+    }
+}
+
+fn validate_skeleton(skeleton: &Skeleton) -> Result<(), MotionValueError> {
+    for point in [
+        skeleton.chest,
+        skeleton.hip,
+        skeleton.neck,
+        skeleton.head,
+        skeleton.muzzle,
+        skeleton.tail_root,
+        skeleton.tail_back,
+    ] {
+        PosePoint::try_new(point)?;
+    }
+    for (base, tip) in skeleton.ears {
+        PosePoint::try_new(base)?;
+        PosePoint::try_new(tip)?;
+    }
+    for (root, tip) in skeleton.whiskers {
+        PosePoint::try_new(root)?;
+        PosePoint::try_new(tip)?;
+    }
+    for leg in skeleton.legs {
+        for point in [leg.root, leg.mid, leg.paw] {
+            PosePoint::try_new(point)?;
+        }
+    }
+    Ok(())
 }
 
 /// Two-bone analytic IK, total over any target: the reach is clamped
@@ -287,7 +431,7 @@ pub fn skeleton(pose: &CatPose) -> Skeleton {
 /// bend leaves toward `hint` — behind the cat, where elbows and hocks
 /// live.
 #[must_use]
-pub fn two_bone(
+fn two_bone(
     root: Vector3,
     target: Vector3,
     upper: f64,
@@ -336,7 +480,13 @@ pub struct PreparedTail(Tail);
 impl Tail {
     pub fn prepare_restore(capture: [Vector3; TAIL_N]) -> Result<PreparedTail, RestoreValueError> {
         for (index, point) in capture.iter().copied().enumerate() {
-            validate_restore_point(&format!("tail[{index}]"), point)?;
+            PosePoint::try_new(point).map_err(|error| {
+                let axis = error.field().rsplit('.').next().unwrap_or(error.field());
+                RestoreValueError::new(
+                    format!("tail[{index}].{axis}"),
+                    "must be finite and inside the pose envelope",
+                )
+            })?;
         }
         Ok(PreparedTail(Self::restore(capture)))
     }
@@ -347,16 +497,19 @@ impl Tail {
     }
 
     /// A fresh tail already in its standing rest curve.
-    #[must_use]
-    pub fn new(root: Vector3, back: Vector3, rv: Vector3) -> Self {
+    pub fn new(
+        root: PosePoint,
+        yaw: ActorYaw,
+        support: SupportElevation,
+    ) -> Result<Self, MotionValueError> {
         let mut tail = Self {
-            nodes: [root; TAIL_N],
+            nodes: [root.world(); TAIL_N],
         };
         // settle instantly into the rest pose: a long advance from rest
         for _ in 0..120 {
-            tail.advance(0.1, root, back, rv, 0.0, 0.0);
+            tail.advance(StepDuration::from_raw(0.1), root, yaw, support, 0.0, 0.0)?;
         }
-        tail
+        Ok(tail)
     }
 
     /// The joints, root-side first.
@@ -367,17 +520,86 @@ impl Tail {
 
     /// A chain rebuilt at an exact curve. `new` settles toward rest by
     /// iterating — correct for a spawn, wrong for a restore.
-    #[must_use]
-    pub fn restore(nodes: [Vector3; TAIL_N]) -> Self {
+    fn restore(nodes: [Vector3; TAIL_N]) -> Self {
         Self { nodes }
     }
 
-    /// One tick: `back` is the direction away from the body, `rv` the
-    /// cat's right, `sit` the sit blend (the tail curls around the
-    /// haunches), `sway` a signed lateral weight the node drives with
-    /// the stride and an idle breath.
+    /// Translate the whole remembered curve by one exact support delta.
+    /// Validation happens on a copy so an invalid delta or boundary overflow
+    /// preserves every prior node bit.
+    pub fn transport_y(&mut self, delta_y: f32) -> Result<(), MotionValueError> {
+        if !delta_y.is_finite() {
+            return Err(MotionValueError::non_finite("tail.support_delta_y"));
+        }
+        if delta_y == 0.0 {
+            return Ok(());
+        }
+        let lift = Vector3::new(0.0, delta_y, 0.0);
+        let mut next = self.nodes;
+        for node in &mut next {
+            *node = PosePoint::try_new(*node + lift)?.world();
+        }
+        self.nodes = next;
+        Ok(())
+    }
+
+    /// One tick: yaw supplies the direction away from the body and the cat's
+    /// right; `sit` curls the tail around the haunches and `sway` is the
+    /// signed lateral weight driven by stride and idle breath.
     pub fn advance(
         &mut self,
+        dt: StepDuration,
+        root: PosePoint,
+        yaw: ActorYaw,
+        support: SupportElevation,
+        sit: f64,
+        sway: f64,
+    ) -> Result<(), MotionValueError> {
+        if !sit.is_finite() {
+            return Err(MotionValueError::non_finite("tail.sit"));
+        }
+        if !(0.0..=1.0).contains(&sit) {
+            return Err(MotionValueError::out_of_range("tail.sit"));
+        }
+        if !sway.is_finite() {
+            return Err(MotionValueError::non_finite("tail.sway"));
+        }
+        let mut next = self.nodes;
+        let support_y = support.y();
+        let world_root = root.world();
+        let mut local_root = world_root;
+        // The shipped flat curve is an exact capture/replay contract. Keep its
+        // world-space f32 path untouched at +0 support; once elevated, follow
+        // in the root frame so a shared world translation cannot change a bend.
+        if support_y != 0.0 {
+            local_root = Vector3::ZERO;
+            for node in &mut next {
+                *node -= world_root;
+            }
+        }
+        Self::advance_nodes(
+            &mut next,
+            dt.seconds(),
+            local_root,
+            -forward(yaw.radians()),
+            rightward(yaw.radians()),
+            sit,
+            sway,
+        );
+        if support_y != 0.0 {
+            for point in &mut next {
+                *point += world_root;
+            }
+        }
+        for point in next {
+            PosePoint::try_new(point)?;
+        }
+        self.nodes = next;
+        Ok(())
+    }
+
+    fn advance_nodes(
+        nodes: &mut [Vector3; TAIL_N],
         dt: f64,
         root: Vector3,
         back: Vector3,
@@ -385,10 +607,9 @@ impl Tail {
         sit: f64,
         sway: f64,
     ) {
-        let sit = sit.clamp(0.0, 1.0);
         let mut prev = root;
         let mut prev_dir = back.normalized();
-        for (i, node) in self.nodes.iter_mut().enumerate() {
+        for (i, node) in nodes.iter_mut().enumerate() {
             let u = i as f64 / (TAIL_N - 1) as f64;
             // standing: a graceful trailing arc — mostly back at the base,
             // rising to ~45° up-and-back at the tip (never hooked straight
@@ -479,6 +700,517 @@ fn up(h: f32) -> Vector3 {
 mod tests {
     use super::*;
 
+    use godot::builtin::Vector2;
+
+    use crate::cat_brain::{CatBrain, RoamRect};
+    use crate::support_motion::{
+        ActorPosition, ActorYaw, FiniteMeasure, MotionValueProblem, PosePoint, StepDuration,
+    };
+
+    fn actor_position(world: Vector3) -> ActorPosition {
+        ActorPosition::try_new(world).expect("test position must be in the actor domain")
+    }
+
+    fn actor_yaw(radians: f64) -> ActorYaw {
+        ActorYaw::try_new(radians).expect("test yaw must be in the actor domain")
+    }
+
+    fn pose_point(world: Vector3) -> PosePoint {
+        PosePoint::try_new(world).expect("test point must be in the pose domain")
+    }
+
+    fn support(y: f32) -> SupportElevation {
+        SupportElevation::try_new(y).expect("test support must be in the elevation domain")
+    }
+
+    fn duration(seconds: f64) -> StepDuration {
+        StepDuration::from_raw(seconds)
+    }
+
+    fn speed(meters_per_second: f64) -> FiniteMeasure {
+        FiniteMeasure::try_new(meters_per_second, "test.actual_speed")
+            .expect("test speed must be finite and non-negative")
+    }
+
+    fn pose_and_frame_at(y: f32, sit: f64) -> (CatPose, GaitFrame) {
+        let position = actor_position(Vector3::new(0.25, y, -0.5));
+        let yaw = actor_yaw(0.35);
+        let mut gait = CatGait::new(position, yaw).unwrap();
+        let frame = gait
+            .advance(duration(0.0), position, yaw, speed(0.0))
+            .unwrap();
+        let pose = CatPose::try_from_gait(position, yaw, &frame, sit).unwrap();
+        (pose, frame)
+    }
+
+    fn skeleton_points(skeleton: &Skeleton) -> Vec<Vector3> {
+        let mut points = vec![
+            skeleton.chest,
+            skeleton.hip,
+            skeleton.neck,
+            skeleton.head,
+            skeleton.muzzle,
+            skeleton.tail_root,
+        ];
+        for (base, tip) in skeleton.ears {
+            points.extend([base, tip]);
+        }
+        for (root, tip) in skeleton.whiskers {
+            points.extend([root, tip]);
+        }
+        for leg in skeleton.legs {
+            points.extend([leg.root, leg.mid, leg.paw]);
+        }
+        points
+    }
+
+    fn assert_uniform_y_translation(flat: Vector3, raised: Vector3, delta_y: f32) {
+        assert_eq!(flat.x.to_bits(), raised.x.to_bits());
+        assert_eq!(flat.z.to_bits(), raised.z.to_bits());
+        let observed_delta = raised.y - flat.y;
+        assert!(
+            ordered_f32_bits(observed_delta).abs_diff(ordered_f32_bits(delta_y)) <= 1,
+            "expected {delta_y} m Y translation, got {} -> {}",
+            flat.y,
+            raised.y
+        );
+    }
+
+    fn ordered_f32_bits(value: f32) -> u32 {
+        let bits = value.to_bits();
+        if bits & 0x8000_0000 == 0 {
+            bits | 0x8000_0000
+        } else {
+            !bits
+        }
+    }
+
+    fn assert_translation_with_one_ulp_xz(flat: Vector3, raised: Vector3, delta_y: f32) {
+        assert!(ordered_f32_bits(flat.x).abs_diff(ordered_f32_bits(raised.x)) <= 1);
+        assert!(ordered_f32_bits(flat.z).abs_diff(ordered_f32_bits(raised.z)) <= 1);
+        let observed_delta = raised.y - flat.y;
+        assert!(
+            ordered_f32_bits(observed_delta).abs_diff(ordered_f32_bits(delta_y)) <= 1,
+            "expected {delta_y} m Y translation, got {} -> {}",
+            flat.y,
+            raised.y
+        );
+    }
+
+    #[test]
+    fn elevated_skeleton_is_the_flat_skeleton_translated_once() {
+        let (flat_pose, _) = pose_and_frame_at(0.0, 0.0);
+        let (raised_pose, _) = pose_and_frame_at(0.75, 0.0);
+        let flat = skeleton(&flat_pose).unwrap();
+        let raised = skeleton(&raised_pose).unwrap();
+        let flat_points = skeleton_points(&flat);
+        let raised_points = skeleton_points(&raised);
+        assert_eq!(flat_points.len(), raised_points.len());
+        for (flat, raised) in flat_points.into_iter().zip(raised_points) {
+            assert_uniform_y_translation(flat, raised, 0.75);
+        }
+    }
+
+    #[test]
+    fn elevated_sit_keeps_every_joint_above_its_support() {
+        for sit in [0.5, 0.75, 1.0] {
+            let (pose, _) = pose_and_frame_at(0.75, sit);
+            let derived = skeleton(&pose).unwrap();
+            for point in skeleton_points(&derived) {
+                assert!(
+                    point.y >= 0.749,
+                    "sit {sit} derived a joint below its support at {}",
+                    point.y
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn extreme_actor_roots_keep_every_skeleton_joint_inside_pose_envelope() {
+        for (position, yaw) in [
+            (Vector3::new(1_000_000.0, 1_000_000.0, 0.0), 0.0),
+            (Vector3::new(-1_000_000.0, -1_000_000.0, 0.0), 0.0),
+            (
+                Vector3::new(1_000_000.0, 1_000_000.0, -1_000_000.0),
+                std::f64::consts::FRAC_PI_4,
+            ),
+            (
+                Vector3::new(-1_000_000.0, -1_000_000.0, 1_000_000.0),
+                -std::f64::consts::FRAC_PI_4,
+            ),
+        ] {
+            let position = actor_position(position);
+            let yaw = actor_yaw(yaw);
+            let mut gait = CatGait::new(position, yaw).unwrap();
+            let frame = gait
+                .advance(duration(0.0), position, yaw, speed(0.0))
+                .unwrap();
+            let pose = CatPose::try_from_gait(position, yaw, &frame, 1.0).unwrap();
+            let derived = skeleton(&pose).unwrap();
+            for point in skeleton_points(&derived) {
+                for lane in [point.x, point.y, point.z] {
+                    assert!(lane.is_finite());
+                    assert!(lane.abs() <= 1_000_002.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tail_transport_preserves_the_curve_before_following() {
+        let root = pose_point(Vector3::new(0.0, 0.24, 0.0));
+        let mut tail = Tail::new(root, actor_yaw(0.0), support(0.0)).unwrap();
+        let before = *tail.nodes();
+        tail.transport_y(0.75).unwrap();
+        for (flat, raised) in before.into_iter().zip(*tail.nodes()) {
+            assert_uniform_y_translation(flat, raised, 0.75);
+        }
+    }
+
+    #[test]
+    fn tail_follow_is_translation_equivariant() {
+        let yaw = actor_yaw(0.45);
+        let flat_root = pose_point(Vector3::new(0.25, 0.24, -0.5));
+        let raised_root = pose_point(Vector3::new(0.25, 0.99, -0.5));
+        let mut flat = Tail::new(flat_root, yaw, support(0.0)).unwrap();
+        let mut raised = flat;
+        raised.transport_y(0.75).unwrap();
+
+        flat.advance(duration(DT), flat_root, yaw, support(0.0), 0.35, -0.18)
+            .unwrap();
+        raised
+            .advance(duration(DT), raised_root, yaw, support(0.75), 0.35, -0.18)
+            .unwrap();
+        for (flat, raised) in (*flat.nodes()).into_iter().zip(*raised.nodes()) {
+            assert_translation_with_one_ulp_xz(flat, raised, 0.75);
+        }
+    }
+
+    #[test]
+    fn zero_support_tail_new_and_follow_preserve_legacy_lane_bits() {
+        let root = pose_point(Vector3::new(0.25, 0.24, -0.5));
+        let yaw = actor_yaw(0.45);
+        let mut tail = Tail::new(root, yaw, support(0.0)).unwrap();
+        assert_eq!(
+            tail.nodes()
+                .map(|node| [node.x.to_bits(), node.y.to_bits(), node.z.to_bits()]),
+            [
+                [1_049_474_446, 1_048_400_644, 3_202_588_332],
+                [1_050_345_326, 1_049_053_321, 3_200_785_472],
+                [1_051_161_492, 1_049_951_715, 3_199_095_880],
+                [1_051_895_133, 1_051_169_547, 3_197_577_126],
+                [1_052_525_220, 1_052_662_712, 3_196_272_746],
+            ]
+        );
+
+        tail.advance(duration(DT), root, yaw, support(0.0), 0.35, -0.18)
+            .unwrap();
+        assert_eq!(
+            tail.nodes()
+                .map(|node| [node.x.to_bits(), node.y.to_bits(), node.z.to_bits()]),
+            [
+                [1_049_457_795, 1_048_353_209, 3_202_577_386],
+                [1_050_353_713, 1_049_012_011, 3_200_781_380],
+                [1_051_196_353, 1_049_902_385, 3_199_100_561],
+                [1_051_944_385, 1_051_121_136, 3_197_589_584],
+                [1_052_572_744, 1_052_620_197, 3_196_291_147],
+            ]
+        );
+    }
+
+    #[test]
+    fn tail_transport_rejects_nonfinite_delta_without_poisoning_nodes() {
+        let root = pose_point(Vector3::new(0.0, 0.24, 0.0));
+        let tail = Tail::new(root, actor_yaw(0.0), support(0.0)).unwrap();
+        for delta_y in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut attempt = tail;
+            let before = *attempt.nodes();
+            let error = attempt.transport_y(delta_y).unwrap_err();
+            assert_eq!(error.field(), "tail.support_delta_y");
+            assert_eq!(error.problem(), MotionValueProblem::NonFinite);
+            assert_eq!(*attempt.nodes(), before);
+        }
+    }
+
+    #[test]
+    fn tail_transport_rejects_finite_boundary_overflow_without_mutation() {
+        for (edge, delta_y) in [
+            (1_000_002.0_f32, 0.0625_f32),
+            (-1_000_002.0_f32, -0.0625_f32),
+        ] {
+            let mut capture = [Vector3::ZERO; TAIL_N];
+            capture[2].y = edge;
+            let mut tail = Tail::from_prepared(
+                Tail::prepare_restore(capture).expect("the exact pose edge must restore"),
+            );
+            let before = *tail.nodes();
+            let error = tail.transport_y(delta_y).unwrap_err();
+            assert_eq!(error.field(), "pose_point.y");
+            assert_eq!(error.problem(), MotionValueProblem::OutOfRange);
+            assert_eq!(*tail.nodes(), before);
+        }
+    }
+
+    #[test]
+    fn cat_pose_rejects_poisoned_gait_frame_before_deriving_joints() {
+        let position = actor_position(Vector3::ZERO);
+        let yaw = actor_yaw(0.0);
+        let mut gait = CatGait::new(position, yaw).unwrap();
+        let frame = gait
+            .advance(duration(0.0), position, yaw, speed(0.0))
+            .unwrap();
+
+        let mut bad_paw = frame.clone();
+        bad_paw.paws[1].x = f32::INFINITY;
+        let error = CatPose::try_from_gait(position, yaw, &bad_paw, 0.0).unwrap_err();
+        assert_eq!(error.field(), "pose_point.x");
+        assert_eq!(error.problem(), MotionValueProblem::NonFinite);
+
+        let contact = cat_gait::Contact {
+            leg: 0,
+            at: Vector3::ZERO,
+        };
+        let mut exact_contact_budget = frame.clone();
+        exact_contact_budget.contacts = vec![contact; 4];
+        CatPose::try_from_gait(position, yaw, &exact_contact_budget, 0.0)
+            .expect("one possible contact per leg is the bounded public frame domain");
+
+        let mut unbounded_contacts = frame.clone();
+        unbounded_contacts.contacts = vec![
+            cat_gait::Contact {
+                leg: 0,
+                at: Vector3::ZERO,
+            };
+            5
+        ];
+        let error = CatPose::try_from_gait(position, yaw, &unbounded_contacts, 0.0).unwrap_err();
+        assert_eq!(error.field(), "cat_pose.contacts");
+        assert_eq!(error.problem(), MotionValueProblem::OutOfRange);
+
+        let mut bad_contact_leg = frame.clone();
+        bad_contact_leg.contacts.push(cat_gait::Contact {
+            leg: LEGS,
+            at: Vector3::ZERO,
+        });
+        let error = CatPose::try_from_gait(position, yaw, &bad_contact_leg, 0.0).unwrap_err();
+        assert_eq!(error.field(), "cat_pose.contact.leg");
+        assert_eq!(error.problem(), MotionValueProblem::OutOfRange);
+
+        let mut bad_contact_point = frame.clone();
+        bad_contact_point.contacts.push(cat_gait::Contact {
+            leg: 0,
+            at: Vector3::new(0.0, f32::NAN, 0.0),
+        });
+        let error = CatPose::try_from_gait(position, yaw, &bad_contact_point, 0.0).unwrap_err();
+        assert_eq!(error.field(), "pose_point.y");
+        assert_eq!(error.problem(), MotionValueProblem::NonFinite);
+
+        for (phase, amp, bob, support_delta_y, sit, field, problem) in [
+            (
+                f64::NAN,
+                frame.amp,
+                frame.bob,
+                0.0,
+                0.0,
+                "cat_pose.phase",
+                MotionValueProblem::NonFinite,
+            ),
+            (
+                1.0,
+                frame.amp,
+                frame.bob,
+                0.0,
+                0.0,
+                "cat_pose.phase",
+                MotionValueProblem::OutOfRange,
+            ),
+            (
+                frame.phase,
+                f64::NAN,
+                frame.bob,
+                0.0,
+                0.0,
+                "cat_pose.amp",
+                MotionValueProblem::NonFinite,
+            ),
+            (
+                frame.phase,
+                1.01,
+                frame.bob,
+                0.0,
+                0.0,
+                "cat_pose.amp",
+                MotionValueProblem::OutOfRange,
+            ),
+            (
+                frame.phase,
+                frame.amp,
+                f64::NAN,
+                0.0,
+                0.0,
+                "cat_pose.bob",
+                MotionValueProblem::NonFinite,
+            ),
+            (
+                frame.phase,
+                frame.amp,
+                0.006_001,
+                0.0,
+                0.0,
+                "cat_pose.bob",
+                MotionValueProblem::OutOfRange,
+            ),
+            (
+                frame.phase,
+                frame.amp,
+                frame.bob,
+                f32::NAN,
+                0.0,
+                "cat_pose.support_delta_y",
+                MotionValueProblem::NonFinite,
+            ),
+            (
+                frame.phase,
+                frame.amp,
+                frame.bob,
+                0.0,
+                f64::NAN,
+                "cat_pose.sit",
+                MotionValueProblem::NonFinite,
+            ),
+            (
+                frame.phase,
+                frame.amp,
+                frame.bob,
+                0.0,
+                -0.01,
+                "cat_pose.sit",
+                MotionValueProblem::OutOfRange,
+            ),
+        ] {
+            let mut poisoned = frame.clone();
+            poisoned.phase = phase;
+            poisoned.amp = amp;
+            poisoned.bob = bob;
+            poisoned.support_delta_y = support_delta_y;
+            let error = CatPose::try_from_gait(position, yaw, &poisoned, sit).unwrap_err();
+            assert_eq!(error.field(), field);
+            assert_eq!(error.problem(), problem);
+        }
+    }
+
+    #[test]
+    fn skeleton_rejects_public_pose_poison_and_unrepresentable_yaw() {
+        let (base, _) = pose_and_frame_at(0.0, 0.0);
+        for poisoned in [
+            CatPose {
+                pos: Vector3::new(f32::NAN, 0.0, 0.0),
+                ..base
+            },
+            CatPose {
+                yaw: f64::MAX,
+                ..base
+            },
+            CatPose { amp: 1.01, ..base },
+            CatPose { sit: -0.01, ..base },
+            CatPose {
+                bob: 0.006_001,
+                ..base
+            },
+        ] {
+            assert!(skeleton(&poisoned).is_err());
+        }
+
+        let edge = Vector3::new(1_000_002.0, 0.0, 0.0);
+        let derived_overflow = CatPose {
+            pos: edge,
+            yaw: -std::f64::consts::FRAC_PI_2,
+            paws: [edge; LEGS],
+            bob: 0.0,
+            amp: 0.0,
+            sit: 0.0,
+        };
+        let error = skeleton(&derived_overflow)
+            .expect_err("a valid raw pose whose derived chest crosses the pose edge must refuse");
+        assert_eq!(error.field(), "pose_point.x");
+        assert_eq!(error.problem(), MotionValueProblem::OutOfRange);
+    }
+
+    #[test]
+    fn poisoned_tail_capture_refuses_checked_restore() {
+        let mut nodes = [Vector3::ZERO; TAIL_N];
+        nodes[3].x = f32::INFINITY;
+        let error = Tail::prepare_restore(nodes).expect_err("tail poison must be refused");
+        assert_eq!(error.path, "tail[3].x");
+
+        let mut nodes = [Vector3::ZERO; TAIL_N];
+        nodes[1].z = crate::support_motion::MAX_POSE_COORD_M + 1.0;
+        let error = Tail::prepare_restore(nodes).expect_err("tail overflow must be refused");
+        assert_eq!(error.path, "tail[1].z");
+    }
+
+    #[test]
+    fn brain_and_tail_typed_steps_reject_invalid_inputs_without_mutating_prior_state() {
+        let position = actor_position(Vector3::ZERO);
+        let yaw = actor_yaw(0.0);
+        let rect = RoamRect::try_around(position, Vector2::new(6.0, 6.0)).unwrap();
+        let brain = CatBrain::new(7, rect, yaw);
+        let brain_before = brain.capture();
+        assert!(ActorPosition::try_new(Vector3::new(f32::NAN, 0.0, 0.0)).is_err());
+        assert!(ActorYaw::try_new(f64::INFINITY).is_err());
+        assert!(FiniteMeasure::try_new(f64::NAN, "cat.progress").is_err());
+        assert_eq!(brain.capture(), brain_before);
+
+        let root = PosePoint::try_new(Vector3::new(0.0, 0.24, 0.0)).unwrap();
+        let mut tail = Tail::new(root, yaw, support(0.0)).unwrap();
+        let tail_before = tail;
+        for (sit, sway, field, problem) in [
+            (f64::NAN, 0.0, "tail.sit", MotionValueProblem::NonFinite),
+            (-0.01, 0.0, "tail.sit", MotionValueProblem::OutOfRange),
+            (1.01, 0.0, "tail.sit", MotionValueProblem::OutOfRange),
+            (
+                0.5,
+                f64::INFINITY,
+                "tail.sway",
+                MotionValueProblem::NonFinite,
+            ),
+        ] {
+            let error = tail
+                .advance(
+                    StepDuration::from_raw(DT),
+                    root,
+                    yaw,
+                    support(0.0),
+                    sit,
+                    sway,
+                )
+                .expect_err("invalid tail controls must be refused");
+            assert_eq!(error.field(), field);
+            assert_eq!(error.problem(), problem);
+            assert_eq!(tail, tail_before);
+        }
+
+        let edge = Vector3::new(1_000_002.0, 0.0, 0.0);
+        let mut edge_tail = Tail::from_prepared(
+            Tail::prepare_restore([edge; TAIL_N]).expect("the exact pose edge must restore"),
+        );
+        let edge_before = edge_tail;
+        let error = edge_tail
+            .advance(
+                StepDuration::from_raw(DT),
+                pose_point(edge),
+                actor_yaw(std::f64::consts::FRAC_PI_2),
+                support(0.0),
+                0.0,
+                0.0,
+            )
+            .expect_err("the follow step beyond the pose edge must refuse");
+        assert_eq!(error.field(), "pose_point.x");
+        assert_eq!(error.problem(), MotionValueProblem::OutOfRange);
+        assert_eq!(edge_tail, edge_before);
+    }
+
     #[test]
     fn prepared_restore_rejects_invalid_pose_or_tail_point() {
         let pose = CatPose {
@@ -492,6 +1224,18 @@ mod tests {
         let error = CatPose::prepare_restore(pose).expect_err("pose poison must be refused");
         assert_eq!(error.path, "pose.sit");
 
+        let pose = CatPose {
+            pos: Vector3::ZERO,
+            yaw: f64::MAX,
+            paws: [Vector3::ZERO; LEGS],
+            bob: 0.0,
+            amp: 0.0,
+            sit: 0.0,
+        };
+        let error = CatPose::prepare_restore(pose)
+            .expect_err("a yaw that cannot narrow to Godot must be refused");
+        assert_eq!(error.path, "pose.yaw");
+
         let mut nodes = [Vector3::ZERO; TAIL_N];
         nodes[3].x = f32::INFINITY;
         let error = Tail::prepare_restore(nodes).expect_err("tail poison must be refused");
@@ -503,13 +1247,17 @@ mod tests {
 
     /// A settled walking pose sweep straight off the real gait.
     fn walk_poses(sit: f64) -> Vec<CatPose> {
-        let mut gait = CatGait::new(Vector3::ZERO, 0.0);
+        let yaw = actor_yaw(0.0);
+        let mut gait = CatGait::new(actor_position(Vector3::ZERO), yaw).unwrap();
         let mut pos = Vector3::ZERO;
         let mut out = Vec::new();
         for _ in 0..600 {
             pos += Vector3::new(0.0, 0.0, -(0.6 * DT) as f32);
-            let frame = gait.advance(DT, pos, 0.0, 0.6);
-            out.push(CatPose::from_gait(pos, 0.0, &frame, sit));
+            let position = actor_position(pos);
+            let frame = gait
+                .advance(duration(DT), position, yaw, speed(0.6))
+                .unwrap();
+            out.push(CatPose::try_from_gait(position, yaw, &frame, sit).unwrap());
         }
         out
     }
@@ -520,7 +1268,7 @@ mod tests {
     fn legs_preserve_segment_lengths() {
         for sit in [0.0, 0.35, 1.0] {
             for pose in walk_poses(sit) {
-                let sk = skeleton(&pose);
+                let sk = skeleton(&pose).unwrap();
                 for (leg, l) in sk.legs.iter().enumerate() {
                     let (upper, lower) = if leg < 2 {
                         (FORE_UPPER, FORE_LOWER)
@@ -573,7 +1321,7 @@ mod tests {
     fn legs_bend_backward() {
         let poses = walk_poses(0.0);
         let pose = &poses[300];
-        let sk = skeleton(pose);
+        let sk = skeleton(pose).unwrap();
         let fw = Vector3::new(0.0, 0.0, -1.0); // yaw 0 faces -Z
         for l in sk.legs {
             let straight = (l.paw - l.root) * 0.5 + l.root;
@@ -586,10 +1334,16 @@ mod tests {
     /// chest and head rise proud, and the hind paws tuck in beside them.
     #[test]
     fn sitting_drops_the_haunches_and_lifts_the_head() {
-        let mut gait = CatGait::new(Vector3::ZERO, 0.0);
-        let frame = gait.advance(DT, Vector3::ZERO, 0.0, 0.0);
-        let stand = skeleton(&CatPose::from_gait(Vector3::ZERO, 0.0, &frame, 0.0));
-        let seated = skeleton(&CatPose::from_gait(Vector3::ZERO, 0.0, &frame, 1.0));
+        let position = actor_position(Vector3::ZERO);
+        let yaw = actor_yaw(0.0);
+        let mut gait = CatGait::new(position, yaw).unwrap();
+        let frame = gait
+            .advance(duration(DT), position, yaw, speed(0.0))
+            .unwrap();
+        let stand_pose = CatPose::try_from_gait(position, yaw, &frame, 0.0).unwrap();
+        let seated_pose = CatPose::try_from_gait(position, yaw, &frame, 1.0).unwrap();
+        let stand = skeleton(&stand_pose).unwrap();
+        let seated = skeleton(&seated_pose).unwrap();
         assert!(f64::from(seated.hip.y) < 0.09);
         assert!(f64::from(stand.hip.y) > 0.19);
         assert!(seated.head.y > stand.head.y);
@@ -609,10 +1363,15 @@ mod tests {
     /// or above the ground through the whole sit.
     #[test]
     fn seated_legs_never_pierce_the_floor() {
-        let mut gait = CatGait::new(Vector3::ZERO, 0.0);
-        let frame = gait.advance(DT, Vector3::ZERO, 0.0, 0.0);
+        let position = actor_position(Vector3::ZERO);
+        let yaw = actor_yaw(0.0);
+        let mut gait = CatGait::new(position, yaw).unwrap();
+        let frame = gait
+            .advance(duration(DT), position, yaw, speed(0.0))
+            .unwrap();
         for sit in [0.5, 0.75, 1.0] {
-            let sk = skeleton(&CatPose::from_gait(Vector3::ZERO, 0.0, &frame, sit));
+            let pose = CatPose::try_from_gait(position, yaw, &frame, sit).unwrap();
+            let sk = skeleton(&pose).unwrap();
             for (leg, l) in sk.legs.iter().enumerate() {
                 for (joint, p) in [("root", l.root), ("mid", l.mid), ("paw", l.paw)] {
                     assert!(
@@ -630,7 +1389,7 @@ mod tests {
     #[test]
     fn ears_muzzle_whiskers_stay_on_the_face() {
         for pose in walk_poses(0.0).iter().step_by(60) {
-            let sk = skeleton(pose);
+            let sk = skeleton(pose).unwrap();
             for (base, tip) in sk.ears {
                 assert!(f64::from((base - sk.head).length()) < 0.06);
                 assert!(f64::from((tip - base).length()) < 0.06);
@@ -654,7 +1413,7 @@ mod tests {
     fn standing_paws_pass_through() {
         let poses = walk_poses(0.0);
         for (i, pose) in poses.iter().enumerate() {
-            let sk = skeleton(pose);
+            let sk = skeleton(pose).unwrap();
             for (leg, l) in sk.legs.iter().enumerate() {
                 let d = f64::from((l.paw - pose.paws[leg]).length());
                 if i >= 300 {
@@ -671,9 +1430,10 @@ mod tests {
     #[test]
     fn tail_follows_lags_and_curls() {
         let root = Vector3::new(0.0, 0.24, 0.0);
-        let back = Vector3::new(0.0, 0.0, 1.0);
+        let root_point = pose_point(root);
+        let yaw = actor_yaw(0.0);
         let rv = Vector3::new(1.0, 0.0, 0.0);
-        let mut tail = Tail::new(root, back, rv);
+        let mut tail = Tail::new(root_point, yaw, support(0.0)).unwrap();
         for node in tail.nodes() {
             assert!(node.x.is_finite() && node.y.is_finite() && node.z.is_finite());
         }
@@ -685,18 +1445,33 @@ mod tests {
         }
         // swing the body 90 degrees in one tick: the base joint obeys
         // quickly, the tip barely moves yet — lag written in the air
-        let new_back = Vector3::new(1.0, 0.0, 0.0);
-        let new_rv = Vector3::new(0.0, 0.0, -1.0);
         let before = *tail.nodes();
-        tail.advance(1.0 / 60.0, root, new_back, new_rv, 0.0, 0.0);
+        tail.advance(
+            duration(1.0 / 60.0),
+            root_point,
+            actor_yaw(std::f64::consts::FRAC_PI_2),
+            support(0.0),
+            0.0,
+            0.0,
+        )
+        .unwrap();
         let after = *tail.nodes();
         let base_move = f64::from((after[0] - before[0]).length());
         let tip_move = f64::from((after[TAIL_N - 1] - before[TAIL_N - 1]).length());
         assert!(base_move > tip_move, "the tip failed to lag the base");
         // settle into a sit: the tip ends up swung to the side
-        let mut sitting = Tail::new(root, back, rv);
+        let mut sitting = Tail::new(root_point, yaw, support(0.0)).unwrap();
         for _ in 0..600 {
-            sitting.advance(1.0 / 60.0, root, back, rv, 1.0, 0.0);
+            sitting
+                .advance(
+                    duration(1.0 / 60.0),
+                    root_point,
+                    yaw,
+                    support(0.0),
+                    1.0,
+                    0.0,
+                )
+                .unwrap();
         }
         let tip = sitting.nodes()[TAIL_N - 1];
         assert!(
@@ -709,20 +1484,23 @@ mod tests {
     /// iterations toward rest), so a restore door must bypass it.
     #[test]
     fn a_restored_tail_holds_its_exact_curve() {
-        let rv = Vector3::new(1.0, 0.0, 0.0);
-        let mut tail = Tail::new(Vector3::ZERO, Vector3::new(0.0, 0.1, -0.2), rv);
+        let yaw = actor_yaw(0.0);
+        let mut tail = Tail::new(pose_point(Vector3::ZERO), yaw, support(0.0)).unwrap();
         for i in 0..30 {
             let root = Vector3::new(f32::from(i as u8) * 0.01, 0.0, 0.0);
             tail.advance(
-                0.05,
-                root,
-                root + Vector3::new(0.0, 0.1, -0.2),
-                rv,
+                duration(0.05),
+                pose_point(root),
+                yaw,
+                support(0.0),
                 0.2,
                 0.1,
-            );
+            )
+            .unwrap();
         }
-        let restored = Tail::restore(*tail.nodes());
+        let restored = Tail::from_prepared(
+            Tail::prepare_restore(*tail.nodes()).expect("self-capture must restore"),
+        );
         assert_eq!(restored.nodes(), tail.nodes());
     }
 
@@ -733,14 +1511,16 @@ mod tests {
     #[test]
     fn tail_never_coils_into_a_loop() {
         let root = Vector3::new(0.0, 0.24, 0.0);
+        let root_point = pose_point(root);
+        let yaw = actor_yaw(0.0);
         let back = Vector3::new(0.0, 0.0, 1.0);
-        let rv = Vector3::new(1.0, 0.0, 0.0);
         let max_cos = TAIL_MAX_BEND.cos();
         for sit in [0.0, 0.5, 1.0] {
             for sway in [-0.25, 0.0, 0.25] {
-                let mut tail = Tail::new(root, back, rv);
+                let mut tail = Tail::new(root_point, yaw, support(0.0)).unwrap();
                 for _ in 0..600 {
-                    tail.advance(DT, root, back, rv, sit, sway);
+                    tail.advance(duration(DT), root_point, yaw, support(0.0), sit, sway)
+                        .unwrap();
                 }
                 let mut prev_dir = back;
                 let mut prev = root;
@@ -762,17 +1542,27 @@ mod tests {
     /// walk frames, spun yaws, a bobbing body: total, always.
     #[test]
     fn skeleton_is_total() {
-        let mut gait = CatGait::new(Vector3::ZERO, 0.3);
         let mut pos = Vector3::new(2.0, 0.0, -1.0);
         let mut yaw = 0.3;
+        let mut gait = CatGait::new(actor_position(pos), actor_yaw(yaw)).unwrap();
         for i in 0..900 {
             yaw += 1.4 * DT;
             let speed = if i % 200 < 130 { 0.6 } else { 0.0 };
             pos +=
                 Vector3::new((-yaw.sin()) as f32, 0.0, (-yaw.cos()) as f32) * ((speed * DT) as f32);
-            let frame = gait.advance(DT, pos, yaw, speed);
+            let frame = gait
+                .advance(
+                    duration(DT),
+                    actor_position(pos),
+                    actor_yaw(yaw),
+                    self::speed(speed),
+                )
+                .unwrap();
             let sit = (f64::from(i % 300) / 300.0).min(1.0);
-            let sk = skeleton(&CatPose::from_gait(pos, yaw, &frame, sit));
+            let position = actor_position(pos);
+            let yaw = actor_yaw(yaw);
+            let pose = CatPose::try_from_gait(position, yaw, &frame, sit).unwrap();
+            let sk = skeleton(&pose).unwrap();
             for v in [sk.chest, sk.hip, sk.neck, sk.head, sk.muzzle, sk.tail_root] {
                 assert!(v.x.is_finite() && v.y.is_finite() && v.z.is_finite());
             }

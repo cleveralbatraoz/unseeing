@@ -514,6 +514,32 @@ func test_cat_gait_internal_support_mismatch_refuses_before_writes() -> void:
 	await _assert_atomic_refusal(main, blob, "cats[0].gait.planted[0].y")
 
 
+func test_cat_body_y_and_gait_support_y_mismatch_leaves_world_untouched() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	var cat: Dictionary = (blob["cats"] as Array)[0]
+	var gait: Dictionary = cat["gait"]
+	var changed_support := str(str(gait["support_y"]).to_float() + 0.5)
+	gait["support_y"] = changed_support
+	for group_name: String in ["planted", "aim"]:
+		for point: Array in gait[group_name] as Array:
+			point[1] = changed_support
+	_install_canonical_hash(main, blob)
+	await _assert_atomic_refusal(main, blob, "cats[0].gait.support_y")
+
+
+func test_cat_rect_rehash_stays_syntax_only_before_owner_preflight_refuses_it() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	var brain: Dictionary = ((blob["cats"] as Array)[0] as Dictionary)["brain"]
+	var rect: Dictionary = brain["rect"]
+	rect["max_x"] = "1000000.25"
+	_install_canonical_hash(main, blob)
+	await _assert_atomic_refusal(main, blob, "cats[0].brain.rect.max_x")
+
+
 func test_disabled_runtime_actor_refuses_capture() -> void:
 	var main := await _boot_ticked()
 	main.player.set_physics_process(false)

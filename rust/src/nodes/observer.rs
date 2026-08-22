@@ -34,7 +34,7 @@ use super::level::{FaceCensusEntry, WaveLevel};
 use super::player::UnseeingPlayer;
 use super::source;
 use crate::cat_body::{CatPose, TAIL_N};
-use crate::cat_brain::{BrainCapture, BrainState, RoamRect};
+use crate::cat_brain::{BrainCapture, BrainState, RoamRectCapture};
 use crate::cat_gait::{GaitCapture, LEGS};
 use crate::echo_queue::PendingEcho;
 use crate::ffi::{WaveCore, cast_reflection_fan};
@@ -1824,8 +1824,8 @@ fn brain_dict(brain: &BrainCapture) -> VarDictionary {
     entry
 }
 
-fn rect_dict(rect: &RoamRect) -> VarDictionary {
-    let RoamRect {
+fn rect_dict(rect: &RoamRectCapture) -> VarDictionary {
+    let RoamRectCapture {
         min_x,
         min_z,
         max_x,
@@ -2565,8 +2565,8 @@ fn parse_brain(group: &Group) -> Result<BrainCapture, String> {
     })
 }
 
-fn parse_rect(group: &Group) -> Result<RoamRect, String> {
-    Ok(RoamRect {
+fn parse_rect(group: &Group) -> Result<RoamRectCapture, String> {
+    Ok(RoamRectCapture {
         min_x: group.f64("min_x")?,
         min_z: group.f64("min_z")?,
         max_x: group.f64("max_x")?,

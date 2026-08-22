@@ -18,9 +18,9 @@ func _role(name: String) -> float:
 	return table.get(name, NAN)
 
 
-func _add_floor() -> void:
+func _add_floor_at(support_y: float) -> void:
 	var body: StaticBody3D = auto_free(StaticBody3D.new())
-	body.position = Vector3(0, -0.05, 0)
+	body.position = Vector3(0, support_y - 0.05, 0)
 	var col := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
 	shape.size = Vector3(20, 0.1, 20)
@@ -29,13 +29,21 @@ func _add_floor() -> void:
 	add_child(body)
 
 
-func _add_cat() -> void:
+func _add_floor() -> void:
+	_add_floor_at(0.0)
+
+
+func _add_cat_at(position: Vector3) -> void:
 	_pulses = Pulses.new()
 	_cat = auto_free(WaveCat.new())
 	_cat.pulses = _pulses
 	_cat.data_mat = ShaderMaterial.new()
-	_cat.position = Vector3(0, 0, 0)
+	_cat.position = position
 	add_child(_cat)
+
+
+func _add_cat() -> void:
+	_add_cat_at(Vector3.ZERO)
 
 
 ## No silent nulls: a cat without its injected pool and material reports
@@ -46,6 +54,54 @@ func test_uninjected_cat_reports_and_disables() -> void:
 	await assert_error(enter).is_push_error("WaveCat: pulses/data_mat not injected — cat disabled")
 	assert_bool(bare.is_physics_processing()).is_false()
 	assert_int(bare.get_child_count()).is_equal(0)
+
+
+## Invalid scene-owned motion data is refused before the collider, skin, or
+## deterministic owners exist. Both processing channels stay inert.
+func test_cat_ready_refuses_invalid_motion_inputs_before_building_children() -> void:
+	for witness: Dictionary in [
+		{
+			"position": Vector3(NAN, 0.0, 0.0),
+			"roam_size": Vector2(6.0, 6.0),
+			"error": "WaveCat: ready inputs refused: actor_position.x must be finite",
+		},
+		{
+			"position": Vector3.ZERO,
+			"roam_size": Vector2(0.5, 6.0),
+			"error": "WaveCat: ready inputs refused: roam_rect.size_x is outside its valid range",
+		},
+	]:
+		var cat: WaveCat = auto_free(WaveCat.new())
+		var position: Vector3 = witness["position"]
+		var roam_size: Vector2 = witness["roam_size"]
+		var expected_error: String = witness["error"]
+		cat.pulses = Pulses.new()
+		cat.data_mat = ShaderMaterial.new()
+		cat.position = position
+		cat.roam_size = roam_size
+		var enter := func() -> void: add_child(cat)
+		await assert_error(enter).is_push_error(expected_error)
+		assert_bool(cat.is_physics_processing()).is_false()
+		assert_bool(cat.is_processing()).is_false()
+		assert_int(cat.get_child_count()).is_equal(0)
+
+
+## A poisoned engine sample after ready is stopped at the real physics
+## boundary, before the brain/gait/tail transaction can commit anything.
+func test_cat_physics_refuses_poisoned_pre_move_sample_and_disables() -> void:
+	_add_floor()
+	_add_cat()
+	await get_tree().physics_frame
+	var child_count := _cat.get_child_count()
+	var refuse := func() -> void:
+		_cat.velocity = Vector3(NAN, 0.0, 0.0)
+		_cat.notification(Node.NOTIFICATION_PHYSICS_PROCESS)
+	await assert_error(refuse).is_push_error(
+		"WaveCat: physics velocity refused: actor_velocity.x must be finite"
+	)
+	assert_bool(_cat.is_physics_processing()).is_false()
+	assert_bool(_cat.is_processing()).is_false()
+	assert_int(_cat.get_child_count()).is_equal(child_count)
 
 
 ## The cat lives its own life: within a few simulated seconds it leaves its
@@ -87,6 +143,35 @@ func test_cat_wanders_and_paw_waves_sound() -> void:
 			found_presence = true
 	assert_bool(found_paw).override_failure_message("no paw-voiced pulse in the pool").is_true()
 	assert_bool(found_presence).override_failure_message("no presence heartbeat pulse").is_true()
+
+
+## At an elevated support, body, paws, and both existing voices carry the same
+## root datum. The adapter adds only the authored 2 cm paw and 18 cm presence
+## offsets; no endpoint falls back to world zero.
+func test_elevated_cat_pose_and_voices_share_root_support() -> void:
+	_add_floor_at(0.75)
+	_add_cat_at(Vector3(0.0, 0.75, 0.0))
+	var now := 0.0
+	for i: int in 300:
+		now = float(i) * DT
+		_cat.tick(now)
+		await get_tree().physics_frame
+	assert_float(_cat.position.y).is_equal_approx(0.75, 0.001)
+	for paw: Vector3 in _cat.paw_positions():
+		assert_float(paw.y).is_between(0.749, 0.801)
+
+	var found_paw := false
+	var found_presence := false
+	for i: int in _pulses.live_count(now):
+		var datum := _pulses.dat[i]
+		if is_equal_approx(datum.y, WaveCat.paw_range()):
+			assert_float(_pulses.pos[i].y).is_equal_approx(0.77, 0.001)
+			found_paw = true
+		elif is_equal_approx(datum.y, WaveCat.presence_range()):
+			assert_float(_pulses.pos[i].y).is_equal_approx(0.93, 0.001)
+			found_presence = true
+	assert_bool(found_paw).override_failure_message("no elevated paw voice").is_true()
+	assert_bool(found_presence).override_failure_message("no elevated presence voice").is_true()
 
 
 ## The silhouette exists: after a rendered frame the baked mesh carries

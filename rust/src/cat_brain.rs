@@ -21,18 +21,15 @@
 //! making progress; the brain notices, abandons that ambition, and picks
 //! another — no pathfinding in v1, just honest give-up-and-go-elsewhere.
 
-use godot::builtin::Vector3;
+use godot::builtin::{Vector2, Vector3};
 
 use crate::reproduce::RestoreValueError;
-use crate::support_motion::ActorYaw;
+use crate::support_motion::{
+    ActorPosition, ActorYaw, FiniteMeasure, MAX_ACTOR_COORD_M, MotionValueError, StepDuration,
+};
 
 /// The leisurely wander walk, m/s — inside the gait's design envelope.
 pub const WANDER_SPEED: f64 = 0.6;
-
-/// Roam edges ultimately describe a Godot `Vector3` world. Keeping them in
-/// that representable envelope also prevents a malformed span from
-/// overflowing the brain's target arithmetic.
-const MAX_BRAIN_COORD: f64 = f32::MAX as f64;
 
 /// Hardest turn, rad/s. Cats swivel comfortably but not instantly.
 pub const TURN_RATE: f64 = 2.4;
@@ -128,12 +125,23 @@ impl Pcg32 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RoamRect {
     /// West edge.
-    pub min_x: f64,
+    min_x: f64,
     /// North edge (smaller z).
-    pub min_z: f64,
+    min_z: f64,
     /// East edge.
-    pub max_x: f64,
+    max_x: f64,
     /// South edge.
+    max_z: f64,
+}
+
+/// Raw format-2 image of a roam rectangle. The wire must be able to carry a
+/// malformed-but-syntactic artifact through canonical hashing; only the brain
+/// owner's prepared restore door narrows these lanes to [`RoamRect`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RoamRectCapture {
+    pub min_x: f64,
+    pub min_z: f64,
+    pub max_x: f64,
     pub max_z: f64,
 }
 
@@ -141,17 +149,102 @@ impl RoamRect {
     /// The rect of the given full extents centered on a point — how the
     /// engine node builds it from its own spawn position and a designer
     /// size knob.
+    pub fn try_around(center: ActorPosition, size: Vector2) -> Result<Self, MotionValueError> {
+        let size_x = checked_roam_size(f64::from(size.x), "roam_rect.size_x")?;
+        let size_z = checked_roam_size(f64::from(size.y), "roam_rect.size_z")?;
+        let center = center.world();
+        Self::try_restore(
+            f64::from(center.x) - size_x * 0.5,
+            f64::from(center.z) - size_z * 0.5,
+            f64::from(center.x) + size_x * 0.5,
+            f64::from(center.z) + size_z * 0.5,
+        )
+    }
+
+    pub fn try_restore(
+        min_x: f64,
+        min_z: f64,
+        max_x: f64,
+        max_z: f64,
+    ) -> Result<Self, MotionValueError> {
+        for (value, field) in [
+            (min_x, "roam_rect.min_x"),
+            (min_z, "roam_rect.min_z"),
+            (max_x, "roam_rect.max_x"),
+            (max_z, "roam_rect.max_z"),
+        ] {
+            if !value.is_finite() {
+                return Err(MotionValueError::non_finite(field));
+            }
+            if value.abs() > f64::from(MAX_ACTOR_COORD_M) {
+                return Err(MotionValueError::out_of_range(field));
+            }
+        }
+        if max_x < min_x {
+            return Err(MotionValueError::out_of_range("roam_rect.max_x"));
+        }
+        if max_z < min_z {
+            return Err(MotionValueError::out_of_range("roam_rect.max_z"));
+        }
+        checked_roam_size(max_x - min_x, "roam_rect.size_x")?;
+        checked_roam_size(max_z - min_z, "roam_rect.size_z")?;
+        Ok(Self {
+            min_x,
+            min_z,
+            max_x,
+            max_z,
+        })
+    }
+
     #[must_use]
-    pub fn around(center: Vector3, size_x: f64, size_z: f64) -> Self {
-        let cx = f64::from(center.x);
-        let cz = f64::from(center.z);
-        Self {
-            min_x: cx - size_x * 0.5,
-            min_z: cz - size_z * 0.5,
-            max_x: cx + size_x * 0.5,
-            max_z: cz + size_z * 0.5,
+    pub fn min_x(self) -> f64 {
+        self.min_x
+    }
+
+    #[must_use]
+    pub fn min_z(self) -> f64 {
+        self.min_z
+    }
+
+    #[must_use]
+    pub fn max_x(self) -> f64 {
+        self.max_x
+    }
+
+    #[must_use]
+    pub fn max_z(self) -> f64 {
+        self.max_z
+    }
+
+    #[must_use]
+    pub fn contains_target(self, tx: f64, tz: f64) -> bool {
+        tx.is_finite()
+            && tz.is_finite()
+            && tx.abs() <= f64::from(MAX_ACTOR_COORD_M)
+            && tz.abs() <= f64::from(MAX_ACTOR_COORD_M)
+            && (self.min_x..=self.max_x).contains(&tx)
+            && (self.min_z..=self.max_z).contains(&tz)
+    }
+
+    #[must_use]
+    fn capture(self) -> RoamRectCapture {
+        RoamRectCapture {
+            min_x: self.min_x,
+            min_z: self.min_z,
+            max_x: self.max_x,
+            max_z: self.max_z,
         }
     }
+}
+
+fn checked_roam_size(value: f64, field: &'static str) -> Result<f64, MotionValueError> {
+    if !value.is_finite() {
+        return Err(MotionValueError::non_finite(field));
+    }
+    if !(1.0..=30.0).contains(&value) {
+        return Err(MotionValueError::out_of_range(field));
+    }
+    Ok(value)
 }
 
 /// What the cat is at right now — the observable face of the state.
@@ -169,9 +262,9 @@ pub enum Mood {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Drive {
     /// Commanded planar speed, m/s — already eased.
-    pub speed: f64,
+    pub speed: FiniteMeasure,
     /// Commanded heading, radians — already rate-limited.
-    pub yaw: f64,
+    pub yaw: ActorYaw,
     /// Whether the cat means to be sitting.
     pub sitting: bool,
 }
@@ -200,7 +293,7 @@ pub enum BrainState {
 pub struct BrainCapture {
     pub rng_state: u64,
     pub rng_inc: u64,
-    pub rect: RoamRect,
+    pub rect: RoamRectCapture,
     pub state: BrainState,
     pub yaw: f64,
     pub speed: f64,
@@ -225,12 +318,24 @@ pub struct PreparedCatBrain(CatBrain);
 
 impl CatBrain {
     pub fn prepare_restore(capture: BrainCapture) -> Result<PreparedCatBrain, RestoreValueError> {
-        let rect = capture.rect;
+        let raw_rect = capture.rect;
+        let rect = RoamRect::try_restore(
+            raw_rect.min_x,
+            raw_rect.min_z,
+            raw_rect.max_x,
+            raw_rect.max_z,
+        )
+        .map_err(|error| {
+            let field = error
+                .field()
+                .strip_prefix("roam_rect.")
+                .unwrap_or(error.field());
+            RestoreValueError::new(
+                format!("brain.rect.{field}"),
+                "must be a finite ordered 1..=30 m rectangle inside actor bounds",
+            )
+        })?;
         for (field, value) in [
-            ("rect.min_x", rect.min_x),
-            ("rect.min_z", rect.min_z),
-            ("rect.max_x", rect.max_x),
-            ("rect.max_z", rect.max_z),
             ("yaw", capture.yaw),
             ("speed", capture.speed),
             ("blocked", capture.blocked),
@@ -245,31 +350,6 @@ impl CatBrain {
         ActorYaw::try_new(capture.yaw).map_err(|_| {
             RestoreValueError::new("brain.yaw", "must narrow to a finite Godot rotation lane")
         })?;
-        for (field, value) in [
-            ("rect.min_x", rect.min_x),
-            ("rect.min_z", rect.min_z),
-            ("rect.max_x", rect.max_x),
-            ("rect.max_z", rect.max_z),
-        ] {
-            if value.abs() > MAX_BRAIN_COORD {
-                return Err(RestoreValueError::new(
-                    format!("brain.{field}"),
-                    "is outside Godot world-coordinate bounds",
-                ));
-            }
-        }
-        if rect.min_x > rect.max_x {
-            return Err(RestoreValueError::new(
-                "brain.rect.max_x",
-                "must not be below min_x",
-            ));
-        }
-        if rect.min_z > rect.max_z {
-            return Err(RestoreValueError::new(
-                "brain.rect.max_z",
-                "must not be below min_z",
-            ));
-        }
         if capture.rng_inc & 1 == 0 {
             return Err(RestoreValueError::new(
                 "brain.rng_inc",
@@ -278,22 +358,26 @@ impl CatBrain {
         }
         match capture.state {
             BrainState::Roam { tx, tz } => {
-                for (field, target, min, max) in [
-                    ("state.tx", tx, rect.min_x, rect.max_x),
-                    ("state.tz", tz, rect.min_z, rect.max_z),
-                ] {
+                for (field, target) in [("state.tx", tx), ("state.tz", tz)] {
                     if !target.is_finite() {
                         return Err(RestoreValueError::new(
                             format!("brain.{field}"),
                             "must be finite",
                         ));
                     }
-                    if target < min || target > max {
-                        return Err(RestoreValueError::new(
-                            format!("brain.{field}"),
-                            "must lie inside the roam rectangle",
-                        ));
-                    }
+                }
+                if !rect.contains_target(tx, tz) {
+                    let field = if tx.abs() > f64::from(MAX_ACTOR_COORD_M)
+                        || !(rect.min_x..=rect.max_x).contains(&tx)
+                    {
+                        "brain.state.tx"
+                    } else {
+                        "brain.state.tz"
+                    };
+                    return Err(RestoreValueError::new(
+                        field,
+                        "must lie inside the raw roam rectangle and actor bounds",
+                    ));
                 }
             }
             BrainState::Pause { left } => {
@@ -331,7 +415,7 @@ impl CatBrain {
                 "must be in 0..=BLOCKED_AFTER",
             ));
         }
-        Ok(PreparedCatBrain(Self::restore(capture)))
+        Ok(PreparedCatBrain(Self::restore(capture, rect)))
     }
 
     #[must_use]
@@ -343,12 +427,12 @@ impl CatBrain {
     /// (a fixed first pause — no draw, so seed streams start aligned at
     /// the first real choice), then begins to wander `rect`.
     #[must_use]
-    pub fn new(seed: u64, rect: RoamRect, yaw: f64) -> Self {
+    pub fn new(seed: u64, rect: RoamRect, yaw: ActorYaw) -> Self {
         Self {
             rng: Pcg32::new(seed, 0xCA7),
             rect,
             state: State::Pause { left: 0.8 },
-            yaw,
+            yaw: yaw.radians(),
             speed: 0.0,
             blocked: 0.0,
         }
@@ -376,7 +460,24 @@ impl CatBrain {
     /// One tick of mind. `pos` is the body's position, `progress` the
     /// planar meters it ACTUALLY moved since the last tick — feed the
     /// measurement, not the wish, so blocked bodies read as blocked.
-    pub fn advance(&mut self, dt: f64, pos: Vector3, progress: f64) -> Drive {
+    pub fn advance(
+        &mut self,
+        dt: StepDuration,
+        pos: ActorPosition,
+        progress: FiniteMeasure,
+    ) -> Result<Drive, MotionValueError> {
+        let mut next = *self;
+        let drive = next.advance_checked(dt.seconds(), pos.world(), progress.value())?;
+        *self = next;
+        Ok(drive)
+    }
+
+    fn advance_checked(
+        &mut self,
+        dt: f64,
+        pos: Vector3,
+        progress: f64,
+    ) -> Result<Drive, MotionValueError> {
         match self.state {
             State::Pause { left } | State::Sit { left } => {
                 self.speed += (0.0 - self.speed) * (dt * SPEED_EASE).min(1.0);
@@ -393,11 +494,11 @@ impl CatBrain {
             }
             State::Roam { tx, tz } => self.roam(dt, pos, progress, tx, tz),
         }
-        Drive {
-            speed: self.speed,
-            yaw: self.yaw,
+        Ok(Drive {
+            speed: FiniteMeasure::try_new(self.speed, "cat_brain.speed")?,
+            yaw: ActorYaw::try_new(self.yaw)?,
             sitting: matches!(self.state, State::Sit { .. }),
-        }
+        })
     }
 
     /// The walking mind: steer toward the target, slow into arrivals and
@@ -461,7 +562,7 @@ impl CatBrain {
         BrainCapture {
             rng_state,
             rng_inc,
-            rect: self.rect,
+            rect: self.rect.capture(),
             state: match self.state {
                 State::Roam { tx, tz } => BrainState::Roam { tx, tz },
                 State::Pause { left } => BrainState::Pause { left },
@@ -475,11 +576,10 @@ impl CatBrain {
 
     /// A brain rebuilt mid-life — the one thing `new` cannot express (it
     /// hard-codes the first pause and a fresh stream).
-    #[must_use]
-    pub fn restore(capture: BrainCapture) -> Self {
+    fn restore(capture: BrainCapture, rect: RoamRect) -> Self {
         Self {
             rng: Pcg32::restore(capture.rng_state, capture.rng_inc),
-            rect: capture.rect,
+            rect,
             state: match capture.state {
                 BrainState::Roam { tx, tz } => State::Roam { tx, tz },
                 BrainState::Pause { left } => State::Pause { left },
@@ -529,28 +629,188 @@ fn wrap_pi(a: f64) -> f64 {
 mod tests {
     use super::*;
 
+    use godot::builtin::Vector2;
+
+    use crate::support_motion::{ActorPosition, ActorYaw, FiniteMeasure, StepDuration};
+
+    fn actor_position(world: Vector3) -> ActorPosition {
+        ActorPosition::try_new(world).expect("test position must be in the actor domain")
+    }
+
+    fn actor_yaw(radians: f64) -> ActorYaw {
+        ActorYaw::try_new(radians).expect("test yaw must be in the actor domain")
+    }
+
+    fn progress(meters: f64) -> FiniteMeasure {
+        FiniteMeasure::try_new(meters, "test.progress")
+            .expect("test progress must be finite and non-negative")
+    }
+
+    fn duration(seconds: f64) -> StepDuration {
+        StepDuration::from_raw(seconds)
+    }
+
+    #[test]
+    #[expect(
+        clippy::excessive_precision,
+        reason = "999_985.0625 is the hand-derived adjacent f32 centre, exactly one ULP above the safe centre"
+    )]
+    fn roam_rect_accepts_last_exact_safe_edge_and_rejects_adjacent_excess() {
+        for (center, expected_edge, expected_field) in [
+            (
+                Vector3::new(999_985.0, 0.0, 0.0),
+                1_000_000.0_f64,
+                "roam_rect.max_x",
+            ),
+            (
+                Vector3::new(-999_985.0, 0.0, 0.0),
+                -1_000_000.0_f64,
+                "roam_rect.min_x",
+            ),
+            (
+                Vector3::new(0.0, 0.0, 999_985.0),
+                1_000_000.0_f64,
+                "roam_rect.max_z",
+            ),
+            (
+                Vector3::new(0.0, 0.0, -999_985.0),
+                -1_000_000.0_f64,
+                "roam_rect.min_z",
+            ),
+        ] {
+            let rect = RoamRect::try_around(actor_position(center), Vector2::new(30.0, 30.0))
+                .expect("the last centre whose rect meets the actor bound must pass");
+            let edge = match expected_field {
+                "roam_rect.min_x" => rect.min_x(),
+                "roam_rect.min_z" => rect.min_z(),
+                "roam_rect.max_z" => rect.max_z(),
+                _ => rect.max_x(),
+            };
+            assert_eq!(edge.to_bits(), expected_edge.to_bits());
+        }
+
+        for (center, expected_field) in [
+            (Vector3::new(999_985.062_5, 0.0, 0.0), "roam_rect.max_x"),
+            (Vector3::new(-999_985.062_5, 0.0, 0.0), "roam_rect.min_x"),
+            (Vector3::new(0.0, 0.0, 999_985.062_5), "roam_rect.max_z"),
+            (Vector3::new(0.0, 0.0, -999_985.062_5), "roam_rect.min_z"),
+        ] {
+            let error = RoamRect::try_around(actor_position(center), Vector2::new(30.0, 30.0))
+                .expect_err("the adjacent centre puts one rect edge outside actor space");
+            assert_eq!(error.field(), expected_field);
+        }
+    }
+
+    #[test]
+    fn rounded_brain_target_round_trips_after_margin_sampling() {
+        let center = actor_position(Vector3::new(0.08, 0.0, 0.0));
+        let rect = RoamRect::try_around(center, Vector2::new(1.0, 1.0)).unwrap();
+        let yaw = actor_yaw(0.0);
+        let mut brain = CatBrain::new(5, rect, yaw);
+        for _ in 0..13 {
+            brain
+                .advance(duration(1.0 / 15.0), center, progress(0.0))
+                .expect("valid brain inputs must produce a drive");
+        }
+        let capture = brain.capture();
+        let BrainState::Roam { tx, tz } = capture.state else {
+            panic!("seed 5 must have left the initial pause")
+        };
+        assert_eq!(tx.to_bits(), 0.2_f64.to_bits());
+        assert!(rect.contains_target(tx, tz));
+        let restored = CatBrain::from_prepared(
+            CatBrain::prepare_restore(capture).expect("self-produced rounded target must restore"),
+        );
+        assert_eq!(restored.capture(), capture);
+    }
+
+    #[test]
+    fn brain_restore_rejects_out_of_envelope_rect_or_target() {
+        let outside = 1_000_000.25_f64;
+        assert_eq!(
+            RoamRect::try_restore(-1.0, -1.0, outside, 1.0)
+                .unwrap_err()
+                .field(),
+            "roam_rect.max_x"
+        );
+        assert_eq!(
+            RoamRect::try_restore(0.041, -0.5, 0.049, 0.5)
+                .unwrap_err()
+                .field(),
+            "roam_rect.size_x"
+        );
+        assert_eq!(
+            RoamRect::try_restore(-15.000_001, -0.5, 15.000_001, 0.5)
+                .unwrap_err()
+                .field(),
+            "roam_rect.size_x"
+        );
+        for (min_x, min_z, max_x, max_z, expected_field) in [
+            (-0.5, 0.041, 0.5, 0.049, "roam_rect.size_z"),
+            (-0.5, -15.000_001, 0.5, 15.000_001, "roam_rect.size_z"),
+            (0.5, -0.5, -0.5, 0.5, "roam_rect.max_x"),
+            (-0.5, 0.5, 0.5, -0.5, "roam_rect.max_z"),
+        ] {
+            assert_eq!(
+                RoamRect::try_restore(min_x, min_z, max_x, max_z)
+                    .unwrap_err()
+                    .field(),
+                expected_field
+            );
+        }
+
+        let rect = RoamRect::try_restore(-1.0, -1.0, 1.0, 1.0).unwrap();
+        for (tx, tz) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+            let mut edge = CatBrain::new(7, rect, actor_yaw(0.0)).capture();
+            edge.state = BrainState::Roam { tx, tz };
+            CatBrain::prepare_restore(edge).expect("either raw rectangle edge must restore");
+        }
+        let mut capture = CatBrain::new(7, rect, actor_yaw(0.0)).capture();
+        capture.state = BrainState::Roam {
+            tx: 1.000_000_000_000_000_2,
+            tz: 0.0,
+        };
+        let error = CatBrain::prepare_restore(capture)
+            .expect_err("a target outside the raw rect must be refused");
+        assert_eq!(error.path, "brain.state.tx");
+    }
+
+    #[test]
+    fn poisoned_brain_capture_refuses_checked_restore() {
+        let rect = RoamRect::try_restore(-2.0, -3.0, 2.0, 3.0).unwrap();
+        let mut capture = CatBrain::new(7, rect, actor_yaw(0.0)).capture();
+        capture.speed = f64::NAN;
+        assert_eq!(
+            CatBrain::prepare_restore(capture).unwrap_err().path,
+            "brain.speed"
+        );
+
+        let mut capture = CatBrain::new(7, rect, actor_yaw(0.0)).capture();
+        capture.blocked = -0.25;
+        assert_eq!(
+            CatBrain::prepare_restore(capture).unwrap_err().path,
+            "brain.blocked"
+        );
+    }
+
     const DT: f64 = 1.0 / 60.0;
 
     #[test]
     fn prepared_restore_rejects_invalid_brain_rect_target_or_rng() {
-        let rect = RoamRect {
-            min_x: -2.0,
-            min_z: -3.0,
-            max_x: 2.0,
-            max_z: 3.0,
-        };
-        let mut capture = CatBrain::new(7, rect, 0.0).capture();
+        let rect =
+            RoamRect::try_restore(-2.0, -3.0, 2.0, 3.0).expect("test rectangle must be valid");
+        let mut capture = CatBrain::new(7, rect, actor_yaw(0.0)).capture();
         capture.rng_inc &= !1;
         let error = CatBrain::prepare_restore(capture).expect_err("even stream must be refused");
         assert_eq!(error.path, "brain.rng_inc");
 
-        let mut capture = CatBrain::new(7, rect, 0.0).capture();
+        let mut capture = CatBrain::new(7, rect, actor_yaw(0.0)).capture();
         capture.state = BrainState::Pause { left: 8.0 };
         let error = CatBrain::prepare_restore(capture)
             .expect_err("a pause longer than the pause author's ceiling must be refused");
         assert_eq!(error.path, "brain.state.left");
 
-        let mut capture = CatBrain::new(7, rect, 0.0).capture();
+        let mut capture = CatBrain::new(7, rect, actor_yaw(0.0)).capture();
         capture.rect.max_x = f64::MAX;
         let error = CatBrain::prepare_restore(capture)
             .expect_err("a roam edge outside actor space must be refused");
@@ -559,15 +819,16 @@ mod tests {
 
     #[test]
     fn prepared_restore_rejects_yaw_that_cannot_reach_a_finite_godot_lane() {
-        let rect = RoamRect::around(Vector3::ZERO, 6.0, 6.0);
-        let mut poisoned = CatBrain::new(7, rect, 0.0).capture();
+        let rect = RoamRect::try_around(actor_position(Vector3::ZERO), Vector2::new(6.0, 6.0))
+            .expect("test rectangle must be valid");
+        let mut poisoned = CatBrain::new(7, rect, actor_yaw(0.0)).capture();
         poisoned.yaw = f64::MAX;
         let error = CatBrain::prepare_restore(poisoned)
             .expect_err("a yaw that narrows to infinity must be refused");
         assert_eq!(error.path, "brain.yaw");
 
         for boundary in [f64::from(f32::MAX), -f64::from(f32::MAX)] {
-            let mut accepted = CatBrain::new(7, rect, 0.0).capture();
+            let mut accepted = CatBrain::new(7, rect, actor_yaw(0.0)).capture();
             accepted.yaw = boundary;
             let restored = CatBrain::from_prepared(
                 CatBrain::prepare_restore(accepted).expect("finite f32 boundary must pass"),
@@ -635,20 +896,32 @@ mod tests {
 
     impl Sim {
         fn new(seed: u64) -> Self {
-            let rect = RoamRect::around(Vector3::new(3.0, 0.0, 3.0), 6.0, 6.0);
+            let rect = RoamRect::try_around(
+                actor_position(Vector3::new(3.0, 0.0, 3.0)),
+                Vector2::new(6.0, 6.0),
+            )
+            .expect("test rectangle must be valid");
             Self {
-                brain: CatBrain::new(seed, rect, 0.0),
+                brain: CatBrain::new(seed, rect, actor_yaw(0.0)),
                 pos: Vector3::new(3.0, 0.0, 3.0),
                 last: Vector3::new(3.0, 0.0, 3.0),
             }
         }
 
         fn step(&mut self) -> Drive {
-            let progress = f64::from((self.pos - self.last).length());
+            let measured_progress = f64::from((self.pos - self.last).length());
             self.last = self.pos;
-            let drive = self.brain.advance(DT, self.pos, progress);
-            let fw = Vector3::new((-drive.yaw.sin()) as f32, 0.0, (-drive.yaw.cos()) as f32);
-            self.pos += fw * ((drive.speed * DT) as f32);
+            let drive = self
+                .brain
+                .advance(
+                    duration(DT),
+                    actor_position(self.pos),
+                    progress(measured_progress),
+                )
+                .expect("valid simulation inputs must produce a drive");
+            let yaw = drive.yaw.radians();
+            let fw = Vector3::new((-yaw.sin()) as f32, 0.0, (-yaw.cos()) as f32);
+            self.pos += fw * ((drive.speed.value() * DT) as f32);
             drive
         }
     }
@@ -721,9 +994,9 @@ mod tests {
     #[test]
     fn turning_is_rate_limited() {
         let mut sim = Sim::new(11);
-        let mut prev = sim.step().yaw;
+        let mut prev = sim.step().yaw.radians();
         for _ in 0..(120.0 / DT) as usize {
-            let yaw = sim.step().yaw;
+            let yaw = sim.step().yaw.radians();
             assert!((yaw - prev).abs() <= TURN_RATE * DT + 1e-12);
             prev = yaw;
         }
@@ -742,8 +1015,8 @@ mod tests {
         let mut sim = Sim::new(5);
         for _ in 0..(120.0 / DT) as usize {
             let drive = sim.step();
-            assert!(drive.speed <= WANDER_SPEED + 1e-9);
-            assert!(drive.speed >= 0.0);
+            assert!(drive.speed.value() <= WANDER_SPEED + 1e-9);
+            assert!(drive.speed.value() >= 0.0);
         }
     }
 
@@ -751,12 +1024,16 @@ mod tests {
     /// couple of seconds, abandons that ambition for a fresh target.
     #[test]
     fn a_blocked_cat_loses_interest() {
-        let rect = RoamRect::around(Vector3::ZERO, 8.0, 8.0);
-        let mut brain = CatBrain::new(3, rect, 0.0);
+        let position = actor_position(Vector3::ZERO);
+        let rect = RoamRect::try_around(position, Vector2::new(8.0, 8.0))
+            .expect("test rectangle must be valid");
+        let mut brain = CatBrain::new(3, rect, actor_yaw(0.0));
         // wake through the initial pause into a first target
         let mut first = None;
         for _ in 0..(2.0 / DT) as usize {
-            brain.advance(DT, Vector3::ZERO, 0.0);
+            brain
+                .advance(duration(DT), position, progress(0.0))
+                .expect("valid brain inputs must produce a drive");
             if let Some(t) = brain.target() {
                 first = Some(t);
                 break;
@@ -766,7 +1043,9 @@ mod tests {
         // the body never moves (progress 0): interest must move instead
         let mut repicked = false;
         for _ in 0..(3.0 / DT) as usize {
-            brain.advance(DT, Vector3::ZERO, 0.0);
+            brain
+                .advance(duration(DT), position, progress(0.0))
+                .expect("valid brain inputs must produce a drive");
             if brain.target().is_some_and(|t| t != first) {
                 repicked = true;
                 break;
@@ -775,18 +1054,25 @@ mod tests {
         assert!(repicked, "still pushing at the same blocked target");
     }
 
-    /// A rect too small for the wall margin collapses to its center —
-    /// total, never panicking, never aiming outside.
+    /// A subminimum rectangle is refused at construction, while the smallest
+    /// valid rectangle still produces a target inside its raw extent.
     #[test]
-    fn degenerate_rect_collapses_to_center() {
-        let rect = RoamRect::around(Vector3::new(1.0, 0.0, 2.0), 0.5, 0.5);
-        let mut brain = CatBrain::new(1, rect, 0.0);
+    fn subminimum_rect_is_rejected_and_smallest_valid_rect_stays_inside() {
+        let position = actor_position(Vector3::new(1.0, 0.0, 2.0));
+        let error = RoamRect::try_around(position, Vector2::new(0.5, 0.5))
+            .expect_err("a roam rectangle smaller than one meter must be refused");
+        assert_eq!(error.field(), "roam_rect.size_x");
+
+        let rect = RoamRect::try_around(position, Vector2::new(1.0, 1.0))
+            .expect("the one-meter lower boundary must be accepted");
+        let mut brain = CatBrain::new(1, rect, actor_yaw(0.0));
         for _ in 0..(5.0 / DT) as usize {
-            brain.advance(DT, Vector3::new(1.0, 0.0, 2.0), 0.0);
+            brain
+                .advance(duration(DT), position, progress(0.0))
+                .expect("valid brain inputs must produce a drive");
         }
         if let Some((tx, tz)) = brain.target() {
-            assert!((tx - 1.0).abs() < 1e-9);
-            assert!((tz - 2.0).abs() < 1e-9);
+            assert!(rect.contains_target(tx, tz));
         }
     }
 
@@ -796,18 +1082,28 @@ mod tests {
     /// same-seed-same-life law, lifted to same-capture-same-future.
     #[test]
     fn a_restored_brain_lives_the_same_future() {
-        let rect = RoamRect::around(Vector3::ZERO, 6.0, 6.0);
-        let mut original = CatBrain::new(7, rect, 0.3);
+        let rect = RoamRect::try_around(actor_position(Vector3::ZERO), Vector2::new(6.0, 6.0))
+            .expect("test rectangle must be valid");
+        let mut original = CatBrain::new(7, rect, actor_yaw(0.3));
         let mut pos = Vector3::ZERO;
         for _ in 0..120 {
-            let drive = original.advance(0.1, pos, 0.05);
-            pos += Vector3::new(0.05, 0.0, 0.02) * (drive.speed as f32);
+            let drive = original
+                .advance(duration(0.1), actor_position(pos), progress(0.05))
+                .expect("valid brain inputs must produce a drive");
+            pos += Vector3::new(0.05, 0.0, 0.02) * (drive.speed.value() as f32);
         }
-        let mut restored = CatBrain::restore(original.capture());
+        let capture = original.capture();
+        let mut restored = CatBrain::from_prepared(
+            CatBrain::prepare_restore(capture).expect("self-produced capture must restore"),
+        );
         assert_eq!(restored, original); // PartialEq on the whole brain
         for _ in 0..200 {
-            let a = original.advance(0.1, pos, 0.04);
-            let b = restored.advance(0.1, pos, 0.04);
+            let a = original
+                .advance(duration(0.1), actor_position(pos), progress(0.04))
+                .expect("valid brain inputs must produce a drive");
+            let b = restored
+                .advance(duration(0.1), actor_position(pos), progress(0.04))
+                .expect("valid brain inputs must produce a drive");
             assert_eq!(a.speed, b.speed);
             assert_eq!(a.yaw, b.yaw);
             assert_eq!(a.sitting, b.sitting);

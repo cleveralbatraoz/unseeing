@@ -38,7 +38,7 @@
 use godot::builtin::{Vector3, Vector4};
 
 use crate::cat_body::{CatPose, TAIL_N};
-use crate::cat_brain::{BrainCapture, BrainState, RoamRect};
+use crate::cat_brain::{BrainCapture, BrainState, RoamRectCapture};
 use crate::cat_gait::GaitCapture;
 use crate::echo_queue::PendingEcho;
 use crate::observe::QueuedWave;
@@ -570,8 +570,8 @@ fn encode_brain(brain: &BrainCapture, enc: &mut Enc) {
     enc.f64(*blocked);
 }
 
-fn encode_rect(rect: &RoamRect, enc: &mut Enc) {
-    let RoamRect {
+fn encode_rect(rect: &RoamRectCapture, enc: &mut Enc) {
+    let RoamRectCapture {
         min_x,
         min_z,
         max_x,
@@ -1087,8 +1087,8 @@ fn diff_brain(a: &BrainCapture, b: &BrainCapture) -> Option<String> {
     .map(String::from)
 }
 
-fn diff_rect(a: &RoamRect, b: &RoamRect) -> Option<&'static str> {
-    let RoamRect {
+fn diff_rect(a: &RoamRectCapture, b: &RoamRectCapture) -> Option<&'static str> {
+    let RoamRectCapture {
         min_x,
         min_z,
         max_x,
@@ -1307,7 +1307,7 @@ mod tests {
             brain: BrainCapture {
                 rng_state,
                 rng_inc: rng_state ^ 0x00ca_7000_0000_0ca7,
-                rect: RoamRect {
+                rect: RoamRectCapture {
                     min_x: -3.5 + k,
                     min_z: -4.25 + k,
                     max_x: 5.75 + k,
