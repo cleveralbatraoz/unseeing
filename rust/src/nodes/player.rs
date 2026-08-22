@@ -16,30 +16,53 @@
 //! composition root queue wave requests. This keeps all space queries
 //! inside Godot's supported physics window.
 
+use godot::classes::character_body_3d::{MotionMode, PlatformOnLeave};
 use godot::classes::{
     Camera3D, CapsuleShape3D, CharacterBody3D, CollisionShape3D, ICharacterBody3D, Input,
     InputEvent, InputEventKey, InputEventMouseButton, InputEventMouseMotion, InputMap, Os,
-    PhysicsDirectSpaceState3D, PhysicsRayQueryParameters3D, input,
+    PhysicsDirectSpaceState3D, PhysicsRayQueryParameters3D, PhysicsServer3D,
+    PhysicsTestMotionParameters3D, PhysicsTestMotionResult3D, input,
 };
 use godot::global::{Key, MouseButton};
 use godot::prelude::*;
+use std::fmt;
+use std::num::NonZeroU64;
 
+use super::support::{
+    FLOOR_MAX_ANGLE_RAD, FLOOR_SNAP_M, MAX_SLIDES, MOTION_RESULT_MAX_CONTACTS, PLATFORM_LAYERS,
+    SAFE_MARGIN_M, SNAP_PROBE_MAX_CONTACTS, collision_pair, is_actor_layer,
+};
 use crate::observe::QueuedWave;
 use crate::observe::reflect::{CheckedReflectionRequest, ReflectionRequest};
 use crate::pulse_pool::{CheckedWave, OMNI_COS};
 use crate::render;
 use crate::reproduce::{HeroCapture, RestoreValueError};
 use crate::support_motion::{
-    ActorPosition, ActorVelocity, FootstepSuppression, GodotRotation, MotionState, PosePoint,
-    QueuedWaveGate,
+    ActorPosition, ActorTransform, ActorVelocity, FiniteRotation, FootstepSuppression,
+    GodotRotation, MotionOutcome, MotionRestoreError, MotionState, MotionValueError,
+    PlanarVelocity, PosePoint, QueuedWaveGate, StepDuration, SupportContact, SupportElevation,
+    SupportMotionConfig, prepare, reconcile, validate_restore,
 };
 use crate::temporal::{PreparedTime, prepare_time};
 
 /// Eye height above the floor.
 pub const EYE: f64 = 1.6;
 
+/// World root height of the authored standing hero on a flat support.
+pub const PLAYER_STANDING_ROOT_Y: f64 = 0.9;
+
+/// Maximum separation at which a new support contact may be born.
+#[expect(
+    dead_code,
+    reason = "Task 2 publishes the checked player elevation boundary consumed by Task 3"
+)]
+pub const CONTACT_BIRTH_HEIGHT_M: f32 = 0.04;
+
+/// Capsule centre relative to the authored standing root.
+const PLAYER_CAPSULE_CENTER_Y_M: f32 = -0.05;
+
 /// Camera rest height in capsule-local space.
-pub const CAM_BASE_Y: f64 = EYE - 0.9;
+pub const CAM_BASE_Y: f64 = EYE - PLAYER_STANDING_ROOT_Y;
 
 /// Walk speed, m/s — a careful walk, not a run.
 pub const SPEED: f64 = 2.1;
@@ -116,6 +139,8 @@ pub(super) struct PreparedPlayerState {
     eye: Gd<Camera3D>,
     eye_rotation: Vector3,
     motion: MotionState,
+    collision_layer: u32,
+    collision_mask: u32,
     last_tap: f64,
     tap_target: Vector3,
     tap_queued: bool,
@@ -128,6 +153,339 @@ pub(super) struct PreparedPlayerState {
 struct RestProbe {
     tip: Vector3,
     supported: bool,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RawSupportFact {
+    point: Vector3,
+    normal: Vector3,
+    collider_rid_valid: bool,
+    collider_layer: u32,
+    collider_id: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SupportReadError {
+    InvalidOuterCount(i32),
+    MissingSlide(i32),
+    InvalidInnerCount { slide: i32, count: i32 },
+    InvalidOrdinaryRid { slide: i32, contact: i32 },
+    InvalidProbeCount(i32),
+    InvalidProbeRid(i32),
+    InvalidValue(MotionValueError),
+}
+
+impl From<MotionValueError> for SupportReadError {
+    fn from(error: MotionValueError) -> Self {
+        Self::InvalidValue(error)
+    }
+}
+
+impl fmt::Display for SupportReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidOuterCount(count) => {
+                write!(
+                    formatter,
+                    "slide collision count {count} is outside 0..={MAX_SLIDES}"
+                )
+            }
+            Self::MissingSlide(slide) => {
+                write!(formatter, "slide collision {slide} is missing")
+            }
+            Self::InvalidInnerCount { slide, count } => write!(
+                formatter,
+                "slide collision {slide} contact count {count} is outside 1..={MOTION_RESULT_MAX_CONTACTS}"
+            ),
+            Self::InvalidOrdinaryRid { slide, contact } => write!(
+                formatter,
+                "slide collision {slide} contact {contact} has an invalid collider RID"
+            ),
+            Self::InvalidProbeCount(count) => write!(
+                formatter,
+                "snap probe contact count {count} is outside 1..={SNAP_PROBE_MAX_CONTACTS}"
+            ),
+            Self::InvalidProbeRid(contact) => {
+                write!(
+                    formatter,
+                    "snap probe contact {contact} has an invalid collider RID"
+                )
+            }
+            Self::InvalidValue(error) => error.fmt(formatter),
+        }
+    }
+}
+
+trait PlayerMotionPort {
+    fn read_global_transform(&mut self) -> Transform3D;
+    fn read_global_rotation(&mut self) -> Vector3;
+    fn read_velocity(&mut self) -> Vector3;
+    fn write_velocity(&mut self, velocity: Vector3);
+    fn move_and_slide_once(&mut self);
+    fn is_on_floor(&mut self) -> bool;
+    fn read_slide_collision_count(&mut self) -> i32;
+    fn read_slide_contact_count(&mut self, slide: i32) -> Option<i32>;
+    fn read_slide_contact_geometry(
+        &mut self,
+        slide: i32,
+        contact: i32,
+    ) -> Option<(Vector3, Vector3)>;
+    fn read_slide_collider(&mut self, slide: i32, contact: i32) -> Option<(bool, u32, u64)>;
+    fn probe_snap(&mut self, post_transform: Transform3D) -> bool;
+    fn read_probe_contact_count(&mut self) -> i32;
+    fn read_probe_contact_geometry(&mut self, contact: i32) -> (Vector3, Vector3);
+    fn read_probe_collider(&mut self, contact: i32) -> (bool, u32, u64);
+    fn read_collision_layer(&mut self) -> u32;
+    fn read_collision_mask(&mut self) -> u32;
+    fn write_collision_layer(&mut self, layer: u32);
+    fn write_collision_mask(&mut self, mask: u32);
+    fn write_global_transform(&mut self, transform: Transform3D);
+    fn disable_physics(&mut self);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlayerTickSuccess {
+    state: MotionState,
+    support_collider_id: Option<u64>,
+    collision_layer: u32,
+    collision_mask: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PreparedPlayerPreMove {
+    saved_transform: Transform3D,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PlayerTickReason {
+    Motion(MotionValueError),
+    Support(SupportReadError),
+}
+
+impl fmt::Display for PlayerTickReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Motion(error) => error.fmt(formatter),
+            Self::Support(error) => error.fmt(formatter),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PlayerTickFault {
+    phase: &'static str,
+    reason: PlayerTickReason,
+}
+
+fn floor_angle_accepts(contact: SupportContact) -> bool {
+    let normal = contact.normal();
+    let x = f64::from(normal.x);
+    let y = f64::from(normal.y);
+    let z = f64::from(normal.z);
+    let length = (x * x + y * y + z * z).sqrt();
+    let cosine = (y / length).clamp(-1.0, 1.0);
+    cosine.acos() <= f64::from(FLOOR_MAX_ANGLE_RAD)
+}
+
+fn read_post_move_support<P: PlayerMotionPort>(
+    port: &mut P,
+    post_transform: ActorTransform,
+) -> Result<(Option<SupportContact>, Option<u64>), SupportReadError> {
+    if !port.is_on_floor() {
+        return Ok((None, None));
+    }
+
+    let slide_count = port.read_slide_collision_count();
+    if !(0..=MAX_SLIDES).contains(&slide_count) {
+        return Err(SupportReadError::InvalidOuterCount(slide_count));
+    }
+    let mut candidate = None;
+    let mut saw_floorish = false;
+    for slide in 0..slide_count {
+        let contact_count = port
+            .read_slide_contact_count(slide)
+            .ok_or(SupportReadError::MissingSlide(slide))?;
+        if !(1..=MOTION_RESULT_MAX_CONTACTS).contains(&contact_count) {
+            return Err(SupportReadError::InvalidInnerCount {
+                slide,
+                count: contact_count,
+            });
+        }
+        for contact_index in 0..contact_count {
+            let (point, normal) = port
+                .read_slide_contact_geometry(slide, contact_index)
+                .ok_or(SupportReadError::MissingSlide(slide))?;
+            let contact = SupportContact::try_new(point, normal)?;
+            if !floor_angle_accepts(contact) {
+                continue;
+            }
+            saw_floorish = true;
+            let (collider_rid_valid, collider_layer, collider_id) = port
+                .read_slide_collider(slide, contact_index)
+                .ok_or(SupportReadError::MissingSlide(slide))?;
+            if !collider_rid_valid {
+                return Err(SupportReadError::InvalidOrdinaryRid {
+                    slide,
+                    contact: contact_index,
+                });
+            }
+            if !is_actor_layer(collider_layer) && candidate.is_none() {
+                candidate = Some((contact, NonZeroU64::new(collider_id).map(NonZeroU64::get)));
+            }
+        }
+    }
+    if let Some((support, collider_id)) = candidate {
+        return Ok((Some(support), collider_id));
+    }
+    if saw_floorish {
+        return Ok((None, None));
+    }
+
+    if !port.probe_snap(post_transform.world()) {
+        return Ok((None, None));
+    }
+    let contact_count = port.read_probe_contact_count();
+    if !(1..=SNAP_PROBE_MAX_CONTACTS).contains(&contact_count) {
+        return Err(SupportReadError::InvalidProbeCount(contact_count));
+    }
+    let mut candidate = None;
+    for contact_index in 0..contact_count {
+        let (point, normal) = port.read_probe_contact_geometry(contact_index);
+        let contact = SupportContact::try_new(point, normal)?;
+        if !floor_angle_accepts(contact) {
+            continue;
+        }
+        let (collider_rid_valid, collider_layer, collider_id) =
+            port.read_probe_collider(contact_index);
+        if !collider_rid_valid {
+            return Err(SupportReadError::InvalidProbeRid(contact_index));
+        }
+        if !is_actor_layer(collider_layer) && candidate.is_none() {
+            candidate = Some((contact, NonZeroU64::new(collider_id).map(NonZeroU64::get)));
+        }
+    }
+    Ok(candidate.map_or((None, None), |(support, collider_id)| {
+        (Some(support), collider_id)
+    }))
+}
+
+fn refuse_player_before_move<P: PlayerMotionPort>(
+    port: &mut P,
+    phase: &'static str,
+    error: MotionValueError,
+) -> PlayerTickFault {
+    port.write_velocity(Vector3::ZERO);
+    port.disable_physics();
+    PlayerTickFault {
+        phase,
+        reason: PlayerTickReason::Motion(error),
+    }
+}
+
+fn rollback_player_motion<P: PlayerMotionPort>(
+    port: &mut P,
+    saved_transform: Transform3D,
+    phase: &'static str,
+    reason: PlayerTickReason,
+) -> PlayerTickFault {
+    port.write_global_transform(saved_transform);
+    port.write_velocity(Vector3::ZERO);
+    port.disable_physics();
+    PlayerTickFault { phase, reason }
+}
+
+fn prepare_player_pre_move<P: PlayerMotionPort>(
+    port: &mut P,
+) -> Result<PreparedPlayerPreMove, PlayerTickFault> {
+    let saved_transform = port.read_global_transform();
+    ActorTransform::try_new(saved_transform)
+        .map_err(|error| refuse_player_before_move(port, "physics transform", error))?;
+    FiniteRotation::try_new(port.read_global_rotation())
+        .map_err(|error| refuse_player_before_move(port, "physics rotation", error))?;
+    ActorVelocity::try_new(port.read_velocity())
+        .map_err(|error| refuse_player_before_move(port, "physics velocity", error))?;
+    Ok(PreparedPlayerPreMove { saved_transform })
+}
+
+fn controlled_player_tick_from_pre_move<P: PlayerMotionPort>(
+    port: &mut P,
+    pre_move: PreparedPlayerPreMove,
+    prior: MotionState,
+    desired_planar: PlanarVelocity,
+    raw_dt: f64,
+    config: SupportMotionConfig,
+) -> Result<PlayerTickSuccess, PlayerTickFault> {
+    let saved_transform = pre_move.saved_transform;
+
+    let prepared = prepare(
+        prior,
+        desired_planar,
+        StepDuration::from_raw(raw_dt),
+        config,
+    );
+    port.write_velocity(prepared.command().world_velocity());
+    port.move_and_slide_once();
+
+    let post_transform =
+        ActorTransform::try_new(port.read_global_transform()).map_err(|error| {
+            rollback_player_motion(
+                port,
+                saved_transform,
+                "post-move transform",
+                PlayerTickReason::Motion(error),
+            )
+        })?;
+    FiniteRotation::try_new(port.read_global_rotation()).map_err(|error| {
+        rollback_player_motion(
+            port,
+            saved_transform,
+            "post-move rotation",
+            PlayerTickReason::Motion(error),
+        )
+    })?;
+    let (support, collider_id) = read_post_move_support(port, post_transform).map_err(|error| {
+        rollback_player_motion(
+            port,
+            saved_transform,
+            "post-move support",
+            PlayerTickReason::Support(error),
+        )
+    })?;
+    let actual_velocity = ActorVelocity::try_new(port.read_velocity()).map_err(|error| {
+        rollback_player_motion(
+            port,
+            saved_transform,
+            "post-move velocity",
+            PlayerTickReason::Motion(error),
+        )
+    })?;
+    let transition = reconcile(prepared, MotionOutcome::new(actual_velocity, support));
+    let (collision_layer, collision_mask) = collision_pair(transition.state.phase());
+    if port.read_collision_layer() != collision_layer {
+        port.write_collision_layer(collision_layer);
+    }
+    if port.read_collision_mask() != collision_mask {
+        port.write_collision_mask(collision_mask);
+    }
+    Ok(PlayerTickSuccess {
+        state: transition.state,
+        support_collider_id: transition.state.support().and(collider_id),
+        collision_layer,
+        collision_mask,
+    })
+}
+
+#[cfg(test)]
+fn controlled_player_tick<P: PlayerMotionPort>(
+    port: &mut P,
+    prior: MotionState,
+    desired_planar: PlanarVelocity,
+    raw_dt: f64,
+    config: SupportMotionConfig,
+) -> Result<PlayerTickSuccess, PlayerTickFault> {
+    let pre_move = prepare_player_pre_move(port)?;
+    controlled_player_tick_from_pre_move(port, pre_move, prior, desired_planar, raw_dt, config)
 }
 
 /// The blind hero. Movement and look happen on the engine's
@@ -168,10 +526,155 @@ pub struct UnseeingPlayer {
     wave_queue: Vec<WaveRequest>,
     #[init(val = MotionState::initial())]
     motion_state: MotionState,
-    support_collider_id: Option<i64>,
+    #[init(val = SupportMotionConfig::PLAYER_DEFAULT)]
+    motion_config: SupportMotionConfig,
+    support_collider_id: Option<u64>,
+    #[init(val = PhysicsTestMotionParameters3D::new_gd())]
+    snap_params: Gd<PhysicsTestMotionParameters3D>,
+    #[init(val = PhysicsTestMotionResult3D::new_gd())]
+    snap_result: Gd<PhysicsTestMotionResult3D>,
     #[init(val = FootstepSuppression::CLEAR)]
     footstep_suppression: FootstepSuppression,
     base: Base<CharacterBody3D>,
+}
+
+impl PlayerMotionPort for UnseeingPlayer {
+    fn read_global_transform(&mut self) -> Transform3D {
+        self.base().get_global_transform()
+    }
+
+    fn read_global_rotation(&mut self) -> Vector3 {
+        self.base().get_global_rotation()
+    }
+
+    fn read_velocity(&mut self) -> Vector3 {
+        self.base().get_velocity()
+    }
+
+    fn write_velocity(&mut self, velocity: Vector3) {
+        self.base_mut().set_velocity(velocity);
+    }
+
+    fn move_and_slide_once(&mut self) {
+        self.base_mut().move_and_slide();
+    }
+
+    fn is_on_floor(&mut self) -> bool {
+        self.base().is_on_floor()
+    }
+
+    fn read_slide_collision_count(&mut self) -> i32 {
+        self.base().get_slide_collision_count()
+    }
+
+    fn read_slide_contact_count(&mut self, slide: i32) -> Option<i32> {
+        self.base()
+            .get_slide_collision(slide)
+            .map(|collision| collision.get_collision_count())
+    }
+
+    fn read_slide_contact_geometry(
+        &mut self,
+        slide: i32,
+        contact: i32,
+    ) -> Option<(Vector3, Vector3)> {
+        self.base().get_slide_collision(slide).map(|collision| {
+            (
+                collision.get_position_ex().collision_index(contact).done(),
+                collision.get_normal_ex().collision_index(contact).done(),
+            )
+        })
+    }
+
+    fn read_slide_collider(&mut self, slide: i32, contact: i32) -> Option<(bool, u32, u64)> {
+        self.base().get_slide_collision(slide).map(|collision| {
+            let rid = collision
+                .get_collider_rid_ex()
+                .collision_index(contact)
+                .done();
+            let valid = rid.is_valid();
+            let layer = if valid {
+                PhysicsServer3D::singleton().body_get_collision_layer(rid)
+            } else {
+                0
+            };
+            let id = collision
+                .get_collider_id_ex()
+                .collision_index(contact)
+                .done();
+            (valid, layer, id)
+        })
+    }
+
+    fn probe_snap(&mut self, post_transform: Transform3D) -> bool {
+        self.snap_params.set_from(post_transform);
+        let body = self.base().get_rid();
+        PhysicsServer3D::singleton()
+            .body_test_motion_ex(body, &self.snap_params)
+            .result(&self.snap_result)
+            .done()
+    }
+
+    fn read_probe_contact_count(&mut self) -> i32 {
+        self.snap_result.get_collision_count()
+    }
+
+    fn read_probe_contact_geometry(&mut self, contact: i32) -> (Vector3, Vector3) {
+        (
+            self.snap_result
+                .get_collision_point_ex()
+                .collision_index(contact)
+                .done(),
+            self.snap_result
+                .get_collision_normal_ex()
+                .collision_index(contact)
+                .done(),
+        )
+    }
+
+    fn read_probe_collider(&mut self, contact: i32) -> (bool, u32, u64) {
+        let rid = self
+            .snap_result
+            .get_collider_rid_ex()
+            .collision_index(contact)
+            .done();
+        let valid = rid.is_valid();
+        let layer = if valid {
+            PhysicsServer3D::singleton().body_get_collision_layer(rid)
+        } else {
+            0
+        };
+        let id = self
+            .snap_result
+            .get_collider_id_ex()
+            .collision_index(contact)
+            .done();
+        (valid, layer, id)
+    }
+
+    fn read_collision_layer(&mut self) -> u32 {
+        self.base().get_collision_layer()
+    }
+
+    fn read_collision_mask(&mut self) -> u32 {
+        self.base().get_collision_mask()
+    }
+
+    fn write_collision_layer(&mut self, layer: u32) {
+        self.base_mut().set_collision_layer(layer);
+    }
+
+    fn write_collision_mask(&mut self, mask: u32) {
+        self.base_mut().set_collision_mask(mask);
+    }
+
+    fn write_global_transform(&mut self, transform: Transform3D) {
+        self.base_mut().set_global_transform(transform);
+    }
+
+    fn disable_physics(&mut self) {
+        self.base_mut().set_physics_process(false);
+    }
 }
 
 #[godot_api]
@@ -184,6 +687,7 @@ impl ICharacterBody3D for UnseeingPlayer {
         capsule.set_radius(0.35);
         capsule.set_height(1.7);
         col.set_shape(&capsule);
+        col.set_position(Vector3::new(0.0, PLAYER_CAPSULE_CENTER_Y_M, 0.0));
         self.base_mut().add_child(&col);
         let mut camera = Camera3D::new_alloc();
         camera.set_position(Vector3::new(0.0, CAM_BASE_Y as f32, 0.0));
@@ -197,6 +701,24 @@ impl ICharacterBody3D for UnseeingPlayer {
         camera.set_fov(66.0); // ~1.15 rad vertical, the validated design FOV
         self.base_mut().add_child(&camera);
         self.camera = Some(camera);
+        self.base_mut().set_motion_mode(MotionMode::GROUNDED);
+        self.base_mut().set_up_direction(Vector3::UP);
+        self.base_mut().set_floor_snap_length(FLOOR_SNAP_M);
+        self.base_mut().set_floor_max_angle(FLOOR_MAX_ANGLE_RAD);
+        self.base_mut().set_safe_margin(SAFE_MARGIN_M);
+        self.base_mut().set_max_slides(MAX_SLIDES);
+        self.base_mut().set_floor_stop_on_slope_enabled(true);
+        self.base_mut().set_floor_constant_speed_enabled(false);
+        self.base_mut().set_platform_floor_layers(PLATFORM_LAYERS);
+        self.base_mut().set_platform_wall_layers(PLATFORM_LAYERS);
+        self.base_mut()
+            .set_platform_on_leave(PlatformOnLeave::DO_NOTHING);
+        self.snap_params.set_motion(Vector3::DOWN * FLOOR_SNAP_M);
+        self.snap_params.set_margin(SAFE_MARGIN_M);
+        self.snap_params.set_max_collisions(SNAP_PROBE_MAX_CONTACTS);
+        self.snap_params.set_recovery_as_collision_enabled(true);
+        self.snap_params.set_collide_separation_ray_enabled(true);
+        self.apply_collision_pair();
         Self::ensure_actions();
         // no silent nulls: without its pulse pool the player cannot voice a
         // single tap or footstep — refuse to run instead of crashing later
@@ -237,16 +759,41 @@ impl ICharacterBody3D for UnseeingPlayer {
         }
     }
 
-    fn physics_process(&mut self, _dt: f64) {
-        let input =
-            Input::singleton().get_vector("move_left", "move_right", "move_forward", "move_back");
-        let dir3 = self.base().get_transform().basis * Vector3::new(input.x, 0.0, input.y);
-        let mut velocity = self.base().get_velocity();
-        velocity.x = (f64::from(dir3.x) * SPEED) as f32;
-        velocity.z = (f64::from(dir3.z) * SPEED) as f32;
-        velocity.y = 0.0; // flat map: no gravity, no jumping — walking is the verb
-        self.base_mut().set_velocity(velocity);
-        self.base_mut().move_and_slide();
+    fn physics_process(&mut self, dt: f64) {
+        let pre_move = match prepare_player_pre_move(self) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                godot_error!("UnseeingPlayer: {} refused: {}", error.phase, error.reason);
+                return;
+            }
+        };
+        let desired = if self.motion_state.accepts_control() {
+            match self.desired_planar_velocity() {
+                Ok(desired) => desired,
+                Err(error) => {
+                    let error = refuse_player_before_move(self, "movement input", error);
+                    godot_error!("UnseeingPlayer: {} refused: {}", error.phase, error.reason);
+                    return;
+                }
+            }
+        } else {
+            PlanarVelocity::ZERO
+        };
+        let prior = self.motion_state;
+        let config = self.motion_config();
+        let moved = match controlled_player_tick_from_pre_move(
+            self, pre_move, prior, desired, dt, config,
+        ) {
+            Ok(moved) => moved,
+            Err(error) => {
+                godot_error!("UnseeingPlayer: {} refused: {}", error.phase, error.reason);
+                return;
+            }
+        };
+        self.motion_state = moved.state;
+        self.support_collider_id = moved.support_collider_id;
+        debug_assert_eq!(self.base().get_collision_layer(), moved.collision_layer);
+        debug_assert_eq!(self.base().get_collision_mask(), moved.collision_mask);
 
         let probe = self.compute_cane_rest(self.cane_rest_offset);
         self.publish_cane_rest(&probe);
@@ -269,6 +816,24 @@ impl ICharacterBody3D for UnseeingPlayer {
 
 #[godot_api]
 impl UnseeingPlayer {
+    /// The six active authored motion scalars in constructor order. This is
+    /// a read-only observability door; designer configuration belongs to the
+    /// composition root and is injected before this node enters the tree.
+    #[func]
+    fn motion_config_snapshot(&self) -> PackedFloat64Array {
+        let config = self.motion_config;
+        PackedFloat64Array::from(
+            &[
+                config.fall_acceleration_mps2(),
+                config.terminal_fall_speed_mps(),
+                config.landing_silent_speed_mps(),
+                config.landing_full_speed_mps(),
+                config.landing_max_gain(),
+                config.landing_max_range_m(),
+            ][..],
+        )
+    }
+
     pub(super) fn prepare_restore(
         &self,
         hero: &HeroCapture,
@@ -291,12 +856,24 @@ impl UnseeingPlayer {
             let axis = error.field().rsplit('.').next().unwrap_or("velocity");
             RestoreValueError::new(format!("hero.velocity.{axis}"), "must be finite")
         })?;
-        if hero.motion != MotionState::initial() {
-            return Err(RestoreValueError::new(
-                "hero.motion",
-                "this runtime admits only initial controlled motion",
-            ));
-        }
+        validate_restore(hero.motion, velocity, self.motion_config).map_err(|error| {
+            let (path, rule) = match error {
+                MotionRestoreError::AirbornePlanarMismatch { axis } => {
+                    (
+                        format!("hero.motion.phase.planar_velocity.{axis}"),
+                        "must match the corresponding physical velocity lane bit-exactly while airborne",
+                    )
+                }
+                MotionRestoreError::AirborneTerminalExceeded => (
+                    "hero.motion.phase.vertical_velocity".to_string(),
+                    "must remain between zero and the injected terminal fall speed",
+                ),
+                MotionRestoreError::Physical(_) => {
+                    ("hero.motion".to_string(), "contains an invalid physical value")
+                }
+            };
+            RestoreValueError::new(path, rule)
+        })?;
         if hero.footstep_suppression_pending {
             return Err(RestoreValueError::new(
                 "hero.footstep_suppression_pending",
@@ -389,6 +966,7 @@ impl UnseeingPlayer {
                     "must form a canonical complete Godot YXZ rotation with the live Y/Z lanes",
                 )
             })?;
+        let (collision_layer, collision_mask) = collision_pair(hero.motion.phase());
         Ok(PreparedPlayerState {
             position: position.world(),
             velocity: velocity.world(),
@@ -396,6 +974,8 @@ impl UnseeingPlayer {
             eye,
             eye_rotation: eye_rotation.world(),
             motion: hero.motion,
+            collision_layer,
+            collision_mask,
             last_tap,
             tap_target: hero.tap_target,
             tap_queued: hero.tap_queued,
@@ -412,6 +992,7 @@ impl UnseeingPlayer {
         self.base_mut().set_rotation(value.rotation);
         eye.set_rotation(value.eye_rotation);
         self.motion_state = value.motion;
+        self.apply_exact_collision_pair(value.collision_layer, value.collision_mask);
         self.support_collider_id = None;
         self.footstep_suppression = value.footstep_suppression;
         self.last_tap = value.last_tap;
@@ -490,6 +1071,27 @@ impl UnseeingPlayer {
     #[func]
     fn mouse_sens() -> f64 {
         MOUSE_SENS
+    }
+
+    /// Relocate the physical hero atomically. Invalid raw positions leave
+    /// every body and motion observation untouched.
+    #[func]
+    fn relocate(&mut self, world_position: Vector3) -> VarDictionary {
+        let mut verdict = VarDictionary::new();
+        match self.try_relocate(world_position) {
+            Ok(()) => verdict.set("relocated", true),
+            Err(error) => verdict.set("unavailable", error.to_string().as_str()),
+        }
+        verdict
+    }
+
+    /// Accepted world-support identity, if the engine supplied one. A
+    /// server-backed support may lawfully have no Object id.
+    #[func]
+    fn support_collider_id(&self) -> Variant {
+        self.support_collider_id
+            .and_then(|id| i64::try_from(id).ok())
+            .map_or_else(Variant::nil, |id| id.to_variant())
     }
 
     /// The clock is handed, never poked: the composition root advances
@@ -846,6 +1448,18 @@ fn exact_f32_lane(value: f64, path: &'static str) -> Result<f32, RestoreValueErr
     Ok(lane)
 }
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Task 2 publishes the checked player elevation boundary consumed by Task 3"
+    )
+)]
+fn support_elevation_at(world_position: Vector3) -> Result<SupportElevation, MotionValueError> {
+    let position = ActorPosition::try_new(world_position)?;
+    SupportElevation::try_new(position.world().y - PLAYER_STANDING_ROOT_Y as f32)
+}
+
 fn prepare_last_tap(raw: f64, now: PreparedTime) -> Result<f64, RestoreValueError> {
     let sentinel = raw.to_bits() == (-10.0_f64).to_bits();
     let elapsed = raw.is_finite() && raw >= 0.0 && raw <= now.value();
@@ -860,6 +1474,54 @@ fn prepare_last_tap(raw: f64, now: PreparedTime) -> Result<f64, RestoreValueErro
 }
 
 impl UnseeingPlayer {
+    pub(super) fn inject_motion_config(&mut self, config: SupportMotionConfig) {
+        self.motion_config = config;
+    }
+
+    pub(crate) fn motion_config(&self) -> SupportMotionConfig {
+        self.motion_config
+    }
+
+    #[expect(
+        dead_code,
+        reason = "Task 2 publishes the checked player elevation boundary consumed by Task 3"
+    )]
+    pub(crate) fn support_elevation_y(&self) -> Result<SupportElevation, MotionValueError> {
+        support_elevation_at(self.base().get_global_position())
+    }
+
+    fn desired_planar_velocity(&self) -> Result<PlanarVelocity, MotionValueError> {
+        let input =
+            Input::singleton().get_vector("move_left", "move_right", "move_forward", "move_back");
+        let local = Vector3::new(input.x, 0.0, input.y);
+        let transformed = self.base().get_transform().basis * local * SPEED as f32;
+        PlanarVelocity::try_from_world(transformed)
+    }
+
+    pub(super) fn try_relocate(&mut self, world_position: Vector3) -> Result<(), MotionValueError> {
+        let position = ActorPosition::try_new(world_position)?;
+        self.base_mut().set_global_position(position.world());
+        self.motion_state = self.motion_state.relocated();
+        self.support_collider_id = None;
+        self.base_mut().set_velocity(Vector3::ZERO);
+        self.apply_collision_pair();
+        Ok(())
+    }
+
+    fn apply_collision_pair(&mut self) {
+        let (layer, mask) = collision_pair(self.motion_state.phase());
+        self.apply_exact_collision_pair(layer, mask);
+    }
+
+    fn apply_exact_collision_pair(&mut self, layer: u32, mask: u32) {
+        if self.base().get_collision_layer() != layer {
+            self.base_mut().set_collision_layer(layer);
+        }
+        if self.base().get_collision_mask() != mask {
+            self.base_mut().set_collision_mask(mask);
+        }
+    }
+
     /// The cane's queued-intent flag, for the observer: a tap accepted
     /// this frame that the physics tick has not yet executed.
     pub(crate) fn tap_queued(&self) -> bool {
@@ -905,7 +1567,881 @@ impl UnseeingPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::support_motion::MotionPhase;
     use crate::temporal::prepare_time;
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum MotionTrace {
+        ReadTransform,
+        ReadRotation,
+        ReadVelocity,
+        SetVelocity(Vector3),
+        MoveAndSlide,
+        Probe(Transform3D),
+        ReadProbeCount,
+        ReadProbeContact(i32),
+        SetLayer(u32),
+        SetMask(u32),
+        SetTransform(Transform3D),
+        DisablePhysics,
+    }
+
+    struct FakePlayerMotionPort {
+        pre_transform: Transform3D,
+        pre_rotation: Vector3,
+        pre_velocity: Vector3,
+        post_transform: Transform3D,
+        post_rotation: Vector3,
+        post_velocity: Vector3,
+        moved: bool,
+        on_floor: bool,
+        slides: Vec<Option<Vec<RawSupportFact>>>,
+        outer_count_override: Option<i32>,
+        inner_count_override: Option<(i32, i32)>,
+        probe_hit: bool,
+        probe_contacts: Vec<RawSupportFact>,
+        probe_count_override: Option<i32>,
+        collision_layer: u32,
+        collision_mask: u32,
+        trace: Vec<MotionTrace>,
+    }
+
+    impl FakePlayerMotionPort {
+        fn valid() -> Self {
+            let rotation = Vector3::new(0.125, -0.25, 0.0625);
+            let transform = Transform3D::new(
+                Basis::from_euler(EulerOrder::YXZ, rotation),
+                Vector3::new(1.25, 0.9, -2.5),
+            );
+            Self {
+                pre_transform: transform,
+                pre_rotation: rotation,
+                pre_velocity: Vector3::ZERO,
+                post_transform: transform,
+                post_rotation: rotation,
+                post_velocity: Vector3::new(0.75, 0.0, -1.25),
+                moved: false,
+                on_floor: false,
+                slides: Vec::new(),
+                outer_count_override: None,
+                inner_count_override: None,
+                probe_hit: false,
+                probe_contacts: Vec::new(),
+                probe_count_override: None,
+                collision_layer: 2,
+                collision_mask: 4_294_967_291,
+                trace: Vec::new(),
+            }
+        }
+
+        fn probe_calls(&self) -> usize {
+            self.trace
+                .iter()
+                .filter(|entry| matches!(entry, MotionTrace::Probe(_)))
+                .count()
+        }
+
+        fn effect_trace(&self) -> Vec<MotionTrace> {
+            self.trace
+                .iter()
+                .copied()
+                .filter(|entry| {
+                    matches!(
+                        entry,
+                        MotionTrace::SetVelocity(_)
+                            | MotionTrace::MoveAndSlide
+                            | MotionTrace::SetLayer(_)
+                            | MotionTrace::SetMask(_)
+                            | MotionTrace::SetTransform(_)
+                            | MotionTrace::DisablePhysics
+                    )
+                })
+                .collect()
+        }
+    }
+
+    impl PlayerMotionPort for FakePlayerMotionPort {
+        fn read_global_transform(&mut self) -> Transform3D {
+            self.trace.push(MotionTrace::ReadTransform);
+            if self.moved {
+                self.post_transform
+            } else {
+                self.pre_transform
+            }
+        }
+
+        fn read_global_rotation(&mut self) -> Vector3 {
+            self.trace.push(MotionTrace::ReadRotation);
+            if self.moved {
+                self.post_rotation
+            } else {
+                self.pre_rotation
+            }
+        }
+
+        fn read_velocity(&mut self) -> Vector3 {
+            self.trace.push(MotionTrace::ReadVelocity);
+            if self.moved {
+                self.post_velocity
+            } else {
+                self.pre_velocity
+            }
+        }
+
+        fn write_velocity(&mut self, velocity: Vector3) {
+            self.trace.push(MotionTrace::SetVelocity(velocity));
+            if self.moved {
+                self.post_velocity = velocity;
+            } else {
+                self.pre_velocity = velocity;
+            }
+        }
+
+        fn move_and_slide_once(&mut self) {
+            self.trace.push(MotionTrace::MoveAndSlide);
+            self.moved = true;
+        }
+
+        fn is_on_floor(&mut self) -> bool {
+            self.on_floor
+        }
+
+        fn read_slide_collision_count(&mut self) -> i32 {
+            self.outer_count_override
+                .unwrap_or_else(|| i32::try_from(self.slides.len()).unwrap_or(i32::MAX))
+        }
+
+        fn read_slide_contact_count(&mut self, slide: i32) -> Option<i32> {
+            if let Some((target, count)) = self.inner_count_override
+                && slide == target
+            {
+                return Some(count);
+            }
+            self.slides
+                .get(usize::try_from(slide).ok()?)?
+                .as_ref()
+                .map(|contacts| i32::try_from(contacts.len()).unwrap_or(i32::MAX))
+        }
+
+        fn read_slide_contact_geometry(
+            &mut self,
+            slide: i32,
+            contact: i32,
+        ) -> Option<(Vector3, Vector3)> {
+            self.slides
+                .get(usize::try_from(slide).ok()?)?
+                .as_ref()?
+                .get(usize::try_from(contact).ok()?)
+                .copied()
+                .map(|fact| (fact.point, fact.normal))
+        }
+
+        fn read_slide_collider(&mut self, slide: i32, contact: i32) -> Option<(bool, u32, u64)> {
+            self.slides
+                .get(usize::try_from(slide).ok()?)?
+                .as_ref()?
+                .get(usize::try_from(contact).ok()?)
+                .copied()
+                .map(|fact| {
+                    (
+                        fact.collider_rid_valid,
+                        fact.collider_layer,
+                        fact.collider_id,
+                    )
+                })
+        }
+
+        fn probe_snap(&mut self, post_transform: Transform3D) -> bool {
+            self.trace.push(MotionTrace::Probe(post_transform));
+            self.probe_hit
+        }
+
+        fn read_probe_contact_count(&mut self) -> i32 {
+            self.trace.push(MotionTrace::ReadProbeCount);
+            self.probe_count_override
+                .unwrap_or_else(|| i32::try_from(self.probe_contacts.len()).unwrap_or(i32::MAX))
+        }
+
+        fn read_probe_contact_geometry(&mut self, contact: i32) -> (Vector3, Vector3) {
+            self.trace.push(MotionTrace::ReadProbeContact(contact));
+            let fact = self
+                .probe_contacts
+                .get(usize::try_from(contact).unwrap_or(usize::MAX))
+                .copied()
+                .unwrap_or_else(world_floor);
+            (fact.point, fact.normal)
+        }
+
+        fn read_probe_collider(&mut self, contact: i32) -> (bool, u32, u64) {
+            let fact = self
+                .probe_contacts
+                .get(usize::try_from(contact).unwrap_or(usize::MAX))
+                .copied()
+                .unwrap_or_else(world_floor);
+            (
+                fact.collider_rid_valid,
+                fact.collider_layer,
+                fact.collider_id,
+            )
+        }
+
+        fn read_collision_layer(&mut self) -> u32 {
+            self.collision_layer
+        }
+
+        fn read_collision_mask(&mut self) -> u32 {
+            self.collision_mask
+        }
+
+        fn write_collision_layer(&mut self, layer: u32) {
+            self.trace.push(MotionTrace::SetLayer(layer));
+            self.collision_layer = layer;
+        }
+
+        fn write_collision_mask(&mut self, mask: u32) {
+            self.trace.push(MotionTrace::SetMask(mask));
+            self.collision_mask = mask;
+        }
+
+        fn write_global_transform(&mut self, transform: Transform3D) {
+            self.trace.push(MotionTrace::SetTransform(transform));
+            self.post_transform = transform;
+        }
+
+        fn disable_physics(&mut self) {
+            self.trace.push(MotionTrace::DisablePhysics);
+        }
+    }
+
+    fn world_floor() -> RawSupportFact {
+        RawSupportFact {
+            point: Vector3::new(2.0, 0.0, -3.0),
+            normal: Vector3::UP,
+            collider_rid_valid: true,
+            collider_layer: 1,
+            collider_id: 41,
+        }
+    }
+
+    fn actor_floor() -> RawSupportFact {
+        RawSupportFact {
+            collider_layer: 2,
+            collider_id: 17,
+            ..world_floor()
+        }
+    }
+
+    fn wall_contact() -> RawSupportFact {
+        RawSupportFact {
+            normal: Vector3::RIGHT,
+            collider_id: 29,
+            ..world_floor()
+        }
+    }
+
+    fn poison_transform_lane(value: Transform3D, lane: usize) -> Transform3D {
+        let mut columns = [
+            value.basis.col_a(),
+            value.basis.col_b(),
+            value.basis.col_c(),
+        ];
+        let mut origin = value.origin;
+        if lane < 9 {
+            let column = lane / 3;
+            match lane % 3 {
+                0 => columns[column].x = f32::NAN,
+                1 => columns[column].y = f32::NAN,
+                _ => columns[column].z = f32::NAN,
+            }
+        } else {
+            match lane - 9 {
+                0 => origin.x = f32::NAN,
+                1 => origin.y = f32::NAN,
+                _ => origin.z = f32::NAN,
+            }
+        }
+        Transform3D::new(Basis::from_cols(columns[0], columns[1], columns[2]), origin)
+    }
+
+    fn poison_vector_lane(mut value: Vector3, lane: usize) -> Vector3 {
+        match lane {
+            0 => value.x = f32::NAN,
+            1 => value.y = f32::NAN,
+            _ => value.z = f32::NAN,
+        }
+        value
+    }
+
+    fn assert_transform_bits_eq(actual: Transform3D, expected: Transform3D) {
+        for (actual_lane, expected_lane) in [
+            (actual.basis.col_a().x, expected.basis.col_a().x),
+            (actual.basis.col_a().y, expected.basis.col_a().y),
+            (actual.basis.col_a().z, expected.basis.col_a().z),
+            (actual.basis.col_b().x, expected.basis.col_b().x),
+            (actual.basis.col_b().y, expected.basis.col_b().y),
+            (actual.basis.col_b().z, expected.basis.col_b().z),
+            (actual.basis.col_c().x, expected.basis.col_c().x),
+            (actual.basis.col_c().y, expected.basis.col_c().y),
+            (actual.basis.col_c().z, expected.basis.col_c().z),
+            (actual.origin.x, expected.origin.x),
+            (actual.origin.y, expected.origin.y),
+            (actual.origin.z, expected.origin.z),
+        ] {
+            assert_eq!(actual_lane.to_bits(), expected_lane.to_bits());
+        }
+    }
+
+    fn post_transform(port: &FakePlayerMotionPort) -> ActorTransform {
+        ActorTransform::try_new(port.post_transform).unwrap()
+    }
+
+    #[test]
+    fn valid_tick_calls_move_and_slide_once() {
+        let mut port = FakePlayerMotionPort::valid();
+        let result = controlled_player_tick(
+            &mut port,
+            MotionState::initial(),
+            PlanarVelocity::try_new(1.0, -2.0).unwrap(),
+            1.0 / 60.0,
+            SupportMotionConfig::PLAYER_DEFAULT,
+        )
+        .unwrap();
+        assert_eq!(
+            port.trace
+                .iter()
+                .filter(|entry| matches!(entry, MotionTrace::MoveAndSlide))
+                .count(),
+            1
+        );
+        let MotionPhase::Airborne {
+            planar_velocity_mps,
+            vertical_velocity_mps,
+        } = result.state.phase()
+        else {
+            panic!("unsupported controlled motion must become airborne")
+        };
+        assert_eq!(planar_velocity_mps.x_mps().to_bits(), 0.75_f32.to_bits());
+        assert_eq!(planar_velocity_mps.z_mps().to_bits(), (-1.25_f32).to_bits());
+        assert_eq!(vertical_velocity_mps.mps().to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(
+            (result.collision_layer, result.collision_mask),
+            (4, 4_294_967_289)
+        );
+        assert_eq!(
+            (port.collision_layer, port.collision_mask),
+            (4, 4_294_967_289)
+        );
+    }
+
+    #[test]
+    fn collision_pair_writes_are_change_only_and_repair_corrupted_lanes() {
+        let airborne_phase = MotionPhase::Airborne {
+            planar_velocity_mps: PlanarVelocity::try_new(0.75, -1.25).unwrap(),
+            vertical_velocity_mps: crate::support_motion::FiniteVelocity::try_new(-1.0).unwrap(),
+        };
+        let airborne = MotionState::restore(airborne_phase, None, None).unwrap();
+        let mut unchanged = FakePlayerMotionPort::valid();
+        unchanged.collision_layer = 4;
+        unchanged.collision_mask = 4_294_967_289;
+        controlled_player_tick(
+            &mut unchanged,
+            airborne,
+            PlanarVelocity::ZERO,
+            1.0 / 60.0,
+            SupportMotionConfig::PLAYER_DEFAULT,
+        )
+        .unwrap();
+        assert!(
+            !unchanged
+                .trace
+                .iter()
+                .any(|entry| matches!(entry, MotionTrace::SetLayer(_) | MotionTrace::SetMask(_)))
+        );
+
+        let mut corrupted = FakePlayerMotionPort::valid();
+        corrupted.on_floor = true;
+        corrupted.slides = vec![Some(vec![world_floor()])];
+        corrupted.collision_layer = 8;
+        corrupted.collision_mask = 16;
+        controlled_player_tick(
+            &mut corrupted,
+            MotionState::initial(),
+            PlanarVelocity::ZERO,
+            1.0 / 60.0,
+            SupportMotionConfig::PLAYER_DEFAULT,
+        )
+        .unwrap();
+        assert_eq!(
+            (corrupted.collision_layer, corrupted.collision_mask),
+            (2, 4_294_967_291)
+        );
+        assert_eq!(
+            corrupted
+                .effect_trace()
+                .into_iter()
+                .filter(|entry| matches!(entry, MotionTrace::SetLayer(_) | MotionTrace::SetMask(_)))
+                .collect::<Vec<_>>(),
+            [
+                MotionTrace::SetLayer(2),
+                MotionTrace::SetMask(4_294_967_291)
+            ]
+        );
+
+        let mut only_mask_corrupt = FakePlayerMotionPort::valid();
+        only_mask_corrupt.on_floor = true;
+        only_mask_corrupt.slides = vec![Some(vec![world_floor()])];
+        only_mask_corrupt.collision_mask = 16;
+        controlled_player_tick(
+            &mut only_mask_corrupt,
+            MotionState::initial(),
+            PlanarVelocity::ZERO,
+            1.0 / 60.0,
+            SupportMotionConfig::PLAYER_DEFAULT,
+        )
+        .unwrap();
+        assert_eq!(
+            only_mask_corrupt
+                .effect_trace()
+                .into_iter()
+                .filter(|entry| matches!(entry, MotionTrace::SetLayer(_) | MotionTrace::SetMask(_)))
+                .collect::<Vec<_>>(),
+            [MotionTrace::SetMask(4_294_967_291)]
+        );
+    }
+
+    #[test]
+    fn poisoned_player_pre_move_transform_or_rotation_refuses_without_move_or_wave() {
+        let mut cases = Vec::new();
+        for lane in 0..12 {
+            let mut port = FakePlayerMotionPort::valid();
+            port.pre_transform = poison_transform_lane(port.pre_transform, lane);
+            cases.push(port);
+        }
+        for lane in 0..3 {
+            let mut port = FakePlayerMotionPort::valid();
+            port.pre_rotation = poison_vector_lane(port.pre_rotation, lane);
+            cases.push(port);
+        }
+        for lane in 0..3 {
+            let mut port = FakePlayerMotionPort::valid();
+            port.pre_velocity = poison_vector_lane(port.pre_velocity, lane);
+            cases.push(port);
+        }
+
+        for mut port in cases {
+            let post_before = port.post_transform;
+            assert!(
+                controlled_player_tick(
+                    &mut port,
+                    MotionState::initial(),
+                    PlanarVelocity::try_new(1.0, -2.0).unwrap(),
+                    1.0 / 60.0,
+                    SupportMotionConfig::PLAYER_DEFAULT,
+                )
+                .is_err()
+            );
+            assert!(!port.moved);
+            assert_transform_bits_eq(port.post_transform, post_before);
+            assert_eq!(port.pre_velocity, Vector3::ZERO);
+            assert_eq!(
+                port.effect_trace(),
+                [
+                    MotionTrace::SetVelocity(Vector3::ZERO),
+                    MotionTrace::DisablePhysics,
+                ]
+            );
+            assert_eq!(
+                (port.collision_layer, port.collision_mask),
+                (2, 4_294_967_291)
+            );
+        }
+    }
+
+    #[test]
+    fn post_move_poison_writes_exact_saved_transform_then_zero_velocity_then_disables() {
+        let mut cases = Vec::new();
+        for lane in 0..12 {
+            let mut port = FakePlayerMotionPort::valid();
+            port.post_transform = poison_transform_lane(port.post_transform, lane);
+            cases.push(port);
+        }
+        for lane in 0..3 {
+            let mut port = FakePlayerMotionPort::valid();
+            port.post_rotation = poison_vector_lane(port.post_rotation, lane);
+            cases.push(port);
+        }
+        for lane in 0..3 {
+            let mut port = FakePlayerMotionPort::valid();
+            port.post_velocity = poison_vector_lane(port.post_velocity, lane);
+            cases.push(port);
+        }
+        for lane in 0..6 {
+            let mut port = FakePlayerMotionPort::valid();
+            port.on_floor = true;
+            let mut fact = world_floor();
+            if lane < 3 {
+                fact.point = poison_vector_lane(fact.point, lane);
+            } else {
+                fact.normal = poison_vector_lane(fact.normal, lane - 3);
+            }
+            port.slides = vec![Some(vec![fact])];
+            cases.push(port);
+        }
+
+        for mut port in cases {
+            let saved = port.pre_transform;
+            let prior = MotionState::initial();
+            assert!(
+                controlled_player_tick(
+                    &mut port,
+                    prior,
+                    PlanarVelocity::ZERO,
+                    1.0 / 60.0,
+                    SupportMotionConfig::PLAYER_DEFAULT,
+                )
+                .is_err()
+            );
+            assert_transform_bits_eq(port.post_transform, saved);
+            assert_eq!(port.post_velocity, Vector3::ZERO);
+            assert_eq!(
+                (port.collision_layer, port.collision_mask),
+                (2, 4_294_967_291)
+            );
+            assert_eq!(
+                port.effect_trace(),
+                [
+                    MotionTrace::SetVelocity(Vector3::ZERO),
+                    MotionTrace::MoveAndSlide,
+                    MotionTrace::SetTransform(saved),
+                    MotionTrace::SetVelocity(Vector3::ZERO),
+                    MotionTrace::DisablePhysics,
+                ]
+            );
+            assert!(
+                !port.trace.iter().any(|entry| matches!(
+                    entry,
+                    MotionTrace::SetLayer(_) | MotionTrace::SetMask(_)
+                ))
+            );
+            assert_eq!(prior, MotionState::initial());
+        }
+    }
+
+    #[test]
+    fn support_reader_scans_nested_contacts_actor_then_world_and_preserves_zero_id() {
+        let mut nested = FakePlayerMotionPort::valid();
+        nested.on_floor = true;
+        nested.slides = vec![Some(vec![wall_contact(), world_floor()])];
+        let transform = post_transform(&nested);
+        let (support, id) = read_post_move_support(&mut nested, transform).unwrap();
+        assert_eq!(
+            support,
+            Some(SupportContact::try_new(world_floor().point, Vector3::UP).unwrap())
+        );
+        assert_eq!(id, Some(41));
+        assert_eq!(nested.probe_calls(), 0);
+
+        let mut actor_then_world = FakePlayerMotionPort::valid();
+        actor_then_world.on_floor = true;
+        let mut zero_id = world_floor();
+        zero_id.collider_id = 0;
+        actor_then_world.slides = vec![Some(vec![actor_floor()]), Some(vec![zero_id])];
+        let transform = post_transform(&actor_then_world);
+        let (support, id) = read_post_move_support(&mut actor_then_world, transform).unwrap();
+        assert_eq!(support.map(SupportContact::point), Some(zero_id.point));
+        assert_eq!(id, None);
+        assert_eq!(actor_then_world.probe_calls(), 0);
+    }
+
+    #[test]
+    fn support_reader_rejects_counts_missing_entries_rids_and_every_poisoned_lane() {
+        for count in [-1, 7] {
+            let mut port = FakePlayerMotionPort::valid();
+            port.on_floor = true;
+            port.outer_count_override = Some(count);
+            let transform = post_transform(&port);
+            assert_eq!(
+                read_post_move_support(&mut port, transform),
+                Err(SupportReadError::InvalidOuterCount(count))
+            );
+        }
+        let mut missing = FakePlayerMotionPort::valid();
+        missing.on_floor = true;
+        missing.outer_count_override = Some(1);
+        let transform = post_transform(&missing);
+        assert_eq!(
+            read_post_move_support(&mut missing, transform),
+            Err(SupportReadError::MissingSlide(0))
+        );
+        for count in [0, 7] {
+            let mut port = FakePlayerMotionPort::valid();
+            port.on_floor = true;
+            port.slides = vec![Some(vec![world_floor()])];
+            port.inner_count_override = Some((0, count));
+            let transform = post_transform(&port);
+            assert_eq!(
+                read_post_move_support(&mut port, transform),
+                Err(SupportReadError::InvalidInnerCount { slide: 0, count })
+            );
+        }
+        let mut invalid_rid = FakePlayerMotionPort::valid();
+        invalid_rid.on_floor = true;
+        let mut fact = world_floor();
+        fact.collider_rid_valid = false;
+        invalid_rid.slides = vec![Some(vec![fact])];
+        let transform = post_transform(&invalid_rid);
+        assert_eq!(
+            read_post_move_support(&mut invalid_rid, transform),
+            Err(SupportReadError::InvalidOrdinaryRid {
+                slide: 0,
+                contact: 0,
+            })
+        );
+        for lane in 0..6 {
+            let mut port = FakePlayerMotionPort::valid();
+            port.on_floor = true;
+            let mut fact = world_floor();
+            if lane < 3 {
+                fact.point = poison_vector_lane(fact.point, lane);
+            } else {
+                fact.normal = poison_vector_lane(fact.normal, lane - 3);
+            }
+            port.slides = vec![Some(vec![fact])];
+            let transform = post_transform(&port);
+            assert!(matches!(
+                read_post_move_support(&mut port, transform),
+                Err(SupportReadError::InvalidValue(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn support_reader_accepts_exact_bounds_and_preserves_first_world_in_ledger_order() {
+        let mut later_world = world_floor();
+        later_world.point = Vector3::new(-7.0, 0.25, 9.0);
+        later_world.collider_id = 83;
+        let mut bounded_ledger = FakePlayerMotionPort::valid();
+        bounded_ledger.on_floor = true;
+        bounded_ledger.slides = vec![
+            Some(vec![
+                world_floor(),
+                wall_contact(),
+                wall_contact(),
+                wall_contact(),
+                wall_contact(),
+                wall_contact(),
+            ]),
+            Some(vec![wall_contact(); 6]),
+            Some(vec![wall_contact(); 6]),
+            Some(vec![wall_contact(); 6]),
+            Some(vec![wall_contact(); 6]),
+            Some(vec![
+                wall_contact(),
+                wall_contact(),
+                wall_contact(),
+                wall_contact(),
+                wall_contact(),
+                later_world,
+            ]),
+        ];
+        let transform = post_transform(&bounded_ledger);
+        let (support, id) = read_post_move_support(&mut bounded_ledger, transform).unwrap();
+        assert_eq!(
+            support.map(SupportContact::point),
+            Some(world_floor().point)
+        );
+        assert_eq!(id, Some(41));
+        assert_eq!(bounded_ledger.probe_calls(), 0);
+
+        let mut bounded_probe = FakePlayerMotionPort::valid();
+        bounded_probe.on_floor = true;
+        bounded_probe.probe_hit = true;
+        bounded_probe.probe_contacts =
+            vec![world_floor(), later_world, actor_floor(), wall_contact()];
+        let transform = post_transform(&bounded_probe);
+        let (support, id) = read_post_move_support(&mut bounded_probe, transform).unwrap();
+        assert_eq!(
+            support.map(SupportContact::point),
+            Some(world_floor().point)
+        );
+        assert_eq!(id, Some(41));
+        assert_eq!(bounded_probe.probe_calls(), 1);
+    }
+
+    #[test]
+    fn support_reader_validates_later_facts_before_returning_first_world_floor() {
+        let mut port = FakePlayerMotionPort::valid();
+        port.on_floor = true;
+        let mut poison = wall_contact();
+        poison.point.z = f32::NAN;
+        port.slides = vec![Some(vec![world_floor(), poison])];
+        let transform = post_transform(&port);
+        assert!(matches!(
+            read_post_move_support(&mut port, transform),
+            Err(SupportReadError::InvalidValue(_))
+        ));
+    }
+
+    #[test]
+    fn snap_probe_runs_only_for_a_hidden_floor_and_never_reads_stale_false_results() {
+        let mut off_floor = FakePlayerMotionPort::valid();
+        let transform = post_transform(&off_floor);
+        assert_eq!(
+            read_post_move_support(&mut off_floor, transform).unwrap(),
+            (None, None)
+        );
+        assert_eq!(off_floor.probe_calls(), 0);
+
+        let mut actor_only = FakePlayerMotionPort::valid();
+        actor_only.on_floor = true;
+        actor_only.slides = vec![Some(vec![actor_floor()])];
+        actor_only.probe_hit = true;
+        actor_only.probe_contacts = vec![world_floor()];
+        let transform = post_transform(&actor_only);
+        assert_eq!(
+            read_post_move_support(&mut actor_only, transform).unwrap(),
+            (None, None)
+        );
+        assert_eq!(actor_only.probe_calls(), 0);
+
+        let mut false_probe = FakePlayerMotionPort::valid();
+        false_probe.on_floor = true;
+        false_probe.probe_hit = false;
+        false_probe.probe_count_override = Some(5);
+        false_probe.probe_contacts = vec![world_floor()];
+        let transform = post_transform(&false_probe);
+        assert_eq!(
+            read_post_move_support(&mut false_probe, transform).unwrap(),
+            (None, None)
+        );
+        assert_eq!(false_probe.probe_calls(), 1);
+        assert!(!false_probe.trace.contains(&MotionTrace::ReadProbeCount));
+
+        let mut hidden = FakePlayerMotionPort::valid();
+        hidden.on_floor = true;
+        hidden.probe_hit = true;
+        hidden.probe_contacts = vec![actor_floor(), world_floor()];
+        hidden.post_transform = Transform3D::new(
+            Basis::from_euler(EulerOrder::XYZ, Vector3::new(-0.125, 0.375, -0.0625)),
+            Vector3::new(5.5, 1.25, -8.0),
+        );
+        let transform = post_transform(&hidden);
+        let (support, id) = read_post_move_support(&mut hidden, transform).unwrap();
+        assert_eq!(
+            support.map(SupportContact::point),
+            Some(world_floor().point)
+        );
+        assert_eq!(id, Some(41));
+        assert_eq!(hidden.probe_calls(), 1);
+        assert!(
+            hidden
+                .trace
+                .contains(&MotionTrace::Probe(transform.world()))
+        );
+
+        let mut actor_probe = FakePlayerMotionPort::valid();
+        actor_probe.on_floor = true;
+        actor_probe.probe_hit = true;
+        actor_probe.probe_contacts = vec![actor_floor()];
+        let transform = post_transform(&actor_probe);
+        assert_eq!(
+            read_post_move_support(&mut actor_probe, transform).unwrap(),
+            (None, None)
+        );
+        assert_eq!(actor_probe.probe_calls(), 1);
+        assert!(
+            actor_probe
+                .trace
+                .contains(&MotionTrace::ReadProbeContact(0))
+        );
+    }
+
+    #[test]
+    fn snap_probe_validates_later_facts_before_returning_first_world_floor() {
+        let mut poisoned_point = wall_contact();
+        poisoned_point.point.z = f32::NAN;
+        let mut poisoned_normal = wall_contact();
+        poisoned_normal.normal.x = f32::NAN;
+        let mut invalid_floor_rid = world_floor();
+        invalid_floor_rid.collider_rid_valid = false;
+
+        for (later, expected_invalid_rid) in [
+            (poisoned_point, false),
+            (poisoned_normal, false),
+            (invalid_floor_rid, true),
+        ] {
+            let mut port = FakePlayerMotionPort::valid();
+            port.on_floor = true;
+            port.probe_hit = true;
+            port.probe_contacts = vec![world_floor(), later];
+            let transform = post_transform(&port);
+            let result = read_post_move_support(&mut port, transform);
+            if expected_invalid_rid {
+                assert_eq!(result, Err(SupportReadError::InvalidProbeRid(1)));
+            } else {
+                assert!(matches!(result, Err(SupportReadError::InvalidValue(_))));
+            }
+            assert!(port.trace.contains(&MotionTrace::ReadProbeContact(1)));
+        }
+    }
+
+    #[test]
+    fn snap_probe_rejects_counts_rids_and_every_poisoned_lane() {
+        for count in [0, 5] {
+            let mut port = FakePlayerMotionPort::valid();
+            port.on_floor = true;
+            port.probe_hit = true;
+            port.probe_count_override = Some(count);
+            let transform = post_transform(&port);
+            assert_eq!(
+                read_post_move_support(&mut port, transform),
+                Err(SupportReadError::InvalidProbeCount(count))
+            );
+        }
+        let mut invalid_rid = FakePlayerMotionPort::valid();
+        invalid_rid.on_floor = true;
+        invalid_rid.probe_hit = true;
+        let mut fact = world_floor();
+        fact.collider_rid_valid = false;
+        invalid_rid.probe_contacts = vec![fact];
+        let transform = post_transform(&invalid_rid);
+        assert_eq!(
+            read_post_move_support(&mut invalid_rid, transform),
+            Err(SupportReadError::InvalidProbeRid(0))
+        );
+        for lane in 0..6 {
+            let mut port = FakePlayerMotionPort::valid();
+            port.on_floor = true;
+            port.probe_hit = true;
+            let mut fact = world_floor();
+            if lane < 3 {
+                fact.point = poison_vector_lane(fact.point, lane);
+            } else {
+                fact.normal = poison_vector_lane(fact.normal, lane - 3);
+            }
+            port.probe_contacts = vec![fact];
+            let transform = post_transform(&port);
+            assert!(matches!(
+                read_post_move_support(&mut port, transform),
+                Err(SupportReadError::InvalidValue(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn support_elevation_keeps_flat_positive_zero_and_checked_extreme_lane_results() {
+        let flat = support_elevation_at(Vector3::new(3.0, 0.9, -4.0)).unwrap();
+        assert_eq!(flat.y().to_bits(), 0.0_f32.to_bits());
+
+        let high = support_elevation_at(Vector3::new(0.0, 1_000_000.0, 0.0)).unwrap();
+        assert_eq!(high.y().to_bits(), 0x4974_23f2);
+        let low = support_elevation_at(Vector3::new(0.0, -1_000_000.0, 0.0)).unwrap();
+        assert_eq!(low.y().to_bits(), 0xc974_240e);
+
+        for poison in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(support_elevation_at(Vector3::new(0.0, poison, 0.0)).is_err());
+        }
+    }
 
     #[test]
     fn prepared_last_tap_accepts_only_the_exact_sentinel_or_elapsed_time() {

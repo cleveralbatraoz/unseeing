@@ -127,6 +127,53 @@ func _install_canonical_hash(main: UnseeingGame, blob: Dictionary) -> void:
 		blob["hash"] = diagnostic["hash"]
 
 
+func _set_airborne_motion(
+	hero: Dictionary, planar_x: String, vertical: String, planar_z: String
+) -> void:
+	hero["velocity"] = [planar_x, vertical, planar_z]
+	var motion: Dictionary = hero["motion"]
+	motion["phase"] = {
+		"kind": "airborne",
+		"planar_velocity": [planar_x, planar_z],
+		"vertical_velocity": vertical,
+	}
+	motion["support"] = null
+
+
+func _set_controlled_support(hero: Dictionary) -> void:
+	var motion: Dictionary = hero["motion"]
+	motion["phase"] = {"kind": "controlled"}
+	motion["support"] = {
+		"point": ["2.0", "0.0", "-3.0"],
+		"normal": ["0.0", "1.0", "0.0"],
+	}
+	motion["last_landing"] = null
+
+
+func _assert_atomic_motion_refusal(main: UnseeingGame, blob: Dictionary, expected: String) -> void:
+	_queue_one(main, Vector3(-8.25, 0.5, 7.125))
+	var before_env: Dictionary = main.capture_env()
+	var before: Dictionary = main.observer.capture(main.now, before_env)
+	assert_bool(before.has("unavailable")).is_false()
+	var before_transform := main.player.global_transform
+	var before_velocity := main.player.velocity
+	main.player.collision_layer = 8
+	main.player.collision_mask = 16
+	var holder: Array[Dictionary] = [{}]
+	var invoke := func() -> void: holder[0] = main.restore_blob(blob)
+	await assert_error(invoke).is_success()
+	assert_bool(holder[0].has("unavailable")).is_true()
+	assert_str(str(holder[0].get("unavailable", ""))).contains(expected)
+	assert_bool(main.player.global_transform == before_transform).is_true()
+	assert_vector(main.player.velocity).is_equal(before_velocity)
+	assert_int(main.player.collision_layer).is_equal(8)
+	assert_int(main.player.collision_mask).is_equal(16)
+	assert_dict(main.capture_env()).is_equal(before_env)
+	var after: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_bool(after.has("unavailable")).is_false()
+	assert_str(after["hash"]).is_equal(before["hash"])
+
+
 ## One invalid artifact against a deliberately changed live world. A full
 ## capture hash covers env, pool, actors, sources and every private pure owner;
 ## process flags are adjacent runtime state and are pinned separately. The
@@ -761,18 +808,80 @@ func test_prepared_restore_rejects_an_out_of_domain_slot_origin_before_writes() 
 	await _assert_atomic_refusal(main, blob, "slots[0].pos.x")
 
 
-func test_dormant_schema_refuses_airborne_pending_or_controlled_contact_state() -> void:
+func test_format_2_restore_installs_controlled_support_and_airborne_collision_pairs() -> void:
 	var main := await _boot_ticked()
 	await _lively(main)
-	var airborne := _copy(main.observer.capture(main.now, main.capture_env()))
-	var motion: Dictionary = (airborne["hero"] as Dictionary)["motion"]
-	motion["phase"] = {
-		"kind": "airborne", "planar_velocity": ["0.0", "0.0"], "vertical_velocity": "-1.0"
-	}
-	motion["support"] = null
-	_install_canonical_hash(main, airborne)
-	await _assert_atomic_refusal(main, airborne, "hero.motion")
+	var controlled := _copy(main.observer.capture(main.now, main.capture_env()))
+	assert_float(controlled["format_version"]).is_equal(2.0)
+	_set_controlled_support(controlled["hero"] as Dictionary)
+	_install_canonical_hash(main, controlled)
+	main.player.collision_layer = 64
+	main.player.collision_mask = 128
+	var controlled_verdict: Dictionary = main.restore_blob(controlled)
+	assert_str(str(controlled_verdict.get("unavailable", ""))).is_empty()
+	assert_int(main.player.collision_layer).is_equal(2)
+	assert_int(main.player.collision_mask).is_equal(4_294_967_291)
+	assert_bool(main.player.call("support_collider_id") == null).is_true()
 
+	var airborne := _copy(main.observer.capture(main.now, main.capture_env()))
+	assert_float(airborne["format_version"]).is_equal(2.0)
+	_set_airborne_motion(airborne["hero"] as Dictionary, "1.25", "-3.5", "-0.75")
+	_install_canonical_hash(main, airborne)
+	main.player.collision_layer = 64
+	main.player.collision_mask = 128
+	var airborne_verdict: Dictionary = main.restore_blob(airborne)
+	assert_str(str(airborne_verdict.get("unavailable", ""))).is_empty()
+	assert_int(main.player.collision_layer).is_equal(4)
+	assert_int(main.player.collision_mask).is_equal(4_294_967_289)
+	assert_bool(main.player.call("support_collider_id") == null).is_true()
+	var restored := main.observer.capture(main.now, main.capture_env())
+	assert_str(restored["hash"]).is_equal(airborne["hash"])
+
+
+func test_airborne_restore_planar_mismatch_is_atomic_for_both_axes() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	for mismatch: Array in [["1.5", "-0.75", "x"], ["1.25", "-0.5", "z"]]:
+		var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+		var hero: Dictionary = blob["hero"]
+		_set_airborne_motion(hero, "1.25", "-3.5", "-0.75")
+		var phase: Dictionary = (hero["motion"] as Dictionary)["phase"]
+		phase["planar_velocity"] = [mismatch[0], mismatch[1]]
+		_install_canonical_hash(main, blob)
+		await _assert_atomic_motion_refusal(
+			main, blob, "hero.motion.phase.planar_velocity.%s" % mismatch[2]
+		)
+
+
+func test_airborne_restore_uses_injected_terminal_config_and_refuses_excess_atomically() -> void:
+	var main: UnseeingGame = auto_free(
+		WORLD_FIXTURE.game(WORLD_FIXTURE.DEFAULT_EXTENTS, true, true, true)
+	)
+	main.player_terminal_fall_speed = 6.0
+	add_child(main)
+	main.level.scene_file_path = FIXTURE_SCENE_PATH
+	await _one_frame()
+	await _lively(main)
+	var edge := _copy(main.observer.capture(main.now, main.capture_env()))
+	_set_airborne_motion(edge["hero"] as Dictionary, "1.25", "-6.0", "-0.75")
+	_install_canonical_hash(main, edge)
+	var edge_verdict: Dictionary = main.restore_blob(edge)
+	assert_str(str(edge_verdict.get("unavailable", ""))).is_empty()
+	assert_int(main.player.collision_layer).is_equal(4)
+	assert_int(main.player.collision_mask).is_equal(4_294_967_289)
+
+	# Root properties are construction-time staging. Changing one afterward
+	# cannot rewrite the checked config already owned by the live Player.
+	main.player_terminal_fall_speed = 50.0
+	var excess := _copy(main.observer.capture(main.now, main.capture_env()))
+	_set_airborne_motion(excess["hero"] as Dictionary, "1.25", "-6.000000476837158", "-0.75")
+	_install_canonical_hash(main, excess)
+	await _assert_atomic_motion_refusal(main, excess, "hero.motion.phase.vertical_velocity")
+
+
+func test_dormant_schema_still_refuses_pending_or_controlled_contact_state() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
 	var pending := _copy(main.observer.capture(main.now, main.capture_env()))
 	(pending["hero"] as Dictionary)["footstep_suppression_pending"] = true
 	_install_canonical_hash(main, pending)

@@ -181,8 +181,11 @@ one existing `move_and_slide()`:
    world-space velocity command. Controlled Y is exactly positive zero.
    Airborne Y applies the bounded acceleration law.
 3. Set the one velocity and call `move_and_slide()` once.
-4. Read the post-move position, collision-adjusted velocity, and floor contact
-   facts at the Godot boundary.
+4. Read the post-move position and collision-adjusted velocity. When Godot
+   reports `is_on_floor()`, read every bounded contact in its public motion
+   ledger. If that complete ledger contains no floor contact, run the one
+   conditional preallocated snap-fact probe defined below; it is a read-only
+   query, not a second body move.
 5. Convert those facts to a narrow `MotionOutcome` value and call
    `reconcile(prepared, outcome)`.
 6. Store the returned state and apply any returned `LandingEvent` command.
@@ -229,19 +232,58 @@ airborne actor makes the pair ignore each other symmetrically. A centred fall
 passes through instead of balancing, and only non-actor world geometry can
 produce accepted support or a landing event.
 
-The support adapter validates each floor point and normal, then reads the
-collider's collision layer from the collision RID through `PhysicsServer3D`.
-It rejects a floor collision whose layer occupies either named actor bit;
-every other valid floor collision remains geometry-classified by the explicit
-slope settings below, including server-backed geometry whose collider object
-cannot be cast to `CollisionObject3D`. An invalid RID or poisoned floor fact is
-an explicit adapter refusal, not an invented edge. The adapter derives its own
-layer and mask entirely from captured `MotionPhase`: construction applies the
-controlled pair before the first move; explicit player relocation changes the
-phase and collision pair synchronously before it returns; every reconciliation
-and restore applies the pair for the resulting phase. The boundary writes
-layer/mask only when the derived pair differs from the current one, avoiding
-needless broadphase churn. They are not additional mutable state.
+The support adapter validates each contact point and normal before classifying
+it, then reads every floor collider's collision layer from its collision RID
+through `PhysicsServer3D`. One `KinematicCollision3D` contains multiple contact
+facts, so the adapter scans both bounded levels: at most six public motion
+results and at most six contacts in each result. It accumulates the first
+world-support candidate in ledger order but validates the complete bounded
+geometry sample and every floor collider fact before returning it. A later
+poisoned point, normal, or floor RID can therefore never be hidden by an
+earlier valid floor. Collider identity for a contact already proven non-floor
+is neither read nor part of the support domain.
+
+Godot 4.7.1's internal floor snap is a special case that the public slide
+ledger cannot represent. The engine computes a private `MotionResult`, may set
+`is_on_floor()` and move the body, but does not append that result to the
+public `motion_results` list. No public `CharacterBody3D` method exposes that
+snap collider's RID. This is pinned to Godot 4.7.1's
+[`apply_floor_snap` implementation](https://github.com/godotengine/godot/blob/4.7.1-stable/scene/3d/physics/character_body_3d.cpp#L459-L501)
+and its public
+[`motion_results` accessors](https://github.com/godotengine/godot/blob/4.7.1-stable/scene/3d/physics/character_body_3d.cpp#L716-L738),
+not inferred from node classes. Therefore, only when `is_on_floor()` is true and the
+complete ordinary ledger contains no floorish contact, the adapter runs one
+cached, read-only `PhysicsServer3D::body_test_motion` from the validated
+post-move transform down `FLOOR_SNAP_M`. Its parameters mirror the engine's
+snap law: `SAFE_MARGIN_M`, four maximum contacts,
+`recovery_as_collision = true`, and `collide_separation_ray = true`. The
+parameter and result objects are allocated once per actor; the physics tick
+only rewrites and reads them. A false query result is valid no-support and the
+adapter does not read stale reusable result data. A successful result with an
+out-of-domain count, an invalid RID, or a poisoned contact is an explicit
+transaction refusal. If the ordinary ledger contains floorish actor contacts
+but no world contact, it is already a complete actor-only floor fact and no
+fallback runs. This conditional query recovers collision facts only; it never
+changes the actor's transform or velocity and is not a second solver.
+
+For either source, the adapter rejects a floor collision whose layer occupies
+either named actor bit; every other valid floor collision remains
+geometry-classified by the explicit slope settings below, including
+server-backed geometry whose collider object cannot be cast to
+`CollisionObject3D`. It finishes validating all bounded contact geometry and
+every floor collider fact before using the first accepted world candidate.
+Actor-only floor contacts are valid
+no-support. An invalid RID or poisoned contact is an explicit adapter refusal,
+not an invented edge. Collider object ID zero means absent observation
+identity, not invalid support.
+
+The adapter derives its own layer and mask entirely from captured
+`MotionPhase`: construction applies the controlled pair before the first move;
+explicit player relocation changes the phase and collision pair synchronously
+before it returns; every reconciliation and restore applies the pair for the
+resulting phase. The boundary writes layer/mask only when the derived pair
+differs from the current one, avoiding needless broadphase churn. They are not
+additional mutable state.
 Default all-layer ray queries, including touch/cane observation, can still see
 both named actor layers. A future actor-to-actor airborne response must replace
 this explicit layer contract rather than add an order-dependent second move.
@@ -729,9 +771,14 @@ At minimum, each mutation must make a named test fail:
   against the actual diff.
 
 The per-actor steady-state cost remains O(1), allocation-free pure arithmetic
-around the one existing `move_and_slide()`. No support raycast, shape cast,
-global cache, worker, or platform-specific path is added. Player cane rays are
+around the one existing `move_and_slide()`. The ordinary support ledger is
+bounded at six motion results times six contacts. A snap-only floor may add
+exactly one read-only four-contact `body_test_motion` using per-actor scratch
+objects allocated at construction; no support raycast, unbounded query, global
+cache, worker, or platform-specific path is added. Player cane rays are
 unchanged except for elevation-relative endpoints.
+This is an adapter work bound; it does not claim a constant instruction count
+inside the selected PhysicsServer backend.
 
 ## Documentation and delivery
 
@@ -763,9 +810,13 @@ explicit integration choice.
 - **Unconditional downward velocity every supported tick.** Rejected as the
   primary law: it hides support phase, weakens exact-flat/capture evidence, and
   gives consumers no explicit air/landing contract.
-- **Support ray or shape-cast solver.** Rejected: it duplicates Godot's capsule
-  sweep, disagrees at edges, adds queries per actor, and makes moving-platform
-  evolution harder.
+- **Independent support ray or shape-cast solver.** Rejected: it duplicates
+  Godot's capsule sweep, disagrees at edges, adds an unconditional second
+  support law, and makes moving-platform evolution harder. The accepted
+  conditional `body_test_motion` is narrower: it runs only when Godot has
+  already declared a floor but withheld the snap collision from its public
+  ledger, mirrors the engine's four-contact snap parameters, and recovers the
+  missing RID without moving the body.
 - **Per-paw/per-foot terrain IK, steep-slope sliding, moving-platform state,
   actor-to-actor airborne response, fall damage, recovery, landing pause, and
   fall animation.** Deliberately deferred. The explicit `MotionOutcome` and

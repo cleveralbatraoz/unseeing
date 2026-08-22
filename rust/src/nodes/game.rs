@@ -58,6 +58,7 @@ use super::settings::SettingsMenu;
 use crate::demo_tap::DemoTap;
 use crate::ffi::WaveCore;
 use crate::flicker::{Flicker, FlickerState};
+use crate::support_motion::{MotionConfigError, MotionConfigField, SupportMotionConfig};
 use crate::temporal::{advance_clock, valid_time_or_zero};
 
 /// The perceptual ladder's world layer — real depth, everything but the
@@ -88,6 +89,49 @@ pub struct UnseeingGame {
     #[export]
     #[var]
     level_scene: Option<Gd<PackedScene>>,
+    /// Downward acceleration in metres per second squared. This authored
+    /// Player setting is checked with the other five motion fields and is
+    /// applied only when the Player is constructed.
+    #[export(range = (0.1, 30.0, 0.1, suffix = " m/s²"))]
+    #[var(get = get_player_fall_acceleration, set = set_player_fall_acceleration)]
+    #[init(val = 9.8)]
+    player_fall_acceleration: f64,
+    /// Maximum downward speed in metres per second. This authored Player
+    /// setting is checked with the other five motion fields and is applied
+    /// only when the Player is constructed.
+    #[export(range = (0.5, 50.0, 0.5, suffix = " m/s"))]
+    #[var(get = get_player_terminal_fall_speed, set = set_player_terminal_fall_speed)]
+    #[init(val = 20.0)]
+    player_terminal_fall_speed: f64,
+    /// Landing speed in metres per second at or below which no landing wave
+    /// is authored. It must remain below Player Landing Full Speed; either
+    /// threshold may be staged first and the pair is checked at construction.
+    #[export(range = (0.0, 10.0, 0.1, suffix = " m/s"))]
+    #[var(get = get_player_landing_silent_speed, set = set_player_landing_silent_speed)]
+    #[init(val = 1.5)]
+    player_landing_silent_speed: f64,
+    /// Landing speed in metres per second at which the authored landing wave
+    /// reaches full strength. It must exceed Player Landing Silent Speed;
+    /// either threshold may be staged first and the pair is checked at
+    /// construction.
+    #[export(range = (0.1, 20.0, 0.1, suffix = " m/s"))]
+    #[var(get = get_player_landing_full_speed, set = set_player_landing_full_speed)]
+    #[init(val = 4.0)]
+    player_landing_full_speed: f64,
+    /// Maximum authored landing-wave gain. This unitless Player setting is
+    /// checked with the other five motion fields and is applied only when the
+    /// Player is constructed.
+    #[export(range = (0.0, 1.0, 0.01))]
+    #[var(get = get_player_landing_max_gain, set = set_player_landing_max_gain)]
+    #[init(val = 0.85)]
+    player_landing_max_gain: f64,
+    /// Maximum authored landing-wave radius in metres. This Player setting is
+    /// checked with the other five motion fields and is applied only when the
+    /// Player is constructed.
+    #[export(range = (0.0, 10.0, 0.1, suffix = " m"))]
+    #[var(get = get_player_landing_max_range, set = set_player_landing_max_range)]
+    #[init(val = 5.0)]
+    player_landing_max_range: f64,
     /// The world skin — real depth, every solid and the hero's own body.
     #[init(val = ShaderMaterial::new_gd())]
     #[var]
@@ -346,7 +390,15 @@ impl INode3D for UnseeingGame {
         // one's clock from this same handle.
         self.cat_children = level.bind().cats();
 
+        let player_config = match self.staged_player_motion_config() {
+            Ok(config) => config,
+            Err(error) => {
+                godot_error!("UnseeingGame: invalid player motion configuration — {error}");
+                return;
+            }
+        };
         let mut player = UnseeingPlayer::new_alloc();
+        player.bind_mut().inject_motion_config(player_config);
         player.set("pulses", &core.clone().upcast::<RefCounted>().to_variant());
         player.set_position(level.bind().spawn_pos());
         let mut rotation = player.get_rotation();
@@ -520,6 +572,66 @@ impl UnseeingGame {
         self.cat_children.clone()
     }
 
+    #[func]
+    fn get_player_fall_acceleration(&self) -> f64 {
+        self.player_fall_acceleration
+    }
+
+    #[func]
+    fn set_player_fall_acceleration(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::FallAcceleration, value);
+    }
+
+    #[func]
+    fn get_player_terminal_fall_speed(&self) -> f64 {
+        self.player_terminal_fall_speed
+    }
+
+    #[func]
+    fn set_player_terminal_fall_speed(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::TerminalFallSpeed, value);
+    }
+
+    #[func]
+    fn get_player_landing_silent_speed(&self) -> f64 {
+        self.player_landing_silent_speed
+    }
+
+    #[func]
+    fn set_player_landing_silent_speed(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::LandingSilentSpeed, value);
+    }
+
+    #[func]
+    fn get_player_landing_full_speed(&self) -> f64 {
+        self.player_landing_full_speed
+    }
+
+    #[func]
+    fn set_player_landing_full_speed(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::LandingFullSpeed, value);
+    }
+
+    #[func]
+    fn get_player_landing_max_gain(&self) -> f64 {
+        self.player_landing_max_gain
+    }
+
+    #[func]
+    fn set_player_landing_max_gain(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::LandingMaxGain, value);
+    }
+
+    #[func]
+    fn get_player_landing_max_range(&self) -> f64 {
+        self.player_landing_max_range
+    }
+
+    #[func]
+    fn set_player_landing_max_range(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::LandingMaxRange, value);
+    }
+
     /// The RNG's own seed, widened to the wire-friendly integer width —
     /// `main.gd`'s `_flicker._rng.state` neighbour, not itself: this is
     /// the SEED, the fixed starting point, while the capture's
@@ -650,6 +762,59 @@ impl UnseeingGame {
 }
 
 impl UnseeingGame {
+    fn staged_player_motion_config(&self) -> Result<SupportMotionConfig, MotionConfigError> {
+        SupportMotionConfig::try_new(
+            self.player_fall_acceleration,
+            self.player_terminal_fall_speed,
+            self.player_landing_silent_speed,
+            self.player_landing_full_speed,
+            self.player_landing_max_gain,
+            self.player_landing_max_range,
+        )
+    }
+
+    fn try_stage_player_motion_field(&mut self, field: MotionConfigField, value: f64) {
+        let mut candidate = [
+            self.player_fall_acceleration,
+            self.player_terminal_fall_speed,
+            self.player_landing_silent_speed,
+            self.player_landing_full_speed,
+            self.player_landing_max_gain,
+            self.player_landing_max_range,
+        ];
+        candidate[match field {
+            MotionConfigField::FallAcceleration => 0,
+            MotionConfigField::TerminalFallSpeed => 1,
+            MotionConfigField::LandingSilentSpeed => 2,
+            MotionConfigField::LandingFullSpeed => 3,
+            MotionConfigField::LandingMaxGain => 4,
+            MotionConfigField::LandingMaxRange => 5,
+        }] = value;
+
+        let accepted = match SupportMotionConfig::try_new(
+            candidate[0],
+            candidate[1],
+            candidate[2],
+            candidate[3],
+            candidate[4],
+            candidate[5],
+        ) {
+            Ok(_) | Err(MotionConfigError::ThresholdOrder { .. }) => true,
+            Err(_) => false,
+        };
+        if !accepted {
+            return;
+        }
+        match field {
+            MotionConfigField::FallAcceleration => self.player_fall_acceleration = value,
+            MotionConfigField::TerminalFallSpeed => self.player_terminal_fall_speed = value,
+            MotionConfigField::LandingSilentSpeed => self.player_landing_silent_speed = value,
+            MotionConfigField::LandingFullSpeed => self.player_landing_full_speed = value,
+            MotionConfigField::LandingMaxGain => self.player_landing_max_gain = value,
+            MotionConfigField::LandingMaxRange => self.player_landing_max_range = value,
+        }
+    }
+
     /// Install only owner-checked environment values. Unlike the public
     /// legacy `apply_env` test surface, this door cannot repair or warn.
     fn apply_prepared_env(&mut self, env: &PreparedEnv, rng: &mut Gd<RandomNumberGenerator>) {
@@ -831,5 +996,29 @@ mod tests {
         assert!(post_quad_visible(true, Some("?demo")));
         assert!(post_quad_visible(true, None));
         assert!(post_quad_visible(false, Some("?gprobe")));
+    }
+}
+
+#[cfg(all(test, feature = "editor-docs"))]
+mod editor_docs_tests {
+    #[test]
+    fn player_motion_property_purpose_units_and_threshold_rule_reach_editor_docs() {
+        let xml = godot::docs::gather_xml_docs()
+            .find(|xml| xml.contains("<class name=\"UnseeingGame\""))
+            .expect("UnseeingGame must register an editor-docs XML class");
+        for phrase in [
+            "Downward acceleration in metres per second squared",
+            "Maximum downward speed in metres per second",
+            "must remain below Player Landing Full Speed",
+            "must exceed Player Landing Silent Speed",
+            "Maximum authored landing-wave gain",
+            "Maximum authored landing-wave radius in metres",
+            "applied only when the Player is constructed",
+        ] {
+            assert!(
+                xml.contains(phrase),
+                "UnseeingGame editor XML omitted `{phrase}`: {xml}"
+            );
+        }
     }
 }

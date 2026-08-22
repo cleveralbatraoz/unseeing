@@ -30,4 +30,5 @@ mod settings;
 mod solid;
 mod source;
 mod spawn;
+mod support;
 mod wall;

@@ -16,9 +16,9 @@
 - Strict TDD applies to every behavior: add the named test, witness the intended failure, write the smallest production change, witness the pass, then refactor. Production written before its test is deleted.
 - Execute the checklist in dependency order `Task 1 → Task 6 → Task 4 → Task 2 → Task 3 → Task 5 → Task 7 → Task 8`; related prose remains grouped by actor, so the numbering is the authority. Every task ends with targeted mutation evidence, a read-only reviewer gate against the actual diff, all relevant green tests, and one small coherent commit. Task 6 lands the format-2 schema before behavior: player/cat motion fields are `Controlled`/unsupported, suppression is clear, and existing queued waves are `Always`; preflight rejects non-dormant actor states until the corresponding adapter task lifts only that semantic restriction. The wire layout never changes again. Tasks 4, 2, 3, and 5 then activate already-captured state one behavior at a time, so every reachable commit remains complete and restorable without a mega-commit or version churn. All commits use `Dmitrii Galchenko <dggrus@gmail.com>`; subjects/bodies are narrative and contain no assistant attribution.
 - `game/` remains the sole Godot 4.7 project. GDScript remains test/probe-only; all shipped kinematics, animation math, landing response, capture, and perception behavior live in Rust.
-- The same pure Rust law must run on native x86_64/arm64 and wasm32. Add no architecture conditionals, threads, global caches, mutable statics, custom Resources, generated configuration files, dependencies, raycasts, shape casts, or a second `move_and_slide()`.
+- The same pure Rust law must run on native x86_64/arm64 and wasm32. Add no architecture conditionals, threads, global caches, mutable statics, custom Resources, generated configuration files, dependencies, support raycasts, unconditional shape casts, or a second `move_and_slide()`. The sole support-query exception is the spec's conditional, preallocated four-contact `PhysicsServer3D::body_test_motion` fallback when Godot declares a snap floor but exposes no floor contact in its public ledger.
 - All public pure functions are total on their declared domain. Godot values are validated at the adapter boundary; invalid configuration/state produces an explicit error and never a panic, NaN, Infinity, invented support, or partial restore.
-- Per actor, steady-state work remains O(1), allocation-free pure arithmetic around the existing one body move. The cat's existing contact `Vec` and wave activity remain its only relevant allocation behavior.
+- Per actor, steady-state work remains O(1), allocation-free pure arithmetic around the existing one body move. Ordinary support reads at most six motion results times six contacts; a hidden snap reads at most four cached probe contacts. The cat's existing contact `Vec` and wave activity remain its only relevant allocation behavior.
 - Only `UnseeingPlayer` and `WaveCat` acquire support motion. `WaveProp`, `WaveColumn`, `WaveWedge`, `WaveWall`, `WaveRun`, floor/ceiling slabs, `SoundFan`, and `SoundRadio` remain authored static content with their current coupled mesh/collider transforms.
 - There is no jump, fall damage, recovery, landing pause, fall pose, moving-platform state, steep-slope sliding, per-foot/per-paw terrain IK, or actor-to-actor airborne response in this version.
 - The cat brain and yaw freeze while airborne, but `CatGait`, the silhouette, tail animation, and presence cadence continue from actual movement. Do not reset or freeze the gait.
@@ -507,6 +507,8 @@ Request read-only spec and code review of this task's diff, verify every finding
 ### Task 2: Player Physical Support, Layers, and Inspector Injection
 
 **Files:**
+- Modify: `docs/superpowers/specs/2026-08-21-character-elevation-support-design.md`
+- Modify: `docs/superpowers/plans/2026-08-21-character-elevation-support.md`
 - Create: `rust/src/nodes/support.rs`
 - Create: `game/tests/character_elevation_fixture.gd`
 - Create: `game/tests/player_elevation_test.gd`
@@ -517,6 +519,7 @@ Request read-only spec and code review of this task's diff, verify every finding
 - Modify: `game/tests/movement_test.gd:1-97`
 - Modify: `game/tests/game_root_test.gd`
 - Modify: `game/tests/knob_hint_test.gd`
+- Modify: `game/tests/restore_transaction_test.gd`
 
 **Interfaces:**
 - Consumes: all Task 1 types/functions.
@@ -582,11 +585,11 @@ static func add_bed(parent: Node, at: Vector3) -> WaveProp:
 
 These literals come from `game/scenes/props/table.tscn` and `game/scenes/level_01.tscn`; tests assert the resulting collider top rather than trusting only the comments.
 
-In `player_elevation_test.gd`, add exact cases `test_player_capsule_bottom_meets_the_authored_flat_datum`, `test_unsupported_player_falls_and_stops_at_terminal_speed`, `test_airborne_input_cannot_reverse_the_departure_trajectory`, `test_airborne_wall_contact_removes_only_the_blocked_planar_component_without_a_wave`, `test_player_returns_to_control_on_lower_world_geometry_once`, `test_player_knobs_reach_the_runtime_player_before_tree_entry`, `test_out_of_range_player_knob_retains_the_prior_scalar`, `test_valid_player_threshold_pairs_round_trip_above_and_below_defaults`, `test_invalid_final_player_threshold_pair_refuses_before_player_construction`, `test_player_solver_contract_is_explicit_on_every_property`, `test_player_solver_disables_ambient_platform_motion`, `test_actor_layers_are_named_and_phase_derived`, `test_player_rejects_actor_layer_floor_before_cat_adapter_exists`, `test_server_backed_world_body_without_node_is_accepted_support`, `test_server_backed_zero_object_id_is_accepted_with_null_identity`, `test_poisoned_player_pre_move_transform_or_rotation_refuses_without_move_or_wave`, `test_poisoned_player_post_move_transform_or_rotation_rolls_back_exactly`, and `test_nonfinite_player_relocation_is_atomic`. Until Task 7 exposes structured phase, the return-to-control test observes the layer-3 to layer-2 transition and accepted `is_on_floor()` state; Task 3 separately pins exactly one landing wave. The solver-contract case reads and hand-asserts motion mode, up direction, snap, maximum floor angle, safe margin, maximum slides, both slope booleans, both platform masks, and platform-on-leave. The actor-floor case uses a static dummy on layer 2 beneath the player; the server-backed cases create a body/shape directly through `PhysicsServer3D` and prove its valid RID remains support without a `CollisionObject3D` node; an object ID of zero is observed as NIL, not support refusal.
+In `player_elevation_test.gd`, add exact cases `test_player_capsule_bottom_meets_the_authored_flat_datum`, `test_unsupported_player_falls_and_stops_at_terminal_speed`, `test_airborne_input_cannot_reverse_the_departure_trajectory`, `test_airborne_wall_contact_removes_only_the_blocked_planar_component_without_a_wave`, `test_player_returns_to_control_on_lower_world_geometry_once`, `test_player_knobs_reach_the_runtime_player_before_tree_entry`, `test_out_of_range_player_knob_retains_the_prior_scalar`, `test_valid_player_threshold_pairs_round_trip_above_and_below_defaults`, `test_invalid_final_player_threshold_pair_refuses_before_player_construction`, `test_player_solver_contract_is_explicit_on_every_property`, `test_player_solver_disables_ambient_platform_motion`, `test_actor_layers_are_named_and_phase_derived`, `test_player_rejects_actor_layer_floor_before_cat_adapter_exists`, `test_server_backed_world_body_without_node_is_accepted_support`, `test_server_backed_zero_object_id_is_accepted_with_null_identity`, `test_snap_only_step_down_stays_controlled`, `test_poisoned_player_pre_move_transform_or_rotation_refuses_without_move_or_wave`, and `test_nonfinite_player_relocation_is_atomic`. The post-move poison is deliberately a Rust `PlayerMotionPort` production-path test: Godot exposes no deterministic way to inject only the post-solver sample, and a shipped test-only node hook would violate the adapter boundary. Until Task 7 exposes structured phase, the return-to-control test observes the layer-3 to layer-2 transition and accepted `is_on_floor()` state; Task 3 separately pins exactly one landing wave. The solver-contract case reads and hand-asserts motion mode, up direction, snap, maximum floor angle, safe margin, maximum slides, both slope booleans, both platform masks, and platform-on-leave. The actor-floor case uses a static dummy on layer 2 beneath the player; the server-backed cases create a body/shape directly through `PhysicsServer3D` and prove its valid RID remains support without a `CollisionObject3D` node; an object ID of zero is observed as NIL, not support refusal. Every server-created body and shape RID is freed in teardown. The Rust port trace, not the gdUnit name, proves the exact zero/one probe count.
 
-Before adapter production, add Rust trace tests around a narrow private `PlayerMotionPort` used by the callback: `post_move_poison_writes_exact_saved_transform_then_zero_velocity_then_disables` supplies a valid pre-transform and a post-transform/rotation with each lane poisoned in turn, and asserts that exact three-command trace plus no state/layer/wave command; `valid_tick_calls_move_and_slide_once` asserts one and only one move command. The production port forwards to `CharacterBody3D`; the fake is test-only and contains no scene tree.
+Before adapter production, add Rust trace tests around a narrow private `PlayerMotionPort` used by the callback: `post_move_poison_writes_exact_saved_transform_then_zero_velocity_then_disables` supplies a valid pre-transform and a post-transform/rotation/velocity or support fact with each lane poisoned in turn, and asserts that exact three-command trace plus no state/layer/wave command; `valid_tick_calls_move_and_slide_once` asserts one and only one move command. Separate support-reader tests pin a wall at inner contact zero followed by a floor at inner contact one, actor then world floors, a zero object ID, outer counts `-1/7`, inner counts `0/7`, missing entries, invalid RIDs, and every poisoned point/normal lane. An ordinary floor makes zero snap probes. `is_on_floor()` with no public floor contact makes exactly one probe; a true probe result must have `1..=4` contacts, while count `0/5`, actor-then-world contacts, actor-only contacts, invalid RID, poisoned lanes, and a valid first world floor followed by a poisoned later fact are pinned independently. A false probe result is valid no-support and must not read stale reusable result data. The production port forwards to `CharacterBody3D` and its cached probe objects; the fake is test-only and contains no scene tree.
 
-Add the exact #64 ramp test in this red step, before the adapter exists: a `1.4 × 0.45 × 1.0 m` wedge leading to the checked platform described above. Poll the player up and back down; assert the settled platform root against `1.35_f32` with tolerance `SAFE_MARGIN_M + 1.192_092_895_507_812_5e-7 m` (one f32 ULP at 1.35), controlled layer/support throughout, no airborne layer, and no landing observation/wave on either direction. The old planar-only body must fail this elevation result.
+Add `test_player_ramp_up_and_down_never_becomes_airborne` in this red step, before the adapter exists: use the exact #64 `1.4 × 0.45 × 1.0 m` wedge leading to the checked platform described above. Poll the player up and back down; assert the settled platform root against `1.35_f32` with tolerance `SAFE_MARGIN_M + 1.192_092_895_507_812_5e-7 m` (one f32 ULP at 1.35), controlled layer/support throughout, no airborne layer, and no landing observation/wave on either direction. The old planar-only body must fail this elevation result.
 
 Update `movement_test.gd::before_test` to add a checked wide floor before adding its root-Y `0.9` player. The expected grounded velocity Y remains exactly zero; replace the obsolete “flat map” wording with “controlled supported motion”.
 
@@ -619,6 +622,8 @@ pub const FLOOR_SNAP_M: f32 = 0.10;
 pub const FLOOR_MAX_ANGLE_RAD: f32 = std::f32::consts::FRAC_PI_4;
 pub const SAFE_MARGIN_M: f32 = 0.001;
 pub const MAX_SLIDES: i32 = 6;
+pub const MOTION_RESULT_MAX_CONTACTS: i32 = 6;
+pub const SNAP_PROBE_MAX_CONTACTS: i32 = 4;
 pub const PLATFORM_LAYERS: u32 = 0;
 
 pub fn collision_pair(phase: MotionPhase) -> (u32, u32) {
@@ -661,9 +666,11 @@ pub const CAM_BASE_Y: f64 = EYE - PLAYER_STANDING_ROOT_Y;
 
 `support_elevation_y()` performs `global_position.y - PLAYER_STANDING_ROOT_Y as f32`, entirely in the `Vector3` lane type. Thus an authored flat root whose Y is the same `0.9` f32 returns exact positive zero, while `CAM_BASE_Y` retains the existing f64 expression and camera bit pattern; do not widen the world Y before subtraction or add the datum to the camera twice.
 
-Store `motion_config: SupportMotionConfig::PLAYER_DEFAULT`, `motion_state: MotionState::initial()`, and `support_collider_id: Option<u64>`. In `ready`, set the 1.7 m capsule local Y to `-0.05`, write every solver setting explicitly—including `MotionMode::GROUNDED`, both platform-layer masks `0`, and `PlatformOnLeave::DO_NOTHING`—and apply the controlled pair before the first move. Add no “fault already reported” state: the refusal door below disables processing after its one error.
+Store `motion_config: SupportMotionConfig::PLAYER_DEFAULT`, `motion_state: MotionState::initial()`, `support_collider_id: Option<u64>`, and one actor-owned `PhysicsTestMotionParameters3D`/`PhysicsTestMotionResult3D` scratch pair allocated before the first tick. In `ready`, set the 1.7 m capsule local Y to `-0.05`, write every solver setting explicitly—including `MotionMode::GROUNDED`, both platform-layer masks `0`, and `PlatformOnLeave::DO_NOTHING`—configure the scratch parameters with downward `FLOOR_SNAP_M`, `SAFE_MARGIN_M`, `SNAP_PROBE_MAX_CONTACTS`, recovery-as-collision and separation-ray collision, and apply the controlled pair before the first move. Add no “fault already reported” state: the refusal door below disables processing after its one error.
 
-The player-owned function has the exact signature `fn post_move_support(&self) -> Result<(Option<SupportContact>, Option<u64>), SupportReadError>`. If `is_on_floor()` is false it returns `(None,None)`. Otherwise it scans `0..get_slide_collision_count()` in ledger order; `get_slide_collision(index) == None` is `SupportReadError::MissingCollision(index)`. For each entry it constructs `SupportContact::try_new(collision.get_position(), collision.get_normal())?` before angle arithmetic, widens the validated normal lanes, and accepts the floor predicate `acos(clamp(dot(normal, UP)/(length(normal)), -1, 1)) <= f64::from(FLOOR_MAX_ANGLE_RAD)`. Non-floor entries continue. A floorish entry must have `collision.get_collider_rid().is_valid()` or returns `InvalidRid(index)`; query `PhysicsServer3D::singleton().body_get_collision_layer(rid)`, continue on either actor bit, and otherwise return the contact plus `NonZeroU64::new(collision.get_collider_id()).map(NonZeroU64::get)`. Exhausting the ledger returns `(None,None)`. `SupportReadError` is a private `Display` enum with `MissingCollision(i32)`, `InvalidRid(i32)`, and `InvalidValue(MotionValueError)`; `From<MotionValueError>` maps the last variant. It never silently turns poisoned facts into air. A rejected actor collision cannot hide a later world floor, while server-backed geometry needs no object cast and a zero object ID becomes `None`. Collider identity never enters behavior or capture.
+The tested support reader has the exact shape `fn read_post_move_support<P: PlayerMotionPort>(port: &mut P, post_transform: ActorTransform) -> Result<(Option<SupportContact>, Option<u64>), SupportReadError>`. `PlayerMotionPort` exposes only raw engine facts, the one probe command, and body writes; it must not expose a composite `post_move_support` method that production and fake implementations could implement differently. The generic tick coordinator calls this one reader directly, while the production port's raw methods mutably borrow the actor's cached probe scratch. If `is_on_floor()` is false the reader returns `(None,None)` without a probe. Otherwise it validates the outer slide count is in `0..=MAX_SLIDES`, then scans every present `KinematicCollision3D` in ledger order. Each inner count must be in `1..=MOTION_RESULT_MAX_CONTACTS`; use the indexed godot-rust position/normal builders (`get_position_ex().collision_index(j).done()` and its normal counterpart), never the zero-argument deepest-contact shortcut. Construct `SupportContact::try_new(point, normal)` before angle arithmetic, widen the validated normal lanes, and accept the floor predicate `acos(clamp(dot(normal, UP)/(length(normal)), -1, 1)) <= f64::from(FLOOR_MAX_ANGLE_RAD)`. Only a floorish entry reads its indexed RID/ID builders; it requires a valid RID, queries `PhysicsServer3D::body_get_collision_layer`, continues on either actor bit, and otherwise retains the first world candidate. Do not return early: finish validating all bounded contact geometry and every floor collider fact before committing the candidate. Collider facts for a contact already proven non-floor are deliberately outside the support domain and are not read.
+
+Track whether any ordinary contact was floorish. If the complete ledger contains a world candidate, return it after validation. If it contains only actor floors, return valid no-support without probing: Godot's main motion, not hidden snap, established that floor. Only when there was no ordinary floorish contact, rewrite the cached probe's `from` with the validated post-move transform and call `PhysicsServer3D::body_test_motion_ex(...).result(...).done()` once. A false result is valid no-support and must not read stale reusable result data. A true result whose count is outside `1..=SNAP_PROBE_MAX_CONTACTS` is an explicit refusal. Validate and classify every probe contact by the same point/normal/RID/layer law, retain the first world candidate, and return it only after the complete four-contact bound is validated; actor-only probe contacts are valid no-support. `SupportReadError` is a private `Display` enum with explicit outer-count, missing-slide, inner-count, ordinary-RID, probe-count, probe-RID, and `InvalidValue(MotionValueError)` variants carrying both indices where applicable. `From<MotionValueError>` maps the last variant. It never silently turns poisoned facts into air. Server-backed geometry needs no object cast, `NonZeroU64::new(id).map(NonZeroU64::get)` makes object ID zero absent identity, and collider identity never enters behavior or capture.
 
 `desired_planar_velocity` returns `Result<PlanarVelocity, MotionValueError>` and validates the complete transformed world vector. `support_elevation_y` returns `Result<SupportElevation, MotionValueError>` after validating the player root as `ActorPosition`. Replace `physics_process` motion with this exact ordering (the small `refuse_motion(error)` helper logs once, zeros velocity, disables physics processing, and has no mutable latch):
 
@@ -709,7 +716,7 @@ let rotation_after = match FiniteRotation::try_new(self.base().get_global_rotati
     }
 };
 let _validated_post = (transform_after.position(), rotation_after);
-let (support, collider_id) = match self.post_move_support() {
+let (support, collider_id) = match read_post_move_support(self, transform_after) {
     Ok(value) => value,
     Err(error) => {
         self.base_mut().set_global_transform(transform_before.world());
@@ -733,6 +740,8 @@ self.apply_collision_pair();
 ```
 
 Do not sample movement input when airborne. Keep look and queued cane handling after the validated body move. The `MotionState` itself retains any landing observation returned by reconciliation; Task 3 adds its tested effect. Rust-only `try_relocate(world_position: Vector3) -> Result<(), MotionValueError>` first constructs `ActorPosition`; on error it changes no transform, velocity, phase, layer, or support. On success it synchronously installs the validated position, calls `motion_state.relocated()`, clears support identity, writes zero body velocity, and applies controlled layers before returning `Ok(())`. A registered `#[func] relocate(world_position) -> VarDictionary` is the thin Godot test/game door: it returns `{ "relocated": true }` on success or `{ "unavailable": error.to_string() }` on refusal, using the repository's existing verdict convention rather than exposing Rust `Result` through godot-rust. The gdUnit atomicity test calls this wrapper and asserts the exact dictionary plus unchanged body observations.
+
+Activate the already-shipped format-2 player state in the same Task 2 transaction. In `UnseeingPlayer::prepare_restore`, replace only the `MotionState::initial()` refusal with `validate_restore(hero.motion, validated_velocity, self.motion_config)`. Keep Task 3's pending-suppression and `ControlledContact` queue restrictions unchanged. `PreparedPlayerState` carries `collision_pair(hero.motion.phase())`; `install_prepared` applies that derived pair infallibly after installing the already-prepared actor state and still clears transient support identity. Red transaction cases pin compatible midair restore `(layer=4, mask=4_294_967_289)`, controlled restore `(layer=2, mask=4_294_967_291)`, bit-mismatched airborne X/Z, terminal excess, a custom injected terminal limit, and unchanged world/layer/mask on every refusal. Do not change `HeroCapture`, the format-2 encoder/parser/hash, or `FORMAT_VERSION`.
 
 - [ ] **Step 5: Add validated player Inspector fields and inject before tree entry**
 
@@ -792,11 +801,11 @@ for suite in player_elevation_test movement_test game_root_test knob_hint_test; 
 done
 ```
 
-Expected: all green against the freshly built dylib, one body move per tick, no input steering in air, and exact property documentation.
+Expected: all green against the freshly built dylib, one body move per tick, zero probes for a public floor and exactly one cached fact probe for hidden snap, no input steering in air, and exact property documentation.
 
 - [ ] **Step 7: Mutate, review, and commit physical player support**
 
-Prove the named tests fail when restoring `velocity.y = 0`, sampling input in air, retaining desired rather than post-slide X/Z, omitting either post-transform/rotation validation, reconstructing instead of restoring the saved transform, treating collider ID zero as refusal, leaving controlled layers in air, accepting actor support, restoring capsule Y to zero, ignoring injected config, changing each solver/platform property, or adding a second move. Restore green after each mutation. Rebuild release Rust, import, rerun the Task 2 Godot gates, request physics/performance plus code review, and fix verified findings. Lift Task 6 preflight's dormant-player restriction in the same diff, then commit the physical player behavior with its existing format-2 capture fields.
+Prove the named tests fail when restoring `velocity.y = 0`, sampling input in air, retaining desired rather than post-slide X/Z, omitting either post-transform/rotation/velocity/support validation, reconstructing instead of restoring the saved transform, reading only contact zero, returning before later facts are validated, deleting or unconditionally running the snap probe, changing either contact bound, treating collider ID zero as refusal, leaving controlled layers in air, accepting actor support, restoring capsule Y to zero, ignoring injected config, changing each solver/platform property, or adding a second move. Restore green after each mutation. Rebuild release Rust, import, rerun the Task 2 Godot gates, request physics/performance plus code review, and fix verified findings. Lift Task 6 preflight's dormant-player restriction in the same diff, then commit the physical player behavior with its existing format-2 capture fields.
 
 ---
 
@@ -1130,7 +1139,9 @@ Implement the same registered read-only `motion_config_snapshot() -> PackedFloat
 
 Store `motion_state: MotionState::initial()` and `support_collider_id: Option<u64>`; add no report latch. Configure all eleven solver values from the global table before editor/runtime branches and apply the phase-derived pair only when it changes.
 
-The cat-owned support door is `fn post_move_support(&self) -> Result<(Option<SupportContact>, Option<u64>), SupportReadError>`. False `is_on_floor()` returns `(None,None)`. Otherwise scan every slide entry in ledger order; missing entry is `MissingCollision(index)`. Validate point/normal, compare the widened normalized dot angle with `FLOOR_MAX_ANGLE_RAD`, continue on a non-floor entry, require a valid collider RID, and obtain its layer through `PhysicsServer3D::body_get_collision_layer`. Continue on either actor bit; otherwise return the contact and `NonZeroU64::new(get_collider_id()).map(NonZeroU64::get)`. Exhaustion returns `(None,None)`. The private `Display` error variants are `MissingCollision(i32)`, `InvalidRid(i32)`, and `InvalidValue(MotionValueError)`. No object-class cast or poisoned-fact skip is permitted; a zero object ID remains valid support with absent observation identity.
+The cat-owned support door uses the exact bounded ordinary-ledger plus conditional cached snap-fact algorithm introduced in Task 2: outer `0..=MAX_SLIDES`, inner `1..=MOTION_RESULT_MAX_CONTACTS`, every indexed point/normal and every floor collider fact validated before the first retained world candidate is returned, actor-only ordinary floors producing no support and no fallback, and exactly one `1..=SNAP_PROBE_MAX_CONTACTS` `body_test_motion` only when `is_on_floor()` has no ordinary floorish contact. Non-floor collider identity remains unread. A false probe result is valid no-support and never reads stale scratch data. WaveCat owns its own preallocated parameter/result scratch pair. No object-class cast or poisoned-fact skip is permitted; invalid counts/floor RIDs are explicit refusal, while a zero object ID remains valid support with absent observation identity.
+
+Task 5 adds cat-owned Rust port traces rather than relying on the player adapter's evidence: ordinary actor-only floor means zero probes, hidden snap means exactly one, false probe means no reusable-result read, and poisoned post velocity/support produces exact rollback. Independent bound/full-ledger mutations must fail these cat tests. If the implementation instead shares the one tested support coordinator from Task 2, the cat tests still pin its adapter wiring and scratch ownership.
 
 Add a private pure `CatControlPolicy::{AdvanceBrain,Frozen { yaw: ActorYaw, sitting: bool }}` selector over `(MotionPhase, ActorYaw, Mood)`. Only `AdvanceBrain` may call `CatBrain::advance` and produce `Some(yaw)`; `Frozen` always produces `PlanarVelocity::ZERO` and `yaw_command = None`. The named policy test pins that no airborne path can invoke a yaw setter even when writing the old yaw would appear observationally harmless.
 
@@ -1217,7 +1228,7 @@ let rotation_after = match FiniteRotation::try_new(self.base().get_global_rotati
 };
 let new_position = transform_after.position();
 let _validated_post_rotation = rotation_after;
-let (support, collider_id) = match self.post_move_support() {
+let (support, collider_id) = match read_post_move_support(self, transform_after) {
     Ok(value) => value,
     Err(error) => {
         self.rollback_motion(transform_before, brain_before, gait_before, tail_before, error);
@@ -1845,10 +1856,14 @@ test "$(find "$ELEVATION_EVIDENCE_DIR" -name '*.png' -type f | wc -l | tr -d ' '
 (cd rust && cargo test valid_tick_calls_move_and_slide_once)
 (cd rust && cargo test cat_valid_tick_calls_move_and_slide_once)
 if git diff --unified=0 "$(git merge-base HEAD main)" -- rust/src | \
-  grep -E '^\+.*(intersect_ray|intersect_shape|cast_motion)'; then
-  echo 'unexpected new body-support query' >&2
+  grep -E '^\+.*(intersect_ray|intersect_shape|cast_motion|get_rest_info)'; then
+  echo 'unexpected independent body-support query' >&2
   exit 1
 fi
+SUPPORT_BODY_TEST_CALLS="$(grep -h -E '\.body_test_motion_ex\(' \
+  rust/src/nodes/{support,player,cat}.rs 2>/dev/null | wc -l | tr -d ' ')"
+test "$SUPPORT_BODY_TEST_CALLS" -ge 1
+test "$SUPPORT_BODY_TEST_CALLS" -le 2
 ```
 
 Use `view_image` on the generated frames nearest the four logged marks under
@@ -1861,7 +1876,7 @@ rm -rf /tmp/unseeing-elevation-movie-issue64
 test ! -e game/override.cfg
 ```
 
-Review the pure/adapters for allocation sites and global state; the trace tests prove one move, and the diff gate proves no new body-support query.
+Review the pure/adapters for allocation sites and global state. The trace tests prove one move plus zero-or-one conditional support-fact probe, and the structural gate permits only the one shared or two actor-owned `body_test_motion_ex` call sites while rejecting independent ray/shape/rest queries.
 
 - [ ] **Step 6: Rewrite the current wiki in a fresh external clone**
 
