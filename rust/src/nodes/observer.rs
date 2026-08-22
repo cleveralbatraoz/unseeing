@@ -59,6 +59,10 @@ use crate::reproduce::{
     CaptureState, CatCapture, EnvCapture, FORMAT_VERSION, HeroCapture, SourceCapture,
     first_divergence, state_hash,
 };
+use crate::support_motion::{
+    FiniteVelocity, LandingEvent, MotionPhase, MotionState, PlanarVelocity, QueuedWaveGate,
+    SupportContact,
+};
 use crate::viewmodel::ViewmodelCapture;
 
 /// No level: the observer was never handed the world to read.
@@ -70,6 +74,8 @@ const NO_LEVEL: &str = "observer was never injected a level";
 /// limbs, camera or no camera) would send a reader hunting the wrong system.
 const NO_CAMERA: &str = "observer was never injected a camera — walls_to_eye and the camera group are measured \
      from the eye";
+
+const DISABLED_HERO: &str = "the hero physics process is disabled — capture refused";
 
 /// A level whose wave pool never arrived, or arrived as something that is
 /// not a pool at all. `pub(super)`: [`super::restorer::WaveRestorer`] reuses
@@ -300,6 +306,23 @@ impl WaveObserver {
     fn capture(&self, now: f64, env: VarDictionary) -> VarDictionary {
         match self.capture_state(now, &env) {
             Ok(state) => state_dict(&state),
+            Err(reason) => unavailable(&reason),
+        }
+    }
+
+    /// Compute the canonical state hash of a blob after syntax parsing only.
+    /// This intentionally does not ask the restorer whether the state is
+    /// currently admissible: transaction tests and repair tools use it to
+    /// label a deliberately future-shaped artifact without touching the
+    /// running world.
+    #[func]
+    fn canonical_hash_of(&self, blob: VarDictionary) -> VarDictionary {
+        match parse_blob(&blob) {
+            Ok(state) => {
+                let mut answer = VarDictionary::new();
+                answer.set("hash", hex64(state_hash(&state)).as_str());
+                answer
+            }
             Err(reason) => unavailable(&reason),
         }
     }
@@ -685,18 +708,25 @@ impl WaveObserver {
     /// the BODY, and is the one fact in the whole blob that no snapshot has
     /// ever been able to reach.
     fn capture_hero(&self) -> Result<HeroCapture, &'static str> {
+        let player_handle = self.player.as_ref().ok_or(NO_HERO)?;
+        if !player_handle.is_physics_processing() {
+            return Err(DISABLED_HERO);
+        }
         let body = self.live_body()?;
         let viewmodel = body.bind().capture_vm().ok_or(NO_VM)?;
         let hero = self.read_hero()?;
+        let player = player_handle.bind();
         Ok(HeroCapture {
             position: hero.position,
             velocity: hero.velocity,
+            motion: player.motion_state(),
             yaw: hero.yaw,
             pitch: hero.pitch,
             last_tap: hero.last_tap,
             tap_target: hero.tap_target,
             tap_queued: hero.tap_queued,
             queued_waves: hero.queued_waves,
+            footstep_suppression_pending: player.footstep_suppression_pending(),
             viewmodel,
         })
     }
@@ -857,9 +887,17 @@ fn capture_cats(level: &WaveLevel) -> Result<Vec<CatCapture>, String> {
         .cat_handles()
         .iter()
         .map(|cat| {
-            cat.bind()
+            let capture = cat
+                .bind()
                 .capture_state()
-                .ok_or_else(|| format!("{UNBUILT_CAT} ({})", cat.get_name()))
+                .ok_or_else(|| format!("{UNBUILT_CAT} ({})", cat.get_name()))?;
+            if !cat.is_physics_processing() || !cat.is_processing() {
+                return Err(format!(
+                    "cat {} has disabled processing — capture refused",
+                    cat.get_name()
+                ));
+            }
+            Ok(capture)
         })
         .collect()
 }
@@ -1374,7 +1412,7 @@ fn v4_array(v: Vector4) -> VarArray {
 fn lane_array(lanes: &[f32]) -> VarArray {
     let mut out = VarArray::new();
     for &lane in lanes {
-        out.push(&lane.to_string().to_variant());
+        out.push(&format!("{lane:?}").to_variant());
     }
     out
 }
@@ -1472,6 +1510,13 @@ fn env_dict(env: &EnvCapture, floats: Floats) -> VarDictionary {
     entry
 }
 
+/// The already-parsed environment in the native shape the capture door
+/// consumes. Restore uses this only for its postcondition; it never reparses
+/// the artifact or calls the legacy `env_of` boundary after preflight.
+pub(super) fn native_env_dict(env: &EnvCapture) -> VarDictionary {
+    env_dict(env, Floats::Native)
+}
+
 /// A float spelled for the road its dictionary is taking.
 fn float_value(value: f64, floats: Floats) -> Variant {
     match floats {
@@ -1520,17 +1565,20 @@ fn hero_capture_dict(hero: &HeroCapture) -> VarDictionary {
     let HeroCapture {
         position,
         velocity,
+        motion,
         yaw,
         pitch,
         last_tap,
         tap_target,
         tap_queued,
         queued_waves,
+        footstep_suppression_pending,
         viewmodel,
     } = hero;
     let mut entry = VarDictionary::new();
     entry.set("position", &v3_array(*position));
     entry.set("velocity", &v3_array(*velocity));
+    entry.set("motion", &motion_dict(*motion));
     entry.set("yaw", yaw.to_string().as_str());
     entry.set("pitch", pitch.to_string().as_str());
     entry.set("last_tap", last_tap.to_string().as_str());
@@ -1539,6 +1587,10 @@ fn hero_capture_dict(hero: &HeroCapture) -> VarDictionary {
     entry.set(
         "queued_waves",
         &dict_list(queued_waves.iter(), queued_wave_capture_dict),
+    );
+    entry.set(
+        "footstep_suppression_pending",
+        *footstep_suppression_pending,
     );
     entry.set("viewmodel", &viewmodel_dict(viewmodel));
     entry
@@ -1563,6 +1615,7 @@ fn queued_wave_capture_dict(wave: &QueuedWave) -> VarDictionary {
         gain,
         echoes,
         normal,
+        gate,
     } = wave;
     let mut entry = VarDictionary::new();
     entry.set("type", *kind);
@@ -1572,6 +1625,71 @@ fn queued_wave_capture_dict(wave: &QueuedWave) -> VarDictionary {
     entry.set("gain", gain.to_string().as_str());
     entry.set("echoes", *echoes);
     entry.set("normal", &v3_array(*normal));
+    entry.set("gate", queued_gate_name(*gate));
+    entry
+}
+
+fn queued_gate_name(gate: QueuedWaveGate) -> &'static str {
+    match gate {
+        QueuedWaveGate::Always => "always",
+        QueuedWaveGate::ControlledContact => "controlled_contact",
+    }
+}
+
+fn motion_dict(motion: MotionState) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("phase", &phase_dict(motion.phase()));
+    entry.set(
+        "support",
+        &motion
+            .support()
+            .map_or_else(Variant::nil, |support| support_dict(support).to_variant()),
+    );
+    entry.set(
+        "last_landing",
+        &motion
+            .last_landing()
+            .map_or_else(Variant::nil, |landing| landing_dict(landing).to_variant()),
+    );
+    entry
+}
+
+fn phase_dict(phase: MotionPhase) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    match phase {
+        MotionPhase::Controlled => entry.set("kind", "controlled"),
+        MotionPhase::Airborne {
+            planar_velocity_mps,
+            vertical_velocity_mps,
+        } => {
+            entry.set("kind", "airborne");
+            entry.set(
+                "planar_velocity",
+                &lane_array(&[planar_velocity_mps.x_mps(), planar_velocity_mps.z_mps()]),
+            );
+            entry.set(
+                "vertical_velocity",
+                format!("{:?}", vertical_velocity_mps.mps()).as_str(),
+            );
+        }
+    }
+    entry
+}
+
+fn support_dict(support: SupportContact) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("point", &v3_array(support.point()));
+    entry.set("normal", &v3_array(support.normal()));
+    entry
+}
+
+fn landing_dict(landing: LandingEvent) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set(
+        "impact_speed",
+        format!("{:?}", landing.impact_speed().mps()).as_str(),
+    );
+    entry.set("support", &support_dict(landing.support()));
     entry
 }
 
@@ -1607,6 +1725,7 @@ fn cat_capture_dict(cat: &CatCapture) -> VarDictionary {
         position,
         yaw,
         velocity,
+        motion,
         brain,
         gait,
         tail,
@@ -1620,6 +1739,7 @@ fn cat_capture_dict(cat: &CatCapture) -> VarDictionary {
     entry.set("position", &v3_array(*position));
     entry.set("yaw", yaw.to_string().as_str());
     entry.set("velocity", &v3_array(*velocity));
+    entry.set("motion", &motion_dict(*motion));
     entry.set("brain", &brain_dict(brain));
     entry.set("gait", &gait_dict(gait));
     entry.set("tail", &v3_list(tail));
@@ -1702,6 +1822,7 @@ fn gait_dict(gait: &GaitCapture) -> VarDictionary {
     let GaitCapture {
         phase,
         amp,
+        support_y,
         planted,
         aim,
         in_swing,
@@ -1710,6 +1831,7 @@ fn gait_dict(gait: &GaitCapture) -> VarDictionary {
     let mut entry = VarDictionary::new();
     entry.set("phase", phase.to_string().as_str());
     entry.set("amp", amp.to_string().as_str());
+    entry.set("support_y", format!("{support_y:?}").as_str());
     entry.set("planted", &v3_list(planted));
     entry.set("aim", &v3_list(aim));
     let mut swinging = VarArray::new();
@@ -1837,6 +1959,19 @@ impl Group {
         self.float_of(&self.raw(key)?, &self.path_of(key))
     }
 
+    /// One scalar carried at the engine's real f32 width. Parsing directly
+    /// to f32 is load-bearing: widening through f64 can choose a different
+    /// rounding boundary, and both zero signs are captured state.
+    fn f32(&self, key: &str) -> Result<f32, String> {
+        let path = self.path_of(key);
+        let value = self.lane_of(&self.raw(key)?, &path)?;
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(fault(&path, "must be finite"))
+        }
+    }
+
     /// A float, however this dictionary spells them. NaN, both zeros and
     /// the infinities all survive the text road exactly, which is why
     /// there is no special case for the one field that can hold a NaN.
@@ -1927,6 +2062,16 @@ impl Group {
         group_of(&self.raw(key)?, self.floats, self.path_of(key))
     }
 
+    fn optional_group(&self, key: &str) -> Result<Option<Group>, String> {
+        let value = self.raw(key)?;
+        let path = self.path_of(key);
+        match value.get_type() {
+            VariantType::NIL => Ok(None),
+            VariantType::DICTIONARY => Ok(Some(group_of(&value, self.floats, path)?)),
+            _ => Err(fault(&path, "expected null or a dictionary")),
+        }
+    }
+
     /// The elements of an array, its length pinned when the format fixes
     /// one. A short run is a truncated blob, never a smaller world.
     fn array(&self, key: &str, expect: Option<usize>) -> Result<Vec<Variant>, String> {
@@ -1935,6 +2080,21 @@ impl Group {
 
     fn v3(&self, key: &str) -> Result<Vector3, String> {
         self.vector3(&self.raw(key)?, &self.path_of(key))
+    }
+
+    fn planar_velocity(&self, key: &str) -> Result<[f32; 2], String> {
+        let path = self.path_of(key);
+        let values = elements(&self.raw(key)?, Some(2), &path)?;
+        let mut lanes = [0.0; 2];
+        for (index, value) in values.iter().enumerate() {
+            let lane_path = format!("{path}[{index}]");
+            let lane = self.lane_of(value, &lane_path)?;
+            if !lane.is_finite() {
+                return Err(fault(&lane_path, "must be finite"));
+            }
+            lanes[index] = lane;
+        }
+        Ok(lanes)
     }
 
     fn v4(&self, key: &str) -> Result<Vector4, String> {
@@ -2193,12 +2353,14 @@ fn parse_hero(group: &Group) -> Result<HeroCapture, String> {
     Ok(HeroCapture {
         position: group.v3("position")?,
         velocity: group.v3("velocity")?,
+        motion: parse_motion(&group.group("motion")?)?,
         yaw: group.f64("yaw")?,
         pitch: group.f64("pitch")?,
         last_tap: group.f64("last_tap")?,
         tap_target: group.v3("tap_target")?,
         tap_queued: group.bool("tap_queued")?,
         queued_waves: parse_run(group, "queued_waves", parse_wave)?,
+        footstep_suppression_pending: group.bool("footstep_suppression_pending")?,
         viewmodel: parse_viewmodel(&group.group("viewmodel")?)?,
     })
 }
@@ -2212,7 +2374,99 @@ fn parse_wave(group: &Group) -> Result<QueuedWave, String> {
         gain: group.f64("gain")?,
         echoes: group.i64("echoes")?,
         normal: group.v3("normal")?,
+        gate: parse_queued_gate(group)?,
     })
+}
+
+fn parse_queued_gate(group: &Group) -> Result<QueuedWaveGate, String> {
+    let gate = group.string("gate")?;
+    match gate.as_str() {
+        "always" => Ok(QueuedWaveGate::Always),
+        "controlled_contact" => Ok(QueuedWaveGate::ControlledContact),
+        other => Err(fault(
+            &group.path_of("gate"),
+            &format!("unknown queued-wave gate {other:?}"),
+        )),
+    }
+}
+
+fn parse_motion(group: &Group) -> Result<MotionState, String> {
+    let phase = parse_phase(&group.group("phase")?)?;
+    let support = group
+        .optional_group("support")?
+        .map(|support| parse_support(&support))
+        .transpose()?;
+    let last_landing = group
+        .optional_group("last_landing")?
+        .map(|landing| parse_landing(&landing))
+        .transpose()?;
+    MotionState::restore(phase, support, last_landing).map_err(|error| {
+        let path = match error.field() {
+            "motion_state.support" => group.path_of("support"),
+            "motion_phase.vertical_velocity_mps" => group.path_of("phase.vertical_velocity"),
+            _ => group.path.clone(),
+        };
+        fault(&path, "is inconsistent with the motion state")
+    })
+}
+
+fn parse_phase(group: &Group) -> Result<MotionPhase, String> {
+    let kind = group.string("kind")?;
+    match kind.as_str() {
+        "controlled" => Ok(MotionPhase::Controlled),
+        "airborne" => {
+            let planar = group.planar_velocity("planar_velocity")?;
+            let planar_velocity_mps = PlanarVelocity::try_new(planar[0], planar[1])
+                .map_err(|error| fault(&group.path, &error.to_string()))?;
+            let vertical = group.f32("vertical_velocity")?;
+            let vertical_velocity_mps = FiniteVelocity::try_new(vertical)
+                .map_err(|error| fault(&group.path_of("vertical_velocity"), &error.to_string()))?;
+            Ok(MotionPhase::Airborne {
+                planar_velocity_mps,
+                vertical_velocity_mps,
+            })
+        }
+        other => Err(fault(
+            &group.path_of("kind"),
+            &format!("unknown motion phase {other:?}"),
+        )),
+    }
+}
+
+fn parse_support(group: &Group) -> Result<SupportContact, String> {
+    let point = group.v3("point")?;
+    let normal = group.v3("normal")?;
+    for (key, value) in [("point", point), ("normal", normal)] {
+        for (index, lane) in [value.x, value.y, value.z].into_iter().enumerate() {
+            if !lane.is_finite() {
+                return Err(fault(
+                    &format!("{}[{index}]", group.path_of(key)),
+                    "must be finite",
+                ));
+            }
+        }
+    }
+    SupportContact::try_new(point, normal).map_err(|error| {
+        let path = if error.field() == "support.normal" {
+            group.path_of("normal")
+        } else {
+            group.path.clone()
+        };
+        fault(&path, "must be a nonzero vector")
+    })
+}
+
+fn parse_landing(group: &Group) -> Result<LandingEvent, String> {
+    let impact = group.f32("impact_speed")?;
+    if impact < 0.0 {
+        return Err(fault(
+            &group.path_of("impact_speed"),
+            "must be non-negative",
+        ));
+    }
+    let support = parse_support(&group.group("support")?)?;
+    LandingEvent::try_new(impact, support)
+        .map_err(|error| fault(&group.path_of("impact_speed"), &error.to_string()))
 }
 
 fn parse_viewmodel(group: &Group) -> Result<ViewmodelCapture, String> {
@@ -2240,6 +2494,7 @@ fn parse_cat(group: &Group) -> Result<CatCapture, String> {
         position: group.v3("position")?,
         yaw: group.f64("yaw")?,
         velocity: group.v3("velocity")?,
+        motion: parse_motion(&group.group("motion")?)?,
         brain: parse_brain(&group.group("brain")?)?,
         gait: parse_gait(&group.group("gait")?)?,
         tail: group.v3_array::<TAIL_N>("tail")?,
@@ -2293,11 +2548,15 @@ fn parse_brain_state(group: &Group) -> Result<BrainState, String> {
 }
 
 fn parse_gait(group: &Group) -> Result<GaitCapture, String> {
+    let planted = group.v3_array::<LEGS>("planted")?;
+    let aim = group.v3_array::<LEGS>("aim")?;
+    let support_y = group.f32("support_y")?;
     Ok(GaitCapture {
         phase: group.f64("phase")?,
         amp: group.f64("amp")?,
-        planted: group.v3_array::<LEGS>("planted")?,
-        aim: group.v3_array::<LEGS>("aim")?,
+        support_y,
+        planted,
+        aim,
         in_swing: group.bool_array::<LEGS>("in_swing")?,
         moving: group.bool("moving")?,
     })

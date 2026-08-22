@@ -362,7 +362,7 @@ func test_restore_blob_restores_a_fresh_capture_and_refuses_a_doctored_hash() ->
 	var refused: Dictionary = game.restore_blob(doctored)
 	assert_bool(refused.has("unavailable")).is_true()
 	assert_str(refused["unavailable"]).contains("stored 0000000000000000")
-	assert_str(refused["unavailable"]).contains("restored %s" % honest)
+	assert_str(refused["unavailable"]).contains("canonical %s" % honest)
 
 
 ## MUTATION GUARD: `process()` must feed `level.tick_sources()` the

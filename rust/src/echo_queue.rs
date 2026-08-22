@@ -12,6 +12,8 @@
 
 use godot::builtin::Vector3;
 
+use crate::reproduce::RestoreValueError;
+
 /// The pool kind a fired echo re-enters as: 1, ECHO — a secondary
 /// reflection. Echoes never spawn further echoes.
 pub const ECHO_KIND: i32 = 1;
@@ -46,7 +48,49 @@ pub struct EchoQueue {
     pending: Vec<PendingEcho>,
 }
 
+#[derive(Debug, Clone)]
+pub struct PreparedEchoQueue(EchoQueue);
+
 impl EchoQueue {
+    pub fn prepare_restore(
+        pending: Vec<PendingEcho>,
+    ) -> Result<PreparedEchoQueue, RestoreValueError> {
+        for (index, echo) in pending.iter().enumerate() {
+            for (field, value) in [
+                ("at_t", echo.at_t),
+                ("pos.x", f64::from(echo.pos.x)),
+                ("pos.y", f64::from(echo.pos.y)),
+                ("pos.z", f64::from(echo.pos.z)),
+                ("gain", echo.gain),
+            ] {
+                if !value.is_finite() {
+                    return Err(RestoreValueError::new(
+                        format!("echoes[{index}].{field}"),
+                        "must be finite",
+                    ));
+                }
+            }
+            if echo.at_t < 0.0 {
+                return Err(RestoreValueError::new(
+                    format!("echoes[{index}].at_t"),
+                    "must be non-negative",
+                ));
+            }
+            if echo.gain < 0.0 || echo.gain > 1.0 {
+                return Err(RestoreValueError::new(
+                    format!("echoes[{index}].gain"),
+                    "must be in 0..=1",
+                ));
+            }
+        }
+        Ok(PreparedEchoQueue(Self::from_pending(pending)))
+    }
+
+    #[must_use]
+    pub fn from_prepared(value: PreparedEchoQueue) -> Self {
+        value.0
+    }
+
     /// An empty book: no appointments.
     #[must_use]
     pub fn new() -> Self {
@@ -127,6 +171,26 @@ impl EchoQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_restore_rejects_poisoned_echo_appointment() {
+        let pending = vec![PendingEcho {
+            at_t: 4.0,
+            pos: Vector3::new(1.0, f32::INFINITY, 2.0),
+            gain: 0.5,
+        }];
+        let error = EchoQueue::prepare_restore(pending).expect_err("poison must be refused");
+        assert_eq!(error.path, "echoes[0].pos.y");
+
+        let pending = vec![PendingEcho {
+            at_t: -0.25,
+            pos: Vector3::ZERO,
+            gain: 0.5,
+        }];
+        let error = EchoQueue::prepare_restore(pending)
+            .expect_err("an appointment before the simulation epoch must be refused");
+        assert_eq!(error.path, "echoes[0].at_t");
+    }
 
     /// An echo is an appointment: drain must not fire it a moment early,
     /// and must fire it the instant at_t arrives (<=, boundary included).

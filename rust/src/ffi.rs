@@ -11,11 +11,13 @@ use godot::classes::{
 use godot::prelude::*;
 
 use crate::clustering::{self, RayHit};
-use crate::echo_queue::{ECHO_KIND, ECHO_MAX_R, ECHO_SPEED, EchoQueue, PendingEcho};
+use crate::echo_queue::{
+    ECHO_KIND, ECHO_MAX_R, ECHO_SPEED, EchoQueue, PendingEcho, PreparedEchoQueue,
+};
 use crate::flicker::Randf;
 use crate::level_plan;
 use crate::observe::reflect::ReflectionRequest;
-use crate::pulse_pool::{MAXP, PulsePool, REFUSAL_MESSAGE, SlotCapture};
+use crate::pulse_pool::{MAXP, PreparedPulsePool, PulsePool, REFUSAL_MESSAGE, SlotCapture};
 use crate::ray_fan;
 use crate::render;
 
@@ -502,9 +504,13 @@ impl WaveCore {
     /// state — an appointment in the book fires INTO the pool — so a
     /// restore that set one and not the other would leave the world
     /// scheduling reflections of waves it no longer remembers.
-    pub(crate) fn restore_state(&mut self, pool: PulsePool, echoes: EchoQueue) {
-        self.pool = pool;
-        self.echoes = echoes;
+    pub(crate) fn install_prepared_state(
+        &mut self,
+        pool: PreparedPulsePool,
+        echoes: PreparedEchoQueue,
+    ) {
+        self.pool = PulsePool::from_prepared(pool);
+        self.echoes = EchoQueue::from_prepared(echoes);
     }
 
     /// The one door into the pool: forwards to the pure emit and maps its

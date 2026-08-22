@@ -21,6 +21,7 @@ use self::pool::{SlotObservation, SlotState, slots};
 use crate::echo_queue::EchoQueue;
 use crate::pulse_pool::PulsePool;
 use crate::sight::MAXW;
+use crate::support_motion::QueuedWaveGate;
 
 /// One sound source as an agent reads it. Built at the boundary, where
 /// the source nodes live; carried through here unchanged.
@@ -120,6 +121,7 @@ pub struct QueuedWave {
     pub gain: f64,
     pub echoes: i64,
     pub normal: Vector3,
+    pub gate: QueuedWaveGate,
 }
 
 /// The hero as an agent reads them: where the body stands and moves,
@@ -434,6 +436,7 @@ mod tests {
                 gain: 0.5,
                 echoes: 0,
                 normal: Vector3::UP,
+                gate: QueuedWaveGate::Always,
             }],
         };
         let mut scene = test_scene(Vec::new());

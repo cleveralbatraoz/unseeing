@@ -33,4 +33,43 @@ pub use self::blob::{
 /// construction, so a stale blob restored into a newer build fails as a
 /// version refusal instead of as a mystery divergence twenty fields
 /// deep.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
+
+/// A checked restore owner's one diagnostic carrier. Validation laws stay in
+/// the owner that reads the value; this type only preserves its dotted field
+/// path and stable rule text across the prepared transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreValueError {
+    pub path: String,
+    pub rule: &'static str,
+}
+
+impl RestoreValueError {
+    #[must_use]
+    pub fn new(path: impl Into<String>, rule: &'static str) -> Self {
+        Self {
+            path: path.into(),
+            rule,
+        }
+    }
+
+    #[must_use]
+    pub fn prefixed(self, prefix: &str) -> Self {
+        Self {
+            path: if self.path.is_empty() {
+                prefix.to_string()
+            } else {
+                format!("{prefix}.{}", self.path)
+            },
+            rule: self.rule,
+        }
+    }
+}
+
+impl std::fmt::Display for RestoreValueError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "field {}: {}", self.path, self.rule)
+    }
+}
+
+impl std::error::Error for RestoreValueError {}

@@ -32,7 +32,8 @@ use super::solid::{clear_limbs, warnings_from_level};
 use super::source::{SoundSource, SourceRig, sound};
 use crate::radio_wave;
 use crate::render::{self, Role};
-use crate::sound_source::{Cadence, Spread, Voice, Volume};
+use crate::reproduce::RestoreValueError;
+use crate::sound_source::{Cadence, PreparedCadence, Spread, Voice, Volume};
 use crate::{prop_shape, source_shape};
 
 /// The case's full extent in meters: a set you could carry with one hand.
@@ -329,9 +330,12 @@ impl SoundSource for SoundRadio {
         self.rig.set_image(image);
     }
 
-    fn restore_appointment(&mut self, next: f64) {
-        let interval = self.voice().cadence;
-        self.rig.restore_cadence(Cadence::restore(interval, next));
+    fn prepare_appointment(&self, next: f64) -> Result<PreparedCadence, RestoreValueError> {
+        Cadence::prepare_restore(self.voice().cadence, next, false)
+    }
+
+    fn install_prepared_appointment(&mut self, cadence: PreparedCadence) {
+        self.rig.install_prepared_cadence(cadence);
     }
 }
 

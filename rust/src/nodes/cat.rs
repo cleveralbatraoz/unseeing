@@ -26,12 +26,14 @@ use godot::prelude::*;
 
 use super::limbs::{LimbBuf, sphere, sphere_lod, tube, tube_res};
 use super::solid::clear_limbs;
-use crate::cat_body::{self, CatPose, Tail};
-use crate::cat_brain::{CatBrain, RoamRect};
-use crate::cat_gait::{self, CatGait};
+use crate::cat_body::{self, CatPose, PreparedCatPose, PreparedTail, Tail};
+use crate::cat_brain::{CatBrain, PreparedCatBrain, RoamRect};
+use crate::cat_gait::{self, CatGait, PreparedCatGait};
 use crate::render::{self, Role};
+use crate::reproduce::RestoreValueError;
 use crate::reproduce::blob::CatCapture;
-use crate::sound_source::Cadence;
+use crate::sound_source::{Cadence, PreparedCadence};
+use crate::support_motion::{ActorPosition, ActorVelocity, MotionState};
 
 /// Collider radius — small enough to slip between furniture legs.
 const COL_RADIUS: f32 = 0.11;
@@ -48,6 +50,24 @@ const SIT_EASE: f64 = 3.0;
 /// reaches _ready as a fresh Rust object). Both the editor blueprint build
 /// and the runtime build use these same two names.
 const LIMBS: [&str; 2] = ["CatCollider", "CatSkin"];
+
+/// A complete cat restore after every owner and every engine-width lane has
+/// accepted it. The fields are private so the only write door can be the
+/// assignment-only [`WaveCat::install_prepared`].
+pub(super) struct PreparedCatState {
+    position: Vector3,
+    rotation: Vector3,
+    velocity: Vector3,
+    motion: MotionState,
+    brain: CatBrain,
+    gait: CatGait,
+    tail: Tail,
+    pose: CatPose,
+    presence: Cadence,
+    sit: f64,
+    sim_t: f64,
+    last_pos: Vector3,
+}
 
 /// The companion cat. Inject `pulses` and `data_mat` before adding to
 /// the tree (children run `_ready` first, and the cat refuses to build
@@ -100,6 +120,9 @@ pub struct WaveCat {
     /// fresh pose so `process()` rebuilds the silhouette once per tick,
     /// not once per rendered frame — no wasted rebuilds above 60 Hz.
     mesh_dirty: bool,
+    #[init(val = MotionState::initial())]
+    motion_state: MotionState,
+    support_collider_id: Option<i64>,
     base: Base<CharacterBody3D>,
 }
 
@@ -362,6 +385,7 @@ impl WaveCat {
             position: self.base().get_global_position(),
             yaw: f64::from(self.base().get_global_rotation().y),
             velocity: self.base().get_velocity(),
+            motion: self.motion_state,
             brain: brain.capture(),
             gait: gait.capture(),
             tail: *tail.nodes(),
@@ -373,26 +397,105 @@ impl WaveCat {
         })
     }
 
-    /// Place a built cat into a captured mid-life state. Callers hold the
-    /// tree frozen; the next physics tick resumes the captured life.
-    pub(crate) fn restore_state(&mut self, capture: &CatCapture) {
-        self.base_mut().set_global_position(capture.position);
-        let mut rot = self.base().get_global_rotation();
-        rot.y = capture.yaw as f32;
-        self.base_mut().set_global_rotation(rot);
-        self.base_mut().set_velocity(capture.velocity);
-        self.brain = Some(CatBrain::restore(capture.brain));
-        self.gait = Some(CatGait::restore(capture.gait));
-        self.tail = Some(Tail::restore(capture.tail));
-        self.pose = Some(capture.pose);
-        // presence_next NaN — a cat that never beat — round-trips through
-        // Cadence::restore(interval, NaN), whose next_at() returns None
-        // again: the poison repair in beat() re-books it exactly as it
-        // would have.
-        self.presence = Cadence::restore(cat_gait::PRESENCE_EVERY, capture.presence_next);
-        self.sit = capture.sit;
-        self.sim_t = capture.sim_t;
-        self.last_pos = capture.last_pos;
+    /// Validate and narrow a captured cat without changing the node. Pure
+    /// owners validate their own private state first; this boundary owner
+    /// checks only engine widths, dormant capability and cross-owner
+    /// lockstep that no one pure value can know by itself.
+    pub(super) fn prepare_restore(
+        &self,
+        capture: &CatCapture,
+        brain: PreparedCatBrain,
+        gait: PreparedCatGait,
+        pose: PreparedCatPose,
+        tail: PreparedTail,
+        presence: PreparedCadence,
+    ) -> Result<PreparedCatState, RestoreValueError> {
+        if !self.base().is_physics_processing() || !self.base().is_processing() {
+            return Err(RestoreValueError::new("", "runtime processing is disabled"));
+        }
+        let position = ActorPosition::try_new(capture.position).map_err(|error| {
+            RestoreValueError::new(
+                format!("position.{}", terminal_field(error.field())),
+                "must be finite and inside actor bounds",
+            )
+        })?;
+        let velocity = ActorVelocity::try_new(capture.velocity).map_err(|error| {
+            RestoreValueError::new(
+                format!("velocity.{}", terminal_field(error.field())),
+                "must be finite",
+            )
+        })?;
+        if capture.motion != MotionState::initial() {
+            return Err(RestoreValueError::new(
+                "motion",
+                "this runtime admits only initial controlled motion",
+            ));
+        }
+        let yaw = exact_cat_f32(capture.yaw, "yaw")?;
+        let mut rotation = self.base().get_global_rotation();
+        validate_cat_vector("rotation", rotation)?;
+        rotation.y = yaw;
+
+        for (axis, body, posed) in [
+            ("x", capture.position.x, capture.pose.pos.x),
+            ("y", capture.position.y, capture.pose.pos.y),
+            ("z", capture.position.z, capture.pose.pos.z),
+        ] {
+            if body.to_bits() != posed.to_bits() {
+                return Err(RestoreValueError::new(
+                    format!("pose.pos.{axis}"),
+                    "must match the captured body position bit-for-bit",
+                ));
+            }
+        }
+        if !capture.sit.is_finite() || !(0.0..=1.0).contains(&capture.sit) {
+            return Err(RestoreValueError::new("sit", "must be finite and in 0..=1"));
+        }
+        if !capture.sim_t.is_finite() || capture.sim_t < 0.0 {
+            return Err(RestoreValueError::new(
+                "sim_t",
+                "must be finite and non-negative",
+            ));
+        }
+        let last_pos = ActorPosition::try_new(capture.last_pos).map_err(|error| {
+            RestoreValueError::new(
+                format!("last_pos.{}", terminal_field(error.field())),
+                "must be finite and inside actor bounds",
+            )
+        })?;
+
+        Ok(PreparedCatState {
+            position: position.world(),
+            rotation,
+            velocity: velocity.world(),
+            motion: capture.motion,
+            brain: CatBrain::from_prepared(brain),
+            gait: CatGait::from_prepared(gait),
+            tail: Tail::from_prepared(tail),
+            pose: CatPose::from_prepared(pose),
+            presence: Cadence::from_prepared(presence),
+            sit: capture.sit,
+            sim_t: capture.sim_t,
+            last_pos: last_pos.world(),
+        })
+    }
+
+    /// Consume a completely checked cat restore. There is deliberately no
+    /// repair, narrowing or semantic branch after the transaction starts.
+    pub(super) fn install_prepared(&mut self, value: PreparedCatState) {
+        self.base_mut().set_global_position(value.position);
+        self.base_mut().set_global_rotation(value.rotation);
+        self.base_mut().set_velocity(value.velocity);
+        self.motion_state = value.motion;
+        self.support_collider_id = None;
+        self.brain = Some(value.brain);
+        self.gait = Some(value.gait);
+        self.tail = Some(value.tail);
+        self.pose = Some(value.pose);
+        self.presence = value.presence;
+        self.sit = value.sit;
+        self.sim_t = value.sim_t;
+        self.last_pos = value.last_pos;
         self.mesh_dirty = true;
     }
 
@@ -502,6 +605,36 @@ impl WaveCat {
         }
         render::paint::resize_triangle_surface(&mut self.mesh, &self.tri_buf);
     }
+}
+
+fn terminal_field(path: &str) -> &str {
+    path.rsplit('.').next().unwrap_or(path)
+}
+
+fn exact_cat_f32(value: f64, path: &'static str) -> Result<f32, RestoreValueError> {
+    if !value.is_finite() {
+        return Err(RestoreValueError::new(path, "must be finite"));
+    }
+    let narrowed = value as f32;
+    if f64::from(narrowed).to_bits() != value.to_bits() {
+        return Err(RestoreValueError::new(
+            path,
+            "must round-trip through the Godot f32 lane bit-exactly",
+        ));
+    }
+    Ok(narrowed)
+}
+
+fn validate_cat_vector(path: &str, value: Vector3) -> Result<(), RestoreValueError> {
+    for (axis, lane) in [("x", value.x), ("y", value.y), ("z", value.z)] {
+        if !lane.is_finite() {
+            return Err(RestoreValueError::new(
+                format!("{path}.{axis}"),
+                "must be finite",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The heading's forward vector — Godot yaw convention: yaw 0 faces -Z.

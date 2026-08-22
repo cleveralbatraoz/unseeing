@@ -20,17 +20,13 @@
 //! `process()` on the `INode3D` impl auto-enables per-frame processing —
 //! desired here, so there is no `set_process` dance to add.
 //!
-//! The env trio (`capture_env`/`apply_env`/`restore_blob`) is
-//! `main.gd:204-286` verbatim: the nine environment fields this composition
-//! root owns (the clock, the demo tap's schedule, the flicker envelope and
-//! RNG state), and the
-//! transaction that applies a whole capture blob back — pause bracket,
-//! the observer's `env_of` refusal short-circuit, the previous env kept
-//! for rollback, and the one asymmetry that is NOT a bug: a POST-WRITE
-//! hash mismatch (the artifact disagreeing with its own claimed hash)
-//! refuses WITHOUT rolling back, because the world really was restored
-//! and is internally consistent — it simply is not the instant the file
-//! claims to hold.
+//! The env trio owns the nine environment fields (clock, demo schedule,
+//! flicker envelope and RNG state). `restore_blob` freezes the tree, asks
+//! the restorer for a complete read-only prepared transaction, then installs
+//! its [`PreparedEnv`] and commits the remaining prepared owners. Invalid
+//! artifact syntax, hash, environment, handles or subsystem values therefore
+//! return before any write or repair warning; the legacy `apply_env` surface
+//! remains only for its direct boundary tests.
 //!
 //! `main.tscn` boots `UnseeingGame` as its root — this class IS the
 //! boot root of the shipped path. The retired GDScript composition root is
@@ -57,7 +53,7 @@ use super::hero::HeroBody;
 use super::level::WaveLevel;
 use super::observer::{WaveObserver, unavailable};
 use super::player::UnseeingPlayer;
-use super::restorer::WaveRestorer;
+use super::restorer::{PreparedEnv, WaveRestorer};
 use super::settings::SettingsMenu;
 use crate::demo_tap::DemoTap;
 use crate::ffi::WaveCore;
@@ -74,10 +70,6 @@ const PRIORITY_SOURCES: i32 = 20;
 
 /// The deterministic-run seed every armed switch shares.
 const SEED: u64 = 0x5EED;
-
-/// `restore_blob` was called before `ready()` wired an observer — there is
-/// no reader to ask `env_of` at all.
-const NO_OBSERVER: &str = "the root holds no observer — restore_blob has nothing to ask env_of";
 
 /// `restore_blob` was called before `ready()` wired a restorer — there is
 /// no writer to hand the parsed blob to.
@@ -582,11 +574,10 @@ impl UnseeingGame {
     /// Put a captured env group back — the write side of
     /// [`Self::capture_env`], the exact nine fields it reads and the only
     /// half of a blob no other Rust node can write.
-    /// `main.gd::apply_env` verbatim: every value is ASSIGNED, never
-    /// validated — `env_of` already did that on the way out of the blob's
-    /// text spelling, and a native env handed straight from
-    /// [`Self::capture_env`] (the round-trip and restore-transaction paths)
-    /// needs no validation at all.
+    /// This legacy callable deliberately retains its repairing boundary law
+    /// for direct engine tests. Artifact restore never calls it: preflight
+    /// constructs [`PreparedEnv`] and the private assignment-only door below
+    /// consumes that value without warning or repair.
     #[func]
     fn apply_env(&mut self, env: VarDictionary) {
         let (now, repaired_now) = valid_time_or_zero(dict_f64(&env, "now"));
@@ -608,79 +599,49 @@ impl UnseeingGame {
         }
     }
 
-    /// Apply a captured blob to this running game — the one call the
-    /// suites and the reproduction probes make. `main.gd::restore_blob`
-    /// verbatim: freeze first (state must not move between the env half
-    /// and the engine half), ask the observer to translate the blob's env
-    /// group, apply it, hand the whole blob to the restorer, and roll the
-    /// env back on any refusal the transaction can still name a field for.
-    ///
-    /// The one asymmetry that is NOT a bug: a POST-WRITE hash mismatch —
-    /// the artifact's own claimed hash disagreeing with the world just
-    /// restored — refuses WITHOUT rolling the env back. The restore
-    /// itself succeeded and the world is internally consistent; it is
-    /// simply not the instant the file claims to hold, so undoing it
-    /// would throw away a good restore over a bad label on the file.
+    /// Restore a blob through a complete read-only preflight, followed by
+    /// assignment-only environment and subsystem installs. The tree stays
+    /// frozen across both phases and its incoming pause state is preserved.
+    /// Every artifact refusal returns before the environment, world or
+    /// warning latch is touched; any post-write refusal is necessarily an
+    /// internal prepared-commit defect rather than late validation.
     #[func]
     fn restore_blob(&mut self, blob: VarDictionary) -> VarDictionary {
         let was_paused = self.is_paused();
         self.set_paused(true);
 
-        let Some(observer) = self.observer.clone() else {
-            self.set_paused(was_paused);
-            return unavailable(NO_OBSERVER);
-        };
-        let env = observer.bind().env_of(blob.clone());
-        if env.contains_key("unavailable") {
-            self.set_paused(was_paused);
-            return env;
-        }
-
-        let previous = self.capture_env();
-        self.apply_env(env);
-
         let Some(mut restorer) = self.restorer.clone() else {
-            self.apply_env(previous);
             self.set_paused(was_paused);
             return unavailable(NO_RESTORER);
         };
-        let mut verdict = restorer
-            .bind_mut()
-            .restore(blob.clone(), self.capture_env());
-        if verdict.contains_key("unavailable") {
-            self.apply_env(previous);
-        } else {
-            // `main.gd::restore_blob` verbatim, mismatched defaults and
-            // all: the COMPARE reads a missing key as "" (a blob with a
-            // genuinely empty hash must not spuriously read as missing),
-            // while the MESSAGE reads it as "<missing>" (legible when it
-            // truly is absent) — two defaults for one key, on purpose.
-            let stored_for_compare = blob
-                .get("hash")
-                .and_then(|v| v.try_to::<GString>().ok())
-                .unwrap_or_default();
-            let restored = verdict
-                .get("hash")
-                .and_then(|v| v.try_to::<GString>().ok())
-                .unwrap_or_default();
-            if stored_for_compare != restored {
-                let stored_for_message = blob
-                    .get("hash")
-                    .and_then(|v| v.try_to::<GString>().ok())
-                    .unwrap_or_else(|| GString::from("<missing>"));
-                verdict = unavailable(&format!(
-                    "the blob's stored hash disagrees with the restored world: stored \
-                     {stored_for_message}, restored {restored} — the artifact was edited or \
-                     corrupted"
-                ));
+        let prepared = match restorer.bind().preflight(&blob) {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                self.set_paused(was_paused);
+                return unavailable(&reason);
             }
-        }
+        };
+        self.apply_prepared_env(prepared.env());
+        let verdict = restorer.bind_mut().commit(prepared);
         self.set_paused(was_paused);
         verdict
     }
 }
 
 impl UnseeingGame {
+    /// Install only owner-checked environment values. Unlike the public
+    /// legacy `apply_env` test surface, this door cannot repair or warn.
+    fn apply_prepared_env(&mut self, env: &PreparedEnv) {
+        self.now = env.now.value();
+        self.demo_checked = env.demo_checked;
+        self.demo.armed = env.demo_armed;
+        self.demo.install_prepared(env.demo);
+        self.flicker = Flicker::from_prepared(env.flicker);
+        if let Some(rng) = self.rng.as_mut() {
+            rng.set_state(env.flicker_rng_state);
+        }
+    }
+
     /// One warning per node lifetime is enough to expose a repaired engine or
     /// restore boundary without turning a repeated bad delta into log spam.
     fn report_temporal_repair(&mut self) {

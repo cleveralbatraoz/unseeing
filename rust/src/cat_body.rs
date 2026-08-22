@@ -18,6 +18,8 @@
 use godot::builtin::Vector3;
 
 use crate::cat_gait::{self, GaitFrame, LEGS};
+use crate::reproduce::RestoreValueError;
+use crate::support_motion::MAX_POSE_COORD_M;
 
 /// Chest-line height above the floor while standing, meters.
 pub const CHEST_H: f64 = cat_gait::BODY_H;
@@ -117,7 +119,50 @@ pub struct CatPose {
     pub sit: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedCatPose(CatPose);
+
 impl CatPose {
+    pub fn prepare_restore(capture: CatPose) -> Result<PreparedCatPose, RestoreValueError> {
+        validate_restore_point("pose.pos", capture.pos)?;
+        for (index, paw) in capture.paws.iter().copied().enumerate() {
+            validate_restore_point(&format!("pose.paws[{index}]"), paw)?;
+        }
+        for (field, value) in [
+            ("yaw", capture.yaw),
+            ("bob", capture.bob),
+            ("amp", capture.amp),
+            ("sit", capture.sit),
+        ] {
+            if !value.is_finite() {
+                return Err(RestoreValueError::new(
+                    format!("pose.{field}"),
+                    "must be finite",
+                ));
+            }
+        }
+        if capture.bob.abs() > cat_gait::BOB_AMP {
+            return Err(RestoreValueError::new(
+                "pose.bob",
+                "is outside the gait bob envelope",
+            ));
+        }
+        for (field, value) in [("amp", capture.amp), ("sit", capture.sit)] {
+            if !(0.0..=1.0).contains(&value) {
+                return Err(RestoreValueError::new(
+                    format!("pose.{field}"),
+                    "must be in 0..=1",
+                ));
+            }
+        }
+        Ok(PreparedCatPose(capture))
+    }
+
+    #[must_use]
+    pub fn from_prepared(capture: PreparedCatPose) -> Self {
+        capture.0
+    }
+
     /// A pose straight off a gait frame — the node adds its eased sit.
     #[must_use]
     pub fn from_gait(pos: Vector3, yaw: f64, frame: &GaitFrame, sit: f64) -> Self {
@@ -285,7 +330,22 @@ pub struct Tail {
     nodes: [Vector3; TAIL_N],
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedTail(Tail);
+
 impl Tail {
+    pub fn prepare_restore(capture: [Vector3; TAIL_N]) -> Result<PreparedTail, RestoreValueError> {
+        for (index, point) in capture.iter().copied().enumerate() {
+            validate_restore_point(&format!("tail[{index}]"), point)?;
+        }
+        Ok(PreparedTail(Self::restore(capture)))
+    }
+
+    #[must_use]
+    pub fn from_prepared(capture: PreparedTail) -> Self {
+        capture.0
+    }
+
     /// A fresh tail already in its standing rest curve.
     #[must_use]
     pub fn new(root: Vector3, back: Vector3, rv: Vector3) -> Self {
@@ -365,6 +425,24 @@ impl Tail {
     }
 }
 
+fn validate_restore_point(path: &str, point: Vector3) -> Result<(), RestoreValueError> {
+    for (axis, lane) in [("x", point.x), ("y", point.y), ("z", point.z)] {
+        if !lane.is_finite() {
+            return Err(RestoreValueError::new(
+                format!("{path}.{axis}"),
+                "must be finite",
+            ));
+        }
+        if lane.abs() > MAX_POSE_COORD_M {
+            return Err(RestoreValueError::new(
+                format!("{path}.{axis}"),
+                "is outside its valid range",
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Clamp `dir` so it bends at most [`TAIL_MAX_BEND`] radians from `prev`.
 /// Beyond the cone, `dir` is pulled back to the cone's edge in the plane
 /// the two share — the structural guard against tail loops.
@@ -400,6 +478,25 @@ fn up(h: f32) -> Vector3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_restore_rejects_invalid_pose_or_tail_point() {
+        let pose = CatPose {
+            pos: Vector3::ZERO,
+            yaw: 0.0,
+            paws: [Vector3::ZERO; LEGS],
+            bob: 0.0,
+            amp: 0.0,
+            sit: f64::NAN,
+        };
+        let error = CatPose::prepare_restore(pose).expect_err("pose poison must be refused");
+        assert_eq!(error.path, "pose.sit");
+
+        let mut nodes = [Vector3::ZERO; TAIL_N];
+        nodes[3].x = f32::INFINITY;
+        let error = Tail::prepare_restore(nodes).expect_err("tail poison must be refused");
+        assert_eq!(error.path, "tail[3].x");
+    }
     use crate::cat_gait::CatGait;
 
     const DT: f64 = 1.0 / 60.0;

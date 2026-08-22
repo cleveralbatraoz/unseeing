@@ -15,6 +15,7 @@
 //! (`crate::ffi`, driven by `UnseeingGame`) owns the adapter that widens `randf()`'s f32
 //! into the f64 this module computes with.
 
+use crate::reproduce::RestoreValueError;
 use crate::temporal::RENDERER_VISIBLE_TIME_HORIZON;
 
 /// A source of randomness the flicker law draws from — the boundary that
@@ -81,7 +82,60 @@ pub struct Flicker {
     next_drop: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PreparedFlicker(Flicker);
+
 impl Flicker {
+    pub(crate) fn prepare_restore(
+        state: FlickerState,
+    ) -> Result<PreparedFlicker, RestoreValueError> {
+        for (field, value, min, max) in [
+            ("flicker_t", state.t, 0.0, RENDERER_VISIBLE_TIME_HORIZON),
+            (
+                "flicker_level",
+                state.level,
+                LEVEL_MIN * DROP_DEPTH,
+                LEVEL_MAX,
+            ),
+            (
+                "flicker_drop_until",
+                state.drop_until,
+                -1.0,
+                RENDERER_VISIBLE_TIME_HORIZON,
+            ),
+            (
+                "flicker_next_drop",
+                state.next_drop,
+                0.0,
+                RENDERER_VISIBLE_TIME_HORIZON,
+            ),
+        ] {
+            if !value.is_finite() {
+                return Err(RestoreValueError::new(
+                    format!("env.{field}"),
+                    "must be finite",
+                ));
+            }
+            if value < min || value > max {
+                return Err(RestoreValueError::new(
+                    format!("env.{field}"),
+                    "is outside its valid range",
+                ));
+            }
+        }
+        Ok(PreparedFlicker(Self {
+            t: state.t,
+            level: state.level,
+            drop_until: state.drop_until,
+            next_drop: state.next_drop,
+        }))
+    }
+
+    #[must_use]
+    pub(crate) fn from_prepared(value: PreparedFlicker) -> Self {
+        value.0
+    }
+
     /// A fresh flicker: `flicker.gd`'s field initializers verbatim
     /// (`_t := 0.0`, `_level := 1.0`, `_drop_until := -1.0`,
     /// `_next_drop := 9.0` — the first dropout is scheduled 9 seconds in).
@@ -184,6 +238,14 @@ impl Default for Flicker {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+
+    #[test]
+    fn prepared_restore_rejects_invalid_flicker_state() {
+        let mut state = Flicker::new().state();
+        state.level = LEVEL_MAX + 0.01;
+        let error = Flicker::prepare_restore(state).expect_err("level poison must be refused");
+        assert_eq!(error.path, "env.flicker_level");
+    }
 
     /// A fixed sequence of `randf()` results, consumed strictly in call
     /// order. [`Randf::randf`] panics on a call past the end of the

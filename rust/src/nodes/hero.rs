@@ -23,7 +23,7 @@ use godot::prelude::*;
 use super::limbs::{LimbBuf, sphere, tube};
 use super::player::UnseeingPlayer;
 use crate::render::{self, Role};
-use crate::viewmodel::{self, Pose, Viewmodel, ViewmodelCapture};
+use crate::viewmodel::{self, Pose, PreparedViewmodel, Viewmodel, ViewmodelCapture};
 
 /// The hero's body node. Injected with the player it dresses, the camera
 /// the arm anchors to, the wave pool (held for injection parity — waves
@@ -299,8 +299,8 @@ impl HeroBody {
     /// Place a built viewmodel into a captured mid-stride state — the
     /// footstep clock and shoe alternation included, so the very next
     /// footfall lands exactly where the original's would have.
-    pub(crate) fn restore_vm(&mut self, capture: ViewmodelCapture) {
-        self.vm = Some(Viewmodel::restore(capture));
+    pub(crate) fn install_prepared_vm(&mut self, capture: PreparedViewmodel) {
+        self.vm = Some(Viewmodel::from_prepared(capture));
     }
 }
 

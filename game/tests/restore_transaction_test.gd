@@ -1,4 +1,5 @@
 extends GdUnitTestSuite
+# gdlint:ignore = max-line-length
 ## The restore TRANSACTION against a code-built live world: a captured blob applied
 ## back to a running game, and the proof that the fit is exact.
 ##
@@ -93,6 +94,59 @@ func _one_frame() -> void:
 	await get_tree().physics_frame
 
 
+func _copy(blob: Dictionary) -> Dictionary:
+	return JSON.parse_string(JSON.stringify(blob, "", true, true)) as Dictionary
+
+
+## Replace the artifact label after a test deliberately changes one value.
+## This is syntax hashing only: semantic restore validation would make every
+## transaction case circular by refusing the fixture while it is built.
+func _install_canonical_hash(main: UnseeingGame, blob: Dictionary) -> void:
+	var diagnostic: Dictionary = main.observer.canonical_hash_of(blob)
+	assert_str(str(diagnostic.get("unavailable", ""))).is_empty()
+	if diagnostic.has("hash"):
+		blob["hash"] = diagnostic["hash"]
+
+
+## One invalid artifact against a deliberately changed live world. A full
+## capture hash covers env, pool, actors, sources and every private pure owner;
+## process flags are adjacent runtime state and are pinned separately. The
+## error monitor also proves that refusal emits no repair warning.
+func _assert_atomic_refusal(main: UnseeingGame, blob: Dictionary, expected: String) -> void:
+	_queue_one(main, Vector3(8.125, 0.375, -7.25))
+	await get_tree().physics_frame
+	var was_paused := get_tree().paused
+	get_tree().paused = true
+	var before_env: Dictionary = main.capture_env()
+	var before: Dictionary = main.observer.capture(main.now, before_env)
+	assert_bool(before.has("unavailable")).is_false()
+	var player_process := main.player.is_processing()
+	var player_physics := main.player.is_physics_processing()
+	var cat_process: Array[bool] = []
+	var cat_physics: Array[bool] = []
+	for cat: WaveCat in main.cats():
+		cat_process.append(cat.is_processing())
+		cat_physics.append(cat.is_physics_processing())
+
+	var holder: Array[Dictionary] = [{}]
+	var invoke := func() -> void: holder[0] = main.restore_blob(blob)
+	await assert_error(invoke).is_success()
+	var verdict: Dictionary = holder[0]
+	assert_bool(verdict.has("unavailable")).is_true()
+	assert_str(verdict["unavailable"]).contains(expected)
+	assert_dict(main.capture_env()).is_equal(before_env)
+	var after: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_bool(after.has("unavailable")).is_false()
+	assert_str(after["hash"]).is_equal(before["hash"])
+	assert_bool(main.player.is_processing()).is_equal(player_process)
+	assert_bool(main.player.is_physics_processing()).is_equal(player_physics)
+	var cats := main.cats()
+	for i: int in cats.size():
+		assert_bool(cats[i].is_processing()).is_equal(cat_process[i])
+		assert_bool(cats[i].is_physics_processing()).is_equal(cat_physics[i])
+	get_tree().paused = was_paused
+
+
 ## The headline property: capture, restore, capture again, and the two blobs
 ## are the same instant — bit for bit, over every field the hash covers.
 ##
@@ -154,6 +208,7 @@ func test_a_wrong_version_refuses_before_touching_anything() -> void:
 	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
 	blob["format_version"] = 999
 	(blob["env"] as Dictionary)["now"] = "999.0"
+	_install_canonical_hash(main, blob)
 	var before: Dictionary = main.observer.snapshot(main.now)
 	var clock: float = main.now
 	var verdict: Dictionary = main.restore_blob(blob)
@@ -176,18 +231,16 @@ func test_a_blob_from_another_map_names_both_scenes() -> void:
 	var here: String = blob["level_scene"]
 	assert_str(here).is_equal(FIXTURE_SCENE_PATH)
 	blob["level_scene"] = "res://scenes/somewhere_else.tscn"
+	_install_canonical_hash(main, blob)
 	var verdict: Dictionary = main.restore_blob(blob)
 	assert_bool(verdict.has("unavailable")).is_true()
 	assert_str(verdict["unavailable"]).contains("res://scenes/somewhere_else.tscn")
 	assert_str(verdict["unavailable"]).contains(here)
 
 
-## The one thing the transaction deliberately does not read: the blob's own
-## stored hash. The restorer proves the world against the blob's FIELDS, so a
-## file edited in transit restores faithfully into whatever it now says and
-## proves itself — every field agrees, because the world became the file. The
-## artifact's own claim about itself is checked by the caller, where the file
-## is, and a blob that lies about its hash is refused naming both numbers.
+## The stored hash is artifact validation, so preflight checks it before any
+## write and names both the label and the independently computed canonical
+## value. A file edited in transit never becomes the running world first.
 func test_a_blob_that_lies_about_its_own_hash_is_refused() -> void:
 	var main := await _boot_ticked()
 	await _lively(main)
@@ -197,24 +250,19 @@ func test_a_blob_that_lies_about_its_own_hash_is_refused() -> void:
 	var verdict: Dictionary = main.restore_blob(blob)
 	assert_bool(verdict.has("unavailable")).is_true()
 	assert_str(verdict["unavailable"]).contains("stored 0000000000000000")
-	assert_str(verdict["unavailable"]).contains("restored %s" % honest)
+	assert_str(verdict["unavailable"]).contains("canonical %s" % honest)
 
 
-## A restore that cannot prove itself refuses, and names the field it failed
-## at rather than shrugging at a hash.
-##
-## The eye's pitch is the field a hand-edited blob can genuinely be caught
-## at: the restore door clamps it to the same limit the look law does, so a
-## blob asking for 99 radians restores as 1.35 and the re-capture disagrees
-## with the file. (A pool slot could not stand in here — the pool is verbatim
-## storage in both directions, so a tampered slot restores exactly and the
-## world honestly agrees with the blob. Whether the FILE agrees with its own
-## hash is the read side's question, and `blob_round_trip_ok` answers it.)
+## A semantic artifact failure is named by complete preflight before the
+## engine's narrowing or clamping doors ever see it. The diagnostic hash is
+## deliberately recomputed so this case reaches pitch capability validation
+## independently of the stale-hash guard above.
 func test_a_tampered_blob_is_named_at_its_divergent_field() -> void:
 	var main := await _boot_ticked()
 	await _lively(main)
 	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
 	(blob["hero"] as Dictionary)["pitch"] = "99.0"
+	_install_canonical_hash(main, blob)
 	var verdict: Dictionary = main.restore_blob(blob)
 	assert_bool(verdict.has("unavailable")).is_true()
 	assert_str(verdict["unavailable"]).contains("hero.pitch")
@@ -262,3 +310,167 @@ func test_restore_preserves_the_trees_paused_state() -> void:
 	assert_str(str(verdict.get("unavailable", ""))).is_empty()
 	assert_bool(get_tree().paused).is_true()
 	get_tree().paused = false
+
+
+func test_invalid_environment_only_leaves_env_pool_actors_sources_and_warning_state_untouched(
+) -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	(blob["env"] as Dictionary)["now"] = "-1.0"
+	_install_canonical_hash(main, blob)
+	await _assert_atomic_refusal(main, blob, "env.now")
+
+
+func test_wrong_or_malformed_stored_hash_only_leaves_world_untouched() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var honest := _copy(main.observer.capture(main.now, main.capture_env()))
+	var wrong := _copy(honest)
+	wrong["hash"] = "0000000000000000"
+	await _assert_atomic_refusal(main, wrong, "stored hash")
+	var malformed := _copy(honest)
+	malformed["hash"] = "ABC"
+	await _assert_atomic_refusal(main, malformed, "hash")
+
+
+func test_clamped_hero_pitch_and_lossy_hero_yaw_refuse_before_writes() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	(blob["hero"] as Dictionary)["pitch"] = "99.0"
+	_install_canonical_hash(main, blob)
+	await _assert_atomic_refusal(main, blob, "hero.pitch")
+	var yaw_blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	(yaw_blob["hero"] as Dictionary)["yaw"] = "0.1"
+	_install_canonical_hash(main, yaw_blob)
+	await _assert_atomic_refusal(main, yaw_blob, "hero.yaw")
+
+
+func test_lossy_cat_yaw_and_poisoned_brain_refuse_before_writes() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var yaw_blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	((yaw_blob["cats"] as Array)[0] as Dictionary)["yaw"] = "0.1"
+	_install_canonical_hash(main, yaw_blob)
+	await _assert_atomic_refusal(main, yaw_blob, "cats[0].yaw")
+	var brain_blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	var brain: Dictionary = ((brain_blob["cats"] as Array)[0] as Dictionary)["brain"]
+	brain["speed"] = "NaN"
+	_install_canonical_hash(main, brain_blob)
+	await _assert_atomic_refusal(main, brain_blob, "cats[0].brain.speed")
+
+
+func test_cat_pose_position_mismatch_on_x_or_y_or_z_refuses_before_writes() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	for axis: int in 3:
+		var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+		var cat: Dictionary = (blob["cats"] as Array)[0]
+		var pose: Dictionary = cat["pose"]
+		var pos: Array = pose["pos"]
+		pos[axis] = str(str(pos[axis]).to_float() + 0.25)
+		_install_canonical_hash(main, blob)
+		await _assert_atomic_refusal(main, blob, "cats[0].pose.pos")
+
+
+func test_cat_gait_internal_support_mismatch_refuses_before_writes() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	var gait: Dictionary = ((blob["cats"] as Array)[0] as Dictionary)["gait"]
+	var planted: Array = gait["planted"]
+	var first: Array = planted[0]
+	first[1] = str(str(first[1]).to_float() + 0.5)
+	_install_canonical_hash(main, blob)
+	await _assert_atomic_refusal(main, blob, "cats[0].gait.planted[0].y")
+
+
+func test_disabled_runtime_actor_refuses_capture() -> void:
+	var main := await _boot_ticked()
+	main.player.set_physics_process(false)
+	var player_blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_str(player_blob["unavailable"]).contains("hero")
+	assert_str(player_blob["unavailable"]).contains("disabled")
+
+	var other := await _boot_ticked()
+	var cats := other.cats()
+	assert_bool(cats.is_empty()).is_false()
+	if cats.is_empty():
+		return
+	(cats[0] as WaveCat).set_physics_process(false)
+	var cat_blob: Dictionary = other.observer.capture(other.now, other.capture_env())
+	assert_str(cat_blob["unavailable"]).contains("cat")
+	assert_str(cat_blob["unavailable"]).contains("disabled")
+
+
+func test_freed_cat_or_source_handle_refuses_before_environment_or_warning_write() -> void:
+	var cat_game := await _boot_ticked()
+	await _lively(cat_game)
+	var cats := cat_game.cats()
+	assert_bool(cats.is_empty()).is_false()
+	if cats.is_empty():
+		return
+
+	var source_game := await _boot_ticked()
+	await _lively(source_game)
+	var source_blob: Dictionary = source_game.observer.capture(
+		source_game.now, source_game.capture_env()
+	)
+	var source_env: Dictionary = source_game.capture_env()
+	var sources: Array = source_game.level.sources()
+	assert_bool(sources.is_empty()).is_false()
+	if sources.is_empty():
+		return
+	# Building the second fixture advances the first one too. Take both of the
+	# first fixture's observations only after every awaited setup step.
+	var cat_blob: Dictionary = cat_game.observer.capture(cat_game.now, cat_game.capture_env())
+	var cat_env: Dictionary = cat_game.capture_env()
+
+	# A deliberately freed cached child also makes the world's ordinary process
+	# census unusable. Hold the same pause bracket restore itself promises while
+	# exercising the read-only refusal, then destroy both malformed fixtures
+	# before thawing the shared test tree.
+	var was_paused := get_tree().paused
+	get_tree().paused = true
+	(cats[0] as WaveCat).free()
+	var cat_holder: Array[Dictionary] = [{}]
+	var invoke_cat := func() -> void: cat_holder[0] = cat_game.restore_blob(cat_blob)
+	await assert_error(invoke_cat).is_success()
+	assert_str(str(cat_holder[0].get("unavailable", ""))).contains("cat")
+	assert_dict(cat_game.capture_env()).is_equal(cat_env)
+
+	(sources[0] as Node3D).free()
+	var source_holder: Array[Dictionary] = [{}]
+	var invoke_source := func() -> void: source_holder[0] = source_game.restore_blob(source_blob)
+	await assert_error(invoke_source).is_success()
+	assert_str(str(source_holder[0].get("unavailable", ""))).contains("source")
+	assert_dict(source_game.capture_env()).is_equal(source_env)
+	cat_game.free()
+	source_game.free()
+	get_tree().paused = was_paused
+
+
+func test_dormant_schema_refuses_airborne_pending_or_controlled_contact_state() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var airborne := _copy(main.observer.capture(main.now, main.capture_env()))
+	var motion: Dictionary = (airborne["hero"] as Dictionary)["motion"]
+	motion["phase"] = {
+		"kind": "airborne", "planar_velocity": ["0.0", "0.0"], "vertical_velocity": "-1.0"
+	}
+	motion["support"] = null
+	_install_canonical_hash(main, airborne)
+	await _assert_atomic_refusal(main, airborne, "hero.motion")
+
+	var pending := _copy(main.observer.capture(main.now, main.capture_env()))
+	(pending["hero"] as Dictionary)["footstep_suppression_pending"] = true
+	_install_canonical_hash(main, pending)
+	await _assert_atomic_refusal(main, pending, "hero.footstep_suppression_pending")
+
+	_queue_one(main, Vector3(4.25, 0.625, -2.75))
+	var gated := _copy(main.observer.capture(main.now, main.capture_env()))
+	var wave: Dictionary = ((gated["hero"] as Dictionary)["queued_waves"] as Array)[0]
+	wave["gate"] = "controlled_contact"
+	_install_canonical_hash(main, gated)
+	await _assert_atomic_refusal(main, gated, "hero.queued_waves[0].gate")

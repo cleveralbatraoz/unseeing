@@ -23,8 +23,15 @@
 
 use godot::builtin::Vector3;
 
+use crate::reproduce::RestoreValueError;
+
 /// The leisurely wander walk, m/s — inside the gait's design envelope.
 pub const WANDER_SPEED: f64 = 0.6;
+
+/// Roam edges ultimately describe a Godot `Vector3` world. Keeping them in
+/// that representable envelope also prevents a malformed span from
+/// overflowing the brain's target arithmetic.
+const MAX_BRAIN_COORD: f64 = f32::MAX as f64;
 
 /// Hardest turn, rad/s. Cats swivel comfortably but not instantly.
 pub const TURN_RATE: f64 = 2.4;
@@ -212,7 +219,122 @@ pub struct CatBrain {
     blocked: f64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedCatBrain(CatBrain);
+
 impl CatBrain {
+    pub fn prepare_restore(capture: BrainCapture) -> Result<PreparedCatBrain, RestoreValueError> {
+        let rect = capture.rect;
+        for (field, value) in [
+            ("rect.min_x", rect.min_x),
+            ("rect.min_z", rect.min_z),
+            ("rect.max_x", rect.max_x),
+            ("rect.max_z", rect.max_z),
+            ("yaw", capture.yaw),
+            ("speed", capture.speed),
+            ("blocked", capture.blocked),
+        ] {
+            if !value.is_finite() {
+                return Err(RestoreValueError::new(
+                    format!("brain.{field}"),
+                    "must be finite",
+                ));
+            }
+        }
+        for (field, value) in [
+            ("rect.min_x", rect.min_x),
+            ("rect.min_z", rect.min_z),
+            ("rect.max_x", rect.max_x),
+            ("rect.max_z", rect.max_z),
+        ] {
+            if value.abs() > MAX_BRAIN_COORD {
+                return Err(RestoreValueError::new(
+                    format!("brain.{field}"),
+                    "is outside Godot world-coordinate bounds",
+                ));
+            }
+        }
+        if rect.min_x > rect.max_x {
+            return Err(RestoreValueError::new(
+                "brain.rect.max_x",
+                "must not be below min_x",
+            ));
+        }
+        if rect.min_z > rect.max_z {
+            return Err(RestoreValueError::new(
+                "brain.rect.max_z",
+                "must not be below min_z",
+            ));
+        }
+        if capture.rng_inc & 1 == 0 {
+            return Err(RestoreValueError::new(
+                "brain.rng_inc",
+                "must be an odd PCG stream word",
+            ));
+        }
+        match capture.state {
+            BrainState::Roam { tx, tz } => {
+                for (field, target, min, max) in [
+                    ("state.tx", tx, rect.min_x, rect.max_x),
+                    ("state.tz", tz, rect.min_z, rect.max_z),
+                ] {
+                    if !target.is_finite() {
+                        return Err(RestoreValueError::new(
+                            format!("brain.{field}"),
+                            "must be finite",
+                        ));
+                    }
+                    if target < min || target > max {
+                        return Err(RestoreValueError::new(
+                            format!("brain.{field}"),
+                            "must lie inside the roam rectangle",
+                        ));
+                    }
+                }
+            }
+            BrainState::Pause { left } => {
+                if !left.is_finite() {
+                    return Err(RestoreValueError::new("brain.state.left", "must be finite"));
+                }
+                if left <= 0.0 || left > PAUSE_SECS.1 {
+                    return Err(RestoreValueError::new(
+                        "brain.state.left",
+                        "is outside its valid countdown range",
+                    ));
+                }
+            }
+            BrainState::Sit { left } => {
+                if !left.is_finite() {
+                    return Err(RestoreValueError::new("brain.state.left", "must be finite"));
+                }
+                if left <= 0.0 || left > SIT_SECS.1 {
+                    return Err(RestoreValueError::new(
+                        "brain.state.left",
+                        "is outside its valid countdown range",
+                    ));
+                }
+            }
+        }
+        if capture.speed < 0.0 || capture.speed > WANDER_SPEED {
+            return Err(RestoreValueError::new(
+                "brain.speed",
+                "must be in 0..=WANDER_SPEED",
+            ));
+        }
+        if capture.blocked < 0.0 || capture.blocked > BLOCKED_AFTER {
+            return Err(RestoreValueError::new(
+                "brain.blocked",
+                "must be in 0..=BLOCKED_AFTER",
+            ));
+        }
+        Ok(PreparedCatBrain(Self::restore(capture)))
+    }
+
+    #[must_use]
+    pub fn from_prepared(capture: PreparedCatBrain) -> Self {
+        capture.0
+    }
+
     /// A fresh mind: the cat wakes facing `yaw`, takes a short breath
     /// (a fixed first pause — no draw, so seed streams start aligned at
     /// the first real choice), then begins to wander `rect`.
@@ -404,6 +526,32 @@ mod tests {
     use super::*;
 
     const DT: f64 = 1.0 / 60.0;
+
+    #[test]
+    fn prepared_restore_rejects_invalid_brain_rect_target_or_rng() {
+        let rect = RoamRect {
+            min_x: -2.0,
+            min_z: -3.0,
+            max_x: 2.0,
+            max_z: 3.0,
+        };
+        let mut capture = CatBrain::new(7, rect, 0.0).capture();
+        capture.rng_inc &= !1;
+        let error = CatBrain::prepare_restore(capture).expect_err("even stream must be refused");
+        assert_eq!(error.path, "brain.rng_inc");
+
+        let mut capture = CatBrain::new(7, rect, 0.0).capture();
+        capture.state = BrainState::Pause { left: 8.0 };
+        let error = CatBrain::prepare_restore(capture)
+            .expect_err("a pause longer than the pause author's ceiling must be refused");
+        assert_eq!(error.path, "brain.state.left");
+
+        let mut capture = CatBrain::new(7, rect, 0.0).capture();
+        capture.rect.max_x = f64::MAX;
+        let error = CatBrain::prepare_restore(capture)
+            .expect_err("a roam edge outside actor space must be refused");
+        assert_eq!(error.path, "brain.rect.max_x");
+    }
 
     /// The published pcg_basic.c reference stream: srandom(42, 54) must
     /// yield exactly these first six draws — the implementation is the

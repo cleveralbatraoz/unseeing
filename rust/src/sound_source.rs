@@ -31,6 +31,7 @@
 use godot::builtin::Vector3;
 
 use crate::pulse_pool::{self, OMNI_COS};
+use crate::reproduce::RestoreValueError;
 
 /// The pulse kind every world sound source is born as: the one sound the
 /// hero did not make. Its waves are cut crisp at a wall exactly like a
@@ -230,10 +231,61 @@ impl Voice {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Cadence {
     every: f64,
-    next: f64,
+    next: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PreparedCadence {
+    interval_s: f64,
+    next_s: Option<f64>,
 }
 
 impl Cadence {
+    pub(crate) fn prepare_restore(
+        interval: f64,
+        next: f64,
+        allow_absent_nan: bool,
+    ) -> Result<PreparedCadence, RestoreValueError> {
+        if !interval.is_finite() {
+            return Err(RestoreValueError::new(
+                "cadence.interval_s",
+                "must be finite",
+            ));
+        }
+        if interval <= 0.0 {
+            return Err(RestoreValueError::new(
+                "cadence.interval_s",
+                "must be strictly positive",
+            ));
+        }
+        let next_s = if allow_absent_nan && next.is_nan() {
+            None
+        } else {
+            if !next.is_finite() {
+                return Err(RestoreValueError::new("cadence.next_s", "must be finite"));
+            }
+            if next < 0.0 {
+                return Err(RestoreValueError::new(
+                    "cadence.next_s",
+                    "must be non-negative",
+                ));
+            }
+            Some(next)
+        };
+        Ok(PreparedCadence {
+            interval_s: interval,
+            next_s,
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn from_prepared(value: PreparedCadence) -> Self {
+        Self {
+            every: value.interval_s,
+            next: value.next_s,
+        }
+    }
+
     /// A fresh gate at the given interval, first wave due one interval in.
     /// A non-positive interval never fires — a source with no cadence is
     /// silent, not a per-frame flood.
@@ -241,7 +293,7 @@ impl Cadence {
     pub fn every(interval: f64) -> Self {
         Self {
             every: interval,
-            next: interval,
+            next: interval.is_finite().then_some(interval),
         }
     }
 
@@ -255,7 +307,7 @@ impl Cadence {
     pub fn restore(interval: f64, next: f64) -> Self {
         Self {
             every: interval,
-            next,
+            next: next.is_finite().then_some(next),
         }
     }
 
@@ -277,10 +329,10 @@ impl Cadence {
     /// and a plausible wrong date is worse than an admitted absence.
     #[must_use]
     pub fn next_at(self) -> Option<f64> {
-        if self.every <= 0.0 || !self.every.is_finite() || !self.next.is_finite() {
+        if self.every <= 0.0 || !self.every.is_finite() {
             return None;
         }
-        Some(self.next)
+        self.next
     }
 
     /// Adopt a new interval mid-flight, so a cadence knob is as live as
@@ -302,7 +354,7 @@ impl Cadence {
     /// — `t >= next`, the boundary instant firing — and rebooks from `t`,
     /// not from the missed appointment: no backfill after a time jump.
     pub fn beat(&mut self, t: f64) -> Option<f64> {
-        if self.every <= 0.0 || !self.every.is_finite() {
+        if self.every <= 0.0 || !self.every.is_finite() || !t.is_finite() {
             return None;
         }
         // A gate built from a non-finite interval carries that value in its
@@ -314,16 +366,21 @@ impl Cadence {
         // exactly as a fresh gate does. The repair lives in `beat` rather
         // than in `retune` because the cat's presence gate shares this
         // clock and never retunes.
-        if !self.next.is_finite() {
-            self.next = t + self.every;
+        let Some(next) = self.next else {
+            self.next = finite_sum(t, self.every);
+            return None;
+        };
+        if t < next {
             return None;
         }
-        if t < self.next {
-            return None;
-        }
-        self.next = t + self.every;
+        self.next = finite_sum(t, self.every);
         Some(t)
     }
+}
+
+fn finite_sum(a: f64, b: f64) -> Option<f64> {
+    let sum = a + b;
+    sum.is_finite().then_some(sum)
 }
 
 impl Default for Cadence {
@@ -337,6 +394,17 @@ impl Default for Cadence {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_restore_rejects_invalid_cadence_interval_or_appointment() {
+        let error =
+            Cadence::prepare_restore(0.0, 1.0, false).expect_err("zero interval must be refused");
+        assert_eq!(error.path, "cadence.interval_s");
+        let error = Cadence::prepare_restore(1.0, f64::NAN, false)
+            .expect_err("source NaN appointment must be refused");
+        assert_eq!(error.path, "cadence.next_s");
+        assert!(Cadence::prepare_restore(1.0, f64::NAN, true).is_ok());
+    }
 
     /// THE volume law, in one test: amplitude is gain, reach is linear in
     /// it, and the standing image rides along. Half as loud is half as

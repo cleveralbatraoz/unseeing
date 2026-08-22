@@ -25,6 +25,8 @@
 
 use godot::builtin::{Vector3, Vector4};
 
+use crate::reproduce::RestoreValueError;
+
 /// Pool capacity — the size of the uniform arrays both shaders loop over
 /// per pixel. Fixed forever at the shader contract's 64.
 pub const MAXP: usize = 64;
@@ -76,6 +78,9 @@ pub struct PulsePool {
     kind: [i32; MAXP],
 }
 
+#[derive(Debug, Clone)]
+pub struct PreparedPulsePool(PulsePool);
+
 /// One slot, all six lanes — the shader-facing f32 triplet AND the f64
 /// shadow eviction runs on. Verbatim copies both ways: decoding and
 /// re-encoding the packed lanes would lose gain precision (dat.w packs
@@ -98,6 +103,41 @@ impl Default for PulsePool {
 }
 
 impl PulsePool {
+    pub fn prepare_restore(
+        slots: &[SlotCapture; MAXP],
+    ) -> Result<PreparedPulsePool, RestoreValueError> {
+        for (index, slot) in slots.iter().enumerate() {
+            for (field, value) in [
+                ("pos.x", f64::from(slot.pos.x)),
+                ("pos.y", f64::from(slot.pos.y)),
+                ("pos.z", f64::from(slot.pos.z)),
+                ("dat.x", f64::from(slot.dat.x)),
+                ("dat.y", f64::from(slot.dat.y)),
+                ("dat.z", f64::from(slot.dat.z)),
+                ("dat.w", f64::from(slot.dat.w)),
+                ("dir.x", f64::from(slot.dir.x)),
+                ("dir.y", f64::from(slot.dir.y)),
+                ("dir.z", f64::from(slot.dir.z)),
+                ("dir.w", f64::from(slot.dir.w)),
+                ("t0", slot.t0),
+                ("end", slot.end),
+            ] {
+                if !value.is_finite() {
+                    return Err(RestoreValueError::new(
+                        format!("slots[{index}].{field}"),
+                        "must be finite",
+                    ));
+                }
+            }
+        }
+        Ok(PreparedPulsePool(Self::from_slots(slots)))
+    }
+
+    #[must_use]
+    pub fn from_prepared(value: PreparedPulsePool) -> Self {
+        value.0
+    }
+
     /// A dark pool: every slot born dead. The `-1` birth-time sentinel in
     /// `dat` and the `-1` end time mirror pulses.gd's `_init` exactly —
     /// the shaders read dat.x = -1 as "no pulse ever lived here".
@@ -163,14 +203,11 @@ impl PulsePool {
     /// A pool rebuilt from a capture, bit-identical. Total: any slot
     /// values are legal — the capture is trusted verbatim.
     ///
-    /// Which means a TAMPERED slot cannot show up here, or anywhere
-    /// downstream of here: it is copied in exactly, copied back out
-    /// exactly, and so the restored world honestly agrees with the file it
-    /// came from. [`crate::reproduce::first_divergence`] compares the world
-    /// against the blob's fields and is right to see nothing. What knows
-    /// the difference is the blob's own stored hash, and the one place that
-    /// is compared is `UnseeingGame::restore_blob`, after the transaction
-    /// succeeds — see the composition-root transaction note there.
+    /// A hand-edited finite slot is still copied exactly, so only the
+    /// artifact's stored hash can distinguish it from the captured state.
+    /// `WaveRestorer::preflight` compares that hash before this constructor
+    /// can reach a live pool; non-finite slots are refused by this owner's
+    /// checked [`Self::prepare_restore`] door.
     #[must_use]
     pub fn from_slots(slots: &[SlotCapture; MAXP]) -> Self {
         let mut pool = Self::new();
@@ -627,5 +664,20 @@ mod tests {
         assert_eq!(pool.dat()[1].y, 5.0); // victim was slot 1 in both
         assert_eq!(restored.dat()[1].y, 5.0);
         assert_eq!(restored.dat()[0].y, 60.0);
+    }
+
+    #[test]
+    fn prepared_restore_rejects_nonfinite_pool_slot() {
+        let mut slots = [SlotCapture {
+            pos: Vector3::ZERO,
+            dat: Vector4::new(-1.0, 0.0, 0.0, 0.0),
+            dir: Vector4::ZERO,
+            t0: 0.0,
+            end: -1.0,
+            kind: 0,
+        }; MAXP];
+        slots[17].dir.z = f32::NAN;
+        let error = PulsePool::prepare_restore(&slots).expect_err("poison must be refused");
+        assert_eq!(error.path, "slots[17].dir.z");
     }
 }

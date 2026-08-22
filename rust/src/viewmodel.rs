@@ -15,6 +15,8 @@
 
 use godot::builtin::Vector3;
 
+use crate::reproduce::RestoreValueError;
+
 /// Walk-cycle rate, rad/s of leg and swing phase while moving.
 pub const WALK_RATE: f64 = 7.4;
 
@@ -173,7 +175,59 @@ pub struct Viewmodel {
     step_side: i32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedViewmodel(Viewmodel);
+
 impl Viewmodel {
+    pub fn prepare_restore(
+        capture: ViewmodelCapture,
+    ) -> Result<PreparedViewmodel, RestoreValueError> {
+        for (field, value) in [
+            ("walk_amp", capture.walk_amp),
+            ("leg_phase", capture.leg_phase),
+            ("swing_phase", capture.swing_phase),
+            ("cane_swing", capture.cane_swing),
+            ("sway_x", capture.sway_x),
+            ("sway_y", capture.sway_y),
+            ("last_yaw", capture.last_yaw),
+            ("last_pitch", capture.last_pitch),
+            ("step_t", capture.step_t),
+        ] {
+            if !value.is_finite() {
+                return Err(RestoreValueError::new(
+                    format!("hero.viewmodel.{field}"),
+                    "must be finite",
+                ));
+            }
+        }
+        for (field, value, min, max) in [
+            ("walk_amp", capture.walk_amp, 0.0, 1.0),
+            ("cane_swing", capture.cane_swing, -0.26, 0.26),
+            ("sway_x", capture.sway_x, -SWAY_X_CLAMP, SWAY_X_CLAMP),
+            ("sway_y", capture.sway_y, -SWAY_Y_CLAMP, SWAY_Y_CLAMP),
+            ("step_t", capture.step_t, 0.0, STEP_EVERY),
+        ] {
+            if value < min || value > max {
+                return Err(RestoreValueError::new(
+                    format!("hero.viewmodel.{field}"),
+                    "is outside its valid range",
+                ));
+            }
+        }
+        if !matches!(capture.step_side, -1 | 1) {
+            return Err(RestoreValueError::new(
+                "hero.viewmodel.step_side",
+                "must be -1 or 1",
+            ));
+        }
+        Ok(PreparedViewmodel(Self::restore(capture)))
+    }
+
+    #[must_use]
+    pub fn from_prepared(value: PreparedViewmodel) -> Self {
+        value.0
+    }
+
     /// A fresh viewmodel, caching the current look so the first frame
     /// reads zero look-delta — hero_body.gd's `_ready`. The footstep
     /// clock starts SPENT (`_step_t := 0.0`): a fresh walker steps at
@@ -325,6 +379,19 @@ mod tests {
     use super::*;
 
     const DT: f64 = 1.0 / 60.0;
+
+    #[test]
+    fn prepared_restore_rejects_invalid_viewmodel_side_or_blend() {
+        let mut capture = Viewmodel::new(0.0, 0.0).capture();
+        capture.walk_amp = 1.25;
+        let error = Viewmodel::prepare_restore(capture).expect_err("blend must be refused");
+        assert_eq!(error.path, "hero.viewmodel.walk_amp");
+
+        let mut capture = Viewmodel::new(0.0, 0.0).capture();
+        capture.step_side = 0;
+        let error = Viewmodel::prepare_restore(capture).expect_err("side must be refused");
+        assert_eq!(error.path, "hero.viewmodel.step_side");
+    }
 
     fn walker() -> Viewmodel {
         Viewmodel::new(0.0, 0.0)

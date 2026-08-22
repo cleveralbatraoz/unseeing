@@ -43,6 +43,9 @@ use crate::cat_gait::GaitCapture;
 use crate::echo_queue::PendingEcho;
 use crate::observe::QueuedWave;
 use crate::pulse_pool::{MAXP, SlotCapture};
+use crate::support_motion::{
+    LandingEvent, MotionPhase, MotionState, QueuedWaveGate, SupportContact,
+};
 use crate::viewmodel::ViewmodelCapture;
 
 /// FNV-1a, 64-bit. Hand-rolled because the hash must be identical on
@@ -101,6 +104,7 @@ pub struct EnvCapture {
 pub struct HeroCapture {
     pub position: Vector3,
     pub velocity: Vector3,
+    pub motion: MotionState,
     /// Body yaw and eye pitch, radians, as the look law last left them.
     pub yaw: f64,
     pub pitch: f64,
@@ -112,15 +116,16 @@ pub struct HeroCapture {
     pub tap_queued: bool,
     /// Waves requested and still waiting for the physics tick.
     pub queued_waves: Vec<QueuedWave>,
+    pub footstep_suppression_pending: bool,
     /// The viewmodel's whole state — footstep clock included.
     pub viewmodel: ViewmodelCapture,
 }
 
-/// One world sound source's appointment book. The name is the identity
-/// the restore matches against (sources are found by name in the scene,
-/// never by index), and `next_emit` is the only mutable state a source
-/// carries — everything else is designer-authored and already in the
-/// scene.
+/// One world sound source's appointment book. Scene order fixes its slot and
+/// the name must match the live source in that slot, so a reordered or renamed
+/// scene refuses rather than installing an appointment into the wrong voice.
+/// `next_emit` is the only mutable source state captured here — collider
+/// identity and every designer-authored knob remain properties of the scene.
 #[derive(Debug, Clone)]
 pub struct SourceCapture {
     pub name: String,
@@ -136,6 +141,7 @@ pub struct CatCapture {
     pub position: Vector3,
     pub yaw: f64,
     pub velocity: Vector3,
+    pub motion: MotionState,
     /// The mind's whole state — RNG words included, or the restored cat
     /// diverges at its first whim.
     pub brain: BrainCapture,
@@ -148,8 +154,8 @@ pub struct CatCapture {
     /// and `mood` answer correctly between the restore and the first tick.
     pub pose: CatPose,
     /// The idle-presence cadence's next appointment, or NaN when the cat
-    /// never beat (see `WaveCat::restore_state`, which round-trips that
-    /// NaN back into a cadence with no appointment).
+    /// never beat. `Cadence::prepare_restore` is the sole door that admits
+    /// this legacy sentinel and turns it into a typed absent appointment.
     pub presence_next: f64,
     /// The eased sit blend and the elapsed sim clock the tail's idle
     /// breath rides.
@@ -392,16 +398,19 @@ fn encode_hero(hero: &HeroCapture, enc: &mut Enc) {
     let HeroCapture {
         position,
         velocity,
+        motion,
         yaw,
         pitch,
         last_tap,
         tap_target,
         tap_queued,
         queued_waves,
+        footstep_suppression_pending,
         viewmodel,
     } = hero;
     enc.v3(*position);
     enc.v3(*velocity);
+    encode_motion(*motion, enc);
     enc.f64(*yaw);
     enc.f64(*pitch);
     enc.f64(*last_tap);
@@ -411,6 +420,7 @@ fn encode_hero(hero: &HeroCapture, enc: &mut Enc) {
     for wave in queued_waves {
         encode_wave(wave, enc);
     }
+    enc.bool(*footstep_suppression_pending);
     encode_viewmodel(viewmodel, enc);
 }
 
@@ -423,6 +433,7 @@ fn encode_wave(wave: &QueuedWave, enc: &mut Enc) {
         gain,
         echoes,
         normal,
+        gate,
     } = wave;
     enc.i64(*kind);
     enc.v3(*at);
@@ -431,6 +442,57 @@ fn encode_wave(wave: &QueuedWave, enc: &mut Enc) {
     enc.f64(*gain);
     enc.i64(*echoes);
     enc.v3(*normal);
+    encode_gate(*gate, enc);
+}
+
+fn encode_gate(gate: QueuedWaveGate, enc: &mut Enc) {
+    enc.u32(match gate {
+        QueuedWaveGate::Always => 0,
+        QueuedWaveGate::ControlledContact => 1,
+    });
+}
+
+fn encode_motion(motion: MotionState, enc: &mut Enc) {
+    match motion.phase() {
+        MotionPhase::Controlled => enc.u32(0),
+        MotionPhase::Airborne {
+            planar_velocity_mps,
+            vertical_velocity_mps,
+        } => {
+            enc.u32(1);
+            enc.f32(planar_velocity_mps.x_mps());
+            enc.f32(planar_velocity_mps.z_mps());
+            enc.f32(vertical_velocity_mps.mps());
+        }
+    }
+    encode_support(motion.support(), enc);
+    encode_landing(motion.last_landing(), enc);
+}
+
+fn encode_support(support: Option<SupportContact>, enc: &mut Enc) {
+    match support {
+        None => enc.u32(0),
+        Some(support) => {
+            enc.u32(1);
+            encode_support_value(support, enc);
+        }
+    }
+}
+
+fn encode_support_value(support: SupportContact, enc: &mut Enc) {
+    enc.v3(support.point());
+    enc.v3(support.normal());
+}
+
+fn encode_landing(landing: Option<LandingEvent>, enc: &mut Enc) {
+    match landing {
+        None => enc.u32(0),
+        Some(landing) => {
+            enc.u32(1);
+            enc.f32(landing.impact_speed().mps());
+            encode_support_value(landing.support(), enc);
+        }
+    }
 }
 
 fn encode_viewmodel(viewmodel: &ViewmodelCapture, enc: &mut Enc) {
@@ -463,6 +525,7 @@ fn encode_cat(cat: &CatCapture, enc: &mut Enc) {
         position,
         yaw,
         velocity,
+        motion,
         brain,
         gait,
         tail,
@@ -475,6 +538,7 @@ fn encode_cat(cat: &CatCapture, enc: &mut Enc) {
     enc.v3(*position);
     enc.f64(*yaw);
     enc.v3(*velocity);
+    encode_motion(*motion, enc);
     encode_brain(brain, enc);
     encode_gait(gait, enc);
     for node in tail {
@@ -549,6 +613,7 @@ fn encode_gait(gait: &GaitCapture, enc: &mut Enc) {
     let GaitCapture {
         phase,
         amp,
+        support_y,
         planted,
         aim,
         in_swing,
@@ -556,6 +621,7 @@ fn encode_gait(gait: &GaitCapture, enc: &mut Enc) {
     } = gait;
     enc.f64(*phase);
     enc.f64(*amp);
+    enc.f32(*support_y);
     for paw in planted {
         enc.v3(*paw);
     }
@@ -771,12 +837,14 @@ fn diff_hero(a: &HeroCapture, b: &HeroCapture) -> Option<String> {
     let HeroCapture {
         position,
         velocity,
+        motion,
         yaw,
         pitch,
         last_tap,
         tap_target,
         tap_queued,
         queued_waves,
+        footstep_suppression_pending,
         viewmodel,
     } = a;
     if let Some(c) = diff_v3(*position, b.position) {
@@ -784,6 +852,9 @@ fn diff_hero(a: &HeroCapture, b: &HeroCapture) -> Option<String> {
     }
     if let Some(c) = diff_v3(*velocity, b.velocity) {
         return Some(format!("velocity.{c}"));
+    }
+    if let Some(field) = diff_motion(*motion, b.motion) {
+        return Some(format!("motion.{field}"));
     }
     if let Some(field) = first_mismatch(&[
         ("yaw", same_f64(*yaw, b.yaw)),
@@ -806,6 +877,9 @@ fn diff_hero(a: &HeroCapture, b: &HeroCapture) -> Option<String> {
             return Some(format!("queued_waves[{i}].{field}"));
         }
     }
+    if *footstep_suppression_pending != b.footstep_suppression_pending {
+        return Some("footstep_suppression_pending".to_string());
+    }
     diff_viewmodel(viewmodel, &b.viewmodel).map(|field| format!("viewmodel.{field}"))
 }
 
@@ -818,6 +892,7 @@ fn diff_wave(a: &QueuedWave, b: &QueuedWave) -> Option<String> {
         gain,
         echoes,
         normal,
+        gate,
     } = a;
     // Named "kind" here, this struct's own field — but a reader chasing this
     // divergence path into a blob file wants the WIRE key, which is "type"
@@ -838,7 +913,70 @@ fn diff_wave(a: &QueuedWave, b: &QueuedWave) -> Option<String> {
     ]) {
         return Some(field.to_string());
     }
-    diff_v3(*normal, b.normal).map(|c| format!("normal.{c}"))
+    if let Some(c) = diff_v3(*normal, b.normal) {
+        return Some(format!("normal.{c}"));
+    }
+    (*gate != b.gate).then(|| "gate".to_string())
+}
+
+fn diff_motion(a: MotionState, b: MotionState) -> Option<String> {
+    match (a.phase(), b.phase()) {
+        (MotionPhase::Controlled, MotionPhase::Controlled) => {}
+        (
+            MotionPhase::Airborne {
+                planar_velocity_mps: ap,
+                vertical_velocity_mps: av,
+            },
+            MotionPhase::Airborne {
+                planar_velocity_mps: bp,
+                vertical_velocity_mps: bv,
+            },
+        ) => {
+            if !same_f32(ap.x_mps(), bp.x_mps()) {
+                return Some("phase.planar_velocity.x".to_string());
+            }
+            if !same_f32(ap.z_mps(), bp.z_mps()) {
+                return Some("phase.planar_velocity.z".to_string());
+            }
+            if !same_f32(av.mps(), bv.mps()) {
+                return Some("phase.vertical_velocity".to_string());
+            }
+        }
+        _ => return Some("phase".to_string()),
+    }
+    if let Some(field) = diff_optional_support(a.support(), b.support()) {
+        return Some(format!("support{field}"));
+    }
+    diff_optional_landing(a.last_landing(), b.last_landing())
+        .map(|field| format!("last_landing{field}"))
+}
+
+fn diff_optional_support(a: Option<SupportContact>, b: Option<SupportContact>) -> Option<String> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(a), Some(b)) => diff_support(a, b).map(|field| format!(".{field}")),
+        _ => Some(String::new()),
+    }
+}
+
+fn diff_support(a: SupportContact, b: SupportContact) -> Option<String> {
+    if let Some(c) = diff_v3(a.point(), b.point()) {
+        return Some(format!("point.{c}"));
+    }
+    diff_v3(a.normal(), b.normal()).map(|c| format!("normal.{c}"))
+}
+
+fn diff_optional_landing(a: Option<LandingEvent>, b: Option<LandingEvent>) -> Option<String> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(a), Some(b)) => {
+            if !same_f32(a.impact_speed().mps(), b.impact_speed().mps()) {
+                return Some(".impact_speed".to_string());
+            }
+            diff_support(a.support(), b.support()).map(|field| format!(".support.{field}"))
+        }
+        _ => Some(String::new()),
+    }
 }
 
 fn diff_viewmodel(a: &ViewmodelCapture, b: &ViewmodelCapture) -> Option<&'static str> {
@@ -873,6 +1011,7 @@ fn diff_cat(a: &CatCapture, b: &CatCapture) -> Option<String> {
         position,
         yaw,
         velocity,
+        motion,
         brain,
         gait,
         tail,
@@ -890,6 +1029,9 @@ fn diff_cat(a: &CatCapture, b: &CatCapture) -> Option<String> {
     }
     if let Some(c) = diff_v3(*velocity, b.velocity) {
         return Some(format!("velocity.{c}"));
+    }
+    if let Some(field) = diff_motion(*motion, b.motion) {
+        return Some(format!("motion.{field}"));
     }
     if let Some(field) = diff_brain(brain, &b.brain) {
         return Some(format!("brain.{field}"));
@@ -984,6 +1126,7 @@ fn diff_gait(a: &GaitCapture, b: &GaitCapture) -> Option<String> {
     let GaitCapture {
         phase,
         amp,
+        support_y,
         planted,
         aim,
         in_swing,
@@ -992,6 +1135,7 @@ fn diff_gait(a: &GaitCapture, b: &GaitCapture) -> Option<String> {
     if let Some(field) = first_mismatch(&[
         ("phase", same_f64(*phase, b.phase)),
         ("amp", same_f64(*amp, b.amp)),
+        ("support_y", same_f32(*support_y, b.support_y)),
     ]) {
         return Some(field.to_string());
     }
@@ -1045,17 +1189,121 @@ fn diff_pose(a: &CatPose, b: &CatPose) -> Option<String> {
 mod tests {
     use super::*;
     use crate::reproduce::FORMAT_VERSION;
+    use crate::support_motion::{
+        FiniteVelocity, LandingEvent, MotionPhase, MotionState, PlanarVelocity, QueuedWaveGate,
+        SupportContact,
+    };
+
+    fn support(point: Vector3, normal: Vector3) -> SupportContact {
+        SupportContact::try_new(point, normal).expect("the checked fixture support is valid")
+    }
+
+    fn landing(impact_speed_mps: f32, point: Vector3, normal: Vector3) -> LandingEvent {
+        LandingEvent::try_new(impact_speed_mps, support(point, normal))
+            .expect("the checked fixture landing is valid")
+    }
+
+    fn airborne(
+        planar_x_mps: f32,
+        planar_z_mps: f32,
+        vertical_velocity_mps: f32,
+        last_landing: Option<LandingEvent>,
+    ) -> MotionState {
+        MotionState::restore(
+            MotionPhase::Airborne {
+                planar_velocity_mps: PlanarVelocity::try_new(planar_x_mps, planar_z_mps)
+                    .expect("the checked fixture planar velocity is valid"),
+                vertical_velocity_mps: FiniteVelocity::try_new(vertical_velocity_mps)
+                    .expect("the checked fixture vertical velocity is valid"),
+            },
+            None,
+            last_landing,
+        )
+        .expect("the checked fixture airborne state is valid")
+    }
+
+    fn controlled(support: SupportContact) -> MotionState {
+        MotionState::restore(MotionPhase::Controlled, Some(support), None)
+            .expect("the checked fixture controlled state is valid")
+    }
+
+    fn changed_airborne(state: MotionState, dx: f32, dz: f32, dy: f32) -> MotionState {
+        let MotionPhase::Airborne {
+            planar_velocity_mps,
+            vertical_velocity_mps,
+        } = state.phase()
+        else {
+            panic!("the mutation fixture expected an airborne state")
+        };
+        MotionState::restore(
+            MotionPhase::Airborne {
+                planar_velocity_mps: PlanarVelocity::try_new(
+                    if dx == 0.0 {
+                        planar_velocity_mps.x_mps()
+                    } else {
+                        planar_velocity_mps.x_mps() + dx
+                    },
+                    if dz == 0.0 {
+                        planar_velocity_mps.z_mps()
+                    } else {
+                        planar_velocity_mps.z_mps() + dz
+                    },
+                )
+                .expect("the mutated planar fixture stays valid"),
+                vertical_velocity_mps: FiniteVelocity::try_new(if dy == 0.0 {
+                    vertical_velocity_mps.mps()
+                } else {
+                    vertical_velocity_mps.mps() + dy
+                })
+                .expect("the mutated vertical fixture stays valid"),
+            },
+            state.support(),
+            state.last_landing(),
+        )
+        .expect("the mutated airborne fixture stays consistent")
+    }
+
+    fn changed_support(state: MotionState, point: Vector3, normal: Vector3) -> MotionState {
+        MotionState::restore(
+            state.phase(),
+            Some(support(point, normal)),
+            state.last_landing(),
+        )
+        .expect("the mutated support fixture stays consistent")
+    }
+
+    fn changed_landing(
+        state: MotionState,
+        impact_speed_mps: f32,
+        point: Vector3,
+        normal: Vector3,
+    ) -> MotionState {
+        MotionState::restore(
+            state.phase(),
+            state.support(),
+            Some(landing(impact_speed_mps, point, normal)),
+        )
+        .expect("the mutated landing fixture stays consistent")
+    }
 
     /// One cat's whole life, every literal shifted by `k` so two cats in
     /// the same blob are never confusable and a transposed pair fails
     /// loudly. These are encoder fixtures, not physically constrained
     /// poses — the blob carries bits verbatim and validates nothing.
-    fn test_cat(k: f64, rng_state: u64, state: BrainState, presence_next: f64) -> CatCapture {
+    fn test_cat(
+        k: f64,
+        rng_state: u64,
+        state: BrainState,
+        presence_next: f64,
+        motion: MotionState,
+    ) -> CatCapture {
         let f = k as f32;
+        let support_y = 0.125 + f;
         CatCapture {
             position: Vector3::new(1.25 + f, 0.5 + f, -2.5 + f),
             yaw: 0.625 + k,
             velocity: Vector3::new(-0.375 + f, 0.25 + f, 1.125 + f),
+            motion,
             brain: BrainCapture {
                 rng_state,
                 rng_inc: rng_state ^ 0x00ca_7000_0000_0ca7,
@@ -1073,17 +1321,18 @@ mod tests {
             gait: GaitCapture {
                 phase: 0.28125 + k,
                 amp: 0.75 + k,
+                support_y,
                 planted: [
-                    Vector3::new(1.5 + f, 0.125 + f, 2.75 + f),
-                    Vector3::new(3.25 + f, 0.1875 + f, 4.5 + f),
-                    Vector3::new(-5.75 + f, 0.21875 + f, 6.375 + f),
-                    Vector3::new(7.125 + f, 0.25 + f, -8.5 + f),
+                    Vector3::new(1.5 + f, support_y, 2.75 + f),
+                    Vector3::new(3.25 + f, support_y, 4.5 + f),
+                    Vector3::new(-5.75 + f, support_y, 6.375 + f),
+                    Vector3::new(7.125 + f, support_y, -8.5 + f),
                 ],
                 aim: [
-                    Vector3::new(9.25 + f, 0.3125 + f, 10.5 + f),
-                    Vector3::new(-11.75 + f, 0.375 + f, 12.125 + f),
-                    Vector3::new(13.5 + f, 0.4375 + f, -14.25 + f),
-                    Vector3::new(15.625 + f, 0.5 + f, 16.75 + f),
+                    Vector3::new(9.25 + f, support_y, 10.5 + f),
+                    Vector3::new(-11.75 + f, support_y, 12.125 + f),
+                    Vector3::new(13.5 + f, support_y, -14.25 + f),
+                    Vector3::new(15.625 + f, support_y, 16.75 + f),
                 ],
                 in_swing: [true, false, false, true],
                 moving: true,
@@ -1196,6 +1445,16 @@ mod tests {
             hero: HeroCapture {
                 position: Vector3::new(3.5, 1.25, -4.75),
                 velocity: Vector3::new(-0.75, 0.375, 2.5),
+                motion: airborne(
+                    -0.0,
+                    1.25,
+                    -3.5,
+                    Some(landing(
+                        3.5,
+                        Vector3::new(1.0, 0.45, 2.0),
+                        Vector3::new(0.0, 1.0, 0.0),
+                    )),
+                ),
                 yaw: 1.125,
                 pitch: -0.375,
                 last_tap: 31.5,
@@ -1210,6 +1469,7 @@ mod tests {
                         gain: 1.0,
                         echoes: 6,
                         normal: Vector3::new(0.0, 0.0, 1.0),
+                        gate: QueuedWaveGate::Always,
                     },
                     QueuedWave {
                         kind: 2,
@@ -1219,8 +1479,10 @@ mod tests {
                         gain: 0.5625,
                         echoes: 3,
                         normal: Vector3::new(1.0, 0.0, 0.0),
+                        gate: QueuedWaveGate::ControlledContact,
                     },
                 ],
+                footstep_suppression_pending: true,
                 viewmodel: ViewmodelCapture {
                     walk_amp: 0.375,
                     leg_phase: 1.125,
@@ -1243,12 +1505,26 @@ mod tests {
                         tz: -5.75,
                     },
                     f64::NAN,
+                    controlled(support(
+                        Vector3::new(2.5, 0.125, -1.75),
+                        Vector3::new(0.125, 0.875, -0.25),
+                    )),
                 ),
                 test_cat(
                     1.0,
                     0x0fed_cba9_8765_4321,
                     BrainState::Pause { left: 0.875 },
                     32.5,
+                    airborne(
+                        -1.375,
+                        2.625,
+                        -4.75,
+                        Some(landing(
+                            4.75,
+                            Vector3::new(-3.25, 1.125, 5.5),
+                            Vector3::new(-0.25, 0.9375, 0.125),
+                        )),
+                    ),
                 ),
             ],
         }
@@ -1318,7 +1594,107 @@ mod tests {
             ("hero.position.y", |s| s.hero.position.y += 1.0),
             ("hero.position.z", |s| s.hero.position.z += 1.0),
             ("hero.velocity.x", |s| s.hero.velocity.x += 1.0),
+            ("hero.velocity.y", |s| s.hero.velocity.y += 1.0),
             ("hero.velocity.z", |s| s.hero.velocity.z += 1.0),
+            ("hero.motion.phase", |s| {
+                s.hero.motion = MotionState::restore(
+                    MotionPhase::Controlled,
+                    None,
+                    s.hero.motion.last_landing(),
+                )
+                .expect("the controlled mutation is valid");
+            }),
+            ("hero.motion.phase.planar_velocity.x", |s| {
+                s.hero.motion = changed_airborne(s.hero.motion, 0.25, 0.0, 0.0);
+            }),
+            ("hero.motion.phase.planar_velocity.z", |s| {
+                s.hero.motion = changed_airborne(s.hero.motion, 0.0, 0.25, 0.0);
+            }),
+            ("hero.motion.phase.vertical_velocity", |s| {
+                s.hero.motion = changed_airborne(s.hero.motion, 0.0, 0.0, -0.25);
+            }),
+            ("hero.motion.last_landing.impact_speed", |s| {
+                let event = s.hero.motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                s.hero.motion = changed_landing(
+                    s.hero.motion,
+                    event.impact_speed().mps() + 0.25,
+                    contact.point(),
+                    contact.normal(),
+                );
+            }),
+            ("hero.motion.last_landing.support.point.x", |s| {
+                let event = s.hero.motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut point = contact.point();
+                point.x += 0.25;
+                s.hero.motion = changed_landing(
+                    s.hero.motion,
+                    event.impact_speed().mps(),
+                    point,
+                    contact.normal(),
+                );
+            }),
+            ("hero.motion.last_landing.support.point.y", |s| {
+                let event = s.hero.motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut point = contact.point();
+                point.y += 0.25;
+                s.hero.motion = changed_landing(
+                    s.hero.motion,
+                    event.impact_speed().mps(),
+                    point,
+                    contact.normal(),
+                );
+            }),
+            ("hero.motion.last_landing.support.point.z", |s| {
+                let event = s.hero.motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut point = contact.point();
+                point.z += 0.25;
+                s.hero.motion = changed_landing(
+                    s.hero.motion,
+                    event.impact_speed().mps(),
+                    point,
+                    contact.normal(),
+                );
+            }),
+            ("hero.motion.last_landing.support.normal.x", |s| {
+                let event = s.hero.motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut normal = contact.normal();
+                normal.x += 0.25;
+                s.hero.motion = changed_landing(
+                    s.hero.motion,
+                    event.impact_speed().mps(),
+                    contact.point(),
+                    normal,
+                );
+            }),
+            ("hero.motion.last_landing.support.normal.y", |s| {
+                let event = s.hero.motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut normal = contact.normal();
+                normal.y += 0.25;
+                s.hero.motion = changed_landing(
+                    s.hero.motion,
+                    event.impact_speed().mps(),
+                    contact.point(),
+                    normal,
+                );
+            }),
+            ("hero.motion.last_landing.support.normal.z", |s| {
+                let event = s.hero.motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut normal = contact.normal();
+                normal.z += 0.25;
+                s.hero.motion = changed_landing(
+                    s.hero.motion,
+                    event.impact_speed().mps(),
+                    contact.point(),
+                    normal,
+                );
+            }),
             ("hero.yaw", |s| s.hero.yaw += 0.25),
             ("hero.pitch", |s| s.hero.pitch += 0.25),
             ("hero.last_tap", |s| s.hero.last_tap += 1.0),
@@ -1348,11 +1724,20 @@ mod tests {
             ("hero.queued_waves[0].normal.z", |s| {
                 s.hero.queued_waves[0].normal.z += 1.0;
             }),
+            ("hero.queued_waves[0].gate", |s| {
+                s.hero.queued_waves[0].gate = QueuedWaveGate::ControlledContact;
+            }),
             ("hero.queued_waves[1].normal.x", |s| {
                 s.hero.queued_waves[1].normal.x += 1.0;
             }),
             ("hero.queued_waves[1].speed", |s| {
                 s.hero.queued_waves[1].speed += 1.0;
+            }),
+            ("hero.queued_waves[1].gate", |s| {
+                s.hero.queued_waves[1].gate = QueuedWaveGate::Always;
+            }),
+            ("hero.footstep_suppression_pending", |s| {
+                s.hero.footstep_suppression_pending = false;
             }),
             // hero.viewmodel
             ("hero.viewmodel.walk_amp", |s| {
@@ -1388,6 +1773,45 @@ mod tests {
             ("cats[0].position.z", |s| s.cats[0].position.z += 1.0),
             ("cats[0].yaw", |s| s.cats[0].yaw += 0.25),
             ("cats[0].velocity.y", |s| s.cats[0].velocity.y += 1.0),
+            ("cats[0].motion.phase", |s| {
+                s.cats[0].motion = airborne(0.25, -0.5, -0.75, None);
+            }),
+            ("cats[0].motion.support.point.x", |s| {
+                let contact = s.cats[0].motion.support().expect("fixture support");
+                let mut point = contact.point();
+                point.x += 0.25;
+                s.cats[0].motion = changed_support(s.cats[0].motion, point, contact.normal());
+            }),
+            ("cats[0].motion.support.point.y", |s| {
+                let contact = s.cats[0].motion.support().expect("fixture support");
+                let mut point = contact.point();
+                point.y += 0.25;
+                s.cats[0].motion = changed_support(s.cats[0].motion, point, contact.normal());
+            }),
+            ("cats[0].motion.support.point.z", |s| {
+                let contact = s.cats[0].motion.support().expect("fixture support");
+                let mut point = contact.point();
+                point.z += 0.25;
+                s.cats[0].motion = changed_support(s.cats[0].motion, point, contact.normal());
+            }),
+            ("cats[0].motion.support.normal.x", |s| {
+                let contact = s.cats[0].motion.support().expect("fixture support");
+                let mut normal = contact.normal();
+                normal.x += 0.25;
+                s.cats[0].motion = changed_support(s.cats[0].motion, contact.point(), normal);
+            }),
+            ("cats[0].motion.support.normal.y", |s| {
+                let contact = s.cats[0].motion.support().expect("fixture support");
+                let mut normal = contact.normal();
+                normal.y += 0.25;
+                s.cats[0].motion = changed_support(s.cats[0].motion, contact.point(), normal);
+            }),
+            ("cats[0].motion.support.normal.z", |s| {
+                let contact = s.cats[0].motion.support().expect("fixture support");
+                let mut normal = contact.normal();
+                normal.z += 0.25;
+                s.cats[0].motion = changed_support(s.cats[0].motion, contact.point(), normal);
+            }),
             ("cats[0].brain.rng_state", |s| {
                 s.cats[0].brain.rng_state ^= 1
             }),
@@ -1422,6 +1846,9 @@ mod tests {
             ("cats[0].brain.blocked", |s| s.cats[0].brain.blocked += 0.25),
             ("cats[0].gait.phase", |s| s.cats[0].gait.phase += 0.25),
             ("cats[0].gait.amp", |s| s.cats[0].gait.amp += 0.25),
+            ("cats[0].gait.support_y", |s| {
+                s.cats[0].gait.support_y += 0.25
+            }),
             ("cats[0].gait.planted[0].x", |s| {
                 s.cats[0].gait.planted[0].x += 1.0;
             }),
@@ -1451,6 +1878,105 @@ mod tests {
             ("cats[1].brain.rng_state", |s| {
                 s.cats[1].brain.rng_state ^= 1
             }),
+            ("cats[1].motion.phase", |s| {
+                s.cats[1].motion = MotionState::restore(
+                    MotionPhase::Controlled,
+                    None,
+                    s.cats[1].motion.last_landing(),
+                )
+                .expect("the controlled mutation is valid");
+            }),
+            ("cats[1].motion.phase.planar_velocity.x", |s| {
+                s.cats[1].motion = changed_airborne(s.cats[1].motion, 0.25, 0.0, 0.0);
+            }),
+            ("cats[1].motion.phase.planar_velocity.z", |s| {
+                s.cats[1].motion = changed_airborne(s.cats[1].motion, 0.0, 0.25, 0.0);
+            }),
+            ("cats[1].motion.phase.vertical_velocity", |s| {
+                s.cats[1].motion = changed_airborne(s.cats[1].motion, 0.0, 0.0, -0.25);
+            }),
+            ("cats[1].motion.last_landing.impact_speed", |s| {
+                let event = s.cats[1].motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                s.cats[1].motion = changed_landing(
+                    s.cats[1].motion,
+                    event.impact_speed().mps() + 0.25,
+                    contact.point(),
+                    contact.normal(),
+                );
+            }),
+            ("cats[1].motion.last_landing.support.point.x", |s| {
+                let event = s.cats[1].motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut point = contact.point();
+                point.x += 0.25;
+                s.cats[1].motion = changed_landing(
+                    s.cats[1].motion,
+                    event.impact_speed().mps(),
+                    point,
+                    contact.normal(),
+                );
+            }),
+            ("cats[1].motion.last_landing.support.point.y", |s| {
+                let event = s.cats[1].motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut point = contact.point();
+                point.y += 0.25;
+                s.cats[1].motion = changed_landing(
+                    s.cats[1].motion,
+                    event.impact_speed().mps(),
+                    point,
+                    contact.normal(),
+                );
+            }),
+            ("cats[1].motion.last_landing.support.point.z", |s| {
+                let event = s.cats[1].motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut point = contact.point();
+                point.z += 0.25;
+                s.cats[1].motion = changed_landing(
+                    s.cats[1].motion,
+                    event.impact_speed().mps(),
+                    point,
+                    contact.normal(),
+                );
+            }),
+            ("cats[1].motion.last_landing.support.normal.x", |s| {
+                let event = s.cats[1].motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut normal = contact.normal();
+                normal.x += 0.25;
+                s.cats[1].motion = changed_landing(
+                    s.cats[1].motion,
+                    event.impact_speed().mps(),
+                    contact.point(),
+                    normal,
+                );
+            }),
+            ("cats[1].motion.last_landing.support.normal.y", |s| {
+                let event = s.cats[1].motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut normal = contact.normal();
+                normal.y += 0.25;
+                s.cats[1].motion = changed_landing(
+                    s.cats[1].motion,
+                    event.impact_speed().mps(),
+                    contact.point(),
+                    normal,
+                );
+            }),
+            ("cats[1].motion.last_landing.support.normal.z", |s| {
+                let event = s.cats[1].motion.last_landing().expect("fixture landing");
+                let contact = event.support();
+                let mut normal = contact.normal();
+                normal.z += 0.25;
+                s.cats[1].motion = changed_landing(
+                    s.cats[1].motion,
+                    event.impact_speed().mps(),
+                    contact.point(),
+                    normal,
+                );
+            }),
             ("cats[1].brain.state.left", |s| {
                 if let BrainState::Pause { left } = &mut s.cats[1].brain.state {
                     *left += 1.0;
@@ -1458,6 +1984,9 @@ mod tests {
             }),
             ("cats[1].presence_next", |s| s.cats[1].presence_next += 1.0),
             ("cats[1].pose.sit", |s| s.cats[1].pose.sit += 0.25),
+            ("cats[1].gait.support_y", |s| {
+                s.cats[1].gait.support_y += 0.25
+            }),
         ]
     }
 
@@ -1484,22 +2013,42 @@ mod tests {
     ///  4096  slots  (64 × (12 + 16 + 16 + 8 + 8 + 4))
     ///    60  echoes (4 + 2 × 28)
     ///    36  sources (4 + [4+3+8] + [4+5+8])
-    ///   269  hero   (61 + [4 + 2×64] queued waves + 76 viewmodel)
-    ///   854  cats   (4 + 429 + 421 — the second cat Pauses, a 12-byte
-    ///                state where the first cat's Roam takes 20)
+    ///   330  hero   (61 + 52 motion + [4 + 2×68] queued waves
+    ///                + 1 suppression + 76 viewmodel)
+    ///   950  cats   (4 + 469 + 477 — controlled/support and
+    ///                airborne/landing motion, plus gait support Y)
     ///  ————
-    ///  5407
+    ///  5564
     /// ```
     #[test]
     fn the_fixture_encodes_to_its_layout() {
         assert_eq!(
             canonical_bytes(&test_state()).len(),
-            5407,
+            5564,
             "the fixture's byte layout moved. A field added, removed, \
              retyped or reordered — or an arity change to MAXP, TAIL_N \
              or LEGS — changes this number: give the new field a row in \
              mutations(), bump FORMAT_VERSION, then update this literal \
              from the layout above."
+        );
+    }
+
+    /// A support normal is an observation, not an instruction to repair the
+    /// scene: the exact authored f32 lanes (including non-unit magnitude)
+    /// belong in the canonical bytes. This fixture sequence is hand-picked
+    /// and unique; normalization would replace all three supplied bit words.
+    #[test]
+    fn support_normal_bytes_preserve_the_supplied_f32_bits() {
+        let expected: Vec<u8> = [0.125_f32, 0.875_f32, -0.25_f32]
+            .into_iter()
+            .flat_map(|lane| lane.to_bits().to_le_bytes())
+            .collect();
+        let encoded = canonical_bytes(&test_state());
+        assert!(
+            encoded
+                .windows(expected.len())
+                .any(|window| window == expected),
+            "the controlled cat's non-unit support normal must keep its supplied f32 bits"
         );
     }
 

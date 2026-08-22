@@ -10,6 +10,7 @@
 
 use godot::builtin::Vector3;
 
+use crate::reproduce::RestoreValueError;
 use crate::temporal::RENDERER_VISIBLE_TIME_HORIZON;
 
 /// First tap due at this many seconds.
@@ -36,7 +37,25 @@ pub struct DemoTap {
     next: f64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PreparedDemoTap(f64);
+
 impl DemoTap {
+    pub(crate) fn prepare_restore(next: f64) -> Result<PreparedDemoTap, RestoreValueError> {
+        if next.is_finite() && (0.0..=RENDERER_VISIBLE_TIME_HORIZON).contains(&next) {
+            Ok(PreparedDemoTap(next))
+        } else {
+            Err(RestoreValueError::new(
+                "env.demo_next",
+                "must be finite and inside the renderer-visible time horizon",
+            ))
+        }
+    }
+
+    pub(crate) fn install_prepared(&mut self, value: PreparedDemoTap) {
+        self.next = value.0;
+    }
+
     /// Create a new tap schedule, disarmed and due at FIRST_AT.
     pub fn new(point: Vector3, normal: Vector3) -> Self {
         Self {

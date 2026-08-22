@@ -21,6 +21,9 @@
 
 use godot::builtin::Vector3;
 
+use crate::reproduce::RestoreValueError;
+use crate::support_motion::MAX_POSE_COORD_M;
+
 /// Number of legs; index order is LF, RF, LH, RH.
 pub const LEGS: usize = 4;
 
@@ -170,12 +173,16 @@ pub struct CatGait {
     moving: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct PreparedCatGait(CatGait);
+
 /// Everything a CatGait is, as data — the planted paws included, or the
 /// restored cat's stride starts by sliding into place.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GaitCapture {
     pub phase: f64,
     pub amp: f64,
+    pub support_y: f32,
     pub planted: [Vector3; LEGS],
     pub aim: [Vector3; LEGS],
     pub in_swing: [bool; LEGS],
@@ -183,6 +190,64 @@ pub struct GaitCapture {
 }
 
 impl CatGait {
+    pub fn prepare_restore(capture: GaitCapture) -> Result<PreparedCatGait, RestoreValueError> {
+        if !capture.phase.is_finite() {
+            return Err(RestoreValueError::new("gait.phase", "must be finite"));
+        }
+        if !(0.0..1.0).contains(&capture.phase) {
+            return Err(RestoreValueError::new("gait.phase", "must be in 0..1"));
+        }
+        if !capture.amp.is_finite() {
+            return Err(RestoreValueError::new("gait.amp", "must be finite"));
+        }
+        if !(0.0..=1.0).contains(&capture.amp) {
+            return Err(RestoreValueError::new("gait.amp", "must be in 0..=1"));
+        }
+        if !capture.support_y.is_finite() {
+            return Err(RestoreValueError::new("gait.support_y", "must be finite"));
+        }
+        if capture.support_y.abs() > MAX_POSE_COORD_M {
+            return Err(RestoreValueError::new(
+                "gait.support_y",
+                "is outside its valid range",
+            ));
+        }
+        for (group, points) in [("planted", &capture.planted), ("aim", &capture.aim)] {
+            for (index, point) in points.iter().enumerate() {
+                for (lane, axis) in [(point.x, "x"), (point.y, "y"), (point.z, "z")] {
+                    let path = format!("gait.{group}[{index}].{axis}");
+                    if !lane.is_finite() {
+                        return Err(RestoreValueError::new(path, "must be finite"));
+                    }
+                    if lane.abs() > MAX_POSE_COORD_M {
+                        return Err(RestoreValueError::new(path, "is outside its valid range"));
+                    }
+                }
+                if point.y.to_bits() != capture.support_y.to_bits() {
+                    return Err(RestoreValueError::new(
+                        format!("gait.{group}[{index}].y"),
+                        "must match support_y bit-for-bit",
+                    ));
+                }
+            }
+        }
+        for (leg, swinging) in capture.in_swing.iter().copied().enumerate() {
+            let expected = capture.moving && (capture.phase - OFFSET[leg]).rem_euclid(1.0) >= DUTY;
+            if swinging != expected {
+                return Err(RestoreValueError::new(
+                    format!("gait.in_swing[{leg}]"),
+                    "must agree with phase and moving",
+                ));
+            }
+        }
+        Ok(PreparedCatGait(Self::restore(capture)))
+    }
+
+    #[must_use]
+    pub fn from_prepared(capture: PreparedCatGait) -> Self {
+        capture.0
+    }
+
     /// A fresh gait standing at `pos` facing `yaw`: every paw planted at
     /// its neutral anchor, phase zeroed, standing still.
     #[must_use]
@@ -208,6 +273,7 @@ impl CatGait {
         GaitCapture {
             phase: self.phase,
             amp: self.amp,
+            support_y: self.planted[0].y,
             planted: self.planted,
             aim: self.aim,
             in_swing: self.in_swing,
@@ -355,6 +421,14 @@ fn anchor(pos: Vector3, yaw: f64, leg: usize) -> Vector3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_restore_rejects_invalid_gait_phase_point_or_support() {
+        let mut capture = CatGait::new(Vector3::ZERO, 0.0).capture();
+        capture.phase = 1.0;
+        let error = CatGait::prepare_restore(capture).expect_err("phase must be refused");
+        assert_eq!(error.path, "gait.phase");
+    }
     use crate::pulse_pool::PulsePool;
 
     const DT: f64 = 1.0 / 60.0;

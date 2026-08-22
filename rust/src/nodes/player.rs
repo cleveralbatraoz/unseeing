@@ -26,6 +26,10 @@ use godot::prelude::*;
 
 use crate::observe::QueuedWave;
 use crate::render;
+use crate::reproduce::{HeroCapture, RestoreValueError};
+use crate::support_motion::{
+    ActorPosition, ActorVelocity, FootstepSuppression, MotionState, PosePoint, QueuedWaveGate,
+};
 
 /// Eye height above the floor.
 pub const EYE: f64 = 1.6;
@@ -92,6 +96,20 @@ struct WaveRequest {
     gain: f64,
     echoes: i64,
     normal: Vector3,
+    gate: QueuedWaveGate,
+}
+
+pub(super) struct PreparedPlayerState {
+    position: Vector3,
+    velocity: Vector3,
+    rotation: Vector3,
+    eye_rotation: Vector3,
+    motion: MotionState,
+    last_tap: f64,
+    tap_target: Vector3,
+    tap_queued: bool,
+    wave_queue: Vec<WaveRequest>,
+    footstep_suppression: FootstepSuppression,
 }
 
 /// A cane-rest probe before it is published: the raw physics answer.
@@ -136,6 +154,11 @@ pub struct UnseeingPlayer {
     now: f64,
     tap_queued: bool,
     wave_queue: Vec<WaveRequest>,
+    #[init(val = MotionState::initial())]
+    motion_state: MotionState,
+    support_collider_id: Option<i64>,
+    #[init(val = FootstepSuppression::CLEAR)]
+    footstep_suppression: FootstepSuppression,
     base: Base<CharacterBody3D>,
 }
 
@@ -234,6 +257,155 @@ impl ICharacterBody3D for UnseeingPlayer {
 
 #[godot_api]
 impl UnseeingPlayer {
+    pub(super) fn prepare_restore(
+        &self,
+        hero: &HeroCapture,
+    ) -> Result<PreparedPlayerState, RestoreValueError> {
+        if !self.base().is_physics_processing() {
+            return Err(RestoreValueError::new(
+                "hero",
+                "runtime physics is disabled",
+            ));
+        }
+        let position = ActorPosition::try_new(hero.position).map_err(|error| {
+            let axis = error.field().rsplit('.').next().unwrap_or("position");
+            RestoreValueError::new(
+                format!("hero.position.{axis}"),
+                "must be finite and inside actor bounds",
+            )
+        })?;
+        let velocity = ActorVelocity::try_new(hero.velocity).map_err(|error| {
+            let axis = error.field().rsplit('.').next().unwrap_or("velocity");
+            RestoreValueError::new(format!("hero.velocity.{axis}"), "must be finite")
+        })?;
+        if hero.motion != MotionState::initial() {
+            return Err(RestoreValueError::new(
+                "hero.motion",
+                "this runtime admits only initial controlled motion",
+            ));
+        }
+        if hero.footstep_suppression_pending {
+            return Err(RestoreValueError::new(
+                "hero.footstep_suppression_pending",
+                "this runtime admits only a clear latch",
+            ));
+        }
+        let yaw = exact_f32_lane(hero.yaw, "hero.yaw")?;
+        if !hero.pitch.is_finite() || !(-PITCH_LIMIT..=PITCH_LIMIT).contains(&hero.pitch) {
+            return Err(RestoreValueError::new(
+                "hero.pitch",
+                "must be finite and inside the eye-pitch limit",
+            ));
+        }
+        let pitch = exact_f32_lane(hero.pitch, "hero.pitch")?;
+        if !hero.last_tap.is_finite() {
+            return Err(RestoreValueError::new("hero.last_tap", "must be finite"));
+        }
+        PosePoint::try_new(hero.tap_target).map_err(|error| {
+            let axis = error.field().rsplit('.').next().unwrap_or("tap_target");
+            RestoreValueError::new(
+                format!("hero.tap_target.{axis}"),
+                "must be finite and inside pose bounds",
+            )
+        })?;
+        let mut wave_queue = Vec::with_capacity(hero.queued_waves.len());
+        for (index, wave) in hero.queued_waves.iter().enumerate() {
+            let prefix = format!("hero.queued_waves[{index}]");
+            if wave.gate != QueuedWaveGate::Always {
+                return Err(RestoreValueError::new(
+                    format!("{prefix}.gate"),
+                    "this runtime admits only always-open gates",
+                ));
+            }
+            if i32::try_from(wave.kind).is_err() {
+                return Err(RestoreValueError::new(
+                    format!("{prefix}.type"),
+                    "must fit the pulse kind lane",
+                ));
+            }
+            for (field, value) in [
+                ("max_r", wave.max_r),
+                ("speed", wave.speed),
+                ("gain", wave.gain),
+            ] {
+                if !value.is_finite() {
+                    return Err(RestoreValueError::new(
+                        format!("{prefix}.{field}"),
+                        "must be finite",
+                    ));
+                }
+            }
+            if wave.max_r <= 0.0 {
+                return Err(RestoreValueError::new(
+                    format!("{prefix}.max_r"),
+                    "must be strictly positive",
+                ));
+            }
+            if wave.speed <= 0.0 {
+                return Err(RestoreValueError::new(
+                    format!("{prefix}.speed"),
+                    "must be strictly positive",
+                ));
+            }
+            if !(0.0..=1.0).contains(&wave.gain) {
+                return Err(RestoreValueError::new(
+                    format!("{prefix}.gain"),
+                    "must be in 0..=1",
+                ));
+            }
+            validate_wave_vector(&format!("{prefix}.at"), wave.at)?;
+            validate_wave_vector(&format!("{prefix}.normal"), wave.normal)?;
+            wave_queue.push(WaveRequest {
+                kind: wave.kind,
+                at: wave.at,
+                max_r: wave.max_r,
+                speed: wave.speed,
+                gain: wave.gain,
+                echoes: wave.echoes,
+                normal: wave.normal,
+                gate: wave.gate,
+            });
+        }
+        let mut rotation = self.base().get_rotation();
+        validate_wave_vector("hero.rotation", rotation)?;
+        rotation.y = yaw;
+        let mut eye_rotation = self
+            .camera
+            .as_ref()
+            .ok_or_else(|| RestoreValueError::new("hero.pitch", "the runtime eye is not built"))?
+            .get_rotation();
+        validate_wave_vector("hero.eye_rotation", eye_rotation)?;
+        eye_rotation.x = pitch;
+        Ok(PreparedPlayerState {
+            position: position.world(),
+            velocity: velocity.world(),
+            rotation,
+            eye_rotation,
+            motion: hero.motion,
+            last_tap: hero.last_tap,
+            tap_target: hero.tap_target,
+            tap_queued: hero.tap_queued,
+            wave_queue,
+            footstep_suppression: FootstepSuppression::restore(hero.footstep_suppression_pending),
+        })
+    }
+
+    pub(super) fn install_prepared(&mut self, value: PreparedPlayerState) {
+        self.base_mut().set_global_position(value.position);
+        self.base_mut().set_velocity(value.velocity);
+        self.base_mut().set_rotation(value.rotation);
+        if let Some(camera) = self.camera.as_mut() {
+            camera.set_rotation(value.eye_rotation);
+        }
+        self.motion_state = value.motion;
+        self.support_collider_id = None;
+        self.footstep_suppression = value.footstep_suppression;
+        self.last_tap = value.last_tap;
+        self.tap_target = value.tap_target;
+        self.tap_queued = value.tap_queued;
+        self.wave_queue = value.wave_queue;
+    }
+
     /// The player registers its own senses: idempotent, so a bare
     /// instance in a test scene polls input without the root's help, and
     /// the boot-time call plus every player `_ready` leave exactly one
@@ -380,6 +552,7 @@ impl UnseeingPlayer {
             gain,
             echoes: max_echoes,
             normal: origin_normal,
+            gate: QueuedWaveGate::Always,
         });
     }
 
@@ -597,11 +770,45 @@ impl UnseeingPlayer {
     }
 }
 
+fn exact_f32_lane(value: f64, path: &'static str) -> Result<f32, RestoreValueError> {
+    if !value.is_finite() {
+        return Err(RestoreValueError::new(path, "must be finite"));
+    }
+    let lane = value as f32;
+    if f64::from(lane).to_bits() != value.to_bits() {
+        return Err(RestoreValueError::new(
+            path,
+            "must round-trip through the Godot f32 lane bit-exactly",
+        ));
+    }
+    Ok(lane)
+}
+
+fn validate_wave_vector(path: &str, value: Vector3) -> Result<(), RestoreValueError> {
+    for (axis, lane) in [("x", value.x), ("y", value.y), ("z", value.z)] {
+        if !lane.is_finite() {
+            return Err(RestoreValueError::new(
+                format!("{path}.{axis}"),
+                "must be finite",
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl UnseeingPlayer {
     /// The cane's queued-intent flag, for the observer: a tap accepted
     /// this frame that the physics tick has not yet executed.
     pub(crate) fn tap_queued(&self) -> bool {
         self.tap_queued
+    }
+
+    pub(crate) fn motion_state(&self) -> MotionState {
+        self.motion_state
+    }
+
+    pub(crate) fn footstep_suppression_pending(&self) -> bool {
+        self.footstep_suppression.pending()
     }
 
     /// The eye's pitch, radians — `None` before `_ready` has built the
@@ -626,38 +833,8 @@ impl UnseeingPlayer {
                 gain: w.gain,
                 echoes: w.echoes,
                 normal: w.normal,
+                gate: w.gate,
             })
             .collect()
-    }
-
-    /// The restore door for the eye: the same clamp the look law applies,
-    /// so a blob cannot place the eye past `PITCH_LIMIT`.
-    pub(crate) fn set_eye_pitch(&mut self, pitch: f64) {
-        if let Some(camera) = self.camera.as_mut() {
-            let mut rot = camera.get_rotation();
-            rot.x = pitch.clamp(-PITCH_LIMIT, PITCH_LIMIT) as f32;
-            camera.set_rotation(rot);
-        }
-    }
-
-    /// Empty the out-tray before a restore rebuilds it — restoring onto a
-    /// non-empty queue would replay the captured waves AND the stale ones.
-    pub(crate) fn clear_wave_queue(&mut self) {
-        self.wave_queue.clear();
-    }
-
-    /// The restore door for the cane's queued intent — the flag as DATA,
-    /// both ways.
-    ///
-    /// [`Self::tap`] cannot serve here, and that is the whole reason this
-    /// exists: it only ever SETS the flag, so a blob captured with no tap
-    /// pending could not clear one the live world was holding, and the
-    /// transaction would refuse itself at `hero.tap_queued` over a
-    /// difference it was able to fix. Nothing else about a tap is decided
-    /// here — the cooldown, the aim and the three voices all still run in
-    /// [`Self::cane_tap`], on the physics tick, exactly as a real click's
-    /// would.
-    pub(crate) fn restore_tap_queued(&mut self, queued: bool) {
-        self.tap_queued = queued;
     }
 }
