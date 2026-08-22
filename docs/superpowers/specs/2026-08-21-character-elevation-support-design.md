@@ -162,19 +162,37 @@ one error. Disabling processing makes the report one-shot without adding an
 uncaptured “already reported” latch. Capture refuses a runtime actor disabled
 by this boundary; it never serializes the actor as if it were healthy.
 
-Player visual code is transactional too. It validates one complete render
-sample, advances a copy of the `Viewmodel`, computes both triangle buffers,
-both shoe points, bob/sweep commands, the optional footstep request, and the
-next `FootstepSuppression` value off to the side. Only a completely valid
-`HeroVisualNext` is installed; a refusal retains the prior VM, mesh buffers,
-shoes, bob, queue, cane request, and suppression bit. No partial brain, gait,
-tail, visual, wave, or landing state is installed on any boundary error path.
+Player visual code is transactional too. The `HeroBody` boundary first proves
+that the injected player and camera are live and that the camera is the same
+instance the player owns, then validates one complete value-only
+`HeroVisualSample`, including the tap clock against the same prepared frame
+time. The existing pure limb builder moves from `nodes/limbs.rs` to top-level
+`limbs.rs` without geometry changes, so the top-level cargo-tested
+`prepare_hero_visual` owner depends only on pure modules. The operation advances
+a copy of the `Viewmodel`, computes both triangle buffers, both shoe points,
+bob/sweep commands, a typed optional `PreparedFootstepRequest`, and the next
+`FootstepSuppression` value off to the side. Its candidate camera transform is
+the validated camera-local transform with the next bob applied, composed with
+the validated player transform; it never reads a pre-bob global transform as
+the new frame's arm anchor. The complete next VM, bob/sweep scalars, shoes,
+every buffer position/normal/label lane, and prepared request are validated
+before any installed value changes. Only a completely valid `HeroVisualNext`
+is installed through one Rust-only typed player door; the old separately
+callable raw bob and cane-sweep setters do not remain as bypasses. A refusal
+retains the prior VM, mesh buffers, shoes, bob, queue, cane request, and
+suppression bit. No partial brain, gait, tail, visual, wave, or landing state is
+installed on any boundary error path.
 
 ### Two-phase tick
 
 Godot collision facts are authoritative only after motion, while velocity is
 required before it. The adapter therefore uses two pure calls around exactly
 one existing `move_and_slide()`:
+
+The player narrows the current simulation time to `PreparedTime` together with
+the pre-move boundary sample and retains that exact value until any landing
+command is prepared. An invalid time refuses before velocity write or body
+move; it is never repaired or resampled after contact.
 
 1. Obtain desired planar motion only when the state is `Controlled`.
 2. `prepare(state, desired_planar, duration, config)` returns a finite
@@ -188,7 +206,14 @@ one existing `move_and_slide()`:
    query, not a second body move.
 5. Convert those facts to a narrow `MotionOutcome` value and call
    `reconcile(prepared, outcome)`.
-6. Store the returned state and apply any returned `LandingEvent` command.
+6. Return the pre-move phase and the fresh `LandingEvent` beside the new state;
+   store that state and apply only that returned event command.
+
+The private player tick-success value carries `phase_before`, the reconciled
+state, and `landing: Option<LandingEvent>` without collapsing the event into
+history. `MotionState::last_landing` is retained observation only. No adapter
+may infer a fresh landing from it: doing so would replay an old event after
+restore or on every later controlled tick.
 
 A controlled move with no accepted support becomes airborne and captures the
 actual planar movement at the edge. An airborne move with accepted support
@@ -320,7 +345,11 @@ than an assumption about the kinds of bodies present in today's level.
 
 ### Player
 
-`rust/src/nodes/player.rs` owns an explicit standing-root datum of 0.9 m.
+The non-class pure `rust/src/hero_visual.rs` owner defines the shared
+player eye, standing-root, contact-birth, and derived camera-local datums;
+`rust/src/nodes/player.rs` imports those exact constants for the physical
+adapter and its existing Godot-facing accessors. It does not define copies.
+The explicit standing-root datum is 0.9 m.
 The 1.7 m player capsule moves to local Y = -0.05 m, putting its bottom at
 root-relative -0.9 m. Existing scene roots at Y = 0.9 m therefore remain
 exactly where they are, with the capsule touching floor Y = 0.
@@ -344,11 +373,32 @@ That one value enters the pure body-pose boundary:
 The camera remains a child of the physical player at local
 `CAM_BASE_Y`. It already inherits root elevation and receives no support
 translation. Head bob remains camera-local. This is the explicit guard against
-double-lifting the eye.
+double-lifting the eye. Visual preparation does not mutate the camera to obtain
+the same-frame arm anchor: it replaces only the validated local camera Y with
+`CAM_BASE_Y + next_bob`, composes that prospective local transform with the
+validated player transform, and uses the result for both hand and elbow. The
+successful commit later applies the same bob to that same live camera instance.
 
 While airborne, the viewmodel receives zero walking speed for pose/footstep
 purposes. It may settle through its existing neutral easing; no new fall pose
 is introduced. Looking and cane animation remain live.
+
+The cane's physics boundary is total independently of the render sample. One
+narrow `CaneQueryPort` is the production path for both the Godot adapter and
+the cargo fake; it exposes only raw player/camera samples and bounded ray
+answers, never scene mutation or emission. One generic boundary coordinator
+sequences that explicit dependency while value-only helper operations derive
+one checked `support_y`, validate the complete camera transform/rotation and
+every translated query endpoint before asking the port to query, then validate
+every returned hit position and normal before comparison, state assignment, or
+emission. Cane-rest preparation returns a value and publishes it only on
+success; cane-tap preparation first validates the current time and prior tap
+clock, then stages queued-intent consumption, the next tap clock, target, and
+optional prepared reflecting request together. A malformed time, camera,
+endpoint, or physics hit retains the queued intent, prior cane rest,
+`last_tap`, and `tap_target`, emits nothing, and reports an explicit refusal.
+This adds no query: the existing aim, wall, and downward cane rays are the
+complete query set.
 
 A render frame can queue a shoe contact while the actor is still controlled,
 then the next physics move can leave the edge before that request is drained.
@@ -365,6 +415,23 @@ by queued shoes and immediate cat-paw contacts. The Godot adapters only apply
 its emit-or-suppress answer; neither reimplements the transition as callback
 logic.
 
+The shoe producer cannot assign that provenance through the general registered
+queue API. It prepares a Rust-only `PreparedFootstepRequest` whose fixed fields
+are kind 2, range 1.6 m, speed 4.0 m/s, gain 0.8, two echoes, `Vector3::UP`, and
+`ControlledContact`; only its checked origin and prepared time vary. It owns a
+`CheckedWave` proof for kind/origin/range/speed/gain/time and a distinct
+`CheckedReflectionRequest` proof for origin/normal/range/speed/echoes/time plus
+derived fan geometry; neither proof substitutes for the other. The player
+commit door accepts that type, never raw voice parameters, and appends it
+without another fallible validation. General/demo requests continue to enter
+through `queue_wave` as `Always`. A pure state-in/state-out `FootstepPreparer`
+is the only request/reflection allocation door and is called only when cadence
+actually yields a contact. Its cargo fake returns an explicit call count, so a
+no-footfall frame proves zero calls without a global allocator or hidden test
+state. Such frames allocate nothing for requests or reflection; retained
+visual scratch buffers reuse capacity and no per-frame proof or temporary
+request `Vec` is introduced.
+
 Physics can run more than once before `HeroBody::update()` renders. A
 one-physics-tick flag could therefore disappear before the viewmodel consumes
 it. Instead the player owns a captured pure `FootstepSuppression` value. Its
@@ -374,7 +441,10 @@ old bit plus the cleared next value. `HeroBody` acknowledges it through one
 narrow method when it next evaluates footsteps, passing `moving = false` to
 the existing cadence for that frame. The latch persists
 across any number of physics ticks, cannot emit a wave itself, and prevents a
-regular footstep from doubling the landing voice.
+regular footstep from doubling the landing voice. Every fresh landing arms it,
+including a silent landing and a landing whose authored maximum gain or range
+is zero; suppression follows the transition event, never the optional audible
+voice.
 
 ### Cat
 
@@ -515,6 +585,20 @@ Every airborne-to-controlled transition retains its `LandingEvent`, including
 a silent one. If severity is zero, or if either resulting gain or resulting
 range is zero, the adapter deliberately produces no wave command and does not
 call `emit`/`emit_reflecting`; no pulse slot or echo appointment is consumed.
+For an audible player landing, a pure preparation door constructs the complete
+reflecting command before the first emitter call: the current validated frame
+time, kind 2, the accepted support point plus `(0, 0.04, 0)`, independently
+authored range and gain, speed 4.0 m/s, two echoes, and the accepted support
+normal. The command owns both the complete `CheckedWave` and
+`CheckedReflectionRequest` proofs. The origin must pass the shared `WaveOrigin`
+envelope and the normal plus derived fan geometry must pass the existing
+checked reflection request. A preparation refusal invokes no
+emitter and cannot install a partial landing effect. Player preparation happens
+while the exact saved pre-move transform is still owned; a refusal restores it,
+zeros velocity, disables processing, and returns before state, collision pair,
+latch, queue, or emitter changes. The suppression latch is still derived
+directly from the fresh transition event, not from whether this optional
+audible command exists.
 
 The 1.5 m/s silence threshold separates ordinary snap/ramp corrections and a
 small curb from a real drop. A chair-height drop is above it. The 4.0 m/s full
@@ -579,6 +663,15 @@ fixtures already understand the final variants, but restore rejects a
 non-dormant live value until the task owning that behavior activates it. The
 wire layout and version do not change again as player motion, player effects,
 cat pose, and cat motion are enabled in separate green commits.
+
+The player-effects activation removes only the temporary format-2 preflight
+restrictions on a pending player suppression bit and a
+`ControlledContact` queued-wave gate. It neither changes the parser, canonical
+bytes, hash, field order, nor `FORMAT_VERSION`. Restore prepares and installs
+both values exactly, a later unrelated preflight failure remains all-read-only,
+and the restored future consumes them through the same acknowledgement and
+gate laws as an uninterrupted run. Restored `last_landing` remains inert and
+cannot create a fresh landing command.
 
 Restore validation is delegated to the owners of the laws. Pulse-pool slots,
 echo appointments, viewmodel state, cat brain/gait/pose/tail, cadence/source
@@ -711,7 +804,16 @@ values, not mirrors of production constants.
   cap; the player reflection uses the observed normal while the cat remains
   omnidirectional.
 - Multiple physics ticks before one `HeroBody::update()` cannot lose the
-  pending footstep suppression or duplicate a landing voice.
+  pending footstep suppression or duplicate a landing voice. A silent or
+  zero-configured landing also suppresses the cadence-ready regular step.
+- A nonzero-bob visual frame uses the prospective same-frame camera transform
+  for hand and elbow, while camera-local Y receives bob exactly once and no
+  support translation. A missing, freed, or mismatched injected camera refuses
+  before changing VM, either mesh, shoes, bob, cane request, queue, or latch.
+- A deliberately late visual preparation refusal, after copied-VM advance,
+  complete scratch-buffer construction, and optional footstep preparation,
+  retains every installed VM lane, both triangle buffers including normals and
+  labels, both shoes, bob, cane request, queue, and suppression bit.
 - The `UnseeingGame` Inspector values reach its runtime-created player before
   tree entry; each authored cat uses its own Inspector values.
 - Small-drop silence, chair-height audible landing, and high-drop saturation.
@@ -720,6 +822,11 @@ values, not mirrors of production constants.
 - Capture/restore in controlled, just-left-edge, mid-fall, wall-adjusted, and
   pre-landing states reproduces position, velocity, phase, cat state, observer
   facts, and queued waves.
+- Format-2 restore accepts and bit-preserves a pending player suppression bit
+  and a `ControlledContact` request, reproduces their next acknowledged/gated
+  future, never re-emits a restored old landing, and still refuses every later
+  malformed subsystem before any write. The same canonical layout and version
+  remain in force.
 
 The retained fixture is test content under `game/tests/`, not a shipped level.
 Movie-maker frames provide final visual evidence for flat, elevated, airborne,
@@ -747,14 +854,34 @@ At minimum, each mutation must make a named test fail:
 - remove either capsule datum correction;
 - discard player/cat elevation in each pose boundary;
 - double-apply elevation to the camera or tail;
-- emit steps in air or duplicate the landing tick;
+- anchor the arm to the sampled pre-bob camera, accept a freed/mismatched
+  camera, or double-apply support/bob to the eye;
+- emit steps in air, emit a pre-edge controlled contact after a wall/edge
+  transition, or duplicate the landing tick;
 - clear the player footstep-suppression latch before `HeroBody` acknowledges
-  it;
+  it, omit the candidate latch install, or arm it only for an audible landing;
 - flip landing threshold/cap branches;
 - call either emitter for zero resulting gain or range;
+- infer a fresh landing from `last_landing`, change the player landing current
+  time, kind, support-point `+0.04 m` origin, independent gain/range mapping,
+  speed, echo budget, or accepted support normal, or omit either admission
+  proof;
+- append a raw/unprepared shoe request, change its time, fixed voice or gate,
+  omit either admission proof, validate it after the first installed visual
+  write, or call the request preparer on a no-footfall render frame;
+- install a copied VM, shoe, bob, cane request, suppression bit, or either
+  triangle buffer before a forced late refusal; omit validation of one buffer
+  position, normal, or label lane;
 - ignore the root-injected player configuration or one cat's own configuration;
-- restore absolute foot, paw, presence, or cane Y origins;
-- omit motion phase/velocity from capture, diff, or restore validation.
+- restore absolute foot, paw, presence, or one cane Y law; bypass the cane
+  query port, accept a poisoned time, tap clock, camera, endpoint, hit position,
+  or hit normal after consuming intent or mutating cane rest/tap state, change
+  any cane request field, omit either proof, or change the bounded query
+  order/count;
+- omit motion phase/velocity from capture, diff, or restore validation;
+- reject or rewrite a valid pending/gated player restore, re-emit its old
+  landing, change format 2/canonical bytes, or mutate the scene before a later
+  restore-preflight refusal.
 
 ### Full gates
 
@@ -777,6 +904,11 @@ exactly one read-only four-contact `body_test_motion` using per-actor scratch
 objects allocated at construction; no support raycast, unbounded query, global
 cache, worker, or platform-specific path is added. Player cane rays are
 unchanged except for elevation-relative endpoints.
+The player's two visual triangle scratch buffers retain capacity and swap with
+the installed buffers; a no-footfall render frame performs no request/reflection
+allocation. Allocation needed to prepare or emit an actual footstep or landing
+is wave activity and occurs only for that request, never as an unconditional
+per-frame proof.
 This is an adapter work bound; it does not claim a constant instruction count
 inside the selected PhysicsServer backend.
 

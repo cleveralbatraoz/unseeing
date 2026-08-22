@@ -40,11 +40,13 @@
 | --- | --- |
 | `rust/src/support_motion.rs` (new) | Pure finite value types, validated actor configuration, support phase transition, landing event and authored landing voice. |
 | `rust/src/nodes/support.rs` (new) | Shared Godot solver constants, named actor layer bits/masks, and pure phase-to-layer helpers; no node state or queries. |
-| `rust/src/lib.rs` | Publish the pure support-motion module and document it in the crate architecture map. |
+| `rust/src/lib.rs` | Publish the pure support-motion, shared-limb, and hero-visual modules and document them in the crate architecture map. |
 | `rust/src/nodes/mod.rs` | Include the non-class support boundary helper. |
 | `rust/src/nodes/player.rs` | Player body datum, two-phase motion adapter, layer/support extraction, landing emission, latch, relocation/restore doors, and elevation-relative cane. |
 | `rust/src/nodes/game.rs` | Six scene-authored player Inspector knobs, validated setters, and pre-tree player configuration injection. |
 | `rust/src/viewmodel.rs` | Pure support-relative player leg placement. |
+| `rust/src/limbs.rs` (moved from `rust/src/nodes/limbs.rs`) | Existing pure shared limb-buffer geometry, promoted byte-for-byte out of the registered-node boundary. |
+| `rust/src/hero_visual.rs` (new) | Pure value-only preparation of one atomic player visual frame, including prospective camera anchors, reusable triangle buffers, and typed contact commands; no scene reads or writes. |
 | `rust/src/nodes/hero.rs` | Whole-body elevation, airborne neutral pose/step gate, and acknowledged landing-step suppression. |
 | `rust/src/cat_gait.rs` | One support-Y datum transported through planted/aim/contact state and capture. |
 | `rust/src/cat_body.rs` | Support-relative cat skeleton and exact vertical tail transport. |
@@ -813,21 +815,27 @@ Prove the named tests fail when restoring `velocity.y = 0`, sampling input in ai
 
 **Files:**
 - Modify: `rust/src/viewmodel.rs:91-136,340-550`
-- Modify: `rust/src/nodes/hero.rs:103-157,245-305`
-- Modify: `rust/src/nodes/player.rs:30-40,236-600`
-- Modify: `rust/src/observe/mod.rs:105-128`
+- Move: `rust/src/nodes/limbs.rs` to `rust/src/limbs.rs` byte-for-byte
+- Create: `rust/src/hero_visual.rs`
+- Modify: `rust/src/lib.rs:12-78,90-130`
+- Modify: `rust/src/nodes/mod.rs:17-35`
+- Modify: `rust/src/nodes/hero.rs:34-157,209-305`
+- Modify: `rust/src/nodes/cat.rs:25-45` import path only; no cat behavior
+- Modify: `rust/src/nodes/player.rs:30-110,247-476,762-815,842-1010,1450-1540,1600-2700`
 - Modify: `game/tests/viewmodel_test.gd`
+- Modify: `game/tests/movement_test.gd`
 - Modify: `game/tests/footsteps_test.gd`
 - Modify: `game/tests/cane_test.gd`
 - Modify: `game/tests/player_elevation_test.gd`
+- Modify: `game/tests/restore_transaction_test.gd`
 
 **Interfaces:**
-- Consumes: Task 2 motion state/config/support datum and Task 1 landing voice.
-- Produces: support-relative `viewmodel::leg_pose`; one-consumer player latch; `QueuedWaveGate` and a controlled-contact queue door; support-relative body/cane/footstep origins; reflecting landing emission.
+- Consumes: Task 2 motion state/config/support datum and `PlayerTickSuccess`, Task 1 `landing_voice`, and the gate/latch fields and format-2 wire values already committed by Task 6. Do not redeclare `WaveRequest.gate`, `UnseeingPlayer.footstep_suppression`, `QueuedWaveGate`, or `FootstepSuppression`.
+- Produces: support-relative `viewmodel::leg_pose`; pure value-only `hero_visual::prepare_hero_visual`; `PlayerTickSuccess::{phase_before,landing}` carrying the fresh event; Rust-only `PreparedFootstepRequest` and `PreparedLandingRequest`; support-relative body/cane/footstep origins; exact latch acknowledgement; reflecting landing emission. Top-level `limbs` and `hero_visual` are non-class pure owners. Move the existing limb file byte-for-byte, then have `hero` and `player` depend one-way on `hero_visual`, which depends on `crate::limbs` and must not import `crate::nodes`. Move the shared player eye/root/contact constants and prepared command types into it. No capture field, canonical byte, hash, parser key, or format version changes.
 
-- [ ] **Step 1: Add failing pure and Godot elevation tests**
+- [ ] **Step 1: Write the failing pure leg-domain tests**
 
-Change the planned pure signature and add a translation-equivariance test before production:
+In `rust/src/viewmodel.rs`, change test call sites to the planned signature before changing production:
 
 ```rust
 pub fn leg_pose(
@@ -840,37 +848,71 @@ pub fn leg_pose(
 ) -> Result<LegPose, MotionValueError>;
 ```
 
-Add `PlanarAxes::try_new(forward, right) -> Result<Self, MotionValueError>`; it validates every lane and rejects either zero horizontal direction before normalizing in widened lanes. `LegSide` is the closed `Left | Right` domain. `leg_pose` rejects non-finite phase/amplitude and validates every result as `PosePoint`. The translation test compares support `0.0_f32` and `0.45_f32`: every joint's X/Z bits remain equal and each translated Y is within `2.980_232_238_769_531_25e-8 m` (one f32 ULP at 0.45) of its hand-computed expected Y; existing support-zero cases preserve flat outputs bit-for-bit. Add `leg_pose_rejects_poisoned_axes_phase_and_amplitude_without_output` and the actor-envelope boundary case.
+Add `leg_pose_zero_support_preserves_every_joint_bit`, `leg_pose_translates_each_joint_with_the_output_magnitude_contract`, `leg_pose_rejects_poisoned_axes_phase_and_amplitude_without_output`, and `leg_pose_refuses_the_actor_envelope_edge_before_returning_a_point`. The translation expected side is hand-derived: compare exact f32 bits when the arithmetic has one canonical result, otherwise permit one f32 ULP at that joint's expected output magnitude. Do not use the ULP at the `0.45 m` delta for outputs near `1.35 m`; for example, the ULP there is `1.192_092_895_507_812_5e-7 m`. X/Z and the support-zero baseline compare by bits.
 
-Add Godot cases `test_raised_support_translates_every_player_body_vertex_once`, `test_shoes_and_footstep_origin_follow_platform_height`, `test_camera_inherits_root_height_exactly_once`, `test_airborne_planar_trajectory_does_not_drive_walk_or_steps`, `test_footstep_queued_before_edge_is_consumed_without_emission`, `test_always_wave_queued_before_edge_still_emits`, `test_small_player_drop_retains_landing_but_emits_nothing`, `test_audible_player_landing_uses_support_normal_and_relative_origin_once`, `test_high_player_drop_caps_gain_and_range`, `test_zero_player_landing_gain_consumes_no_pulse_or_echo`, `test_zero_player_landing_range_consumes_no_pulse_or_echo`, `test_landing_tick_has_one_landing_voice_and_no_regular_step`, `test_suppression_survives_multiple_physics_ticks_before_hero_update`, `test_landing_acknowledgement_allows_next_controlled_footstep`, `test_poisoned_player_visual_sample_retains_mesh_vm_queue_and_suppression`, `test_cane_rest_follows_an_elevated_player`, `test_elevated_table_is_classified_relative_to_the_player`, `test_air_sweeping_target_follows_the_falling_player`, and `test_look_and_tap_remain_live_while_airborne`.
-
-Give legacy cane fixtures a small pedestal only under the capsule; it must not extend to the cane tip 1.7 m ahead, preserving their intentional unsupported-tip cases.
-
-- [ ] **Step 2: Witness the visual/cane/voice red failures**
+- [ ] **Step 2: Run the pure leg tests and witness the API red**
 
 Run:
 
 ```bash
 cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
-(cd rust && cargo test viewmodel && cargo build --release)
-GODOT=/tmp/unseeing-godot-4.7.1.VYRXsi/Godot.app/Contents/MacOS/Godot
-"$GODOT" --headless --path game --import
-for suite in player_elevation_test viewmodel_test footsteps_test cane_test; do
-  "$GODOT" --headless --path game -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
-    --ignoreHeadlessMode -c -a "res://tests/${suite}.gd"
-done
+(cd rust && cargo test viewmodel::tests::leg_pose -- --nocapture)
 ```
 
-Expected: player root/collider move but body legs, waves, and cane still use absolute world zero; landing suppression/voice tests fail.
+Expected: compile failure because typed axes/side/support and the fallible signature do not exist yet. A passing run means the old API was not exercised.
 
-- [ ] **Step 3: Make the player body support-relative exactly once**
+- [ ] **Step 3: Implement the minimal typed support-relative leg law and make it green**
 
-In `leg_pose`, use `support.y() + 0.90`, ankle floor `support.y() + 0.07`, and shoe floor `support.y() + 0.065`. At the very start of `HeroBody::update`, before mutating `Viewmodel`, bob, sweep, buffers, meshes, shoes, queue, or suppression, build a private `HeroVisualSample`. It validates `now`, capped `dt`, player `ActorPosition`, `SupportElevation`, `ActorVelocity`, complete player/camera transforms and rotations, flattened `PlanarAxes`, tap target, cane-rest tip, and finite `last_tap`.
+Mechanically rename the current raw adapter entry to `legacy_flat_leg_pose_for_task_3_migration` without changing its body, point the current `HeroBody` call at that temporary name, then add `PlanarAxes::try_new(forward, right) -> Result<Self, MotionValueError>` and the new typed `leg_pose`. This compatibility rename is not a second law or shipped API: it exists only so the unchanged adapter compiles during this red/green microcycle, receives no new call sites, and is deleted in Step 9 when `HeroBody` switches to `prepare_hero_visual`. The Step 9 green review must find no remaining legacy symbol before continuing.
 
-Add retained `next_cane_buf` and `next_body_buf` scratch buffers beside the installed buffers and compute this complete next value off-copy:
+The typed constructor validates all six axes lanes, rejects either zero horizontal vector, normalizes X/Z in widened lanes, and writes exact positive-zero Y. Add closed `LegSide::{Left,Right}`. `leg_pose` rejects non-finite phase/amplitude, uses `support.y() + 0.90`, ankle floor `support.y() + 0.07`, shoe floor `support.y() + 0.065`, and constructs all four outputs through `PosePoint` before returning. Preserve support-zero output bits.
+
+Run:
+
+```bash
+cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
+(cd rust && cargo fmt --check && cargo test viewmodel::tests::leg_pose -- --nocapture)
+```
+
+Expected: PASS. Refactor only after this run remains green.
+
+- [ ] **Step 4: Promote the existing pure limb helper without changing behavior**
+
+Move `rust/src/nodes/limbs.rs` byte-for-byte to `rust/src/limbs.rs`, publish `mod limbs;` from `rust/src/lib.rs`, remove `mod limbs;` from `rust/src/nodes/mod.rs`, and change only the imports in `nodes/{hero,cat}.rs` from `super::limbs` to `crate::limbs`. At crate root the existing `pub(super)` visibility already admits both sibling pure/adaptor modules, so do not edit the moved file. Do not change tessellation, winding, labels, allocation, cat logic, or either adapter's behavior.
+
+Run:
+
+```bash
+cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
+(cd rust && cargo fmt --check && cargo check --all-targets && cargo test)
+```
+
+Expected: PASS with a byte-identical moved limb file plus only import/module declarations and no behavior diff. This green mechanical seam precedes every new visual behavior.
+
+- [ ] **Step 5: Write compile-red tests for the pure atomic visual owner**
+
+Create top-level `rust/src/hero_visual.rs` and include it from `rust/src/lib.rs`, but write its tests before its production definitions. The value-only contract is:
 
 ```rust
-struct HeroVisualNext {
+pub(crate) struct HeroVisualSample {
+    now: PreparedTime,
+    dt: StepDuration,
+    player_transform: ActorTransform,
+    player_rotation: FiniteRotation,
+    position: ActorPosition,
+    support: SupportElevation,
+    velocity: ActorVelocity,
+    camera_local_transform: ActorTransform,
+    camera_rotation: FiniteRotation,
+    axes: PlanarAxes,
+    tap_target: PosePoint,
+    cane_rest_tip: PosePoint,
+    cane_rest_supported: bool,
+    last_tap: PreparedLastTap,
+    controlled: bool,
+}
+
+pub(crate) struct HeroVisualNext {
     vm: Viewmodel,
     suppression: FootstepSuppression,
     bob: f64,
@@ -878,36 +920,170 @@ struct HeroVisualNext {
     shoes: [Vector3; 2],
     cane_vertices: LimbBuf,
     body_vertices: LimbBuf,
-    queue_footstep_at: Option<Vector3>,
+    footstep: Option<PreparedFootstepRequest>,
+}
+
+pub(crate) fn prepare_hero_visual<P: FootstepPreparer>(
+    sample: HeroVisualSample,
+    prior_vm: Viewmodel,
+    prior_suppression: FootstepSuppression,
+    cane_scratch: LimbBuf,
+    body_scratch: LimbBuf,
+    preparer: P,
+) -> Result<(HeroVisualNext, P), HeroVisualRefusal<P>>;
+```
+
+All fields above remain private. Give `HeroVisualSample` one crate-private checked constructor, `HeroVisualNext` one consuming `into_commit_parts`, and `HeroVisualRefusal<P>` one consuming `into_recovery`; sibling adapters never use a struct literal or reach into fields. `FootstepPreparer` is a crate-private narrow pure state-in/state-out contract: consuming `self`, its only method returns the next `self` plus a checked request or typed refusal. Name the production zero-sized implementation `CheckedFootstepPreparer`; it is the only footstep path that may construct `CheckedWave`/`CheckedReflectionRequest`. The test implementation returns an explicit call count without globals, interior mutability, or allocation when uncalled.
+
+```rust
+pub(crate) trait FootstepPreparer: Sized {
+    fn prepare(
+        self,
+        origin: WaveOrigin,
+        now: PreparedTime,
+    ) -> Result<
+        (Self, PreparedFootstepRequest),
+        (Self, FootstepPreparationError),
+    >;
 }
 ```
 
-Move the two retained scratch buffers into the candidate (leaving their prior capacities available), copy the current VM and suppression, advance/acknowledge only those copies, and calculate the complete `HeroVisualNext`. Validate every derived point before touching an installed buffer, mesh, player command, or queue. On success, one infallible commit swaps both candidate buffers into the installed slots (the old installed allocations become the next scratch buffers), resizes both meshes, installs VM/shoes **and `HeroVisualNext.suppression`**, and calls one player door that installs bob/cane sweep and appends the optional prevalidated footstep. On error, return the work buffers to the scratch slots and change nothing else; VM, meshes, shoes, bob, cane request, queue, and suppression remain bit-identical. Thus VM, suppression, geometry, and the complete queue delta are one prepared next state, with no fallible operation after the first write and no steady-state allocation. The prewritten acknowledgement regression proves pending clears exactly once and a later ordinary controlled footstep emits normally. `build_body` uses the sample's support, puts torso/pelvis at `support.y() + 0.90/1.28`, and passes typed position/axes/support into both leg calls. Do not change camera local Y.
+Add tests `prepared_last_tap_accepts_only_the_exact_sentinel_or_elapsed_sample_time`, `prepared_visual_uses_the_next_bob_camera_transform`, `prepared_visual_adds_support_once_to_every_body_vertex`, `airborne_visual_advances_look_and_cane_but_not_walk_or_cadence`, `prepared_footstep_uses_the_sample_time_and_has_fixed_voice_and_controlled_contact_provenance`, `no_footfall_returns_the_same_uncalled_preparer_and_reuses_both_buffers`, and `late_candidate_validation_returns_buffers_and_preparer_without_an_installable_value`. The no-footfall case pre-sizes both scratch buffers, compares their allocation pointers/capacities after return, and requires the explicit preparer call count to remain zero; the cadence-ready companion requires exactly one call. Because all request/reflection allocation is encapsulated behind that call, changing the branch to call-and-drop is an observable mutation. The last test builds the full candidate, then independently poisons each VM/scalar/shoe/buffer-position/buffer-normal/buffer-label/request lane at the final validator and requires a refusal; these are private cargo tests, not shipped Godot hooks.
 
-Add `footstep_suppression: FootstepSuppression` initialized to `CLEAR` to `UnseeingPlayer`. In the physics callback, save `transition.landing`, store `transition.state`, update accepted support identity, apply the resulting collision pair, then replace the suppression value with `footstep_suppression.on_transition(transition.landing)`; only a fresh landing calls `emit_landing`. At `HeroBody::update`, feed zero planar animation speed while airborne. Acknowledge the persistent value only after a real `Viewmodel` has reached its footstep evaluation:
+- [ ] **Step 6: Run the pure visual owner tests and witness the compile red**
 
-```rust
-let controlled = player.bind().motion_state().accepts_control();
-let planar_speed = if controlled {
-    f64::from(Vector2::new(velocity.x, velocity.z).length())
-} else {
-    0.0
-};
-// Viewmodel advance/look/cane remain live, but only the copies change here.
-let Some(mut next_vm) = self.vm else { return; };
-let suppression = player.bind().footstep_suppression();
-let (next_suppression, suppress_landing_step) = suppression.acknowledge();
-let fired = next_vm.footstep(dt, pose.moving && !suppress_landing_step);
+Run:
+
+```bash
+cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
+(cd rust && cargo test hero_visual::tests -- --nocapture)
 ```
 
-Consume Task 1's `QueuedWaveGate`; do not define a node-local duplicate. `WaveRequest` stores this gate. Existing `queue_wave` uses `Always`; add a narrow `queue_footstep(at, ...)` used only by `HeroBody`, which stores `ControlledContact`. Queue the ordinary footstep at `Vector3::new(shoe.x, support_y + 0.04, shoe.z)` through that door. After the physics move/reconciliation, drain the queue with:
+Expected: compile failure on the missing sample/candidate/preparation contracts.
+
+- [ ] **Step 7: Implement and green the value-only visual preparation**
+
+Implement `prepare_hero_visual` without a `Gd`, scene read, mesh write, player call, clock read, or global. Move `EYE`, `PLAYER_STANDING_ROOT_Y`, `CONTACT_BIRTH_HEIGHT_M`, and derived `CAM_BASE_Y` into this pure owner; the existing player static-method API imports/re-exports the same constants instead of defining copies. Lift the exact existing last-tap sentinel/elapsed predicate into crate-private `PreparedLastTap::try_new(raw, now)` and use that one constructor from both restore preflight and the render boundary. Its private raw lane is available only through a crate-private value accessor and retains the accepted bits (including the exact `-10.0` sentinel); restore maps its typed refusal back to the existing `hero.last_tap` path/rule, so capture and format-2 bytes do not change. The visual operation copies and validates the complete next `Viewmodel`, acknowledges only the copied suppression, feeds zero planar speed whenever `controlled == false`, and computes the optional footstep only after a real cadence evaluation. The footstep origin is exactly `Vector3::new(shoe.x, support.y() + CONTACT_BIRTH_HEIGHT_M, shoe.z)`, and its prepared birth time is exactly `sample.now`.
+
+`PreparedFootstepRequest` is a crate-private typed value with private fields and a consuming accessor; only `hero_visual` can construct it. Its fixed fields are kind 2, range 1.6 m, speed 4.0 m/s, gain 0.8, two echoes, `Vector3::UP`, and `QueuedWaveGate::ControlledContact`. It owns the raw command plus both distinct admission proofs: `CheckedWave` validates kind, origin, range, speed, gain, prepared time, and omni beam lanes; `CheckedReflectionRequest` validates origin, normal, range, speed, echo budget, prepared time, and all derived fan geometry. Neither proof substitutes for the other. The player later accepts this type rather than raw parameters. `CheckedFootstepPreparer` performs reflection-fan allocation only when called for `footstep.is_some()`, which is wave activity. A frame with no footfall never calls it and performs no request/reflection allocation.
+
+Build torso/pelvis at `support.y() + 0.90/1.28`, call typed `leg_pose` twice, and use the sample's prospective camera transform for hand/elbow: replace only `camera_local_transform.origin.y` with `CAM_BASE_Y + next_bob`, then compose it with `player_transform`. Never add `support_y` to the camera. Move the two cleared scratch buffers into the candidate and validate before return: every next VM invariant, finite bob/sweep, both shoes through `PosePoint`, every vertex position through `PosePoint`, every finite normal, and every exact expected role-label bit. On error, `HeroVisualRefusal<P>` returns both owned scratch buffers and the returned preparer; no installed state exists in this function.
+
+Run:
+
+```bash
+cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
+(cd rust && cargo fmt --check && cargo test hero_visual::tests -- --nocapture)
+```
+
+Expected: PASS with no scene construction.
+
+- [ ] **Step 8: Add and witness the Godot visual-transaction red cases**
+
+Before wiring `HeroBody`, add `test_raised_support_translates_every_player_body_vertex_once`, `test_shoes_and_footstep_origin_follow_platform_height`, `test_camera_inherits_root_height_exactly_once`, `test_nonzero_bob_anchors_hand_and_elbow_to_the_same_frame_camera`, `test_missing_freed_or_mismatched_visual_camera_refuses_before_mutation`, `test_airborne_planar_trajectory_does_not_drive_walk_or_steps`, and `test_poisoned_player_visual_sample_retains_vm_both_meshes_normals_labels_shoes_bob_cane_queue_and_suppression`. In `movement_test.gd`, replace the direct `set_head_bob` case with `test_head_bob_is_committed_only_by_an_atomic_hero_frame`: inject a real `HeroBody`, drive a nonzero-bob frame, assert camera-local Y against `CAM_BASE_Y + hero.bob_offset` under the named precision contract, and assert ClassDB exposes neither raw `set_head_bob` nor raw `request_cane_sweep`. Change the legacy shoe-wave expectation from `always` to `controlled_contact`. Replace touched legacy `is_equal_approx` assertions with bit comparisons or one hand-derived f32 ULP at the expected output magnitude.
+
+Build the unchanged adapter against the now-green pure module, import, and run the red suites:
+
+```bash
+cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
+(cd rust && cargo build --release)
+GODOT=/tmp/unseeing-godot-4.7.1.VYRXsi/Godot.app/Contents/MacOS/Godot
+"$GODOT" --headless --path game --import
+for suite in player_elevation_test viewmodel_test movement_test footsteps_test; do
+  "$GODOT" --headless --path game -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
+    --ignoreHeadlessMode -c -a "res://tests/${suite}.gd"
+done
+```
+
+Expected: the root/collider rises, but old `HeroBody` geometry remains absolute; the prospective-bob, camera identity, complete rollback, airborne animation, and controlled-contact expectations fail for their named reasons.
+
+- [ ] **Step 9: Wire one checked sample and one infallible visual commit**
+
+At the start of `HeroBody::update`, before borrowing the VM mutably or changing bob, sweep, buffers, meshes, shoes, queue, or suppression, validate both injected `Gd` handles for liveness. Add a narrow adapter-only `UnseeingPlayer::owns_visual_camera(&Gd<Camera3D>) -> bool` that returns false for either freed handle and otherwise compares instance IDs; prove it before sampling. Read each engine fact once and construct `HeroVisualSample`; derive `SupportElevation` from that same validated player position rather than a second ambient position read. Map raw frame `dt` through `StepDuration::from_raw`, `now` through `PreparedTime`, and the one sampled tap clock through the shared `PreparedLastTap` constructor before calling the pure owner.
+
+Retain `next_cane_buf` and `next_body_buf` beside the installed buffers, move them with `CheckedFootstepPreparer` into `prepare_hero_visual`, and on refusal recover those scratch owners and the preparer through the consuming refusal accessor before reporting one error. On success consume `HeroVisualNext::into_commit_parts` and perform one no-`Result` commit: swap both candidate buffers into installed slots, resize both meshes, install VM and shoes, then call one Rust-only player door with the already prepared bob, cane sweep, suppression, and optional `PreparedFootstepRequest`. That door writes camera-local `CAM_BASE_Y + bob`, cane offset, latch, and the already checked queue entry without revalidation. Remove the separately callable raw `set_head_bob` and `request_cane_sweep` doors rather than leave a bypass. Delete `legacy_flat_leg_pose_for_task_3_migration`; the adapter has no raw leg door after this step. The old installed allocations become next-frame scratch. No fallible function or request preparation occurs after the first installed write.
+
+Rebuild, re-import, and run the visual green gate:
+
+```bash
+cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
+(cd rust && cargo fmt --check && cargo test hero_visual::tests && cargo build --release)
+GODOT=/tmp/unseeing-godot-4.7.1.VYRXsi/Godot.app/Contents/MacOS/Godot
+"$GODOT" --headless --path game --import
+for suite in player_elevation_test viewmodel_test movement_test footsteps_test; do
+  "$GODOT" --headless --path game -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
+    --ignoreHeadlessMode -c -a "res://tests/${suite}.gd"
+done
+```
+
+Expected: PASS for every visual case; no landing/restore/cane production has been added yet.
+
+- [ ] **Step 10: Add failing fresh-event, gate, landing, suppression, and format-2 restore tests**
+
+In the private Rust player tests, first require this exact handoff:
 
 ```rust
+struct PlayerTickSuccess {
+    phase_before: MotionPhase,
+    state: MotionState,
+    landing: Option<LandingEvent>,
+    landing_request: Option<PreparedLandingRequest>,
+    support_collider_id: Option<u64>,
+    collision_layer: u32,
+    collision_mask: u32,
+}
+```
+
+Add `invalid_current_time_refuses_before_body_move`, `tick_success_carries_only_the_fresh_landing_event`, `tick_success_defers_collision_pair_until_callback_commit`, `restored_last_landing_never_becomes_a_fresh_event`, `audible_landing_request_owns_wave_and_reflection_proofs_for_current_time`, and `invalid_landing_request_uses_the_exact_post_move_refusal_trace`. Assert the prepared landing owns the raw command, one `CheckedWave`, and one `CheckedReflectionRequest`; changing kind/gain must fail the former even though the latter's internal synthetic wave uses kind 0/gain 1.0. The deferred-pair case requires zero layer/mask writes from the coordinator and the returned derived pair. The last case supplies an out-of-envelope point and a finite reflection normal whose f32 derived geometry overflows separately; it must restore the exact saved transform, zero velocity, disable processing, and produce no state/layer/latch/queue/emitter command.
+
+Add Godot cases `test_footstep_queued_before_edge_is_consumed_without_emission`, `test_always_wave_queued_before_edge_still_emits`, `test_airborne_wall_contact_never_becomes_a_landing_or_step_wave`, `test_small_player_drop_retains_landing_but_emits_nothing`, `test_audible_player_landing_uses_support_normal_and_relative_origin_once`, `test_high_player_drop_caps_gain_and_range`, `test_zero_player_landing_gain_consumes_no_pulse_or_echo`, `test_zero_player_landing_range_consumes_no_pulse_or_echo`, `test_silent_or_zero_voice_landing_still_suppresses_a_cadence_ready_step`, `test_landing_tick_has_one_landing_voice_and_no_regular_step`, `test_suppression_survives_multiple_physics_ticks_before_hero_update`, and `test_landing_acknowledgement_allows_next_controlled_footstep`. The normal assertion must observe the reflecting call or resulting asymmetric echo appointments; reading the retained landing normal alone is not emitter proof.
+
+In `restore_transaction_test.gd`, replace `test_dormant_schema_still_refuses_pending_or_controlled_contact_state` with `test_format_2_restore_accepts_pending_suppression_until_hero_ack`, `test_format_2_restore_preserves_controlled_contact_gate_and_future`, `test_restored_old_landing_is_inert`, and `test_non_dormant_player_preparation_is_still_atomic_when_a_later_group_refuses`. Exercise controlled→controlled emission, controlled→air consumption, airborne consumption, pending across multiple physics ticks, one acknowledgement, and a later normal step. Recompute the existing format-2 hash through `canonical_hash_of`; do not change schema, keys, byte count, parser, or version.
+
+- [ ] **Step 11: Run the event/landing/restore tests and witness the red**
+
+Run:
+
+```bash
+cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
+(cd rust && cargo test tick_success_carries_only_the_fresh_landing_event -- --nocapture)
+(cd rust && cargo build --release)
+GODOT=/tmp/unseeing-godot-4.7.1.VYRXsi/Godot.app/Contents/MacOS/Godot
+"$GODOT" --headless --path game --import
+for suite in player_elevation_test footsteps_test restore_transaction_test; do
+  "$GODOT" --headless --path game -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
+    --ignoreHeadlessMode -c -a "res://tests/${suite}.gd"
+done
+```
+
+Expected: Rust compile-red because `PlayerTickSuccess` drops the event; Godot still emits ungated queue entries, has no landing voice/acknowledgement, and restore still refuses the pending bit and `controlled_contact` gate.
+
+- [ ] **Step 12: Carry the fresh transition, prepare landing, and activate existing gate/latch state**
+
+Extend `PlayerTickSuccess` exactly as tested. Validate raw `self.now` into `PreparedTime` in the pre-move boundary before writing velocity or calling `move_and_slide`, retain it in `PreparedPlayerPreMove`, and pass that exact value into `controlled_player_tick_from_pre_move`; invalid time follows the tested pre-move refusal. Extend `PlayerTickReason` with typed clock and landing-preparation refusals so time, origin, wave, and reflection failures use the existing exact refusal traces rather than string matching. The coordinator records `phase_before = prior.phase()` and the returned `transition.landing`; it never consults `transition.state.last_landing()`. For an audible fresh event, prepare the complete `PreparedLandingRequest` while the saved pre-move transform is still available: call `landing_voice`, validate the support point plus `(0, CONTACT_BIRTH_HEIGHT_M, 0)` through `WaveOrigin`, then retain both a `CheckedWave` proof for current `PreparedTime`, kind 2, origin, independent voice range/gain, speed 4.0 and omni lanes, and a `CheckedReflectionRequest` proof for origin, accepted normal, range, speed, two echoes, time, and derived fan geometry. `landing_voice == None` is a valid prepared silent result and returns before physics-space acquisition or either emitter. Invalid audible preparation follows the tested post-move rollback before any state/layer/latch/queue write.
+
+`PreparedLandingRequest` is crate-private with private fields, only `hero_visual` can construct it, and the player can read it only through one consuming accessor. It owns the already checked reflection fan, so derive only `Debug` for `PlayerTickSuccess`, remove `Clone`, `Copy`, and `PartialEq`, and compare its fields explicitly in tests. Destructure and move the success value once through the callback; do not clone or rebuild the proof after motion.
+
+Move collision-pair application out of the coordinator's success path so the callback commits in this order: store `state`; store support identity; apply the returned pair; set the existing `footstep_suppression = footstep_suppression.on_transition(landing)`; emit the optional already prepared landing request; then handle cane intent and drain queued requests. Every fresh event arms suppression even when the prepared voice is `None`. Do not add a second latch field.
+
+Consume the existing `WaveRequest.gate`. General `queue_wave` remains `Always`; the Rust-only player visual commit door accepts only `PreparedFootstepRequest` and appends it as `ControlledContact`. Destructure the non-`Copy` success once, then drain with the carried facts:
+
+```rust
+let PlayerTickSuccess {
+    phase_before,
+    state,
+    landing,
+    landing_request,
+    support_collider_id,
+    collision_layer,
+    collision_mask,
+} = moved;
+// Commit state/identity/pair/latch and consume landing_request first.
 for request in std::mem::take(&mut self.wave_queue) {
     if !request.gate.allows(
         phase_before,
-        transition.state.phase(),
-        transition.landing,
+        state.phase(),
+        landing,
     ) {
         continue;
     }
@@ -915,17 +1091,46 @@ for request in std::mem::take(&mut self.wave_queue) {
 }
 ```
 
-This consumes a stale pre-edge shoe request silently while preserving general/demo requests; never infer provenance from kind/range/gain. The player suppression value is captured through `pending()` and is never acknowledged by a physics tick. The earlier Task 6 schema already carries the gate through every canonical/wire/restore path.
+This consumes stale shoe provenance silently and preserves general/demo requests. The existing capture door continues to read `pending()` and the existing gate; no physics tick acknowledges suppression. In `prepare_restore`, remove only the temporary pending-bit and non-`Always` gate refusals. Existing prepared queue proofs and exact `FootstepSuppression::restore` installation remain the commit path; change no observation/reproduction type or format constant.
 
-- [ ] **Step 4: Emit one authored player landing voice**
+Rebuild release, import, and run the green event/restore gate:
 
-`emit_landing` first calls `landing_voice`. On `None`, return before acquiring physics space or calling either emitter. Otherwise call the existing `emit_reflecting` in the landing physics tick with kind 2, support contact point plus `(0,0.04,0)`, range/gain from `LandingVoice`, speed `4.0`, two echoes, and the event support normal. The transition's inert `last_landing` remains present even when silent.
+```bash
+cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
+(cd rust && cargo fmt --check && cargo test nodes::player::tests -- --nocapture && cargo test controlled_contact_gate_requires_two_controlled_phases_without_landing && cargo test footstep_suppression_persists_until_acknowledged && cargo build --release)
+GODOT=/tmp/unseeing-godot-4.7.1.VYRXsi/Godot.app/Contents/MacOS/Godot
+"$GODOT" --headless --path game --import
+for suite in player_elevation_test footsteps_test restore_transaction_test; do
+  "$GODOT" --headless --path game -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
+    --ignoreHeadlessMode -c -a "res://tests/${suite}.gd"
+done
+```
 
-Pin small-drop silence, chair-height audibility, high-drop cap, exact one emission, and zero configured gain/range consuming neither pulse nor echo capacity. Configure player variants through a fixture `UnseeingGame` root, not an artificial player Inspector.
+Expected: PASS, including restored futures and exact zero pulse/echo consumption.
 
-- [ ] **Step 5: Translate every cane vertical law by the player datum**
+- [ ] **Step 13: Add and witness the cane-boundary red cases**
 
-Use `support_y = global_player_y - PLAYER_STANDING_ROOT_Y as f32` at the boundary and replace all absolute tests/endpoints:
+Before changing cane production, give legacy cane fixtures a small pedestal only under the capsule; it must not extend to the cane tip 1.7 m ahead, preserving their intentional unsupported-tip cases. Add `test_cane_rest_follows_an_elevated_player`, `test_elevated_table_is_classified_relative_to_the_player`, `test_air_sweeping_target_follows_the_falling_player`, and `test_look_and_tap_remain_live_while_airborne`.
+
+Before production, define tests against a narrow `CaneQueryPort` and the same generic coordinators the Godot adapter will call. The port returns raw player/camera samples and an explicit `Miss | Hit { position, normal } | Malformed` result for each bounded ray, while recording the ordered endpoints; it has no emitter or scene mutation method. The Godot mapping is closed: an empty hit dictionary is `Miss`, jointly present correctly typed position/normal fields are `Hit` (other standard metadata is irrelevant), and a partial or wrongly typed required pair is `Malformed`. Add `cane_endpoints_translate_once_from_one_checked_support_datum`, `poisoned_cane_player_or_camera_sample_queries_nothing_and_changes_no_cane_state`, `poisoned_cane_query_endpoint_queries_nothing_and_changes_no_cane_state`, and `poisoned_or_malformed_cane_hit_changes_no_tap_state_or_wave`. These cargo tests inject malformed samples/hits through the production-path port, assert the exact zero/aim/wall/down query trace, and inspect only returned prepared values; they are not a mirror or shipped hook.
+
+Run:
+
+```bash
+cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
+(cd rust && cargo test cane_endpoints_translate_once_from_one_checked_support_datum -- --nocapture)
+(cd rust && cargo build --release)
+GODOT=/tmp/unseeing-godot-4.7.1.VYRXsi/Godot.app/Contents/MacOS/Godot
+"$GODOT" --headless --path game --import
+"$GODOT" --headless --path game -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
+  --ignoreHeadlessMode -c -a res://tests/cane_test.gd
+```
+
+Expected: pure endpoint API is absent and legacy absolute cane heights fail on elevated/falling players.
+
+- [ ] **Step 14: Translate and harden every cane vertical law**
+
+In `nodes/player.rs`, implement a thin `GodotCaneQueryPort` over the current camera and physics-space handles, and make `prepare_cane_rest<P: CaneQueryPort>` plus `prepare_cane_tap<P: CaneQueryPort>` the only boundary coordinators used by production and cargo fakes. They delegate endpoint/answer validation and prepared-command construction to pure functions in `hero_visual`, sequence only the explicit port calls, and return `RestProbe` or a complete `PreparedCaneTap` value; only the Godot adapter publishes/installs/emits after success. Validate current `PreparedTime`, the prior `PreparedLastTap`, player position, and camera liveness/identity before the first query. Use `support_y = global_player_y - PLAYER_STANDING_ROOT_Y as f32` at that boundary and replace all absolute tests/endpoints:
 
 ```text
 wall scan                 support_y + 0.85
@@ -936,9 +1141,22 @@ floorish aimed hit        hit.y < support_y + 0.20
 swish target              support_y + clamp(EYE + tan(pitch)*1.5, 0.3, 1.7)
 ```
 
-The camera-derived aim ray is already world-elevated and remains unchanged. Cane rays remain the only existing player support-related queries; add no query for body motion.
+Read and validate the player position once, derive that one support value, validate the complete camera transform/rotation and every translated endpoint before asking the port to query, and convert every returned hit position to `PosePoint` before comparison or assignment. Validate every hit normal before use. A reflecting cane command is crate-private, constructible only by `hero_visual`, exposes only one consuming player accessor, and owns its exact current time, kind, origin, range, speed, gain, echo budget, normal, `CheckedWave`, and `CheckedReflectionRequest`, just like the prepared shoe/landing commands; a swish owns no request. Publish `RestProbe` only on complete success. Stage `tap_queued = false`, `last_tap`, `tap_target`, and the optional prepared reflecting request in `PreparedCaneTap`; malformed camera/query/hit data retains the old queued intent, cane rest, tap clock, target, and wave state and emits nothing. The camera-derived aim ray is already world-elevated and remains unchanged. Cane rays remain the only existing player support-related queries; add no body-support query.
 
-- [ ] **Step 6: Run green regressions, mutate, review, and commit player effects**
+Rebuild, import, and run the cane green gate:
+
+```bash
+cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
+(cd rust && cargo fmt --check && cargo test cane_ && cargo build --release)
+GODOT=/tmp/unseeing-godot-4.7.1.VYRXsi/Godot.app/Contents/MacOS/Godot
+"$GODOT" --headless --path game --import
+"$GODOT" --headless --path game -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
+  --ignoreHeadlessMode -c -a res://tests/cane_test.gd
+```
+
+Expected: PASS with unchanged aim-ray count and no new support query.
+
+- [ ] **Step 15: Run full green regressions, complete the mutation matrix, review, and commit**
 
 Run exactly:
 
@@ -947,13 +1165,27 @@ cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
 (cd rust && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --release)
 GODOT=/tmp/unseeing-godot-4.7.1.VYRXsi/Godot.app/Contents/MacOS/Godot
 "$GODOT" --headless --path game --import
-for suite in player_elevation_test viewmodel_test footsteps_test cane_test; do
+gdformat --check game/tests/player_elevation_test.gd game/tests/viewmodel_test.gd game/tests/movement_test.gd game/tests/footsteps_test.gd game/tests/cane_test.gd game/tests/restore_transaction_test.gd
+gdlint game/tests/player_elevation_test.gd game/tests/viewmodel_test.gd game/tests/movement_test.gd game/tests/footsteps_test.gd game/tests/cane_test.gd game/tests/restore_transaction_test.gd
+for suite in player_elevation_test viewmodel_test movement_test footsteps_test cane_test restore_transaction_test; do
   "$GODOT" --headless --path game -s res://addons/gdUnit4/bin/GdUnitCmdTool.gd \
     --ignoreHeadlessMode -c -a "res://tests/${suite}.gd"
 done
 ```
 
-Mutate separately: visual sample guard; mutate the copied VM before a forced derived-point refusal; clear/swap one installed buffer before validation; acknowledge suppression early; zero torso support; zero leg support/clamps; double-lift camera; feed airborne planar speed; restore absolute footstep Y; emit a pre-edge queued contact in air; restore each cane Y literal; emit a silent landing. Each named test must fail. Request implementation plus wave/performance review and restore all green gates. Lift Task 6 preflight's dormant suppression/gate restriction in the same diff, then commit the player visual/contact/landing behavior.
+Mutate separately, restoring green after each mutation:
+
+- omit the visual sample guard; accept a freed/mismatched camera; anchor hand/elbow to the sampled pre-bob global transform; add support to camera local Y or apply bob twice;
+- poison or omit validation of the copied VM, bob, cane sweep, either shoe, one position/normal/label in each buffer, or the prepared request; install/swap any VM/buffer/shoe/player command before a forced late refusal; omit candidate suppression installation;
+- zero torso support, one leg support/clamp, or footstep relative Y; feed airborne planar speed; acknowledge suppression before a real cadence evaluation; arm it only when `landing_voice` is `Some`;
+- remove `phase_before` or fresh `landing` from `PlayerTickSuccess`; infer from `last_landing`; emit a pre-edge controlled contact in air/on a wall/on the landing tick; mark a general request `ControlledContact` or a shoe request `Always`;
+- change the fixed ordinary footstep kind/range/speed/gain/echoes/normal, replace the sample birth time, omit either retained admission proof, append a raw request, validate it after the first visual write, or call the explicit preparer on a no-footfall frame;
+- change player landing kind, current prepared birth time, support-point `+0.04 m` origin, gain, range, speed, echo count, or accepted normal; omit either retained admission proof; swap gain/range; emit twice; call either emitter for silent, zero-gain, or zero-range voice; suppress only audible landings;
+- accept an out-of-envelope landing origin or poisoned reflection normal after state/layer/latch writes;
+- keep the Task 6 pending/gate restore refusal; rewrite a restored gate/latch; re-emit restored `last_landing`; change `FORMAT_VERSION`, canonical bytes, or hash; write any prepared player value before a later restore group refuses;
+- restore each absolute cane Y literal; bypass the production `CaneQueryPort`; accept a poisoned time/tap clock/camera/query endpoint/hit position/hit normal after consuming queued intent or changing cane rest, tap clock, target, or wave state; change cane kind/origin/range/speed/gain/echoes/normal/time, omit either cane-request proof, or reorder/add an aim, wall, down, or body-support query.
+
+Every mutation must fail its named cargo/gdUnit test. Request implementation, architecture, wave/performance, and restore-transaction review against the actual diff; verify and fix each finding, rerun the exact release rebuild/import and six-suite gate above, then commit the one coherent player visual/contact/landing/cane behavior. Apart from Step 4's mechanical `crate::limbs` import, do not edit cat files or begin Task 5 behavior.
 
 ---
 
