@@ -200,6 +200,12 @@ impl Viewmodel {
                 ));
             }
         }
+        if !(capture.leg_phase * 2.0).is_finite() {
+            return Err(RestoreValueError::new(
+                "hero.viewmodel.leg_phase",
+                "must remain finite when doubled for the immediate bob expression",
+            ));
+        }
         for (field, value, min, max) in [
             ("walk_amp", capture.walk_amp, 0.0, 1.0),
             ("cane_swing", capture.cane_swing, -0.26, 0.26),
@@ -391,6 +397,28 @@ mod tests {
         capture.step_side = 0;
         let error = Viewmodel::prepare_restore(capture).expect_err("side must be refused");
         assert_eq!(error.path, "hero.viewmodel.step_side");
+    }
+
+    #[test]
+    fn prepared_restore_rejects_a_leg_phase_whose_double_is_not_finite() {
+        let mut poisoned = Viewmodel::new(0.0, 0.0).capture();
+        poisoned.leg_phase = f64::MAX;
+        let error = Viewmodel::prepare_restore(poisoned)
+            .expect_err("the immediate doubled phase must remain finite");
+        assert_eq!(error.path, "hero.viewmodel.leg_phase");
+
+        let largest_safe = f64::MAX / 2.0;
+        assert!((largest_safe * 2.0).is_finite());
+        assert!((largest_safe.next_up() * 2.0).is_infinite());
+        for boundary in [largest_safe, -largest_safe] {
+            let mut accepted = Viewmodel::new(0.0, 0.0).capture();
+            accepted.leg_phase = boundary;
+            let mut restored = Viewmodel::from_prepared(
+                Viewmodel::prepare_restore(accepted).expect("adjacent safe boundary must pass"),
+            );
+            let pose = restored.advance(0.0, 0.0, 0.0, 0.0, 0.0, -10.0);
+            assert!(pose.bob.is_finite());
+        }
     }
 
     fn walker() -> Viewmodel {

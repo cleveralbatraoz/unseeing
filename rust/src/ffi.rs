@@ -12,14 +12,19 @@ use godot::prelude::*;
 
 use crate::clustering::{self, RayHit};
 use crate::echo_queue::{
-    ECHO_KIND, ECHO_MAX_R, ECHO_SPEED, EchoQueue, PendingEcho, PreparedEchoQueue,
+    ECHO_KIND, ECHO_MAX_R, ECHO_SPEED, EchoAppointment, EchoQueue, PendingEcho, PreparedEchoQueue,
 };
 use crate::flicker::Randf;
 use crate::level_plan;
-use crate::observe::reflect::ReflectionRequest;
-use crate::pulse_pool::{MAXP, PreparedPulsePool, PulsePool, REFUSAL_MESSAGE, SlotCapture};
+use crate::observe::reflect::{
+    CheckedRayHit, CheckedReflectionRequest, REFUSED_HIT, ReflectionRequest,
+};
+use crate::pulse_pool::{
+    CheckedWave, MAXP, PreparedPulsePool, PulsePool, REFUSAL_MESSAGE, SlotCapture,
+};
 use crate::ray_fan;
 use crate::render;
+use crate::temporal::prepare_time;
 
 /// The flicker law's randomness adapter: Godot's `randf()` returns f32,
 /// widened to f64 at the exact point the GDScript law implicitly did (every
@@ -67,8 +72,8 @@ impl WaveCore {
     /// Record a sound — `Pulses.emit`, verbatim: gain clamped into the
     /// pack, eviction preferring expired slots then old footsteps/hums,
     /// and a non-positive speed or radius refused loudly with no slot
-    /// taken. `beam_dir = ZERO` means omnidirectional however `cos_half`
-    /// reads — retained from the GDScript default-argument contract.
+    /// taken. Omnidirectional requests use the one exact shader tuple:
+    /// `beam_dir = ZERO`, `cos_half = -2`.
     #[func]
     #[expect(
         clippy::too_many_arguments,
@@ -117,10 +122,9 @@ impl WaveCore {
         max_echoes: i64,
         origin_normal: Vector3,
     ) {
-        // The original emitted the primary first and sampled reflections
-        // regardless of its outcome; the order is kept, refusal included.
-        self.emit_or_refuse(kind, at, max_r, speed, gain, now, Vector3::ZERO, -2.0);
-        let Some(space) = space else {
+        let Some(checked) =
+            Self::prepare_wave_or_refuse(kind, at, max_r, speed, gain, now, Vector3::ZERO, -2.0)
+        else {
             return;
         };
         // The same struct the debug explainer describes a fan with, and the
@@ -131,13 +135,51 @@ impl WaveCore {
             at,
             normal: origin_normal,
             max_r,
-            speed,
+            speed: checked.raw_speed(),
             max_echoes,
             now,
         };
-        let (_, hits) = cast_reflection_fan(&request, space);
-        for hit in clustering::cluster_hits(hits, clustering::echo_budget(max_echoes)) {
-            self.echoes.schedule(now, hit.dist, hit.point, gain, speed);
+        let checked_reflection = match CheckedReflectionRequest::prepare(request) {
+            Ok(checked) => checked,
+            Err(error) => {
+                godot_error!(
+                    "WaveCore.emit_reflecting: field {}: {}",
+                    error.field(),
+                    error.reason()
+                );
+                return;
+            }
+        };
+        self.pool.install_checked(checked);
+        let Some(space) = space else {
+            return;
+        };
+        let hits = match cast_reflection_fan(&checked_reflection, space) {
+            Ok((_, hits)) => hits,
+            Err(reason) => {
+                godot_error!("{reason}");
+                return;
+            }
+        };
+        let appointments: Vec<EchoAppointment> =
+            clustering::cluster_hits(hits, clustering::echo_budget(max_echoes))
+                .into_iter()
+                .map(|hit| EchoAppointment {
+                    now,
+                    dist: hit.dist,
+                    pos: hit.point,
+                    gain: checked.effective_gain(),
+                    speed: checked.raw_speed(),
+                })
+                .collect();
+        match self.echoes.prepare_schedule_batch(&appointments) {
+            Ok(prepared) => self.echoes = EchoQueue::from_prepared(prepared),
+            Err(error) => {
+                godot_error!(
+                    "WaveCore.emit_reflecting: echo {} is not representable — refused",
+                    error.field()
+                );
+            }
         }
     }
 
@@ -152,12 +194,24 @@ impl WaveCore {
     /// the stringly `.call()` a dynamic `pulses` handle would need.
     #[func]
     pub(crate) fn tick(&mut self, now: f64) {
-        for echo in self.echoes.drain(now) {
+        let now = match prepare_time(now) {
+            Ok(now) => now,
+            Err(error) => {
+                godot_error!("WaveCore.tick: field now: {} — tick refused", error.rule);
+                return;
+            }
+        };
+        for echo in self.echoes.drain(now.value()) {
             // ECHO_MAX_R and ECHO_SPEED are positive constants: refusal
             // is impossible, so the Result carries nothing here.
-            let _ = self
-                .pool
-                .emit_omni(ECHO_KIND, echo.pos, ECHO_MAX_R, ECHO_SPEED, echo.gain, now);
+            let _ = self.pool.emit_omni(
+                i64::from(ECHO_KIND),
+                echo.pos,
+                ECHO_MAX_R,
+                ECHO_SPEED,
+                echo.gain,
+                now.value(),
+            );
         }
     }
 
@@ -532,12 +586,54 @@ impl WaveCore {
         beam_dir: Vector3,
         cos_half: f64,
     ) {
-        let refused = self
-            .pool
-            .emit(kind as i32, at, max_r, speed, gain, now, beam_dir, cos_half)
-            .is_err();
-        if refused {
-            godot_error!("{REFUSAL_MESSAGE}");
+        let Some(checked) =
+            Self::prepare_wave_or_refuse(kind, at, max_r, speed, gain, now, beam_dir, cos_half)
+        else {
+            return;
+        };
+        self.pool.install_checked(checked);
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the same mirrored signature as the public emit()"
+    )]
+    fn prepare_wave_or_refuse(
+        kind: i64,
+        at: Vector3,
+        max_r: f64,
+        speed: f64,
+        gain: f64,
+        now: f64,
+        beam_dir: Vector3,
+        cos_half: f64,
+    ) -> Option<CheckedWave> {
+        let now = match prepare_time(now) {
+            Ok(now) => now,
+            Err(error) => {
+                godot_error!("Pulses.emit: field now: {} — wave refused", error.rule);
+                return None;
+            }
+        };
+        match CheckedWave::prepare(kind, at, max_r, speed, gain, now, beam_dir, cos_half) {
+            Ok(checked) => Some(checked),
+            Err(error)
+                if matches!(error.field(), "speed" | "max_r")
+                    && error.rule() == "must be strictly positive" =>
+            {
+                // These are the original GDScript refusal cases. Keep their
+                // established text; newer domains name their exact lane.
+                godot_error!("{REFUSAL_MESSAGE}");
+                None
+            }
+            Err(error) => {
+                godot_error!(
+                    "Pulses.emit: field {}: {} — wave refused",
+                    error.field(),
+                    error.rule()
+                );
+                None
+            }
         }
     }
 }
@@ -562,21 +658,21 @@ impl WaveCore {
 /// fan is culled to the hemisphere in front of the birth normal, and a
 /// query the physics server refuses to build was never cast at all.
 pub(crate) fn cast_reflection_fan(
-    request: &ReflectionRequest,
+    request: &CheckedReflectionRequest,
     mut space: Gd<PhysicsDirectSpaceState3D>,
-) -> (usize, Vec<RayHit>) {
+) -> Result<(usize, Vec<RayHit>), &'static str> {
     let origin = request.ray_origin();
-    // f64 reach like the GDScript minf; narrowed once, where the ray
-    // vector is scaled — exactly where the original narrowed.
-    let reach = request.reach() as f32;
+    let reach = request.reach_lane();
     let mut rays_cast = 0usize;
     let mut hits: Vec<RayHit> = Vec::with_capacity(ray_fan::RAYS);
     for dir in request.directions() {
-        let Some(query) = PhysicsRayQueryParameters3D::create(origin, origin + dir * reach) else {
-            continue; // the engine refused to build a query: skip the ray
-        };
+        let query =
+            PhysicsRayQueryParameters3D::create(origin, origin + dir * reach).ok_or(REFUSED_HIT)?;
         rays_cast += 1;
         let struck = space.intersect_ray(&query);
+        if struck.is_empty() {
+            continue;
+        }
         let (Some(position), Some(normal)) = (
             struck
                 .get("position")
@@ -585,13 +681,10 @@ pub(crate) fn cast_reflection_fan(
                 .get("normal")
                 .and_then(|v| v.try_to::<Vector3>().ok()),
         ) else {
-            continue; // empty dictionary: the ray struck nothing
+            return Err(REFUSED_HIT);
         };
-        hits.push(RayHit {
-            position,
-            normal,
-            dist: (position - origin).length(),
-        });
+        let hit = CheckedRayHit::prepare(position, normal, request).map_err(|_| REFUSED_HIT)?;
+        hits.push(hit.ray_hit());
     }
-    (rays_cast, hits)
+    Ok((rays_cast, hits))
 }

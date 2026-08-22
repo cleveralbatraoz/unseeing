@@ -33,7 +33,8 @@ use crate::render::{self, Role};
 use crate::reproduce::RestoreValueError;
 use crate::reproduce::blob::CatCapture;
 use crate::sound_source::{Cadence, PreparedCadence};
-use crate::support_motion::{ActorPosition, ActorVelocity, MotionState};
+use crate::support_motion::{ActorPosition, ActorVelocity, GodotRotation, MotionState};
+use crate::temporal::PreparedTime;
 
 /// Collider radius — small enough to slip between furniture legs.
 const COL_RADIUS: f32 = 0.11;
@@ -67,6 +68,7 @@ pub(super) struct PreparedCatState {
     sit: f64,
     sim_t: f64,
     last_pos: Vector3,
+    now: PreparedTime,
 }
 
 /// The companion cat. Inject `pulses` and `data_mat` before adding to
@@ -373,17 +375,21 @@ impl WaveCat {
         self.mesh.clone()
     }
 
-    /// The cat as data — None when _ready refused (uninjected) and the
-    /// brain never existed, which the blob reports as a refusal, never
-    /// as a default cat.
-    pub(crate) fn capture_state(&self) -> Option<CatCapture> {
-        let brain = self.brain.as_ref()?;
-        let gait = self.gait.as_ref()?;
-        let tail = self.tail.as_ref()?;
-        let pose = self.pose.as_ref()?;
-        Some(CatCapture {
+    /// The cat as data, or the exact missing/noncanonical owner that makes a
+    /// complete capture impossible.
+    pub(crate) fn capture_state(&self) -> Result<CatCapture, &'static str> {
+        let brain = self.brain.as_ref().ok_or("cat brain was never built")?;
+        let gait = self.gait.as_ref().ok_or("cat gait was never built")?;
+        let tail = self.tail.as_ref().ok_or("cat tail was never built")?;
+        let pose = self.pose.as_ref().ok_or("cat pose was never built")?;
+        let body_rotation = self.base().get_global_rotation();
+        let yaw = GodotRotation::canonicalize_replacing_yaw(body_rotation, body_rotation.y)
+            .map_err(|_| "cat body does not preserve its configured X/Z rotation")?
+            .world()
+            .y;
+        Ok(CatCapture {
             position: self.base().get_global_position(),
-            yaw: f64::from(self.base().get_global_rotation().y),
+            yaw: f64::from(yaw),
             velocity: self.base().get_velocity(),
             motion: self.motion_state,
             brain: brain.capture(),
@@ -401,6 +407,10 @@ impl WaveCat {
     /// owners validate their own private state first; this boundary owner
     /// checks only engine widths, dormant capability and cross-owner
     /// lockstep that no one pure value can know by itself.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the adapter composes each independently prepared cat owner plus shared time"
+    )]
     pub(super) fn prepare_restore(
         &self,
         capture: &CatCapture,
@@ -409,6 +419,7 @@ impl WaveCat {
         pose: PreparedCatPose,
         tail: PreparedTail,
         presence: PreparedCadence,
+        now: PreparedTime,
     ) -> Result<PreparedCatState, RestoreValueError> {
         if !self.base().is_physics_processing() || !self.base().is_processing() {
             return Err(RestoreValueError::new("", "runtime processing is disabled"));
@@ -431,10 +442,18 @@ impl WaveCat {
                 "this runtime admits only initial controlled motion",
             ));
         }
-        let yaw = exact_cat_f32(capture.yaw, "yaw")?;
-        let mut rotation = self.base().get_global_rotation();
-        validate_cat_vector("rotation", rotation)?;
-        rotation.y = yaw;
+        let rotation = prepare_cat_snapshot_links(
+            self.base().get_global_rotation(),
+            CatSnapshotLinks {
+                body_yaw: capture.yaw,
+                brain_yaw: capture.brain.yaw,
+                pose_yaw: capture.pose.yaw,
+                gait_amp: capture.gait.amp,
+                pose_amp: capture.pose.amp,
+                cat_sit: capture.sit,
+                pose_sit: capture.pose.sit,
+            },
+        )?;
 
         for (axis, body, posed) in [
             ("x", capture.position.x, capture.pose.pos.x),
@@ -466,7 +485,7 @@ impl WaveCat {
 
         Ok(PreparedCatState {
             position: position.world(),
-            rotation,
+            rotation: rotation.world(),
             velocity: velocity.world(),
             motion: capture.motion,
             brain: CatBrain::from_prepared(brain),
@@ -477,6 +496,7 @@ impl WaveCat {
             sit: capture.sit,
             sim_t: capture.sim_t,
             last_pos: last_pos.world(),
+            now,
         })
     }
 
@@ -496,6 +516,7 @@ impl WaveCat {
         self.sit = value.sit;
         self.sim_t = value.sim_t;
         self.last_pos = value.last_pos;
+        self.now = value.now.value();
         self.mesh_dirty = true;
     }
 
@@ -611,30 +632,65 @@ fn terminal_field(path: &str) -> &str {
     path.rsplit('.').next().unwrap_or(path)
 }
 
-fn exact_cat_f32(value: f64, path: &'static str) -> Result<f32, RestoreValueError> {
-    if !value.is_finite() {
-        return Err(RestoreValueError::new(path, "must be finite"));
-    }
-    let narrowed = value as f32;
-    if f64::from(narrowed).to_bits() != value.to_bits() {
-        return Err(RestoreValueError::new(
-            path,
-            "must round-trip through the Godot f32 lane bit-exactly",
-        ));
-    }
-    Ok(narrowed)
+#[derive(Clone, Copy)]
+struct CatSnapshotLinks {
+    body_yaw: f64,
+    brain_yaw: f64,
+    pose_yaw: f64,
+    gait_amp: f64,
+    pose_amp: f64,
+    cat_sit: f64,
+    pose_sit: f64,
 }
 
-fn validate_cat_vector(path: &str, value: Vector3) -> Result<(), RestoreValueError> {
-    for (axis, lane) in [("x", value.x), ("y", value.y), ("z", value.z)] {
-        if !lane.is_finite() {
-            return Err(RestoreValueError::new(
-                format!("{path}.{axis}"),
-                "must be finite",
-            ));
-        }
+fn prepare_cat_snapshot_links(
+    current_full: Vector3,
+    links: CatSnapshotLinks,
+) -> Result<GodotRotation, RestoreValueError> {
+    if links.pose_yaw.to_bits() != links.brain_yaw.to_bits() {
+        return Err(RestoreValueError::new(
+            "pose.yaw",
+            "must match brain.yaw bit-for-bit",
+        ));
     }
-    Ok(())
+    if links.pose_amp.to_bits() != links.gait_amp.to_bits() {
+        return Err(RestoreValueError::new(
+            "pose.amp",
+            "must match gait.amp bit-for-bit",
+        ));
+    }
+    if links.pose_sit.to_bits() != links.cat_sit.to_bits() {
+        return Err(RestoreValueError::new(
+            "pose.sit",
+            "must match the cat sit blend bit-for-bit",
+        ));
+    }
+    let brain_lane = links.brain_yaw as f32;
+    if !brain_lane.is_finite() {
+        return Err(RestoreValueError::new(
+            "brain.yaw",
+            "must narrow to a finite Godot rotation lane",
+        ));
+    }
+    let canonical =
+        GodotRotation::canonicalize_replacing_yaw(current_full, brain_lane).map_err(|_| {
+            RestoreValueError::new(
+                "yaw",
+                "brain yaw must preserve the live complete Godot YXZ X/Z configuration",
+            )
+        })?;
+    if links.body_yaw.to_bits() != f64::from(canonical.world().y).to_bits() {
+        return Err(RestoreValueError::new(
+            "yaw",
+            "must match the canonical f32 engine image of brain.yaw",
+        ));
+    }
+    GodotRotation::try_replacing_yaw(current_full, links.body_yaw as f32).map_err(|_| {
+        RestoreValueError::new(
+            "yaw",
+            "artifact yaw must already be canonical in the live complete rotation",
+        )
+    })
 }
 
 /// The heading's forward vector — Godot yaw convention: yaw 0 faces -Z.
@@ -645,4 +701,94 @@ fn forward(yaw: f64) -> Vector3 {
 /// The heading's right vector.
 fn rightward(yaw: f64) -> Vector3 {
     Vector3::new(yaw.cos() as f32, 0.0, (-yaw.sin()) as f32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copied_cat_state_requires_the_exact_producer_relationships() {
+        let current_full = Vector3::new(0.25, 0.0, 0.125);
+        let brain_yaw = -0.5_f64;
+        let canonical_body_yaw = f64::from(
+            GodotRotation::canonicalize_replacing_yaw(current_full, brain_yaw as f32)
+                .unwrap()
+                .world()
+                .y,
+        );
+        assert_ne!(canonical_body_yaw.to_bits(), brain_yaw.to_bits());
+        prepare_cat_snapshot_links(
+            current_full,
+            CatSnapshotLinks {
+                body_yaw: canonical_body_yaw,
+                brain_yaw,
+                pose_yaw: brain_yaw,
+                gait_amp: 0.375,
+                pose_amp: 0.375,
+                cat_sit: 0.625,
+                pose_sit: 0.625,
+            },
+        )
+        .unwrap();
+
+        let cases = [
+            (
+                "pose.yaw",
+                [
+                    canonical_body_yaw,
+                    brain_yaw,
+                    0.2,
+                    0.375,
+                    0.375,
+                    0.625,
+                    0.625,
+                ],
+            ),
+            (
+                "pose.amp",
+                [
+                    canonical_body_yaw,
+                    brain_yaw,
+                    brain_yaw,
+                    0.375,
+                    0.5,
+                    0.625,
+                    0.625,
+                ],
+            ),
+            (
+                "pose.sit",
+                [
+                    canonical_body_yaw,
+                    brain_yaw,
+                    brain_yaw,
+                    0.375,
+                    0.375,
+                    0.625,
+                    0.5,
+                ],
+            ),
+            (
+                "yaw",
+                [0.2, brain_yaw, brain_yaw, 0.375, 0.375, 0.625, 0.625],
+            ),
+        ];
+        for (path, values) in cases {
+            let error = prepare_cat_snapshot_links(
+                current_full,
+                CatSnapshotLinks {
+                    body_yaw: values[0],
+                    brain_yaw: values[1],
+                    pose_yaw: values[2],
+                    gait_amp: values[3],
+                    pose_amp: values[4],
+                    cat_sit: values[5],
+                    pose_sit: values[6],
+                },
+            )
+            .expect_err("contradictory copied state must be refused");
+            assert_eq!(error.path, path);
+        }
+    }
 }

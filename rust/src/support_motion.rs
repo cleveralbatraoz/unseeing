@@ -1,4 +1,4 @@
-use godot::builtin::{Transform3D, Vector3};
+use godot::builtin::{Basis, EulerOrder, Transform3D, Vector3};
 use std::fmt;
 
 pub const MAX_ACCEL_DT_S: f64 = 1.0 / 15.0;
@@ -313,6 +313,138 @@ impl FiniteRotation {
     pub fn yaw(self) -> ActorYaw {
         ActorYaw(f64::from(self.0.y))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GodotRotation(Vector3);
+
+impl GodotRotation {
+    pub fn canonicalize(euler_radians: Vector3) -> Result<Self, MotionValueError> {
+        let mut current = FiniteRotation::try_new(euler_radians)?.world();
+        for _ in 0..16 {
+            let mapped =
+                Basis::from_euler(EulerOrder::YXZ, current).get_euler_with(EulerOrder::YXZ);
+            FiniteRotation::try_new(mapped)?;
+            if rotation_lanes_equivalent(current, mapped) {
+                return Ok(Self(canonical_wire_rotation(mapped)));
+            }
+            current = mapped;
+        }
+        Err(MotionValueError::inconsistent_state("rotation"))
+    }
+
+    pub fn try_canonical(euler_radians: Vector3) -> Result<Self, MotionValueError> {
+        let canonical = Self::canonicalize(euler_radians)?;
+        if rotation_lanes_equal_bits(euler_radians, canonical.world()) {
+            Ok(Self(euler_radians))
+        } else {
+            Err(MotionValueError::inconsistent_state("rotation"))
+        }
+    }
+
+    pub fn try_replacing_yaw(
+        current_full: Vector3,
+        captured_yaw: f32,
+    ) -> Result<Self, MotionValueError> {
+        FiniteRotation::try_new(current_full)?;
+        let target = Vector3::new(current_full.x, captured_yaw, current_full.z);
+        let canonical = Self::canonicalize(target)?;
+        if target.y.to_bits() == canonical.0.y.to_bits()
+            && rotation_lane_equivalent(target.x, canonical.0.x)
+            && rotation_lane_equivalent(target.z, canonical.0.z)
+        {
+            Ok(Self(target))
+        } else {
+            Err(MotionValueError::inconsistent_state("rotation"))
+        }
+    }
+
+    pub fn canonicalize_replacing_yaw(
+        current_full: Vector3,
+        captured_yaw: f32,
+    ) -> Result<Self, MotionValueError> {
+        FiniteRotation::try_new(current_full)?;
+        let target = Vector3::new(current_full.x, captured_yaw, current_full.z);
+        let canonical = Self::canonicalize(target)?;
+        if rotation_lane_equivalent(target.x, canonical.0.x)
+            && rotation_lane_equivalent(target.z, canonical.0.z)
+        {
+            Ok(Self(Vector3::new(
+                current_full.x,
+                canonical.0.y,
+                current_full.z,
+            )))
+        } else {
+            Err(MotionValueError::inconsistent_state("rotation"))
+        }
+    }
+
+    pub fn try_replacing_pitch(
+        current_full: Vector3,
+        captured_pitch: f32,
+    ) -> Result<Self, MotionValueError> {
+        FiniteRotation::try_new(current_full)?;
+        let target = Vector3::new(captured_pitch, current_full.y, current_full.z);
+        let canonical = Self::canonicalize(target)?;
+        if target.x.to_bits() == canonical.0.x.to_bits()
+            && rotation_lane_equivalent(target.y, canonical.0.y)
+            && rotation_lane_equivalent(target.z, canonical.0.z)
+        {
+            Ok(Self(target))
+        } else {
+            Err(MotionValueError::inconsistent_state("rotation"))
+        }
+    }
+
+    pub fn canonicalize_replacing_pitch(
+        current_full: Vector3,
+        captured_pitch: f32,
+    ) -> Result<Self, MotionValueError> {
+        FiniteRotation::try_new(current_full)?;
+        let target = Vector3::new(captured_pitch, current_full.y, current_full.z);
+        let canonical = Self::canonicalize(target)?;
+        if rotation_lane_equivalent(target.y, canonical.0.y)
+            && rotation_lane_equivalent(target.z, canonical.0.z)
+        {
+            Ok(Self(Vector3::new(
+                canonical.0.x,
+                current_full.y,
+                current_full.z,
+            )))
+        } else {
+            Err(MotionValueError::inconsistent_state("rotation"))
+        }
+    }
+
+    pub fn world(self) -> Vector3 {
+        self.0
+    }
+}
+
+fn canonical_wire_rotation(rotation: Vector3) -> Vector3 {
+    Vector3::new(
+        if rotation.x == 0.0 { 0.0 } else { rotation.x },
+        if rotation.y == 0.0 { 0.0 } else { rotation.y },
+        if rotation.z == 0.0 { 0.0 } else { rotation.z },
+    )
+}
+
+fn rotation_lanes_equal_bits(a: Vector3, b: Vector3) -> bool {
+    [a.x, a.y, a.z]
+        .into_iter()
+        .zip([b.x, b.y, b.z])
+        .all(|(left, right)| left.to_bits() == right.to_bits())
+}
+
+fn rotation_lanes_equivalent(a: Vector3, b: Vector3) -> bool {
+    [a.x, a.y, a.z]
+        .into_iter()
+        .zip([b.x, b.y, b.z])
+        .all(|(left, right)| left.to_bits() == right.to_bits() || (left == 0.0 && right == 0.0))
+}
+
+fn rotation_lane_equivalent(left: f32, right: f32) -> bool {
+    left.to_bits() == right.to_bits() || (left == 0.0 && right == 0.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -843,6 +975,13 @@ pub enum QueuedWaveGate {
 }
 
 impl QueuedWaveGate {
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::ControlledContact => "controlled_contact",
+        }
+    }
+
     pub fn allows(
         self,
         before: MotionPhase,
@@ -1364,6 +1503,196 @@ mod tests {
         assert_eq!(rotation.world().y.to_bits(), valid.y.to_bits());
         assert_eq!(rotation.world().z.to_bits(), valid.z.to_bits());
         assert_eq!(rotation.yaw().radians().to_bits(), (-0.0_f64).to_bits());
+    }
+
+    #[test]
+    fn godot_rotation_refuses_a_noncanonical_exact_f32_yaw() {
+        let requested = Vector3::new(0.0, 4.0, 0.0);
+        let error = GodotRotation::try_canonical(requested)
+            .expect_err("Godot rewrites this exact-f32 Euler angle");
+        assert_eq!(error.field(), "rotation");
+
+        let basis_image =
+            godot::builtin::Basis::from_euler(godot::builtin::EulerOrder::YXZ, requested)
+                .get_euler_with(godot::builtin::EulerOrder::YXZ);
+        let canonical = GodotRotation::canonicalize(basis_image)
+            .expect("the Basis/Euler image must have a stable wire spelling")
+            .world();
+        let checked = GodotRotation::try_canonical(canonical)
+            .expect("the stable Basis/Euler serialization must be canonical");
+        for (actual, expected) in [checked.world().x, checked.world().y, checked.world().z]
+            .into_iter()
+            .zip([canonical.x, canonical.y, canonical.z])
+        {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+
+    #[test]
+    fn godot_rotation_accepts_the_zero_rotation_a_new_node_produces() {
+        let canonical =
+            godot::builtin::Basis::from_euler(godot::builtin::EulerOrder::YXZ, Vector3::ZERO)
+                .get_euler_with(godot::builtin::EulerOrder::YXZ);
+        assert_eq!(canonical.x.to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(Vector3::ZERO.x.to_bits(), 0.0_f32.to_bits());
+        for spelling in [Vector3::ZERO, Vector3::new(-0.0, -0.0, -0.0)] {
+            let serialized = GodotRotation::canonicalize(spelling)
+                .expect("both engine zero spellings must have one stable serialization");
+            for lane in [
+                serialized.world().x,
+                serialized.world().y,
+                serialized.world().z,
+            ] {
+                assert_eq!(lane.to_bits(), 0.0_f32.to_bits());
+            }
+        }
+        GodotRotation::try_canonical(Vector3::ZERO)
+            .expect("the stable positive-zero artifact must be restorable");
+        GodotRotation::try_canonical(Vector3::new(-0.0, 0.0, 0.0))
+            .expect_err("a hand-edited negative-zero artifact is not canonical wire state");
+    }
+
+    #[test]
+    fn godot_rotation_canonicalization_is_idempotent_for_observed_pitch_and_wrapped_yaw() {
+        for (requested, changed_axis, changes) in [
+            (Vector3::new(-0.2, 0.0, 0.0), 0, false),
+            (Vector3::new(0.0, 4.0, 0.0), 1, true),
+        ] {
+            let canonical = GodotRotation::canonicalize(requested)
+                .expect("finite observed rotations must reach a fixed point");
+            let canonical_world = canonical.world();
+            let requested_lane = [requested.x, requested.y, requested.z][changed_axis];
+            let canonical_lane =
+                [canonical_world.x, canonical_world.y, canonical_world.z][changed_axis];
+            if changes {
+                assert_ne!(canonical_lane.to_bits(), requested_lane.to_bits());
+                assert!(GodotRotation::try_canonical(requested).is_err());
+            } else {
+                assert_eq!(canonical_lane.to_bits(), requested_lane.to_bits());
+                GodotRotation::try_canonical(requested)
+                    .expect("the observed pitch is already a fixed point");
+            }
+
+            let admitted = GodotRotation::try_canonical(canonical_world)
+                .expect("the fixed point must be accepted bit-exactly");
+            let repeated = GodotRotation::canonicalize(admitted.world())
+                .expect("canonicalization must remain total at its own output");
+            for (once, twice) in [canonical_world.x, canonical_world.y, canonical_world.z]
+                .into_iter()
+                .zip([repeated.world().x, repeated.world().y, repeated.world().z])
+            {
+                assert_eq!(once.to_bits(), twice.to_bits());
+            }
+        }
+    }
+
+    #[test]
+    fn godot_rotation_lane_replacement_preserves_uncaptured_bits_and_checks_the_complete_yxz_target()
+     {
+        fn assert_bits(actual: Vector3, expected: Vector3) {
+            for (actual, expected) in [actual.x, actual.y, actual.z]
+                .into_iter()
+                .zip([expected.x, expected.y, expected.z])
+            {
+                assert_eq!(actual.to_bits(), expected.to_bits());
+            }
+        }
+
+        let complete = Vector3::new(
+            f32::from_bits(0x3e80_0000),
+            f32::from_bits(0xbf00_0001),
+            f32::from_bits(0x3e00_0000),
+        );
+        assert_bits(
+            GodotRotation::canonicalize(Vector3::new(0.25, -0.5, 0.125))
+                .expect("the known YXZ image must converge")
+                .world(),
+            complete,
+        );
+
+        let yaw_current = Vector3::new(complete.x, 0.0, complete.z);
+        let yaw = GodotRotation::try_replacing_yaw(yaw_current, complete.y)
+            .expect("yaw replacement must retain X/Z bits");
+        assert_bits(yaw.world(), complete);
+
+        let pitch_current = Vector3::new(0.0, complete.y, complete.z);
+        let pitch = GodotRotation::try_replacing_pitch(pitch_current, complete.x)
+            .expect("pitch replacement must retain Y/Z bits");
+        assert_bits(pitch.world(), complete);
+    }
+
+    #[test]
+    fn godot_rotation_lane_replacement_refuses_an_untouched_noncanonical_lane() {
+        let complete = Vector3::new(
+            f32::from_bits(0x3e80_0000),
+            f32::from_bits(0xbf00_0001),
+            f32::from_bits(0x3e00_0000),
+        );
+        GodotRotation::try_replacing_yaw(Vector3::new(4.0, 0.0, complete.z), complete.y)
+            .expect_err("an untouched noncanonical X lane must be refused");
+        GodotRotation::try_replacing_pitch(Vector3::new(0.0, 4.0, complete.z), complete.x)
+            .expect_err("an untouched noncanonical Y lane must be refused");
+        GodotRotation::try_replacing_yaw(Vector3::new(0.0, 0.0, 4.0), 0.0)
+            .expect_err("an isolated noncanonical roll must not hide behind a canonical yaw");
+        GodotRotation::try_replacing_pitch(Vector3::new(0.0, 4.0, 0.0), 0.0)
+            .expect_err("an isolated noncanonical yaw must not hide behind a canonical pitch");
+    }
+
+    #[test]
+    fn godot_rotation_canonicalizing_lane_replacement_allows_owned_ulp_only() {
+        let expected = Vector3::new(
+            f32::from_bits(0x3e80_0000),
+            f32::from_bits(0xbf00_0001),
+            f32::from_bits(0x3e00_0000),
+        );
+        let yaw_current = Vector3::new(expected.x, 0.0, expected.z);
+        let yaw = GodotRotation::canonicalize_replacing_yaw(yaw_current, -0.5)
+            .expect("the owned yaw lane may move to its canonical f32 image")
+            .world();
+        assert_eq!(yaw.x.to_bits(), yaw_current.x.to_bits());
+        assert_eq!(yaw.z.to_bits(), yaw_current.z.to_bits());
+        assert_eq!(yaw.y.to_bits(), expected.y.to_bits());
+        assert_ne!(yaw.y.to_bits(), (-0.5_f32).to_bits());
+
+        let pitch_current = Vector3::new(0.0, expected.y, expected.z);
+        let pitch = GodotRotation::canonicalize_replacing_pitch(pitch_current, expected.x)
+            .expect("canonical pitch replacement must preserve Y/Z")
+            .world();
+        for (actual, expected) in [pitch.x, pitch.y, pitch.z]
+            .into_iter()
+            .zip([expected.x, expected.y, expected.z])
+        {
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+
+        let decoy_yaw = GodotRotation::canonicalize_replacing_yaw(expected, 0.5)
+            .expect("the external restore decoy must preserve X/Z")
+            .world();
+        assert_ne!(decoy_yaw.y.to_bits(), expected.y.to_bits());
+        let decoy_pitch = GodotRotation::canonicalize_replacing_pitch(expected, -0.25)
+            .expect("the external restore decoy must preserve Y/Z")
+            .world();
+        assert_ne!(decoy_pitch.x.to_bits(), expected.x.to_bits());
+    }
+
+    #[test]
+    fn godot_rotation_lane_replacement_preserves_omitted_signed_zero_bits() {
+        let current = Vector3::new(-0.0, 0.25, -0.0);
+        let canonicalized = GodotRotation::canonicalize_replacing_yaw(current, -0.0)
+            .expect("omitted zero signs are live configuration")
+            .world();
+        assert_eq!(canonicalized.x.to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(canonicalized.y.to_bits(), 0.0_f32.to_bits());
+        assert_eq!(canonicalized.z.to_bits(), (-0.0_f32).to_bits());
+
+        let installed = GodotRotation::try_replacing_yaw(current, 0.0)
+            .expect("a canonical owned +0 must retain omitted zero signs")
+            .world();
+        assert_eq!(installed.x.to_bits(), (-0.0_f32).to_bits());
+        assert_eq!(installed.y.to_bits(), 0.0_f32.to_bits());
+        assert_eq!(installed.z.to_bits(), (-0.0_f32).to_bits());
+        GodotRotation::try_replacing_yaw(current, -0.0)
+            .expect_err("the owned artifact lane still requires canonical +0");
     }
 
     #[test]
@@ -2043,6 +2372,15 @@ mod tests {
                 controlled_contact
             );
         }
+    }
+
+    #[test]
+    fn queued_wave_gate_wire_names_are_stable() {
+        assert_eq!(QueuedWaveGate::Always.wire_name(), "always");
+        assert_eq!(
+            QueuedWaveGate::ControlledContact.wire_name(),
+            "controlled_contact"
+        );
     }
 
     #[test]

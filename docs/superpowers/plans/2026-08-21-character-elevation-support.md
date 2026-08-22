@@ -1489,6 +1489,56 @@ pub(crate) struct PreparedCadence {
 
 `PreparedCadence` is owned by `sound_source.rs`. Its fields stay private; only crate-visible checked owner methods construct, inspect, or install it across `sound_source.rs`, `nodes/source.rs`, `nodes/cat.rs`, and `nodes/restorer.rs`.
 
+Task 6 review hardening is part of this same independently green schema
+commit. Add one `WaveOrigin` checked value beside `CheckedWave`; every direct,
+queued, restored-slot, scheduled-echo, and restored-echo origin must be finite
+and lie in the closed `+-MAX_POSE_COORD_M` numerical envelope. This is an
+origin admission invariant, not an acoustic constant or a claim that arbitrary
+corrupted camera/matrix/wall inputs are safe. Make the unchecked raw
+`EchoQueue::from_pending` constructor owner-private. Add the f32-max direct
+red, each closed/adjacent origin boundary, rehashed-slot atomic red, and
+scheduled/restored echo reds before production validation.
+
+The same hardening gives reflected requests one prepared geometry contract.
+Before player queue append, restored-queue acceptance, reflected-primary pool
+installation, or raycast, prove the origin, zero-or-finite/nondegenerate
+normal, lifted ray origin, fan dot products, f32 reach, and every retained ray
+endpoint. Malformed caller geometry makes no primary, queue entry, raycast, or
+echo. Validate every physics-server hit before clustering; a malformed hit
+keeps the independently valid primary but refuses the complete echo fan before
+any echo mutation. Reflection explanations propagate that same refusal rather
+than filtering a kept cluster. Write and witness NaN and mixed-sign f32-max
+normal reds, invalid-hit/batch-atomicity reds, and mutations for every check
+and ordering edge.
+
+Actor rotation preparation preserves configuration absent from format 2.
+Capture canonicalizes each complete live player-local, eye-local, or
+cat-global YXZ vector, requires omitted axes bit-identical, and serializes only
+the owned yaw/pitch lane. Use separate pure operations for (a) canonicalizing
+a live/brain lane replacement while preserving omitted axes and returning a
+possibly one-ULP-adjusted owned lane, and (b) strict artifact installation
+whose full requested vector is already canonical. Restore replaces only the
+captured lane in the current complete live vector and carries that full target
+to the install door; it never synthesizes zero axes. Treat omitted `+0`/`-0`
+as the existing zero-equivalent class but return the original omitted sign
+bits; every nonzero omitted lane stays bit-exact and the owned wire zero is
+canonical `+0`. Extend the exact external
+round trip with compatible canonical nonzero player X/Z, eye Y/Z, and cat X/Z;
+record those live omitted bits immediately before restore and prove them again
+immediately after restore. Record one normal-tick control future from the same
+complete configuration, reset to that configuration, restore, advance once,
+and require the identical future rather than freezing Godot's ordinary Euler
+cache evolution.
+
+Finally, treat the one GLSL packed/decode result as the effective gain. Keep
+the raw finite `[0,1]` clamp and exact packed slot bits, but widen the decoded
+f32 gain to f64 and use only that value for echo scheduling. Pin kind
+`1_000_000`, raw gain `0.5`, packed `10_000_004.0_f32`, and effective gain
+`4.0_f32 / 9.0_f32`; mutation-check any return to raw/clamped echo gain.
+Validate cached hero/restorer liveness before first dereference, validate tick
+time before echo drain, and pass registered `queue_wave` through the shared
+checked request before append.
+
 `UnseeingPlayer::prepare_restore(&HeroCapture) -> Result<PreparedPlayerState, RestoreValueError>` precomputes the exact target transform/eye lane, `ActorVelocity`, motion/suppression/gates, tap values, and validated queue requests; `install_prepared(PreparedPlayerState)` only assigns and clears transient collider identity. The restorer pairs it with `Viewmodel::prepare_restore` in `PreparedHeroRestore`. `WaveCat::prepare_restore(&CatCapture, PreparedCatBrain, PreparedCatGait, PreparedCatPose, PreparedTail, PreparedCadence) -> Result<PreparedCatState, RestoreValueError>` precomputes exact transform/rotation, velocity, motion, cadence, pose/time/last position, and lockstep checks; its install door only assigns and clears identity. These boundary owners, rather than the restorer, know their private fields and authored configs.
 
 The owner APIs are exact and are introduced with failing owner-local tests before `WaveRestorer::preflight` calls them:

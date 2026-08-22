@@ -12,6 +12,7 @@
 
 use godot::builtin::Vector3;
 
+use crate::pulse_pool::WaveOrigin;
 use crate::reproduce::RestoreValueError;
 
 /// The pool kind a fired echo re-enters as: 1, ECHO — a secondary
@@ -40,6 +41,35 @@ pub struct PendingEcho {
     pub gain: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct EchoAppointment {
+    pub(crate) now: f64,
+    pub(crate) dist: f32,
+    pub(crate) pos: Vector3,
+    pub(crate) gain: f64,
+    pub(crate) speed: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EchoScheduleError {
+    field: &'static str,
+    rule: &'static str,
+}
+
+impl EchoScheduleError {
+    fn new(field: &'static str, rule: &'static str) -> Self {
+        Self { field, rule }
+    }
+
+    pub fn field(self) -> &'static str {
+        self.field
+    }
+
+    pub fn rule(self) -> &'static str {
+        self.rule
+    }
+}
+
 /// Scheduled reflections, ordered by discovery — the mirror of pulses.gd's
 /// `_echoes` array. Bounded in practice by `max_echoes` per primary sound,
 /// so the O(n) removals of the drain walk stay trivially cheap.
@@ -56,13 +86,13 @@ impl EchoQueue {
         pending: Vec<PendingEcho>,
     ) -> Result<PreparedEchoQueue, RestoreValueError> {
         for (index, echo) in pending.iter().enumerate() {
-            for (field, value) in [
-                ("at_t", echo.at_t),
-                ("pos.x", f64::from(echo.pos.x)),
-                ("pos.y", f64::from(echo.pos.y)),
-                ("pos.z", f64::from(echo.pos.z)),
-                ("gain", echo.gain),
-            ] {
+            WaveOrigin::try_new(echo.pos).map_err(|error| {
+                RestoreValueError::new(
+                    format!("echoes[{index}].pos.{}", error.axis()),
+                    error.rule(),
+                )
+            })?;
+            for (field, value) in [("at_t", echo.at_t), ("gain", echo.gain)] {
                 if !value.is_finite() {
                     return Err(RestoreValueError::new(
                         format!("echoes[{index}].{field}"),
@@ -102,13 +132,96 @@ impl EchoQueue {
     /// (`at_t = now + d / speed`) and the distance law sets the loudness
     /// (`gain * 0.55 / (1 + 0.4 d)`) — both verbatim from
     /// `emit_reflecting`, operation order included.
-    pub fn schedule(&mut self, now: f64, dist: f32, pos: Vector3, gain: f64, speed: f64) {
+    pub fn schedule(
+        &mut self,
+        now: f64,
+        dist: f32,
+        pos: Vector3,
+        gain: f64,
+        speed: f64,
+    ) -> Result<(), EchoScheduleError> {
+        let pos = WaveOrigin::try_new(pos).map_err(|error| {
+            let field = match error.axis() {
+                "x" => "pos.x",
+                "y" => "pos.y",
+                _ => "pos.z",
+            };
+            EchoScheduleError::new(field, error.rule())
+        })?;
+        for (field, value) in [
+            ("now", now),
+            ("dist", f64::from(dist)),
+            ("gain", gain),
+            ("speed", speed),
+        ] {
+            if !value.is_finite() {
+                return Err(EchoScheduleError::new(field, "must be finite"));
+            }
+        }
+        if dist < 0.0 {
+            return Err(EchoScheduleError::new("dist", "must be non-negative"));
+        }
+        if speed <= 0.0 {
+            return Err(EchoScheduleError::new("speed", "must be strictly positive"));
+        }
+        if !(0.0..=1.0).contains(&gain) {
+            return Err(EchoScheduleError::new("gain", "must be clamped to 0..=1"));
+        }
         let d = f64::from(dist);
+        let travel = d / speed;
+        if !travel.is_finite() {
+            return Err(EchoScheduleError::new("at_t", "travel must be finite"));
+        }
+        let at_t = now + travel;
+        if !at_t.is_finite() {
+            return Err(EchoScheduleError::new("at_t", "appointment must be finite"));
+        }
+        if at_t < 0.0 {
+            return Err(EchoScheduleError::new(
+                "at_t",
+                "appointment must be non-negative",
+            ));
+        }
+        let denominator = 1.0 + d * 0.4;
+        if !denominator.is_finite() || denominator <= 0.0 {
+            return Err(EchoScheduleError::new(
+                "gain",
+                "distance denominator must be finite and positive",
+            ));
+        }
+        let echo_gain = gain * 0.55 / denominator;
+        if !echo_gain.is_finite() || !(0.0..=1.0).contains(&echo_gain) {
+            return Err(EchoScheduleError::new(
+                "gain",
+                "scheduled gain must be finite and in 0..=1",
+            ));
+        }
         self.pending.push(PendingEcho {
-            at_t: now + d / speed,
-            pos,
-            gain: gain * 0.55 / (1.0 + d * 0.4),
+            at_t,
+            pos: pos.world(),
+            gain: echo_gain,
         });
+        Ok(())
+    }
+
+    /// Validate a complete reflection fan against a scratch copy. The live
+    /// book remains untouched until the caller installs the prepared value,
+    /// so one bad appointment cannot leave an earlier echo behind.
+    pub(crate) fn prepare_schedule_batch(
+        &self,
+        appointments: &[EchoAppointment],
+    ) -> Result<PreparedEchoQueue, EchoScheduleError> {
+        let mut prepared = self.clone();
+        for appointment in appointments {
+            prepared.schedule(
+                appointment.now,
+                appointment.dist,
+                appointment.pos,
+                appointment.gain,
+                appointment.speed,
+            )?;
+        }
+        Ok(PreparedEchoQueue(prepared))
     }
 
     /// Fire every reflection whose moment has come: `at_t <= now`, so the
@@ -163,7 +276,7 @@ impl EchoQueue {
     /// through schedule() would re-apply the falloff and re-narrow the
     /// distance through f32, neither of which round-trips.
     #[must_use]
-    pub fn from_pending(pending: Vec<PendingEcho>) -> Self {
+    fn from_pending(pending: Vec<PendingEcho>) -> Self {
         Self { pending }
     }
 }
@@ -192,12 +305,112 @@ mod tests {
         assert_eq!(error.path, "echoes[0].at_t");
     }
 
+    #[test]
+    fn prepared_restore_refuses_an_out_of_domain_echo_origin_before_install() {
+        let mut live = EchoQueue::new();
+        live.schedule(0.0, 1.0, Vector3::ONE, 0.5, 5.5).unwrap();
+        let before = live.capture();
+        let pending = vec![PendingEcho {
+            at_t: 4.0,
+            pos: Vector3::new(0.0, 0.0, (-1_000_002.0_f32).next_down()),
+            gain: 0.5,
+        }];
+
+        let error = EchoQueue::prepare_restore(pending)
+            .expect_err("an echo outside the renderer envelope must not prepare");
+        assert_eq!(error.path, "echoes[0].pos.z");
+        assert_eq!(live.capture(), before);
+    }
+
+    #[test]
+    fn echo_schedule_refuses_a_nonfinite_appointment_before_queue_mutation() {
+        let mut queue = EchoQueue::new();
+        let before = queue.capture();
+        let error = queue
+            .schedule(
+                262_144.0,
+                f32::MAX,
+                Vector3::new(1.0, 2.0, 3.0),
+                1.0,
+                f64::MIN_POSITIVE,
+            )
+            .expect_err("a nonfinite appointment must be refused");
+        assert_eq!(error.field(), "at_t");
+        assert_eq!(error.rule(), "travel must be finite");
+        assert_eq!(queue.capture(), before);
+    }
+
+    #[test]
+    fn echo_schedule_refuses_a_pre_epoch_appointment_before_queue_mutation() {
+        let mut queue = EchoQueue::new();
+        let before = queue.capture();
+
+        let error = queue
+            .schedule(-1.0, 0.0, Vector3::ZERO, 1.0, 5.5)
+            .expect_err("an appointment before the simulation epoch must be refused");
+
+        assert_eq!(error.field(), "at_t");
+        assert_eq!(error.rule(), "appointment must be non-negative");
+        assert_eq!(queue.capture(), before);
+    }
+
+    #[test]
+    fn echo_schedule_refuses_an_out_of_domain_origin_before_queue_mutation() {
+        let mut queue = EchoQueue::new();
+        queue
+            .schedule(0.0, 1.0, Vector3::new(2.0, 3.0, 4.0), 0.5, 5.5)
+            .unwrap();
+        let before = queue.capture();
+
+        let error = queue
+            .schedule(
+                0.0,
+                1.0,
+                Vector3::new(0.0, 1_000_002.0_f32.next_up(), 0.0),
+                0.5,
+                5.5,
+            )
+            .expect_err("an echo outside the renderer envelope must be refused");
+        assert_eq!(error.field(), "pos.y");
+        assert_eq!(queue.capture(), before);
+    }
+
+    #[test]
+    fn a_refused_echo_batch_never_partially_mutates_the_live_book() {
+        let mut queue = EchoQueue::new();
+        queue
+            .schedule(0.0, 1.0, Vector3::new(1.0, 0.0, 0.0), 0.5, 5.5)
+            .unwrap();
+        let before = queue.capture();
+        let appointments = [
+            EchoAppointment {
+                now: 1.0,
+                dist: 2.0,
+                pos: Vector3::new(2.0, 0.0, 0.0),
+                gain: 0.5,
+                speed: 5.5,
+            },
+            EchoAppointment {
+                now: 1.0,
+                dist: 3.0,
+                pos: Vector3::new(1_000_002.0_f32.next_up(), 0.0, 0.0),
+                gain: 0.5,
+                speed: 5.5,
+            },
+        ];
+
+        queue
+            .prepare_schedule_batch(&appointments)
+            .expect_err("one invalid appointment must refuse the complete batch");
+        assert_eq!(queue.capture(), before);
+    }
+
     /// An echo is an appointment: drain must not fire it a moment early,
     /// and must fire it the instant at_t arrives (<=, boundary included).
     #[test]
     fn fires_exactly_at_its_appointment() {
         let mut q = EchoQueue::new();
-        q.schedule(10.0, 2.2, Vector3::ONE, 1.0, 5.5);
+        q.schedule(10.0, 2.2, Vector3::ONE, 1.0, 5.5).unwrap();
         let at_t = q.pending()[0].at_t;
         // the wave equation, verbatim: now + widened(dist) / speed
         assert_eq!(at_t, 10.0 + f64::from(2.2f32) / 5.5);
@@ -213,8 +426,10 @@ mod tests {
     #[test]
     fn drain_removes_fired_only() {
         let mut q = EchoQueue::new();
-        q.schedule(0.0, 1.0, Vector3::new(1.0, 0.0, 0.0), 1.0, 5.5); // at_t ~ 0.18
-        q.schedule(0.0, 5.0, Vector3::new(2.0, 0.0, 0.0), 1.0, 5.5); // at_t ~ 0.91
+        q.schedule(0.0, 1.0, Vector3::new(1.0, 0.0, 0.0), 1.0, 5.5)
+            .unwrap(); // at_t ~ 0.18
+        q.schedule(0.0, 5.0, Vector3::new(2.0, 0.0, 0.0), 1.0, 5.5)
+            .unwrap(); // at_t ~ 0.91
         let fired = q.drain(0.5);
         assert_eq!(fired.len(), 1);
         assert_eq!(fired[0].pos, Vector3::new(1.0, 0.0, 0.0));
@@ -232,14 +447,14 @@ mod tests {
         let c = Vector3::new(3.0, 0.0, 0.0);
         let mut q = EchoQueue::new();
         for p in [a, b, c] {
-            q.schedule(0.0, 1.0, p, 1.0, 5.5);
+            q.schedule(0.0, 1.0, p, 1.0, 5.5).unwrap();
         }
         let fired: Vec<Vector3> = q.drain(1.0).iter().map(|e| e.pos).collect();
         assert_eq!(fired, vec![c, b, a]);
         // and again, identically — no hidden order anywhere
         let mut q2 = EchoQueue::new();
         for p in [a, b, c] {
-            q2.schedule(0.0, 1.0, p, 1.0, 5.5);
+            q2.schedule(0.0, 1.0, p, 1.0, 5.5).unwrap();
         }
         let fired2: Vec<Vector3> = q2.drain(1.0).iter().map(|e| e.pos).collect();
         assert_eq!(fired, fired2);
@@ -251,9 +466,12 @@ mod tests {
     #[test]
     fn partial_drain_keeps_survivor_order() {
         let mut q = EchoQueue::new();
-        q.schedule(0.0, 1.0, Vector3::new(1.0, 0.0, 0.0), 1.0, 1.0); // at_t ~ 1.0
-        q.schedule(0.0, 3.0, Vector3::new(2.0, 0.0, 0.0), 1.0, 1.0); // at_t ~ 3.0
-        q.schedule(0.0, 5.0, Vector3::new(3.0, 0.0, 0.0), 1.0, 1.0); // at_t ~ 5.0
+        q.schedule(0.0, 1.0, Vector3::new(1.0, 0.0, 0.0), 1.0, 1.0)
+            .unwrap(); // at_t ~ 1.0
+        q.schedule(0.0, 3.0, Vector3::new(2.0, 0.0, 0.0), 1.0, 1.0)
+            .unwrap(); // at_t ~ 3.0
+        q.schedule(0.0, 5.0, Vector3::new(3.0, 0.0, 0.0), 1.0, 1.0)
+            .unwrap(); // at_t ~ 5.0
         assert_eq!(q.drain(1.5).len(), 1);
         let survivors: Vec<Vector3> = q.pending().iter().map(|e| e.pos).collect();
         assert_eq!(
@@ -273,9 +491,9 @@ mod tests {
     #[test]
     fn gain_follows_the_distance_law() {
         let mut q = EchoQueue::new();
-        q.schedule(0.0, 0.0, Vector3::ZERO, 1.0, 5.5); // d = 0: no falloff yet
-        q.schedule(0.0, 2.5, Vector3::ZERO, 1.0, 5.5); // 0.55 / 2.0
-        q.schedule(0.0, 3.0, Vector3::ZERO, 0.8, 5.5); // 0.44 / 2.2
+        q.schedule(0.0, 0.0, Vector3::ZERO, 1.0, 5.5).unwrap(); // d = 0: no falloff yet
+        q.schedule(0.0, 2.5, Vector3::ZERO, 1.0, 5.5).unwrap(); // 0.55 / 2.0
+        q.schedule(0.0, 3.0, Vector3::ZERO, 0.8, 5.5).unwrap(); // 0.44 / 2.2
         assert_eq!(q.pending()[0].gain, 0.55);
         assert_eq!(q.pending()[1].gain, 1.0 * 0.55 / (1.0 + 2.5 * 0.4));
         assert!((q.pending()[1].gain - 0.275).abs() < 1e-12);
@@ -290,7 +508,7 @@ mod tests {
     fn appointment_follows_the_wave_equation() {
         let mut q = EchoQueue::new();
         let dist = 3.7f32;
-        q.schedule(10.0, dist, Vector3::ZERO, 1.0, 5.5);
+        q.schedule(10.0, dist, Vector3::ZERO, 1.0, 5.5).unwrap();
         let at_t = q.pending()[0].at_t;
         let d_back = (at_t - 10.0) * 5.5;
         assert!((d_back - f64::from(dist)).abs() < 1e-12);
@@ -303,9 +521,12 @@ mod tests {
     #[test]
     fn a_restored_book_drains_in_the_original_order() {
         let mut book = EchoQueue::new();
-        book.schedule(0.0, 5.5, Vector3::new(1.0, 0.0, 0.0), 1.0, 5.5);
-        book.schedule(0.0, 2.2, Vector3::new(2.0, 0.0, 0.0), 1.0, 5.5);
-        book.schedule(0.0, 4.4, Vector3::new(3.0, 0.0, 0.0), 1.0, 5.5);
+        book.schedule(0.0, 5.5, Vector3::new(1.0, 0.0, 0.0), 1.0, 5.5)
+            .unwrap();
+        book.schedule(0.0, 2.2, Vector3::new(2.0, 0.0, 0.0), 1.0, 5.5)
+            .unwrap();
+        book.schedule(0.0, 4.4, Vector3::new(3.0, 0.0, 0.0), 1.0, 5.5)
+            .unwrap();
         let mut restored = EchoQueue::from_pending(book.capture());
         assert_eq!(restored.pending(), book.pending());
         let fired_original = book.drain(2.0);

@@ -45,8 +45,8 @@ use crate::observe::oids::{
 use crate::observe::pool::{SlotObservation, SlotState};
 use crate::observe::ray::{self, RayExplanation};
 use crate::observe::reflect::{
-    self, Answer, ClusteredPoint, Collected, ExplanationLedger, ReflectionExplanation,
-    ReflectionRequest,
+    self, Answer, CheckedReflectionRequest, ClusteredPoint, Collected, ExplanationLedger,
+    ReflectionExplanation, ReflectionRequest,
 };
 use crate::observe::{
     EchoObservation, EyeObservation, FrameObservation, HeroObservation, QueuedWave,
@@ -60,8 +60,8 @@ use crate::reproduce::{
     first_divergence, state_hash,
 };
 use crate::support_motion::{
-    FiniteVelocity, LandingEvent, MotionPhase, MotionState, PlanarVelocity, QueuedWaveGate,
-    SupportContact,
+    FiniteVelocity, GodotRotation, LandingEvent, MotionPhase, MotionState, PlanarVelocity,
+    QueuedWaveGate, SupportContact,
 };
 use crate::viewmodel::ViewmodelCapture;
 
@@ -191,7 +191,10 @@ impl INode for WaveObserver {
         let space = self.space_state();
         for (id, request) in requests {
             let answer = match space.clone() {
-                Some(space) => Answer::Explained(Box::new(cast_and_explain(&request, space))),
+                Some(space) => match cast_and_explain(&request, space) {
+                    Ok(explanation) => Answer::Explained(Box::new(explanation)),
+                    Err(reason) => Answer::Refused(reason),
+                },
                 None => Answer::Refused(NO_SPACE),
             };
             self.explanations.answer(id, answer);
@@ -251,6 +254,11 @@ impl WaveObserver {
         let eye = camera.get_global_position();
         let rects: Vec<Vector4> = level.wall_rects().as_slice().to_vec();
         let flick = shader_flick(level.data_material());
+        let source_observations =
+            match sources(&level, eye, level.occluders(), level.prop_occluders()) {
+                Ok(sources) => sources,
+                Err(reason) => return unavailable(&reason),
+            };
         // one bind, so the pool and the echo book are read from the same
         // core at the same instant rather than from two borrows of it
         let core = core.bind();
@@ -263,7 +271,7 @@ impl WaveObserver {
             // mistaken for a world rendered at flicker zero.
             flick.unwrap_or(f64::NAN),
             SceneObservation {
-                sources: sources(&level, eye, level.occluders(), level.prop_occluders()),
+                sources: source_observations,
                 wall_rects: rects,
                 eye: EyeObservation {
                     position: eye,
@@ -531,10 +539,12 @@ impl WaveObserver {
             max_echoes,
             now,
         };
-        let id = self.explanations.request(request);
-        if let Some(reason) = request.refusal() {
-            self.explanations.answer(id, Answer::Refused(reason));
-        } else if self.space_state().is_none() {
+        let checked = match CheckedReflectionRequest::prepare(request) {
+            Ok(checked) => checked,
+            Err(error) => return self.explanations.refuse(error.reason()),
+        };
+        let id = self.explanations.request(checked);
+        if self.space_state().is_none() {
             self.explanations.answer(id, Answer::Refused(NO_SPACE));
         }
         id
@@ -570,6 +580,36 @@ impl WaveObserver {
 }
 
 impl WaveObserver {
+    /// Prove that this observer reads the exact graph the restorer will
+    /// write. Capture itself may legitimately omit the camera, but none of
+    /// the three state-owning handles may be absent, freed, or point into a
+    /// different game root.
+    pub(super) fn validate_restore_graph(
+        &self,
+        expected_level: &Gd<WaveLevel>,
+        expected_player: &Gd<UnseeingPlayer>,
+        expected_body: &Gd<HeroBody>,
+    ) -> Result<(), String> {
+        let level = self.live_level().map_err(str::to_string)?;
+        if level.instance_id() != expected_level.instance_id() {
+            return Err("observer level is not the restorer's exact level".to_string());
+        }
+        let player = self.player.as_ref().ok_or_else(|| NO_HERO.to_string())?;
+        if !player.is_instance_valid() {
+            return Err(DEAD_HERO.to_string());
+        }
+        if player.instance_id() != expected_player.instance_id() {
+            return Err("observer hero is not the restorer's exact hero".to_string());
+        }
+        let body = self
+            .live_body()
+            .map_err(|reason| format!("observer body: {reason}"))?;
+        if body.instance_id() != expected_body.instance_id() {
+            return Err("observer body is not the restorer's exact hero body".to_string());
+        }
+        Ok(())
+    }
+
     /// The level, if there is one and it still exists. A freed node leaves
     /// its handle looking valid, so every entry point asks first: the
     /// observer must refuse a torn-down scene, not read through it.
@@ -630,14 +670,22 @@ impl WaveObserver {
         }
         let position = player.get_global_position();
         let velocity = player.get_velocity();
-        let yaw = f64::from(player.get_rotation().y);
+        let body_rotation = player.get_rotation();
+        let yaw = GodotRotation::canonicalize_replacing_yaw(body_rotation, body_rotation.y)
+            .map_err(|_| "the hero body does not preserve its configured X/Z rotation")?
+            .world()
+            .y;
         let bound = player.bind();
-        let pitch = bound.eye_pitch().ok_or(NO_EYE)?;
+        let eye_rotation = bound.eye_rotation().ok_or(NO_EYE)?;
+        let pitch = GodotRotation::canonicalize_replacing_pitch(eye_rotation, eye_rotation.x)
+            .map_err(|_| "the hero eye does not preserve its configured Y/Z rotation")?
+            .world()
+            .x;
         Ok(HeroObservation {
             position,
             velocity,
-            yaw,
-            pitch,
+            yaw: f64::from(yaw),
+            pitch: f64::from(pitch),
             last_tap: bound.last_tap,
             tap_target: bound.tap_target,
             tap_queued: bound.tap_queued(),
@@ -709,6 +757,9 @@ impl WaveObserver {
     /// ever been able to reach.
     fn capture_hero(&self) -> Result<HeroCapture, &'static str> {
         let player_handle = self.player.as_ref().ok_or(NO_HERO)?;
+        if !player_handle.is_instance_valid() {
+            return Err(DEAD_HERO);
+        }
         if !player_handle.is_physics_processing() {
             return Err(DISABLED_HERO);
         }
@@ -753,10 +804,10 @@ impl WaveObserver {
 /// sampling. What differs is only the tail: these hits go into a local
 /// vector and then into the pure explainer, and no echo is ever scheduled.
 fn cast_and_explain(
-    request: &ReflectionRequest,
+    request: &CheckedReflectionRequest,
     space: Gd<PhysicsDirectSpaceState3D>,
-) -> ReflectionExplanation {
-    let (rays_cast, hits) = cast_reflection_fan(request, space);
+) -> Result<ReflectionExplanation, &'static str> {
+    let (rays_cast, hits) = cast_reflection_fan(request, space)?;
     reflect::explain_clustering(request, rays_cast, &hits)
 }
 
@@ -827,18 +878,21 @@ fn sources(
     eye: Vector3,
     occluders: &[crate::sight::Occluder],
     props: &[crate::sight::Occluder],
-) -> Vec<SourceObservation> {
+) -> Result<Vec<SourceObservation>, String> {
     level
         .source_handles()
         .iter()
         .map(|source| {
+            if !source.is_instance_valid() {
+                return Err("a level source has been freed — snapshot refused".to_string());
+            }
             let node = source.clone().into_gd();
             let name = node.get_name().to_string();
             let bound = source.dyn_bind();
             let voice = bound.voice();
             let position = bound.hub();
             let line = ray::explain_ray(eye, position, occluders, props);
-            SourceObservation {
+            Ok(SourceObservation {
                 name,
                 position,
                 volume: voice.volume.amplitude(),
@@ -849,7 +903,7 @@ fn sources(
                 source_volume: standing_image(&node, source::VOLUME_PARAM).unwrap_or(f64::NAN),
                 source_muffle: standing_image(&node, source::MUFFLE_PARAM).unwrap_or(f64::NAN),
                 slot_pressure: voice.slot_pressure(),
-            }
+            })
         })
         .collect()
 }
@@ -868,6 +922,9 @@ fn capture_sources(level: &WaveLevel) -> Result<Vec<SourceCapture>, String> {
         .source_handles()
         .iter()
         .map(|source| {
+            if !source.is_instance_valid() {
+                return Err("a level source has been freed — capture refused".to_string());
+            }
             let name = source.clone().into_gd().get_name().to_string();
             let next_emit = source
                 .dyn_bind()
@@ -887,10 +944,13 @@ fn capture_cats(level: &WaveLevel) -> Result<Vec<CatCapture>, String> {
         .cat_handles()
         .iter()
         .map(|cat| {
+            if !cat.is_instance_valid() {
+                return Err("a level cat has been freed — capture refused".to_string());
+            }
             let capture = cat
                 .bind()
                 .capture_state()
-                .ok_or_else(|| format!("{UNBUILT_CAT} ({})", cat.get_name()))?;
+                .map_err(|reason| format!("{UNBUILT_CAT}: {reason} ({})", cat.get_name()))?;
             if !cat.is_physics_processing() || !cat.is_processing() {
                 return Err(format!(
                     "cat {} has disabled processing — capture refused",
@@ -1086,6 +1146,7 @@ fn queued_wave_dict(wave: &QueuedWave) -> VarDictionary {
     entry.set("gain", wave.gain);
     entry.set("echoes", wave.echoes);
     entry.set("normal", wave.normal);
+    entry.set("gate", wave.gate.wire_name());
     entry
 }
 
@@ -1510,13 +1571,6 @@ fn env_dict(env: &EnvCapture, floats: Floats) -> VarDictionary {
     entry
 }
 
-/// The already-parsed environment in the native shape the capture door
-/// consumes. Restore uses this only for its postcondition; it never reparses
-/// the artifact or calls the legacy `env_of` boundary after preflight.
-pub(super) fn native_env_dict(env: &EnvCapture) -> VarDictionary {
-    env_dict(env, Floats::Native)
-}
-
 /// A float spelled for the road its dictionary is taking.
 fn float_value(value: f64, floats: Floats) -> Variant {
     match floats {
@@ -1625,15 +1679,8 @@ fn queued_wave_capture_dict(wave: &QueuedWave) -> VarDictionary {
     entry.set("gain", gain.to_string().as_str());
     entry.set("echoes", *echoes);
     entry.set("normal", &v3_array(*normal));
-    entry.set("gate", queued_gate_name(*gate));
+    entry.set("gate", gate.wire_name());
     entry
-}
-
-fn queued_gate_name(gate: QueuedWaveGate) -> &'static str {
-    match gate {
-        QueuedWaveGate::Always => "always",
-        QueuedWaveGate::ControlledContact => "controlled_contact",
-    }
 }
 
 fn motion_dict(motion: MotionState) -> VarDictionary {

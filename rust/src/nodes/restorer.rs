@@ -15,9 +15,7 @@ use godot::prelude::*;
 use super::cat::{PreparedCatState, WaveCat};
 use super::hero::HeroBody;
 use super::level::WaveLevel;
-use super::observer::{
-    NO_POOL, WaveObserver, hex64, native_env_dict, parse_blob, pulse_core, unavailable,
-};
+use super::observer::{NO_POOL, WaveObserver, hex64, parse_blob, pulse_core, unavailable};
 use super::player::{PreparedPlayerState, UnseeingPlayer};
 use super::source::SoundSource;
 use crate::cat_body::{CatPose, PreparedCatPose, PreparedTail, Tail};
@@ -99,6 +97,45 @@ pub(super) struct PreparedRestore {
     targets: RestoreTargets,
 }
 
+/// An assignment-complete transaction awaiting only an independent live
+/// readback. It cannot reject or repair input: every artifact law was proven
+/// before the first write.
+pub(super) struct CommittedRestore {
+    expected: CaptureState,
+    expected_hash: u64,
+    observer: Gd<WaveObserver>,
+}
+
+impl CommittedRestore {
+    pub(super) fn verify(self, live_now: f64, live_env: &VarDictionary) -> VarDictionary {
+        let fresh = match self.observer.bind().capture_state(live_now, live_env) {
+            Ok(fresh) => fresh,
+            Err(reason) => {
+                return unavailable(&format!(
+                    "internal restore defect: postcondition capture failed: {reason}"
+                ));
+            }
+        };
+        if let Some(field) = first_divergence(&self.expected, &fresh) {
+            return unavailable(&format!(
+                "internal restore defect: prepared commit diverged at {field}"
+            ));
+        }
+        let fresh_hash = state_hash(&fresh);
+        if fresh_hash != self.expected_hash {
+            return unavailable(&format!(
+                "internal restore defect: prepared commit hash {} differs from expected {}",
+                hex64(fresh_hash),
+                hex64(self.expected_hash)
+            ));
+        }
+        let mut verdict = VarDictionary::new();
+        verdict.set("restored", true);
+        verdict.set("hash", hex64(fresh_hash).as_str());
+        verdict
+    }
+}
+
 impl PreparedRestore {
     pub(super) fn env(&self) -> &PreparedEnv {
         &self.env
@@ -166,6 +203,9 @@ impl WaveRestorer {
         let player = self.live_player()?.clone();
         let body = self.live_body()?.clone();
         let observer = self.live_observer()?.clone();
+        observer
+            .bind()
+            .validate_restore_graph(&level, &player, &body)?;
         let (core, cats, live_sources) = {
             let level = level.bind();
             let core = pulse_core(&level).ok_or_else(|| NO_POOL.to_string())?;
@@ -207,13 +247,13 @@ impl WaveRestorer {
 
         let env = prepare_env(&state)?;
         let waves = PreparedWaveState {
-            pool: PulsePool::prepare_restore(&state.slots).map_err(string_error)?,
+            pool: PulsePool::prepare_restore(&state.slots, env.now).map_err(string_error)?,
             echoes: EchoQueue::prepare_restore(state.echoes.clone()).map_err(string_error)?,
         };
         let hero = PreparedHeroRestore {
             player: player
                 .bind()
-                .prepare_restore(&state.hero)
+                .prepare_restore(&state.hero, env.now)
                 .map_err(string_error)?,
             viewmodel: Viewmodel::prepare_restore(state.hero.viewmodel).map_err(string_error)?,
         };
@@ -240,7 +280,7 @@ impl WaveRestorer {
             .map_err(|error| string_error(error.prefixed(&prefix)))?;
             let prepared = cat
                 .bind()
-                .prepare_restore(capture, brain, gait, pose, tail, presence)
+                .prepare_restore(capture, brain, gait, pose, tail, presence, env.now)
                 .map_err(|error| string_error(error.prefixed(&prefix)))?;
             prepared_cats.push(PreparedCatRestore { cat: prepared });
         }
@@ -288,7 +328,7 @@ impl WaveRestorer {
     /// Consume prepared values in a fixed assignment-only order. Any verdict
     /// after the writes diagnoses an internal postcondition failure; artifact
     /// validity was completely decided by `preflight`.
-    pub(super) fn commit(&mut self, prepared: PreparedRestore) -> VarDictionary {
+    pub(super) fn commit(&mut self, prepared: PreparedRestore) -> CommittedRestore {
         let PreparedRestore {
             expected,
             expected_hash,
@@ -313,7 +353,6 @@ impl WaveRestorer {
         {
             let mut player = player.bind_mut();
             player.install_prepared(hero.player);
-            player.tick(expected.env.now);
         }
         body.bind_mut().install_prepared_vm(hero.viewmodel);
         for (mut cat, prepared_cat) in live_cats.into_iter().zip(cats) {
@@ -331,34 +370,11 @@ impl WaveRestorer {
                 .install_prepared_appointment(source.cadence);
         }
 
-        let fresh = match observer
-            .bind()
-            .capture_state(expected.env.now, &native_env_dict(&expected.env))
-        {
-            Ok(fresh) => fresh,
-            Err(reason) => {
-                return unavailable(&format!(
-                    "internal restore defect: postcondition capture failed: {reason}"
-                ));
-            }
-        };
-        if let Some(field) = first_divergence(&expected, &fresh) {
-            return unavailable(&format!(
-                "internal restore defect: prepared commit diverged at {field}"
-            ));
+        CommittedRestore {
+            expected,
+            expected_hash,
+            observer,
         }
-        let fresh_hash = state_hash(&fresh);
-        if fresh_hash != expected_hash {
-            return unavailable(&format!(
-                "internal restore defect: prepared commit hash {} differs from expected {}",
-                hex64(fresh_hash),
-                hex64(expected_hash)
-            ));
-        }
-        let mut verdict = VarDictionary::new();
-        verdict.set("restored", true);
-        verdict.set("hash", hex64(fresh_hash).as_str());
-        verdict
     }
 
     fn live_level(&self) -> Result<&Gd<WaveLevel>, &'static str> {

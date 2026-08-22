@@ -114,3 +114,16 @@ func test_echo_timing_and_gain_follow_distance() -> void:
 		assert_float(e.gain).is_equal_approx(GAIN * 0.55 / (1.0 + 0.4 * d), 0.0001)
 		var pos := e.pos
 		assert_float((pos - ORIGIN).length()).is_equal_approx(d, 0.06)
+
+
+func test_echo_gain_uses_the_exact_packed_shader_image() -> void:
+	var p := Pulses.new()
+	p.emit_reflecting(1_000_000, SOUND_AT, MAX_R, SPEED, 0.5, NOW, _space, 6, NORMAL)
+	assert_float(p.dat[0].w).is_equal(10_000_004.0)
+	var effective_gain := 0.4444444477558136  # f32 0x3ee38e39 widened to f64
+	var echoes := p.pending_echoes()
+	assert_int(echoes.size()).is_greater(0)
+	for e: Pulses.Echo in echoes:
+		var d := (e.at_t - NOW) * SPEED
+		var expected := effective_gain * 0.55 / (1.0 + 0.4 * d)
+		assert_float(e.gain).is_equal_approx(expected, 0.000000000001)

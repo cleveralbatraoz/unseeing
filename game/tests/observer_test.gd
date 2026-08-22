@@ -1,9 +1,9 @@
-# gdlint:ignore = max-public-methods
+# gdlint:disable = max-public-methods,max-file-lines
 extends GdUnitTestSuite
 ## WaveObserver — the debug observability boundary.
 ##
-## (The directive above must sit on line 1 — gdlint keys an ignore to the
-## line its problem is reported on. A gdUnit4 suite is a list of cases, not
+## (The directive above applies to this whole deliberately broad suite. A
+## gdUnit4 suite is a list of cases, not
 ## a class with an API: every case is a public method, so the 20-method
 ## ceiling counts coverage rather than surface. Suppressed in the two
 ## suites that outgrew it — this one and level_test.gd — and nowhere else,
@@ -950,6 +950,24 @@ func test_a_sound_that_cannot_travel_is_refused_at_once() -> void:
 		assert_str(refusal["unavailable"]).contains("refused")
 
 
+func test_reflection_geometry_overflow_is_refused_before_a_physics_query() -> void:
+	var level := _empty_level(Pulses.new())
+	var obs := _tree_observer(level)
+	var huge := 3.4028234663852886e38
+	var id: int = obs.request_explain_reflection(
+		TAP_AT, Vector3(huge, -huge, huge), TAP_MAX_R, TAP_SPEED, 6, 0.0
+	)
+	var refusal: Dictionary = obs.take_explanation(id)
+	assert_int(refusal.size()).is_equal(1)
+	assert_bool(refusal.has("pending")).is_false()
+	(
+		assert_str(refusal["unavailable"])
+		. is_equal(
+			"reflection request refused: origin, normal, and derived fan geometry must remain finite in f32"
+		)
+	)
+
+
 ## An observer standing in no tree has no world to cast in, and says so
 ## instead of promising an answer no frame will ever deliver. Every other
 ## verb on this class works out of the tree, so silence here would look
@@ -1124,6 +1142,7 @@ func test_the_snapshot_binds_the_hero_at_one_instant() -> void:
 	assert_int(queued.size()).is_equal(1)
 	assert_int(queued[0]["type"]).is_equal(2)
 	assert_vector(queued[0]["normal"]).is_equal(Vector3.UP)
+	assert_str(queued[0]["gate"]).is_equal("always")
 
 
 ## No hero is a NAMED absence, not a hero at the origin: a suite building

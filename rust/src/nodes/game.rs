@@ -74,6 +74,10 @@ const SEED: u64 = 0x5EED;
 /// `restore_blob` was called before `ready()` wired a restorer — there is
 /// no writer to hand the parsed blob to.
 const NO_RESTORER: &str = "the root holds no restorer — restore_blob has nothing to write through";
+const DEAD_RESTORER: &str =
+    "the root restorer has been freed — restore_blob has no live transaction owner";
+const NO_RNG: &str =
+    "the root RNG is absent or has been freed — restore_blob has no exact stream target";
 
 /// Unseeing — the complete shipped composition root.
 #[derive(GodotClass)]
@@ -610,10 +614,24 @@ impl UnseeingGame {
         let was_paused = self.is_paused();
         self.set_paused(true);
 
-        let Some(mut restorer) = self.restorer.clone() else {
+        let Some(mut rng) = self
+            .rng
+            .as_ref()
+            .filter(|rng| rng.is_instance_valid())
+            .cloned()
+        else {
+            self.set_paused(was_paused);
+            return unavailable(NO_RNG);
+        };
+        let Some(restorer) = self.restorer.as_ref() else {
             self.set_paused(was_paused);
             return unavailable(NO_RESTORER);
         };
+        if !restorer.is_instance_valid() {
+            self.set_paused(was_paused);
+            return unavailable(DEAD_RESTORER);
+        }
+        let mut restorer = restorer.clone();
         let prepared = match restorer.bind().preflight(&blob) {
             Ok(prepared) => prepared,
             Err(reason) => {
@@ -621,8 +639,11 @@ impl UnseeingGame {
                 return unavailable(&reason);
             }
         };
-        self.apply_prepared_env(prepared.env());
-        let verdict = restorer.bind_mut().commit(prepared);
+        self.apply_prepared_env(prepared.env(), &mut rng);
+        let committed = restorer.bind_mut().commit(prepared);
+        let live_now = self.now;
+        let live_env = self.capture_env();
+        let verdict = committed.verify(live_now, &live_env);
         self.set_paused(was_paused);
         verdict
     }
@@ -631,15 +652,13 @@ impl UnseeingGame {
 impl UnseeingGame {
     /// Install only owner-checked environment values. Unlike the public
     /// legacy `apply_env` test surface, this door cannot repair or warn.
-    fn apply_prepared_env(&mut self, env: &PreparedEnv) {
+    fn apply_prepared_env(&mut self, env: &PreparedEnv, rng: &mut Gd<RandomNumberGenerator>) {
         self.now = env.now.value();
         self.demo_checked = env.demo_checked;
         self.demo.armed = env.demo_armed;
         self.demo.install_prepared(env.demo);
         self.flicker = Flicker::from_prepared(env.flicker);
-        if let Some(rng) = self.rng.as_mut() {
-            rng.set_state(env.flicker_rng_state);
-        }
+        rng.set_state(env.flicker_rng_state);
     }
 
     /// One warning per node lifetime is enough to expose a repaired engine or

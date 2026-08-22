@@ -151,6 +151,70 @@ func test_reflection_schedules_identical_echoes() -> void:
 	assert_int(p_capped.pending_echo_count()).is_equal(1)
 
 
+func test_invalid_reflection_geometry_refuses_before_primary_or_echo_mutation() -> void:
+	for witness: Array in [
+		[
+			Vector3(NAN, 0.0, 0.0),
+			(
+				"WaveCore.emit_reflecting: field normal.x: reflection request refused: "
+				+ "origin, normal, and derived fan geometry must remain finite in f32"
+			)
+		],
+		[
+			Vector3(3.4028234663852886e38, -3.4028234663852886e38, 3.4028234663852886e38),
+			(
+				"WaveCore.emit_reflecting: field normal: reflection request refused: "
+				+ "origin, normal, and derived fan geometry must remain finite in f32"
+			)
+		]
+	]:
+		var bad_normal: Vector3 = witness[0]
+		var core := WaveCore.new()
+		var emit := func() -> void:
+			core.emit_reflecting(
+				0, SOUND_AT, MAX_R, SPEED, GAIN, NOW, _space, MAX_ECHOES, bad_normal
+			)
+		await assert_error(emit).is_push_error(witness[1])
+		assert_int(core.live_count(NOW + 0.1)).is_equal(0)
+		assert_int(core.pending_echo_count()).is_equal(0)
+
+
+## This is a real PhysicsServer return, not a mirrored Rust fixture. The
+## primary is inside the admitted coordinate envelope, while the box's near
+## face is beyond it but still inside the 4.8 m fan reach. The adapter must
+## validate the returned dictionary through CheckedRayHit before clustering;
+## the valid primary remains, but the complete echo fan refuses atomically.
+func test_out_of_envelope_physics_hit_refuses_before_any_echo_is_scheduled() -> void:
+	var far_sound_at := Vector3(1_000_000.0, 0.0, 0.0)
+	# Near face x = 1_000_002.5, beyond the closed 1_000_002.0 envelope.
+	_add_box(Vector3(1_000_003.0, 0.0, 0.0), Vector3(1.0, 40.0, 40.0))
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var core := WaveCore.new()
+	var emit := func() -> void:
+		core.emit_reflecting(
+			0, far_sound_at, MAX_R, SPEED, GAIN, NOW, _space, MAX_ECHOES, Vector3.ZERO
+		)
+	await assert_error(emit).is_push_error(
+		"reflection fan refused: physics server returned malformed hit geometry"
+	)
+	assert_int(core.live_count(NOW + 0.1)).is_equal(1)
+	assert_vector(core.positions()[0]).is_equal(far_sound_at)
+	assert_int(core.pending_echo_count()).is_equal(0)
+
+
+func test_checked_wave_refusal_names_the_exact_origin_lane_and_rule() -> void:
+	var core := WaveCore.new()
+	var emit := func() -> void:
+		core.emit(
+			0, Vector3(3.4028234663852886e38, 0.0, 0.0), MAX_R, SPEED, GAIN, NOW, Vector3.ZERO, -2.0
+		)
+	await assert_error(emit).is_push_error(
+		"Pulses.emit: field at.x: must lie inside the renderer coordinate envelope — wave refused"
+	)
+	assert_int(core.live_count(NOW + 0.1)).is_equal(0)
+
+
 ## Time marches through every appointment: after each firing — too-early
 ## drains included — both pools hold the same slots, bit for bit. The
 ## 1e-3 s nudge past each at_t stays far under the >= 6e-3 s gap between
@@ -178,3 +242,19 @@ func test_echo_firings_drive_identical_pools() -> void:
 		assert_int(core.live_count(t)).is_equal(p.live_count(t))
 		_assert_pools_identical(p, core)
 	assert_int(p.pending_echo_count()).is_equal(0)  # every appointment kept
+
+
+func test_a_nonfinite_tick_refuses_before_draining_the_echo_book() -> void:
+	var core := WaveCore.new()
+	core.emit_reflecting(0, SOUND_AT, MAX_R, SPEED, GAIN, NOW, _space, MAX_ECHOES, NORMAL)
+	var before: Array = core.pending_echoes()
+	assert_int(before.size()).is_between(2, MAX_ECHOES)
+
+	var tick := func() -> void: core.tick(INF)
+	await (assert_error(tick).is_push_error(
+		(
+			"WaveCore.tick: field now: must be finite and inside the renderer-visible "
+			+ "time horizon — tick refused"
+		)
+	))
+	assert_array(core.pending_echoes()).is_equal(before)

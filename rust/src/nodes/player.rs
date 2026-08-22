@@ -25,11 +25,15 @@ use godot::global::{Key, MouseButton};
 use godot::prelude::*;
 
 use crate::observe::QueuedWave;
+use crate::observe::reflect::{CheckedReflectionRequest, ReflectionRequest};
+use crate::pulse_pool::{CheckedWave, OMNI_COS};
 use crate::render;
 use crate::reproduce::{HeroCapture, RestoreValueError};
 use crate::support_motion::{
-    ActorPosition, ActorVelocity, FootstepSuppression, MotionState, PosePoint, QueuedWaveGate,
+    ActorPosition, ActorVelocity, FootstepSuppression, GodotRotation, MotionState, PosePoint,
+    QueuedWaveGate,
 };
+use crate::temporal::{PreparedTime, prepare_time};
 
 /// Eye height above the floor.
 pub const EYE: f64 = 1.6;
@@ -99,17 +103,25 @@ struct WaveRequest {
     gate: QueuedWaveGate,
 }
 
+struct PreparedWaveRequest {
+    request: WaveRequest,
+    _wave_proof: CheckedWave,
+    _reflection_proof: CheckedReflectionRequest,
+}
+
 pub(super) struct PreparedPlayerState {
     position: Vector3,
     velocity: Vector3,
     rotation: Vector3,
+    eye: Gd<Camera3D>,
     eye_rotation: Vector3,
     motion: MotionState,
     last_tap: f64,
     tap_target: Vector3,
     tap_queued: bool,
-    wave_queue: Vec<WaveRequest>,
+    wave_queue: Vec<PreparedWaveRequest>,
     footstep_suppression: FootstepSuppression,
+    now: PreparedTime,
 }
 
 /// A cane-rest probe before it is published: the raw physics answer.
@@ -260,6 +272,7 @@ impl UnseeingPlayer {
     pub(super) fn prepare_restore(
         &self,
         hero: &HeroCapture,
+        now: PreparedTime,
     ) -> Result<PreparedPlayerState, RestoreValueError> {
         if !self.base().is_physics_processing() {
             return Err(RestoreValueError::new(
@@ -298,9 +311,7 @@ impl UnseeingPlayer {
             ));
         }
         let pitch = exact_f32_lane(hero.pitch, "hero.pitch")?;
-        if !hero.last_tap.is_finite() {
-            return Err(RestoreValueError::new("hero.last_tap", "must be finite"));
-        }
+        let last_tap = prepare_last_tap(hero.last_tap, now)?;
         PosePoint::try_new(hero.tap_target).map_err(|error| {
             let axis = error.field().rsplit('.').next().unwrap_or("tap_target");
             RestoreValueError::new(
@@ -317,93 +328,101 @@ impl UnseeingPlayer {
                     "this runtime admits only always-open gates",
                 ));
             }
-            if i32::try_from(wave.kind).is_err() {
-                return Err(RestoreValueError::new(
-                    format!("{prefix}.type"),
-                    "must fit the pulse kind lane",
-                ));
-            }
-            for (field, value) in [
-                ("max_r", wave.max_r),
-                ("speed", wave.speed),
-                ("gain", wave.gain),
-            ] {
-                if !value.is_finite() {
-                    return Err(RestoreValueError::new(
-                        format!("{prefix}.{field}"),
-                        "must be finite",
-                    ));
-                }
-            }
-            if wave.max_r <= 0.0 {
-                return Err(RestoreValueError::new(
-                    format!("{prefix}.max_r"),
-                    "must be strictly positive",
-                ));
-            }
-            if wave.speed <= 0.0 {
-                return Err(RestoreValueError::new(
-                    format!("{prefix}.speed"),
-                    "must be strictly positive",
-                ));
-            }
-            if !(0.0..=1.0).contains(&wave.gain) {
-                return Err(RestoreValueError::new(
-                    format!("{prefix}.gain"),
-                    "must be in 0..=1",
-                ));
-            }
-            validate_wave_vector(&format!("{prefix}.at"), wave.at)?;
-            validate_wave_vector(&format!("{prefix}.normal"), wave.normal)?;
-            wave_queue.push(WaveRequest {
-                kind: wave.kind,
+            let proof = CheckedWave::prepare(
+                wave.kind,
+                wave.at,
+                wave.max_r,
+                wave.speed,
+                wave.gain,
+                now,
+                Vector3::ZERO,
+                OMNI_COS,
+            )
+            .map_err(|error| {
+                RestoreValueError::new(format!("{prefix}.{}", error.field()), error.rule())
+            })?;
+            let reflection_proof = CheckedReflectionRequest::prepare(ReflectionRequest {
                 at: wave.at,
+                normal: wave.normal,
                 max_r: wave.max_r,
                 speed: wave.speed,
-                gain: wave.gain,
-                echoes: wave.echoes,
-                normal: wave.normal,
-                gate: wave.gate,
+                max_echoes: wave.echoes,
+                now: now.value(),
+            })
+            .map_err(|error| {
+                RestoreValueError::new(format!("{prefix}.{}", error.field()), error.reason())
+            })?;
+            wave_queue.push(PreparedWaveRequest {
+                request: WaveRequest {
+                    kind: wave.kind,
+                    at: wave.at,
+                    max_r: wave.max_r,
+                    speed: wave.speed,
+                    gain: wave.gain,
+                    echoes: wave.echoes,
+                    normal: wave.normal,
+                    gate: wave.gate,
+                },
+                _wave_proof: proof,
+                _reflection_proof: reflection_proof,
             });
         }
-        let mut rotation = self.base().get_rotation();
-        validate_wave_vector("hero.rotation", rotation)?;
-        rotation.y = yaw;
-        let mut eye_rotation = self
+        let rotation =
+            GodotRotation::try_replacing_yaw(self.base().get_rotation(), yaw).map_err(|_| {
+                RestoreValueError::new(
+                    "hero.yaw",
+                    "must form a canonical complete Godot YXZ rotation with the live X/Z lanes",
+                )
+            })?;
+        let eye = self
             .camera
             .as_ref()
-            .ok_or_else(|| RestoreValueError::new("hero.pitch", "the runtime eye is not built"))?
-            .get_rotation();
-        validate_wave_vector("hero.eye_rotation", eye_rotation)?;
-        eye_rotation.x = pitch;
+            .filter(|camera| camera.is_instance_valid())
+            .ok_or_else(|| {
+                RestoreValueError::new("hero.pitch", "the runtime eye is missing or freed")
+            })?
+            .clone();
+        let eye_rotation =
+            GodotRotation::try_replacing_pitch(eye.get_rotation(), pitch).map_err(|_| {
+                RestoreValueError::new(
+                    "hero.pitch",
+                    "must form a canonical complete Godot YXZ rotation with the live Y/Z lanes",
+                )
+            })?;
         Ok(PreparedPlayerState {
             position: position.world(),
             velocity: velocity.world(),
-            rotation,
-            eye_rotation,
+            rotation: rotation.world(),
+            eye,
+            eye_rotation: eye_rotation.world(),
             motion: hero.motion,
-            last_tap: hero.last_tap,
+            last_tap,
             tap_target: hero.tap_target,
             tap_queued: hero.tap_queued,
             wave_queue,
             footstep_suppression: FootstepSuppression::restore(hero.footstep_suppression_pending),
+            now,
         })
     }
 
     pub(super) fn install_prepared(&mut self, value: PreparedPlayerState) {
+        let mut eye = value.eye;
         self.base_mut().set_global_position(value.position);
         self.base_mut().set_velocity(value.velocity);
         self.base_mut().set_rotation(value.rotation);
-        if let Some(camera) = self.camera.as_mut() {
-            camera.set_rotation(value.eye_rotation);
-        }
+        eye.set_rotation(value.eye_rotation);
         self.motion_state = value.motion;
         self.support_collider_id = None;
         self.footstep_suppression = value.footstep_suppression;
         self.last_tap = value.last_tap;
         self.tap_target = value.tap_target;
         self.tap_queued = value.tap_queued;
-        self.wave_queue = value.wave_queue;
+        self.wave_queue = value
+            .wave_queue
+            .into_iter()
+            .map(|prepared| prepared.request)
+            .collect();
+        self.now = value.now.value();
     }
 
     /// The player registers its own senses: idempotent, so a bare
@@ -544,6 +563,48 @@ impl UnseeingPlayer {
         max_echoes: i64,
         origin_normal: Vector3,
     ) {
+        let now = match prepare_time(self.now) {
+            Ok(now) => now,
+            Err(error) => {
+                godot_error!(
+                    "UnseeingPlayer.queue_wave: field now: {} — wave refused",
+                    error.rule
+                );
+                return;
+            }
+        };
+        if let Err(error) = CheckedWave::prepare(
+            wave_type,
+            at,
+            max_r,
+            speed,
+            gain,
+            now,
+            Vector3::ZERO,
+            OMNI_COS,
+        ) {
+            godot_error!(
+                "UnseeingPlayer.queue_wave: field {}: {} — wave refused",
+                error.field(),
+                error.rule()
+            );
+            return;
+        }
+        if let Err(error) = CheckedReflectionRequest::prepare(ReflectionRequest {
+            at,
+            normal: origin_normal,
+            max_r,
+            speed,
+            max_echoes,
+            now: now.value(),
+        }) {
+            godot_error!(
+                "UnseeingPlayer.queue_wave: field {}: {}",
+                error.field(),
+                error.reason()
+            );
+            return;
+        }
         self.wave_queue.push(WaveRequest {
             kind: wave_type,
             at,
@@ -572,6 +633,7 @@ impl UnseeingPlayer {
                 entry.set("gain", w.gain);
                 entry.set("echoes", w.echoes);
                 entry.set("normal", w.normal);
+                entry.set("gate", w.gate.wire_name());
                 entry
             })
             .collect()
@@ -784,16 +846,17 @@ fn exact_f32_lane(value: f64, path: &'static str) -> Result<f32, RestoreValueErr
     Ok(lane)
 }
 
-fn validate_wave_vector(path: &str, value: Vector3) -> Result<(), RestoreValueError> {
-    for (axis, lane) in [("x", value.x), ("y", value.y), ("z", value.z)] {
-        if !lane.is_finite() {
-            return Err(RestoreValueError::new(
-                format!("{path}.{axis}"),
-                "must be finite",
-            ));
-        }
+fn prepare_last_tap(raw: f64, now: PreparedTime) -> Result<f64, RestoreValueError> {
+    let sentinel = raw.to_bits() == (-10.0_f64).to_bits();
+    let elapsed = raw.is_finite() && raw >= 0.0 && raw <= now.value();
+    if sentinel || elapsed {
+        Ok(raw)
+    } else {
+        Err(RestoreValueError::new(
+            "hero.last_tap",
+            "must be the exact initial sentinel or an elapsed simulation time",
+        ))
     }
-    Ok(())
 }
 
 impl UnseeingPlayer {
@@ -811,13 +874,13 @@ impl UnseeingPlayer {
         self.footstep_suppression.pending()
     }
 
-    /// The eye's pitch, radians — `None` before `_ready` has built the
-    /// camera, which is a different fact from a level gaze and must not
-    /// be reported as one.
-    pub(crate) fn eye_pitch(&self) -> Option<f64> {
+    /// The eye's complete local rotation — `None` before `_ready` has built
+    /// the camera or after it was freed. Capture owns only pitch, but must
+    /// prove the uncaptured Y/Z configuration before serialising that lane.
+    pub(crate) fn eye_rotation(&self) -> Option<Vector3> {
         self.camera
             .as_ref()
-            .map(|camera| f64::from(camera.get_rotation().x))
+            .and_then(|camera| camera.is_instance_valid().then(|| camera.get_rotation()))
     }
 
     /// The wave queue as pure observations — the same content the
@@ -836,5 +899,33 @@ impl UnseeingPlayer {
                 gate: w.gate,
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::temporal::prepare_time;
+
+    #[test]
+    fn prepared_last_tap_accepts_only_the_exact_sentinel_or_elapsed_time() {
+        let now = prepare_time(12.5).unwrap();
+        for accepted in [-10.0_f64, 0.0, 12.5] {
+            assert_eq!(
+                prepare_last_tap(accepted, now).unwrap().to_bits(),
+                accepted.to_bits()
+            );
+        }
+        for refused in [
+            -9.0,
+            12.5_f64.next_up(),
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            let error = prepare_last_tap(refused, now)
+                .expect_err("only the sentinel or an elapsed timestamp may pass");
+            assert_eq!(error.path, "hero.last_tap");
+        }
     }
 }

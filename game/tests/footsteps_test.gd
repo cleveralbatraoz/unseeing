@@ -77,12 +77,14 @@ func test_step_waves_carry_the_footstep_voice_and_alternate() -> void:
 		var w_echoes: int = w.echoes
 		var w_normal: Vector3 = w.normal
 		var w_at: Vector3 = w.at
+		var w_gate: String = w.gate
 		assert_int(w_type).is_equal(2)
 		assert_float(w_max_r).is_equal(1.6)
 		assert_float(w_speed).is_equal(4.0)
 		assert_float(w_gain).is_equal(0.8)
 		assert_int(w_echoes).is_equal(2)
 		assert_vector(w_normal).is_equal(Vector3.UP)
+		assert_str(w_gate).is_equal("always")
 		assert_float(w_at.y).is_equal_approx(0.04, 0.0001)
 		assert_float(w_at.x).is_equal_approx(side * 0.07, 0.001)
 		side = -side

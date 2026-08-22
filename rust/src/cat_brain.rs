@@ -24,6 +24,7 @@
 use godot::builtin::Vector3;
 
 use crate::reproduce::RestoreValueError;
+use crate::support_motion::ActorYaw;
 
 /// The leisurely wander walk, m/s — inside the gait's design envelope.
 pub const WANDER_SPEED: f64 = 0.6;
@@ -241,6 +242,9 @@ impl CatBrain {
                 ));
             }
         }
+        ActorYaw::try_new(capture.yaw).map_err(|_| {
+            RestoreValueError::new("brain.yaw", "must narrow to a finite Godot rotation lane")
+        })?;
         for (field, value) in [
             ("rect.min_x", rect.min_x),
             ("rect.min_z", rect.min_z),
@@ -551,6 +555,26 @@ mod tests {
         let error = CatBrain::prepare_restore(capture)
             .expect_err("a roam edge outside actor space must be refused");
         assert_eq!(error.path, "brain.rect.max_x");
+    }
+
+    #[test]
+    fn prepared_restore_rejects_yaw_that_cannot_reach_a_finite_godot_lane() {
+        let rect = RoamRect::around(Vector3::ZERO, 6.0, 6.0);
+        let mut poisoned = CatBrain::new(7, rect, 0.0).capture();
+        poisoned.yaw = f64::MAX;
+        let error = CatBrain::prepare_restore(poisoned)
+            .expect_err("a yaw that narrows to infinity must be refused");
+        assert_eq!(error.path, "brain.yaw");
+
+        for boundary in [f64::from(f32::MAX), -f64::from(f32::MAX)] {
+            let mut accepted = CatBrain::new(7, rect, 0.0).capture();
+            accepted.yaw = boundary;
+            let restored = CatBrain::from_prepared(
+                CatBrain::prepare_restore(accepted).expect("finite f32 boundary must pass"),
+            );
+            assert_eq!(restored.capture().yaw.to_bits(), boundary.to_bits());
+            assert!((restored.capture().yaw as f32).is_finite());
+        }
     }
 
     /// The published pcg_basic.c reference stream: srandom(42, 54) must

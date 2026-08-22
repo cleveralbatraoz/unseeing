@@ -373,7 +373,8 @@ mod tests {
     fn the_echo_book_reports_the_wait_on_every_appointment() {
         let pool = PulsePool::new();
         let mut book = EchoQueue::new();
-        book.schedule(0.0, 5.5, Vector3::new(1.0, 2.0, 3.0), 1.0, 5.5);
+        book.schedule(0.0, 5.5, Vector3::new(1.0, 2.0, 3.0), 1.0, 5.5)
+            .unwrap();
         let f = frame(&pool, &book, 0.25, 1.0, test_scene(Vec::new()));
         assert_eq!(f.echoes.len(), 1);
         assert!((f.echoes[0].at_t - 1.0).abs() < 1e-9);
@@ -390,7 +391,7 @@ mod tests {
     fn an_overdue_appointment_reports_how_late_it_is() {
         let pool = PulsePool::new();
         let mut book = EchoQueue::new();
-        book.schedule(0.0, 5.5, Vector3::ZERO, 1.0, 5.5);
+        book.schedule(0.0, 5.5, Vector3::ZERO, 1.0, 5.5).unwrap();
         let f = frame(&pool, &book, 1.5, 1.0, test_scene(Vec::new()));
         assert!((f.echoes[0].fires_in + 0.5).abs() < 1e-9);
     }

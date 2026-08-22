@@ -549,6 +549,56 @@ the environment and committing every owner are infallible installs of the
 prepared values; the final recapture/hash is an internal postcondition, not a
 late artifact-validation path.
 
+Prepared wave state also has a renderer-numerical domain. Every direct,
+queued, reflected, restored-slot, scheduled-echo, and restored-echo origin is
+admitted through one checked `WaveOrigin`, whose f32 lanes are finite and lie
+in the closed interval `[-MAX_POSE_COORD_M, MAX_POSE_COORD_M]`, with
+`MAX_POSE_COORD_M = 1_000_002 m`. This is the already-authored coordinate
+safety envelope, not an acoustic reach or a level-size limit. It closes the
+specific producer/artifact path by which an extreme finite origin could enter
+`u_ppos`; it is not presented as a theorem over an arbitrary corrupted Godot
+camera, matrix, wall uniform, or authored transform. Origins are never clamped
+or rewritten, and format 2 stores the accepted bits verbatim.
+
+The shader's packed gain is authoritative at its actual precision. A finite
+raw gain is clamped to `[0, 1]`, packed once with its kind, and decoded once by
+the same f32 floor/remainder law as GLSL. That decoded f32 value, widened to
+f64, is the checked effective gain used for reflection appointments. Thus a
+primary ring and its echoes cannot disagree because the packed word lost
+precision; no tolerance or acoustic attenuation model is introduced.
+
+Yaw and pitch remain the only actor rotation lanes in the reproduction blob.
+The omitted axes are live scene configuration, not zeroes. Capture
+canonicalizes each complete live Godot YXZ rotation and refuses if doing so
+would alter an omitted lane. Restore replaces only player/cat yaw or eye
+pitch in the corresponding complete live rotation. Live/brain capture may
+canonicalize the owned lane by one ULP while requiring every omitted lane
+bit-identical; the sole exception is `+0`/`-0` equivalence, for which the
+original omitted sign bit is retained while the serialized owned lane uses
+canonical `+0`. Strict artifact installation otherwise requires the complete
+requested target already canonical. A
+successful restore therefore preserves player body X/Z, eye Y/Z, and cat
+body X/Z at the commit boundary. Once processing resumes, those axes follow
+the same Godot Euler-cache evolution as an un-restored actor started from the
+same complete transform; restore does not freeze or repair ordinary engine
+evolution.
+
+The restore-critical handles hardened here are checked live before their first
+clone, bind, or method call: the observer's cached player during canonical
+capture and the composition root's restorer at transaction entry. This is not
+a claim about unrelated legacy runtime caches. A non-finite public wave tick
+refuses before draining echoes. The
+registered player queue validates a request through the same checked-wave
+door before appending it, while retaining next-physics-tick birth semantics.
+Reflection explanations propagate an unrepresentable appointment as one
+explicit refusal; they never silently drop a kept cluster and publish an
+unbalanced ledger. The same checked reflection-geometry value validates a
+zero-or-finite surface normal, lifted origin, fan-dot arithmetic, reach, and
+ray endpoints before a caller can append a player request, install a reflected
+primary, or cast. Malformed caller geometry is wholly atomic. Invalid facts
+returned by the physics server keep the independently valid primary but
+refuse the entire reflection fan before any echo is scheduled.
+
 The observer adds structured actor motion facts from one validated source:
 
 - phase (`controlled` or `airborne`);

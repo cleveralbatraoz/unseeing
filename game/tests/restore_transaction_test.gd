@@ -1,3 +1,4 @@
+# gdlint:ignore = max-public-methods
 extends GdUnitTestSuite
 # gdlint:ignore = max-line-length
 ## The restore TRANSACTION against a code-built live world: a captured blob applied
@@ -98,6 +99,24 @@ func _copy(blob: Dictionary) -> Dictionary:
 	return JSON.parse_string(JSON.stringify(blob, "", true, true)) as Dictionary
 
 
+func _f32_bits(value: float) -> String:
+	var bytes := PackedByteArray()
+	bytes.resize(4)
+	bytes.encode_float(0, value)
+	return bytes.hex_encode()
+
+
+func _uncaptured_rotation_bits(main: UnseeingGame, cat: WaveCat) -> Array[String]:
+	return [
+		_f32_bits(main.player.rotation.x),
+		_f32_bits(main.player.rotation.z),
+		_f32_bits(main.player.camera.rotation.y),
+		_f32_bits(main.player.camera.rotation.z),
+		_f32_bits(cat.global_rotation.x),
+		_f32_bits(cat.global_rotation.z),
+	]
+
+
 ## Replace the artifact label after a test deliberately changes one value.
 ## This is syntax hashing only: semantic restore validation would make every
 ## transaction case circular by refusing the fixture while it is built.
@@ -133,7 +152,7 @@ func _assert_atomic_refusal(main: UnseeingGame, blob: Dictionary, expected: Stri
 	await assert_error(invoke).is_success()
 	var verdict: Dictionary = holder[0]
 	assert_bool(verdict.has("unavailable")).is_true()
-	assert_str(verdict["unavailable"]).contains(expected)
+	assert_str(str(verdict.get("unavailable", ""))).contains(expected)
 	assert_dict(main.capture_env()).is_equal(before_env)
 	var after: Dictionary = main.observer.capture(main.now, main.capture_env())
 	assert_bool(after.has("unavailable")).is_false()
@@ -144,6 +163,39 @@ func _assert_atomic_refusal(main: UnseeingGame, blob: Dictionary, expected: Stri
 	for i: int in cats.size():
 		assert_bool(cats[i].is_processing()).is_equal(cat_process[i])
 		assert_bool(cats[i].is_physics_processing()).is_equal(cat_physics[i])
+	get_tree().paused = was_paused
+
+
+func _assert_atomic_graph_refusal(
+	main: UnseeingGame,
+	blob: Dictionary,
+	expected: String,
+	damage: Callable,
+	repair: Callable,
+	restore_target: UnseeingGame,
+) -> void:
+	_queue_one(main, Vector3(-6.75, 0.425, 7.875))
+	await get_tree().physics_frame
+	var was_paused := get_tree().paused
+	get_tree().paused = true
+	var before_env: Dictionary = main.capture_env()
+	var before: Dictionary = main.observer.capture(main.now, before_env)
+	assert_bool(before.has("unavailable")).is_false()
+	var before_position := main.player.global_position
+	var before_rotation := main.player.rotation
+	damage.call()
+	var holder: Array[Dictionary] = [{}]
+	var invoke := func() -> void: holder[0] = restore_target.restore_blob(blob)
+	await assert_error(invoke).is_success()
+	repair.call()
+	assert_bool(holder[0].has("unavailable")).is_true()
+	assert_str(str(holder[0].get("unavailable", ""))).contains(expected)
+	assert_dict(main.capture_env()).is_equal(before_env)
+	assert_vector(main.player.global_position).is_equal(before_position)
+	assert_vector(main.player.rotation).is_equal(before_rotation)
+	var after: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_bool(after.has("unavailable")).is_false()
+	assert_str(after["hash"]).is_equal(before["hash"])
 	get_tree().paused = was_paused
 
 
@@ -158,7 +210,40 @@ func _assert_atomic_refusal(main: UnseeingGame, blob: Dictionary, expected: Stri
 ## has moved, and the proof names it.
 func test_round_trip_capture_restore_capture_is_exact() -> void:
 	var main := await _boot_ticked()
+	var before_wrapping_kind: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var wrapping_kind := func() -> void:
+		main.wave_core.emit(2147483648, Vector3.ZERO, 6.0, 5.5, 1.0, main.now, Vector3.ZERO, -2.0)
+	await assert_error(wrapping_kind).is_push_error(
+		"Pulses.emit: field type: must fit the pulse kind lane — wave refused"
+	)
+	var after_wrapping_kind: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_str(after_wrapping_kind["hash"]).is_equal(before_wrapping_kind["hash"])
 	await _lively(main)
+	var cats := main.cats()
+	assert_int(cats.size()).is_greater(0)
+	var cat: WaveCat = cats[0]
+	# Exact known YXZ image of (0.25, -0.5, 0.125). Player body and eye
+	# exercise all four omitted local lanes; the cat keeps its brain-owned Y
+	# while adding the two omitted global lanes.
+	var complete_rotation := Vector3(0.25, -0.5000000596046448, 0.125)
+	main.player.rotation = complete_rotation
+	main.player.camera.rotation = complete_rotation
+	var cat_rotation := cat.global_rotation
+	cat_rotation.x = 0.25
+	cat_rotation.z = 0.125
+	cat.global_rotation = cat_rotation
+	var expected_rotation_config := _uncaptured_rotation_bits(main, cat)
+	var target_env: Dictionary = main.capture_env()
+	target_env["demo_checked"] = true
+	target_env["demo_armed"] = false
+	target_env["demo_next"] = 13.25
+	target_env["flicker_t"] = 12.5
+	target_env["flicker_level"] = 0.9
+	target_env["flicker_drop_until"] = -0.75
+	target_env["flicker_next_drop"] = 8.75
+	target_env["flicker_rng_state"] = 1234567
+	main.apply_env(target_env)
+	target_env = main.capture_env()
 	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
 	assert_bool(blob.has("unavailable")).is_false()
 	# a blob of an empty world would round-trip perfectly and prove nothing:
@@ -167,11 +252,54 @@ func test_round_trip_capture_restore_capture_is_exact() -> void:
 	assert_int(main.observer.snapshot(main.now)["live_slots"]).is_greater(0)
 	assert_int((blob["echoes"] as Array).size()).is_greater(0)
 	assert_int((blob["hero"]["queued_waves"] as Array).size()).is_greater(0)
+	await _one_frame()
+	var expected_rotation_future := _uncaptured_rotation_bits(main, cat)
+	main.player.look(Vector2(175.0, -75.0))
 	for _i in 30:
 		await _one_frame()
+	# The omitted lanes are live configuration at restore time. Re-establish
+	# compatible canonical decoys after ordinary look/yaw evolution, while
+	# changing only the lanes the artifact owns.
+	main.player.rotation = Vector3(0.25, 0.5, 0.125)
+	main.player.camera.rotation = Vector3(-0.25, -0.5000000596046448, 0.125)
+	cat_rotation = cat.global_rotation
+	cat_rotation.x = 0.25
+	cat_rotation.z = 0.125
+	cat.global_rotation = cat_rotation
+	assert_array(_uncaptured_rotation_bits(main, cat)).is_equal(expected_rotation_config)
+	var changed: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_bool(changed.has("unavailable")).is_false()
+	assert_str((changed["hero"] as Dictionary)["yaw"]).is_not_equal(
+		(blob["hero"] as Dictionary)["yaw"]
+	)
+	assert_str((changed["hero"] as Dictionary)["pitch"]).is_not_equal(
+		(blob["hero"] as Dictionary)["pitch"]
+	)
+	var decoy_env := target_env.duplicate(true)
+	var target_now: float = target_env["now"]
+	decoy_env["now"] = target_now + 0.125
+	decoy_env["demo_checked"] = false
+	decoy_env["demo_armed"] = true
+	decoy_env["demo_next"] = 14.25
+	decoy_env["flicker_t"] = 13.5
+	decoy_env["flicker_level"] = 0.8
+	decoy_env["flicker_drop_until"] = 0.25
+	decoy_env["flicker_next_drop"] = 7.75
+	decoy_env["flicker_rng_state"] = 7654321
+	for key: String in target_env:
+		assert_bool(target_env[key] != decoy_env[key]).is_true()
+	main.apply_env(decoy_env)
+	assert_dict(main.capture_env()).is_equal(decoy_env)
 	var verdict: Dictionary = main.restore_blob(blob)
 	assert_str(str(verdict.get("unavailable", ""))).is_empty()
 	assert_str(verdict["hash"]).is_equal(blob["hash"])
+	assert_array(_uncaptured_rotation_bits(main, cat)).is_equal(expected_rotation_config)
+	var fresh: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_str(str(fresh.get("unavailable", ""))).is_empty()
+	assert_str(fresh["hash"]).is_equal(blob["hash"])
+	assert_str(main.observer.blob_round_trip_ok(blob, fresh)).is_empty()
+	await _one_frame()
+	assert_array(_uncaptured_rotation_bits(main, cat)).is_equal(expected_rotation_future)
 
 
 ## The spurious-beat trap. A source's gate is re-pinned AFTER the clock lands,
@@ -434,6 +562,12 @@ func test_freed_cat_or_source_handle_refuses_before_environment_or_warning_write
 	var was_paused := get_tree().paused
 	get_tree().paused = true
 	(cats[0] as WaveCat).free()
+	var cat_capture_holder: Array[Dictionary] = [{}]
+	var capture_cat := func() -> void:
+		cat_capture_holder[0] = cat_game.observer.capture(cat_game.now, cat_game.capture_env())
+	await assert_error(capture_cat).is_success()
+	assert_str(str(cat_capture_holder[0].get("unavailable", ""))).contains("cat")
+	assert_str(str(cat_capture_holder[0].get("unavailable", ""))).contains("freed")
 	var cat_holder: Array[Dictionary] = [{}]
 	var invoke_cat := func() -> void: cat_holder[0] = cat_game.restore_blob(cat_blob)
 	await assert_error(invoke_cat).is_success()
@@ -441,6 +575,14 @@ func test_freed_cat_or_source_handle_refuses_before_environment_or_warning_write
 	assert_dict(cat_game.capture_env()).is_equal(cat_env)
 
 	(sources[0] as Node3D).free()
+	var source_capture_holder: Array[Dictionary] = [{}]
+	var capture_source := func() -> void:
+		source_capture_holder[0] = source_game.observer.capture(
+			source_game.now, source_game.capture_env()
+		)
+	await assert_error(capture_source).is_success()
+	assert_str(str(source_capture_holder[0].get("unavailable", ""))).contains("source")
+	assert_str(str(source_capture_holder[0].get("unavailable", ""))).contains("freed")
 	var source_holder: Array[Dictionary] = [{}]
 	var invoke_source := func() -> void: source_holder[0] = source_game.restore_blob(source_blob)
 	await assert_error(invoke_source).is_success()
@@ -449,6 +591,148 @@ func test_freed_cat_or_source_handle_refuses_before_environment_or_warning_write
 	cat_game.free()
 	source_game.free()
 	get_tree().paused = was_paused
+
+
+func test_a_freed_observer_player_refuses_capture_before_any_handle_call() -> void:
+	var main := await _boot_ticked()
+	var before_env: Dictionary = main.capture_env()
+	var was_paused := get_tree().paused
+	get_tree().paused = true
+	main.player.free()
+
+	var holder: Array[Dictionary] = [{}]
+	var capture := func() -> void: holder[0] = main.observer.capture(main.now, main.capture_env())
+	await assert_error(capture).is_success()
+	assert_str(str(holder[0].get("unavailable", ""))).contains("hero")
+	assert_str(str(holder[0].get("unavailable", ""))).contains("freed")
+	assert_dict(main.capture_env()).is_equal(before_env)
+
+	main.free()
+	get_tree().paused = was_paused
+
+
+func test_capture_refuses_noncanonical_omitted_rotation_lanes_in_every_actor_route() -> void:
+	var main := await _boot_ticked()
+	# Each setter creates a real Godot Basis, and each getter below is its first
+	# YXZ Euler image. The owned lane is already stable on the second map while
+	# one omitted lane is not, so replacing omitted lanes with synthetic zeroes
+	# would silently accept an artifact that exact restore cannot reproduce.
+	var yaw_witness := Vector3(-2.0493662, -2.6510882, -3.7417357)
+	main.player.rotation = yaw_witness
+	var refused: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_str(str(refused.get("unavailable", ""))).contains(
+		"hero body does not preserve its configured X/Z rotation"
+	)
+
+	main.player.rotation = Vector3.ZERO
+	var pitch_witness := Vector3(-4.5095935, -4.016193, 5.4389277)
+	main.player.camera.rotation = pitch_witness
+	refused = main.observer.capture(main.now, main.capture_env())
+	assert_str(str(refused.get("unavailable", ""))).contains(
+		"hero eye does not preserve its configured Y/Z rotation"
+	)
+
+	main.player.camera.rotation = Vector3.ZERO
+	var cats := main.cats()
+	assert_int(cats.size()).is_equal(1)
+	var cat: WaveCat = cats[0]
+	cat.global_rotation = yaw_witness
+	refused = main.observer.capture(main.now, main.capture_env())
+	assert_str(str(refused.get("unavailable", ""))).contains(
+		"cat body does not preserve its configured X/Z rotation"
+	)
+
+
+func test_a_freed_root_restorer_refuses_before_clone_or_world_write() -> void:
+	var main := await _boot_ticked()
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var before_env: Dictionary = main.capture_env()
+	var was_paused := get_tree().paused
+	get_tree().paused = true
+	main.restorer.free()
+
+	var holder: Array[Dictionary] = [{}]
+	var restore := func() -> void: holder[0] = main.restore_blob(blob)
+	await assert_error(restore).is_success()
+	assert_str(str(holder[0].get("unavailable", ""))).contains("restorer")
+	assert_str(str(holder[0].get("unavailable", ""))).contains("freed")
+	assert_dict(main.capture_env()).is_equal(before_env)
+
+	main.free()
+	get_tree().paused = was_paused
+
+
+func test_runtime_queue_uses_checked_wave_admission_before_append() -> void:
+	var main := await _boot_ticked()
+	var before: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var before_count: int = main.player.queued_waves().size()
+
+	var queue := func() -> void:
+		main.player.queue_wave(0, Vector3.ZERO, 1.7976931348623157e308, 5.5, 1.0, 0, Vector3.UP)
+	await (assert_error(queue).is_push_error(
+		(
+			"UnseeingPlayer.queue_wave: field max_r: must narrow to a finite positive "
+			+ "shader lane — wave refused"
+		)
+	))
+	assert_int(main.player.queued_waves().size()).is_equal(before_count)
+	var after: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_str(after["hash"]).is_equal(before["hash"])
+
+
+func test_runtime_queue_refuses_invalid_reflection_geometry_before_append() -> void:
+	for witness: Array in [
+		[
+			Vector3(NAN, 0.0, 0.0),
+			(
+				"UnseeingPlayer.queue_wave: field normal.x: reflection request refused: "
+				+ "origin, normal, and derived fan geometry must remain finite in f32"
+			)
+		],
+		[
+			Vector3(3.4028234663852886e38, -3.4028234663852886e38, 3.4028234663852886e38),
+			(
+				"UnseeingPlayer.queue_wave: field normal: reflection request refused: "
+				+ "origin, normal, and derived fan geometry must remain finite in f32"
+			)
+		]
+	]:
+		var bad_normal: Vector3 = witness[0]
+		var main := await _boot_ticked()
+		var before: Dictionary = main.observer.capture(main.now, main.capture_env())
+		var before_count: int = main.player.queued_waves().size()
+		var queue := func() -> void:
+			main.player.queue_wave(0, Vector3.ZERO, 6.0, 5.5, 1.0, 6, bad_normal)
+		await assert_error(queue).is_push_error(witness[1])
+		assert_int(main.player.queued_waves().size()).is_equal(before_count)
+		var after: Dictionary = main.observer.capture(main.now, main.capture_env())
+		assert_str(after["hash"]).is_equal(before["hash"])
+		main.free()
+
+
+func test_restore_refuses_overflowing_reflection_normal_before_any_write() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	var wave: Dictionary = ((blob["hero"] as Dictionary)["queued_waves"] as Array)[0]
+	var normal: Array = wave["normal"]
+	normal[0] = "3.4028234663852886e38"
+	normal[1] = "-3.4028234663852886e38"
+	normal[2] = "3.4028234663852886e38"
+	_install_canonical_hash(main, blob)
+
+	await _assert_atomic_refusal(main, blob, "hero.queued_waves[0].normal")
+
+
+func test_prepared_restore_rejects_an_out_of_domain_slot_origin_before_writes() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	var slot: Dictionary = (blob["slots"] as Array)[0]
+	(slot["pos"] as Array)[0] = "3.4028234663852886e38"
+	_install_canonical_hash(main, blob)
+
+	await _assert_atomic_refusal(main, blob, "slots[0].pos.x")
 
 
 func test_dormant_schema_refuses_airborne_pending_or_controlled_contact_state() -> void:
@@ -474,3 +758,210 @@ func test_dormant_schema_refuses_airborne_pending_or_controlled_contact_state() 
 	wave["gate"] = "controlled_contact"
 	_install_canonical_hash(main, gated)
 	await _assert_atomic_refusal(main, gated, "hero.queued_waves[0].gate")
+
+
+func _assert_semantically_poisoned_wave_state(main: UnseeingGame) -> void:
+	var nonfinite_appointment := _copy(main.observer.capture(main.now, main.capture_env()))
+	var appointment: Dictionary = (nonfinite_appointment["echoes"] as Array)[0]
+	appointment["at_t"] = "Infinity"
+	_install_canonical_hash(main, nonfinite_appointment)
+
+	var zero_speed := _copy(main.observer.capture(main.now, main.capture_env()))
+	var zero_slot: Dictionary = (zero_speed["slots"] as Array)[0]
+	(zero_slot["dat"] as Array)[2] = "0.0"
+	_install_canonical_hash(main, zero_speed)
+	await _assert_atomic_refusal(main, zero_speed, "slots[0].dat.z")
+
+	var kind_mismatch := _copy(main.observer.capture(main.now, main.capture_env()))
+	var kind_slot: Dictionary = (kind_mismatch["slots"] as Array)[0]
+	var old_kind: int = kind_slot["kind"] as int
+	kind_slot["kind"] = old_kind + 1
+	_install_canonical_hash(main, kind_mismatch)
+	await _assert_atomic_refusal(main, kind_mismatch, "slots[0].kind")
+
+	var forged_end := _copy(main.observer.capture(main.now, main.capture_env()))
+	var end_slot: Dictionary = (forged_end["slots"] as Array)[0]
+	end_slot["end"] = str(str(end_slot["end"]).to_float() + 1000.0)
+	_install_canonical_hash(main, forged_end)
+	await _assert_atomic_refusal(main, forged_end, "slots[0].end")
+
+	_queue_one(main, Vector3(2.125, 0.375, -1.625))
+	var huge_range := _copy(main.observer.capture(main.now, main.capture_env()))
+	var huge_wave: Dictionary = ((huge_range["hero"] as Dictionary)["queued_waves"] as Array)[0]
+	huge_wave["max_r"] = "1.7976931348623157e308"
+	_install_canonical_hash(main, huge_range)
+	await _assert_atomic_refusal(main, huge_range, "hero.queued_waves[0].max_r")
+
+	_queue_one(main, Vector3(-2.375, 0.625, 1.875))
+	var tiny_speed := _copy(main.observer.capture(main.now, main.capture_env()))
+	var tiny_wave: Dictionary = ((tiny_speed["hero"] as Dictionary)["queued_waves"] as Array)[0]
+	tiny_wave["speed"] = "2.2250738585072014e-308"
+	_install_canonical_hash(main, tiny_speed)
+	await _assert_atomic_refusal(main, tiny_speed, "hero.queued_waves[0].speed")
+
+	await _assert_atomic_refusal(main, nonfinite_appointment, "echoes[0].at_t")
+
+
+func test_restore_refuses_noncanonical_actor_angles_and_unsafe_private_numbers_before_writes(
+) -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	await _assert_semantically_poisoned_wave_state(main)
+	var cases: Array[Array] = []
+
+	var leg_phase := _copy(main.observer.capture(main.now, main.capture_env()))
+	var poisoned_vm: Dictionary = (leg_phase["hero"] as Dictionary)["viewmodel"]
+	poisoned_vm["leg_phase"] = "1.7976931348623157e308"
+	cases.append([leg_phase, "hero.viewmodel.leg_phase"])
+
+	var brain_poison := _copy(main.observer.capture(main.now, main.capture_env()))
+	var poisoned_brain: Dictionary = ((brain_poison["cats"] as Array)[0] as Dictionary)["brain"]
+	poisoned_brain["yaw"] = "1.7976931348623157e308"
+	cases.append([brain_poison, "cats[0].brain.yaw"])
+
+	var pose_poison := _copy(main.observer.capture(main.now, main.capture_env()))
+	var poisoned_pose: Dictionary = ((pose_poison["cats"] as Array)[0] as Dictionary)["pose"]
+	poisoned_pose["yaw"] = "1.7976931348623157e308"
+	cases.append([pose_poison, "cats[0].pose.yaw"])
+
+	var player_yaw := _copy(main.observer.capture(main.now, main.capture_env()))
+	(player_yaw["hero"] as Dictionary)["yaw"] = "4.0"
+	cases.append([player_yaw, "hero.yaw"])
+
+	var cat_yaw := _copy(main.observer.capture(main.now, main.capture_env()))
+	((cat_yaw["cats"] as Array)[0] as Dictionary)["yaw"] = "4.0"
+	cases.append([cat_yaw, "cats[0].yaw"])
+
+	var coordinated_cat_yaw := _copy(main.observer.capture(main.now, main.capture_env()))
+	var coordinated_cat: Dictionary = (coordinated_cat_yaw["cats"] as Array)[0]
+	coordinated_cat["yaw"] = "4.0"
+	(coordinated_cat["brain"] as Dictionary)["yaw"] = "4.0"
+	(coordinated_cat["pose"] as Dictionary)["yaw"] = "4.0"
+	cases.append([coordinated_cat_yaw, "cats[0].yaw"])
+
+	var unlinked_cat_body := _copy(main.observer.capture(main.now, main.capture_env()))
+	var unlinked_cat: Dictionary = (unlinked_cat_body["cats"] as Array)[0]
+	# This is the exact canonical f32 YXZ image of raw yaw 4.0, so the body
+	# angle is valid by itself while remaining unrelated to this cat's brain.
+	var other_canonical_yaw := "-2.2831852436065674"
+	assert_str(str(unlinked_cat["yaw"])).is_not_equal(other_canonical_yaw)
+	unlinked_cat["yaw"] = other_canonical_yaw
+	cases.append([unlinked_cat_body, "cats[0].yaw"])
+
+	var brain_yaw := _copy(main.observer.capture(main.now, main.capture_env()))
+	(((brain_yaw["cats"] as Array)[0] as Dictionary)["brain"] as Dictionary)["yaw"] = "4.0"
+	cases.append([brain_yaw, "cats[0].pose.yaw"])
+
+	var pose_yaw := _copy(main.observer.capture(main.now, main.capture_env()))
+	(((pose_yaw["cats"] as Array)[0] as Dictionary)["pose"] as Dictionary)["yaw"] = "4.0"
+	cases.append([pose_yaw, "cats[0].pose.yaw"])
+
+	for case: Array in cases:
+		var blob: Dictionary = case[0]
+		_install_canonical_hash(main, blob)
+		await _assert_atomic_refusal(main, blob, str(case[1]))
+
+
+func test_restore_refuses_future_taps_and_contradictory_cat_copies_before_writes() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var cases: Array[Array] = []
+
+	var negative_tap := _copy(main.observer.capture(main.now, main.capture_env()))
+	(negative_tap["hero"] as Dictionary)["last_tap"] = "-9.0"
+	cases.append([negative_tap, "hero.last_tap"])
+
+	var future_tap := _copy(main.observer.capture(main.now, main.capture_env()))
+	var capture_now := str((future_tap["env"] as Dictionary)["now"]).to_float()
+	(future_tap["hero"] as Dictionary)["last_tap"] = str(capture_now + 1.0)
+	cases.append([future_tap, "hero.last_tap"])
+
+	var pose_yaw := _copy(main.observer.capture(main.now, main.capture_env()))
+	var yaw_pose: Dictionary = ((pose_yaw["cats"] as Array)[0] as Dictionary)["pose"]
+	yaw_pose["yaw"] = str(str(yaw_pose["yaw"]).to_float() + 0.25)
+	cases.append([pose_yaw, "cats[0].pose.yaw"])
+
+	var pose_amp := _copy(main.observer.capture(main.now, main.capture_env()))
+	var amp_pose: Dictionary = ((pose_amp["cats"] as Array)[0] as Dictionary)["pose"]
+	var old_amp := str(amp_pose["amp"]).to_float()
+	amp_pose["amp"] = str(0.75 if old_amp < 0.5 else 0.25)
+	cases.append([pose_amp, "cats[0].pose.amp"])
+
+	var pose_sit := _copy(main.observer.capture(main.now, main.capture_env()))
+	var sit_pose: Dictionary = ((pose_sit["cats"] as Array)[0] as Dictionary)["pose"]
+	var old_sit := str(sit_pose["sit"]).to_float()
+	sit_pose["sit"] = str(0.75 if old_sit < 0.5 else 0.25)
+	cases.append([pose_sit, "cats[0].pose.sit"])
+
+	for case: Array in cases:
+		var blob: Dictionary = case[0]
+		_install_canonical_hash(main, blob)
+		await _assert_atomic_refusal(main, blob, str(case[1]))
+
+
+func test_restore_preflights_the_observers_exact_graph_live_eye_and_root_rng() -> void:
+	var main := await _boot_ticked()
+	var other := await _boot_ticked()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+
+	await _assert_atomic_graph_refusal(
+		main,
+		blob,
+		"observer body",
+		func() -> void: main.observer.inject_body(null),
+		func() -> void: main.observer.inject_body(main.hero),
+		main,
+	)
+	await _assert_atomic_graph_refusal(
+		main,
+		blob,
+		"observer body",
+		func() -> void: main.observer.inject_body(other.hero),
+		func() -> void: main.observer.inject_body(main.hero),
+		main,
+	)
+	await _assert_atomic_graph_refusal(
+		main,
+		blob,
+		"observer hero",
+		func() -> void: main.observer.inject_hero(other.player),
+		func() -> void: main.observer.inject_hero(main.player),
+		main,
+	)
+	await _assert_atomic_graph_refusal(
+		main,
+		blob,
+		"observer level",
+		func() -> void: main.observer.inject(other.level, other.player.camera),
+		func() -> void: main.observer.inject(main.level, main.player.camera),
+		main,
+	)
+
+	var shell: UnseeingGame = auto_free(UnseeingGame.new())
+	shell.restorer = main.restorer
+	await _assert_atomic_graph_refusal(
+		main,
+		blob,
+		"RNG",
+		func() -> void: pass,
+		func() -> void: pass,
+		shell,
+	)
+
+	var old_camera: Camera3D = main.player.camera
+	var old_camera_position := old_camera.position
+	var old_camera_rotation := old_camera.rotation
+	var replacement := Camera3D.new()
+	replacement.position = old_camera_position
+	replacement.rotation = old_camera_rotation
+	main.player.add_child(replacement)
+	main.player.camera = replacement
+	await _assert_atomic_graph_refusal(
+		main,
+		blob,
+		"eye",
+		func() -> void: replacement.free(),
+		func() -> void: main.player.camera = old_camera,
+		main,
+	)
