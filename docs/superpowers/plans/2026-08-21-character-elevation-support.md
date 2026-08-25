@@ -831,7 +831,7 @@ Prove the named tests fail when restoring `velocity.y = 0`, sampling input in ai
 
 **Interfaces:**
 - Consumes: Task 2 motion state/config/support datum and `PlayerTickSuccess`, Task 1 `landing_voice`, and the gate/latch fields and format-2 wire values already committed by Task 6. Do not redeclare `WaveRequest.gate`, `UnseeingPlayer.footstep_suppression`, `QueuedWaveGate`, or `FootstepSuppression`.
-- Produces: support-relative `viewmodel::leg_pose`; pure value-only `hero_visual::prepare_hero_visual`; `PlayerTickSuccess::{phase_before,landing}` carrying the fresh event; Rust-only `PreparedFootstepRequest` and `PreparedLandingRequest`; support-relative body/cane/footstep origins; exact latch acknowledgement; reflecting landing emission. Top-level `limbs` and `hero_visual` are non-class pure owners. Move the existing limb file byte-for-byte, then have `hero` and `player` depend one-way on `hero_visual`, which depends on `crate::limbs` and must not import `crate::nodes`. Move the shared player eye/root/contact constants and prepared command types into it. No capture field, canonical byte, hash, parser key, or format version changes.
+- Produces: the flat `viewmodel::leg_pose` law plus hero_visual's single support transport; pure value-only `hero_visual::prepare_hero_visual`; `PlayerTickSuccess::{phase_before,landing}` carrying the fresh event; Rust-only `PreparedFootstepRequest` and `PreparedLandingRequest`; support-relative body/cane/footstep origins; exact latch acknowledgement; reflecting landing emission. Top-level `limbs` and `hero_visual` are non-class pure owners. Move the existing limb file byte-for-byte, then have `hero` and `player` depend one-way on `hero_visual`, which depends on `crate::limbs` and must not import `crate::nodes`. Move the shared player eye/root/contact constants and prepared command types into it. No capture field, canonical byte, hash, parser key, or format version changes.
 
 - [ ] **Step 1: Write the failing pure leg-domain tests**
 
@@ -840,7 +840,6 @@ In `rust/src/viewmodel.rs`, change test call sites to the planned signature befo
 ```rust
 pub fn leg_pose(
     p: ActorPosition,
-    support: SupportElevation,
     axes: PlanarAxes,
     leg_phase: f64,
     walk_amp: f64,
@@ -848,7 +847,7 @@ pub fn leg_pose(
 ) -> Result<LegPose, MotionValueError>;
 ```
 
-Add `leg_pose_zero_support_preserves_every_joint_bit`, `leg_pose_translates_each_joint_with_the_output_magnitude_contract`, `leg_pose_rejects_poisoned_axes_phase_and_amplitude_without_output`, and `leg_pose_refuses_the_actor_envelope_edge_before_returning_a_point`. The translation expected side is hand-derived: compare exact f32 bits when the arithmetic has one canonical result, otherwise permit one f32 ULP at that joint's expected output magnitude. Do not use the ULP at the `0.45 m` delta for outputs near `1.35 m`; for example, the ULP there is `1.192_092_895_507_812_5e-7 m`. X/Z and the support-zero baseline compare by bits.
+Support does not appear in the leg law (transport decision, 2026-08-25): a ULP audit showed joint-threaded support drifts a raised silhouette up to several f32 roundings away from the translated flat silhouette, so support enters body geometry exactly once, in Step 7's transport pass, mirroring the cat's `translate_skeleton_y`/`transport_y`. Add `leg_pose_preserves_the_legacy_flat_joint_bits`, `leg_pose_rejects_poisoned_axes_phase_and_amplitude_without_output`, and `leg_pose_admits_the_actor_envelope_edge_without_refusal`. The flat baseline compares every joint lane by bits against the hand-derived legacy arithmetic. The envelope case proves totality at `±MAX_ACTOR_COORD_M`: pose lanes stay inside `MAX_POSE_COORD_M` because bounded joint offsets near `1.25 m` cannot cross the `2 m` envelope margin while flat Y lanes are constants.
 
 - [ ] **Step 2: Run the pure leg tests and witness the API red**
 
@@ -859,13 +858,13 @@ cd /Users/dmgalchenko/unseeing/.worktrees/issue-64-hero-elevation
 (cd rust && cargo test viewmodel::tests::leg_pose -- --nocapture)
 ```
 
-Expected: compile failure because typed axes/side/support and the fallible signature do not exist yet. A passing run means the old API was not exercised.
+Expected: compile failure because typed axes/side and the fallible signature do not exist yet. A passing run means the old API was not exercised.
 
-- [ ] **Step 3: Implement the minimal typed support-relative leg law and make it green**
+- [ ] **Step 3: Implement the minimal typed flat leg law and make it green**
 
 Mechanically rename the current raw adapter entry to `legacy_flat_leg_pose_for_task_3_migration` without changing its body, point the current `HeroBody` call at that temporary name, then add `PlanarAxes::try_new(forward, right) -> Result<Self, MotionValueError>` and the new typed `leg_pose`. This compatibility rename is not a second law or shipped API: it exists only so the unchanged adapter compiles during this red/green microcycle, receives no new call sites, and is deleted in Step 9 when `HeroBody` switches to `prepare_hero_visual`. The Step 9 green review must find no remaining legacy symbol before continuing.
 
-The typed constructor validates all six axes lanes, rejects either zero horizontal vector, normalizes X/Z in widened lanes, and writes exact positive-zero Y. Add closed `LegSide::{Left,Right}`. `leg_pose` rejects non-finite phase/amplitude, uses `support.y() + 0.90`, ankle floor `support.y() + 0.07`, shoe floor `support.y() + 0.065`, and constructs all four outputs through `PosePoint` before returning. Preserve support-zero output bits.
+The typed constructor validates all six axes lanes, rejects either zero horizontal vector, normalizes X/Z in widened lanes, and writes exact positive-zero Y. Add closed `LegSide::{Left,Right}`. `leg_pose` rejects non-finite phase/amplitude, uses flat hip height `0.90`, ankle floor `0.07`, shoe floor `0.065`, and constructs all four outputs through `PosePoint` before returning. Preserve the legacy flat output bits. Support never enters this law; Step 7's one transport pass is its sole entry into body geometry.
 
 Run:
 
@@ -967,7 +966,7 @@ Implement `prepare_hero_visual` without a `Gd`, scene read, mesh write, player c
 
 `PreparedFootstepRequest` is a crate-private typed value with private fields and a consuming accessor; only `hero_visual` can construct it. Its fixed fields are kind 2, range 1.6 m, speed 4.0 m/s, gain 0.8, two echoes, `Vector3::UP`, and `QueuedWaveGate::ControlledContact`. It owns the raw command plus both distinct admission proofs: `CheckedWave` validates kind, origin, range, speed, gain, prepared time, and omni beam lanes; `CheckedReflectionRequest` validates origin, normal, range, speed, echo budget, prepared time, and all derived fan geometry. Neither proof substitutes for the other. The player later accepts this type rather than raw parameters. `CheckedFootstepPreparer` performs reflection-fan allocation only when called for `footstep.is_some()`, which is wave activity. A frame with no footfall never calls it and performs no request/reflection allocation.
 
-Build torso/pelvis at `support.y() + 0.90/1.28`, call typed `leg_pose` twice, and use the sample's prospective camera transform for hand/elbow: replace only `camera_local_transform.origin.y` with `CAM_BASE_Y + next_bob`, then compose it with `player_transform`. Never add `support_y` to the camera. Move the two cleared scratch buffers into the candidate and validate before return: every next VM invariant, finite bob/sweep, both shoes through `PosePoint`, every vertex position through `PosePoint`, every finite normal, and every exact expected role-label bit. On error, `HeroVisualRefusal<P>` returns both owned scratch buffers and the returned preparer; no installed state exists in this function.
+Build torso/pelvis flat at `0.90`/`1.28`, call the flat `leg_pose` twice, then add `support.y()` exactly once to every emitted body vertex Y and both shoes in one transport pass — the sole support entry for body geometry, the same one-transport shape as the cat's `translate_skeleton_y`, which is what makes "a raised silhouette is the translated flat silhouette" exact by construction (a single f32 add bounds every lane at half an output ULP). The footstep origin keeps its direct `support.y() + CONTACT_BIRTH_HEIGHT_M` form. Use the sample's prospective camera transform for hand/elbow: replace only `camera_local_transform.origin.y` with `CAM_BASE_Y + next_bob`, then compose it with `player_transform`. Never add `support_y` to the camera. Move the two cleared scratch buffers into the candidate and validate before return: every next VM invariant, finite bob/sweep, both shoes through `PosePoint`, every vertex position through `PosePoint`, every finite normal, and every exact expected role-label bit. On error, `HeroVisualRefusal<P>` returns both owned scratch buffers and the returned preparer; no installed state exists in this function.
 
 Run:
 
@@ -1177,7 +1176,7 @@ Mutate separately, restoring green after each mutation:
 
 - omit the visual sample guard; accept a freed/mismatched camera; anchor hand/elbow to the sampled pre-bob global transform; add support to camera local Y or apply bob twice;
 - poison or omit validation of the copied VM, bob, cane sweep, either shoe, one position/normal/label in each buffer, or the prepared request; install/swap any VM/buffer/shoe/player command before a forced late refusal; omit candidate suppression installation;
-- zero torso support, one leg support/clamp, or footstep relative Y; feed airborne planar speed; acknowledge suppression before a real cadence evaluation; arm it only when `landing_voice` is `Some`;
+- omit, zero, or double the single body transport add; exclude the shoes from it; zero one leg clamp floor or footstep relative Y; feed airborne planar speed; acknowledge suppression before a real cadence evaluation; arm it only when `landing_voice` is `Some`;
 - remove `phase_before` or fresh `landing` from `PlayerTickSuccess`; infer from `last_landing`; emit a pre-edge controlled contact in air/on a wall/on the landing tick; mark a general request `ControlledContact` or a shoe request `Always`;
 - change the fixed ordinary footstep kind/range/speed/gain/echoes/normal, replace the sample birth time, omit either retained admission proof, append a raw request, validate it after the first visual write, or call the explicit preparer on a no-footfall frame;
 - change player landing kind, current prepared birth time, support-point `+0.04 m` origin, gain, range, speed, echo count, or accepted normal; omit either retained admission proof; swap gain/range; emit twice; call either emitter for silent, zero-gain, or zero-range voice; suppress only audible landings;

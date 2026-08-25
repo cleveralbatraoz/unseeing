@@ -360,11 +360,20 @@ The player's support elevation is:
 support_y = player_world_y - PLAYER_STANDING_ROOT_Y
 ```
 
-That one value enters the pure body-pose boundary:
+That one value enters the pure body-pose boundary exactly once, as a
+transport (decision, 2026-08-25, superseding the earlier joint-threaded
+wording: a ULP audit showed threading support through the joint chain
+drifts a raised silhouette up to several f32 roundings away from the
+translated flat silhouette, while a single transport add bounds every lane
+at half an output ULP by construction — the same law the cat already ships
+through `translate_skeleton_y`/`transport_y`):
 
-- `HeroBody` torso, pelvis, and leg roots add it once;
-- `viewmodel::leg_pose` clamps ankle and shoe against heights relative to
-  `support_y`, not absolute world zero;
+- `viewmodel::leg_pose` is the flat leg law — hip height 0.90 m, ankle
+  floor 0.07 m, shoe floor 0.065 m, no support parameter — and is total
+  over validated actor positions because bounded joint offsets near 1.25 m
+  cannot cross the 2 m margin between the actor and pose envelopes;
+- `hero_visual` builds torso, pelvis, and legs flat, then adds `support_y`
+  once to every emitted body vertex and both shoes in one transport pass;
 - queued footstep origins use `support_y + 0.04 m`, preserving the exact flat
   birth height;
 - the cane rest scan, floor/raised classification, fallback target, and air
