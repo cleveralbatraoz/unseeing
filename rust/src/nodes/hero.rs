@@ -14,16 +14,25 @@
 //! No raycasts here: the cane rest comes pre-computed from the player's
 //! physics tick (`cane_rest`), and footsteps are queued to the player so
 //! their reflection rays also run in physics context. All animation MATH
-//! lives in the pure [`viewmodel`] module; this file only reads the
-//! player, poses the pure curves, and rebuilds the immediate meshes.
+//! lives in the pure [`crate::hero_visual`] owner; this file only samples
+//! the engine once, calls the pure preparation, and commits its returned
+//! frame atomically — meshes, viewmodel, shoes, bob, cane sweep, latch
+//! and the optional footstep either all install or none do.
 
 use godot::classes::{ArrayMesh, Camera3D, INode3D, MeshInstance3D, Node3D, ShaderMaterial};
 use godot::prelude::*;
 
-use super::limbs::{LimbBuf, sphere, tube};
-use super::player::UnseeingPlayer;
-use crate::render::{self, Role};
-use crate::viewmodel::{self, Pose, PreparedViewmodel, Viewmodel, ViewmodelCapture};
+use super::player::{UnseeingPlayer, support_elevation_at};
+use crate::hero_visual::{
+    CheckedFootstepPreparer, HeroVisualSample, PreparedLastTap, prepare_hero_visual,
+};
+use crate::limbs::LimbBuf;
+use crate::render;
+use crate::support_motion::{
+    ActorPosition, ActorTransform, ActorVelocity, FiniteRotation, PosePoint, StepDuration,
+};
+use crate::temporal::prepare_time;
+use crate::viewmodel::{PlanarAxes, PreparedViewmodel, Viewmodel, ViewmodelCapture};
 
 /// The hero's body node. Injected with the player it dresses, the camera
 /// the arm anchors to, the wave pool (held for injection parity — waves
@@ -51,22 +60,28 @@ pub struct HeroBody {
     #[var]
     body_mat: Option<Gd<ShaderMaterial>>,
     /// The current walk head-bob (world offset from the base eye height),
-    /// computed here, applied by the player — the camera's one owner.
+    /// prepared by the pure owner, applied through the player's one
+    /// visual commit door — the camera's one owner.
     #[var]
     bob_offset: f64,
     #[init(val = ArrayMesh::new_gd())]
     cane_mesh: Gd<ArrayMesh>,
     #[init(val = ArrayMesh::new_gd())]
     body_mesh: Gd<ArrayMesh>,
-    /// The frame's raw triangle geometry for each layer — cleared and
-    /// refilled every rebuild rather than allocated fresh, the same
-    /// steady-state-capacity trick the companion cat's own buffer relies
-    /// on: both layers rebuild every rendered frame, not merely every
-    /// physics tick.
+    /// The installed triangle geometry for each layer, plus the next
+    /// frame's scratch owners: the pure preparation fills the scratch
+    /// pair, a successful commit swaps them with the installed pair, and
+    /// the old installed allocations become the next frame's scratch —
+    /// steady-state capacity with no per-frame allocation, and a refused
+    /// frame returns both scratch owners untouched.
     #[init(val = Vec::new())]
     cane_buf: LimbBuf,
     #[init(val = Vec::new())]
     body_buf: LimbBuf,
+    #[init(val = Vec::new())]
+    next_cane_buf: LimbBuf,
+    #[init(val = Vec::new())]
+    next_body_buf: LimbBuf,
     vm: Option<Viewmodel>,
     shoes: [Vector3; 2],
     base: Base<Node3D>,
@@ -99,60 +114,165 @@ impl INode3D for HeroBody {
     }
 }
 
+/// Report one boundary refusal and surrender the value — every invalid
+/// engine sample fact uses the same door, so the frame refuses atomically
+/// before any installed state has moved.
+fn sampled<T, E: std::fmt::Display>(result: Result<T, E>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            godot_error!("hero_body: visual sample refused: {error}");
+            None
+        }
+    }
+}
+
 #[godot_api]
 impl HeroBody {
     /// Called by the composition root every frame after movement has
-    /// settled.
+    /// settled. One checked sample in, one infallible commit out.
     #[func]
     pub(super) fn update(&mut self, now: f64, dt: f64) {
-        let (Some(mut player), Some(camera)) = (self.player.clone(), self.camera.clone()) else {
+        let (Some(player_ref), Some(camera_ref)) = (self.player.as_ref(), self.camera.as_ref())
+        else {
             return; // _ready refused: nothing to pose
         };
-        let velocity = player.get_velocity();
-        let planar_speed = f64::from(Vector2::new(velocity.x, velocity.z).length());
-        let yaw = f64::from(player.get_rotation().y);
-        let pitch = f64::from(camera.get_rotation().x);
-        let last_tap = player.bind().last_tap;
-        let pose = {
-            let Some(vm) = self.vm.as_mut() else {
-                return;
-            };
-            vm.advance(now, dt, planar_speed, yaw, pitch, last_tap)
+        // liveness before the first clone: cloning a freed Gd panics, so
+        // the freed handle must be refused while still borrowed
+        if !player_ref.is_instance_valid() || !camera_ref.is_instance_valid() {
+            godot_error!("hero_body: visual camera refused — not the player's live eye");
+            return;
+        }
+        let mut player = player_ref.clone();
+        let camera = camera_ref.clone();
+        if !player.bind().owns_visual_camera(&camera) {
+            godot_error!("hero_body: visual camera refused — not the player's live eye");
+            return;
+        }
+        let Some(prior_vm) = self.vm else {
+            return; // _ready refused: no viewmodel was ever built
         };
 
-        // classic head-bob while walking: computed here, applied by the
-        // player before the arm anchors below read the camera transform
-        self.bob_offset = pose.bob;
-        player.bind_mut().set_head_bob(pose.bob);
-
-        // ask the player's next physics tick to compute the rest at our
-        // sweep angle
-        player
-            .bind_mut()
-            .request_cane_sweep(pose.cane_swing * (1.0 - pose.thrust));
-
-        self.build_cane(&player, &camera, pose);
-        self.build_body(&player, pose);
-
-        // each footfall: a small wave rippling out around that very shoe,
-        // queued to the player so its reflection rays run in physics tick
-        let fired = {
-            let Some(vm) = self.vm.as_mut() else {
-                return;
-            };
-            vm.footstep(dt, pose.moving)
+        // read each engine fact exactly once
+        let raw_transform = player.get_global_transform();
+        let raw_rotation = player.get_global_rotation();
+        let raw_velocity = player.get_velocity();
+        let raw_camera_local = camera.get_transform();
+        let raw_camera_rotation = camera.get_rotation();
+        let (raw_last_tap, raw_tap_target, rest_tip, rest_supported, controlled, suppression) = {
+            let fields = player.bind();
+            let (tip, supported) =
+                fields
+                    .cane_rest
+                    .as_ref()
+                    .map_or((Vector3::ZERO, false), |rest| {
+                        let rest = rest.bind();
+                        (rest.tip, rest.supported)
+                    });
+            (
+                fields.last_tap,
+                fields.tap_target,
+                tip,
+                supported,
+                fields.motion_state().accepts_control(),
+                fields.footstep_suppression(),
+            )
         };
-        if let Some(side) = fired {
-            let shoe = self.shoes[if side < 0 { 0 } else { 1 }];
-            player.bind_mut().queue_wave(
-                2,
-                Vector3::new(shoe.x, 0.04, shoe.z),
-                1.6,
-                4.0,
-                0.8,
-                2,
-                Vector3::UP,
-            );
+
+        let Some(now) = sampled(prepare_time(now).map_err(|error| error.rule)) else {
+            return;
+        };
+        let dt = StepDuration::from_raw(dt);
+        let Some(player_transform) = sampled(ActorTransform::try_new(raw_transform)) else {
+            return;
+        };
+        let Some(position) = sampled(ActorPosition::try_new(raw_transform.origin)) else {
+            return;
+        };
+        // support derives from the same validated position — never a
+        // second ambient position read
+        let Some(support) = sampled(support_elevation_at(position.world())) else {
+            return;
+        };
+        let Some(player_rotation) = sampled(FiniteRotation::try_new(raw_rotation)) else {
+            return;
+        };
+        let Some(velocity) = sampled(ActorVelocity::try_new(raw_velocity)) else {
+            return;
+        };
+        let Some(camera_local_transform) = sampled(ActorTransform::try_new(raw_camera_local))
+        else {
+            return;
+        };
+        let Some(camera_rotation) = sampled(FiniteRotation::try_new(raw_camera_rotation)) else {
+            return;
+        };
+        let basis = raw_transform.basis;
+        let Some(axes) = sampled(PlanarAxes::try_new(-basis.col_c(), basis.col_a())) else {
+            return;
+        };
+        let Some(tap_target) = sampled(PosePoint::try_new(raw_tap_target)) else {
+            return;
+        };
+        let Some(cane_rest_tip) = sampled(PosePoint::try_new(rest_tip)) else {
+            return;
+        };
+        let Some(last_tap) = sampled(PreparedLastTap::try_new(raw_last_tap, now)) else {
+            return;
+        };
+        let Some(sample) = sampled(HeroVisualSample::try_new(
+            now,
+            dt,
+            player_transform,
+            player_rotation,
+            position,
+            support,
+            velocity,
+            camera_local_transform,
+            camera_rotation,
+            axes,
+            tap_target,
+            cane_rest_tip,
+            rest_supported,
+            last_tap,
+            controlled,
+        )) else {
+            return;
+        };
+
+        let cane_scratch = std::mem::take(&mut self.next_cane_buf);
+        let body_scratch = std::mem::take(&mut self.next_body_buf);
+        match prepare_hero_visual(
+            sample,
+            prior_vm,
+            suppression,
+            cane_scratch,
+            body_scratch,
+            CheckedFootstepPreparer,
+        ) {
+            Err(refusal) => {
+                let (reason, cane_scratch, body_scratch, _preparer) = refusal.into_recovery();
+                self.next_cane_buf = cane_scratch;
+                self.next_body_buf = body_scratch;
+                godot_error!("hero_body: visual sample refused: {reason}");
+            }
+            Ok((next, _preparer)) => {
+                // the infallible commit: swap candidate buffers into the
+                // installed slots, resize both meshes, install viewmodel
+                // and shoes, then hand the player its one prepared frame
+                let (vm, suppression, bob, cane_sweep, shoes, cane_vertices, body_vertices, step) =
+                    next.into_commit_parts();
+                self.next_cane_buf = std::mem::replace(&mut self.cane_buf, cane_vertices);
+                self.next_body_buf = std::mem::replace(&mut self.body_buf, body_vertices);
+                render::paint::resize_triangle_surface(&mut self.cane_mesh, &self.cane_buf);
+                render::paint::resize_triangle_surface(&mut self.body_mesh, &self.body_buf);
+                self.vm = Some(vm);
+                self.shoes = shoes;
+                self.bob_offset = bob;
+                player
+                    .bind_mut()
+                    .commit_hero_frame(bob, cane_sweep, suppression, step);
+            }
         }
     }
 
@@ -191,10 +311,10 @@ impl HeroBody {
     /// One render layer of the body: a baked mesh drawn through the given
     /// data-pass material, never frustum-culled (the mesh mutates every
     /// frame). The arm and the legs/torso each read as one silhouette, not
-    /// a heap of tubes, because `build_cane`/`build_body` bake one constant
-    /// label into every vertex of the mesh's own `CUSTOM0` — what the
-    /// shader's G channel reads directly, with no per-instance uniform to
-    /// keep in step.
+    /// a heap of tubes, because the pure builder bakes one constant label
+    /// into every vertex of the mesh's own `CUSTOM0` — what the shader's
+    /// G channel reads directly, with no per-instance uniform to keep in
+    /// step.
     fn add_layer(&mut self, mesh: &Gd<ArrayMesh>, mat: Option<&Gd<ShaderMaterial>>) {
         let mut mi = MeshInstance3D::new_alloc();
         mi.set_mesh(mesh);
@@ -203,90 +323,6 @@ impl HeroBody {
         }
         mi.set_extra_cull_margin(16384.0);
         self.base_mut().add_child(&mi);
-    }
-
-    /// The cane and the arm holding it, rebuilt for this frame's pose.
-    fn build_cane(&mut self, player: &Gd<UnseeingPlayer>, camera: &Gd<Camera3D>, pose: Pose) {
-        let bx = 0.016 * pose.leg_phase.sin() * pose.walk_amp + pose.sway_x;
-        let by = 0.012 * (pose.leg_phase * 2.0).sin() * pose.walk_amp + pose.sway_y;
-        let hand = view_to_world(
-            camera,
-            0.30 + bx,
-            -0.40 + by - 0.03 * pose.thrust,
-            0.55 + 0.16 * pose.thrust,
-        );
-        let elbow = view_to_world(camera, 0.48 + bx * 0.5, -0.64 + by * 0.5, 0.26);
-
-        // rest: the tip lies on whatever surface the cane reaches — floor,
-        // table, chair seat — pre-computed by the player's physics tick; a
-        // small hover animates the sweep so the tip touches down at the
-        // extremes
-        let fields = player.bind();
-        let mut rest_tip = fields
-            .cane_rest
-            .as_ref()
-            .map_or(Vector3::ZERO, |rest| rest.bind().tip);
-        let target = fields.tap_target;
-        drop(fields);
-        let moving = pose.walk_amp > 0.5;
-        let lift = viewmodel::cane_lift(moving, pose.cane_swing);
-        rest_tip.y = (f64::from(rest_tip.y) + 0.12 * lift * (1.0 - pose.thrust)) as f32;
-        let tip = rest_tip.lerp(target, pose.thrust.clamp(0.0, 1.0) as f32);
-
-        let label = render::role_label(Role::HeroCane) as f32;
-        self.cane_buf.clear();
-        tube(&mut self.cane_buf, elbow, hand, 0.055, 0.045, label);
-        sphere(&mut self.cane_buf, hand, 0.055, label);
-        tube(&mut self.cane_buf, hand, tip, 0.013, 0.010, label);
-        sphere(&mut self.cane_buf, tip, 0.040, label);
-        render::paint::resize_triangle_surface(&mut self.cane_mesh, &self.cane_buf);
-    }
-
-    /// The torso and both legs, rebuilt for this frame's walk phase; the
-    /// shoes are cached for the footstep waves.
-    fn build_body(&mut self, player: &Gd<UnseeingPlayer>, pose: Pose) {
-        let p = player.get_global_position();
-        let basis = player.get_global_transform().basis;
-        let fw_raw = -basis.col_c();
-        let fw = Vector3::new(fw_raw.x, 0.0, fw_raw.z).normalized();
-        let rv_raw = basis.col_a();
-        let rv = Vector3::new(rv_raw.x, 0.0, rv_raw.z).normalized();
-
-        let label = render::role_label(Role::HeroBody) as f32;
-        self.body_buf.clear();
-        // small slim torso ending in a pelvis the legs grow out of
-        let tc = Vector3::new(p.x, 0.0, p.z) - fw * 0.20;
-        tube(
-            &mut self.body_buf,
-            Vector3::new(tc.x, 0.90, tc.z),
-            Vector3::new(tc.x, 1.28, tc.z),
-            0.11,
-            0.10,
-            label,
-        );
-        sphere(
-            &mut self.body_buf,
-            Vector3::new(tc.x, 1.28, tc.z),
-            0.10,
-            label,
-        );
-        sphere(
-            &mut self.body_buf,
-            Vector3::new(tc.x, 0.90, tc.z),
-            0.13,
-            label,
-        );
-        // full legs: thigh, knee, shin, round shoe — phase-mirrored walk
-        // cycle from the pure module
-        for s in [-1, 1] {
-            let leg = viewmodel::leg_pose(p, fw, rv, pose.leg_phase, pose.walk_amp, s);
-            self.shoes[if s < 0 { 0 } else { 1 }] = leg.shoe;
-            tube(&mut self.body_buf, leg.hip, leg.knee, 0.06, 0.05, label);
-            sphere(&mut self.body_buf, leg.knee, 0.055, label);
-            tube(&mut self.body_buf, leg.knee, leg.ankle, 0.05, 0.04, label);
-            sphere(&mut self.body_buf, leg.shoe, 0.08, label);
-        }
-        render::paint::resize_triangle_surface(&mut self.body_mesh, &self.body_buf);
     }
 
     /// The viewmodel as data — `None` when `_ready` refused (uninjected)
@@ -302,12 +338,4 @@ impl HeroBody {
     pub(crate) fn install_prepared_vm(&mut self, capture: PreparedViewmodel) {
         self.vm = Some(Viewmodel::from_prepared(capture));
     }
-}
-
-/// A classic viewmodel anchor: camera-space offsets (x right, y up, z
-/// depth into the view) to a world point.
-fn view_to_world(camera: &Gd<Camera3D>, x: f64, y: f64, z: f64) -> Vector3 {
-    let cb = camera.get_global_transform().basis;
-    camera.get_global_position() + cb.col_a() * x as f32 + cb.col_b() * y as f32
-        - cb.col_c() * z as f32
 }

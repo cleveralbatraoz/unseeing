@@ -32,6 +32,11 @@ use super::support::{
     FLOOR_MAX_ANGLE_RAD, FLOOR_SNAP_M, MAX_SLIDES, MOTION_RESULT_MAX_CONTACTS, PLATFORM_LAYERS,
     SAFE_MARGIN_M, SNAP_PROBE_MAX_CONTACTS, collision_pair, is_actor_layer,
 };
+use crate::hero_visual::{
+    CAM_BASE_Y, CaneVerticals, LandingPreparationError, PLAYER_STANDING_ROOT_Y,
+    PreparedCaneRequest, PreparedFootstepRequest, PreparedLandingRequest, PreparedLastTap,
+    prepare_cane_request,
+};
 use crate::observe::QueuedWave;
 use crate::observe::reflect::{CheckedReflectionRequest, ReflectionRequest};
 use crate::pulse_pool::{CheckedWave, OMNI_COS};
@@ -39,30 +44,15 @@ use crate::render;
 use crate::reproduce::{HeroCapture, RestoreValueError};
 use crate::support_motion::{
     ActorPosition, ActorTransform, ActorVelocity, FiniteRotation, FootstepSuppression,
-    GodotRotation, MotionOutcome, MotionRestoreError, MotionState, MotionValueError,
-    PlanarVelocity, PosePoint, QueuedWaveGate, StepDuration, SupportContact, SupportElevation,
-    SupportMotionConfig, prepare, reconcile, validate_restore,
+    GodotRotation, LandingEvent, MotionOutcome, MotionPhase, MotionRestoreError, MotionState,
+    MotionValueError, PlanarVelocity, PosePoint, QueuedWaveGate, StepDuration, SupportContact,
+    SupportElevation, SupportMotionConfig, prepare, reconcile, validate_restore,
 };
 use crate::temporal::{PreparedTime, prepare_time};
-
-/// Eye height above the floor.
-pub const EYE: f64 = 1.6;
-
-/// World root height of the authored standing hero on a flat support.
-pub const PLAYER_STANDING_ROOT_Y: f64 = 0.9;
-
-/// Maximum separation at which a new support contact may be born.
-#[expect(
-    dead_code,
-    reason = "Task 2 publishes the checked player elevation boundary consumed by Task 3"
-)]
-pub const CONTACT_BIRTH_HEIGHT_M: f32 = 0.04;
+use crate::viewmodel::PlanarAxes;
 
 /// Capsule centre relative to the authored standing root.
 const PLAYER_CAPSULE_CENTER_Y_M: f32 = -0.05;
-
-/// Camera rest height in capsule-local space.
-pub const CAM_BASE_Y: f64 = EYE - PLAYER_STANDING_ROOT_Y;
 
 /// Walk speed, m/s — a careful walk, not a run.
 pub const SPEED: f64 = 2.1;
@@ -78,9 +68,6 @@ pub const MOUSE_SENS: f64 = 0.0026;
 
 /// Radians the eye may pitch up or down.
 pub const PITCH_LIMIT: f64 = 1.35;
-
-/// Wall-detection ray height (below tabletops).
-pub const CANE_SCAN_HEIGHT: f32 = 0.85;
 
 /// Wall-detection ray length.
 pub const CANE_SCAN_LENGTH: f64 = 3.4;
@@ -153,6 +140,219 @@ pub(super) struct PreparedPlayerState {
 struct RestProbe {
     tip: Vector3,
     supported: bool,
+}
+
+/// One bounded physics ray's answer through the cane port. The Godot
+/// mapping is closed: an empty dictionary is `Miss`, a jointly present
+/// correctly typed position/normal pair is `Hit` (other metadata is
+/// irrelevant), and a partial or wrongly typed required pair is
+/// `Malformed`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CaneRayAnswer {
+    Miss,
+    Hit { position: Vector3, normal: Vector3 },
+    Malformed,
+}
+
+/// The cane's narrow world-query contract: raw player/camera samples and
+/// bounded rays, nothing else — no emitter and no scene mutation. The
+/// production port and the cargo fakes drive the same coordinators.
+trait CaneQueryPort {
+    fn player_transform(&mut self) -> Transform3D;
+    fn camera_transform(&mut self) -> Option<Transform3D>;
+    fn camera_rotation(&mut self) -> Option<Vector3>;
+    fn cast_ray(&mut self, from: Vector3, to: Vector3) -> CaneRayAnswer;
+}
+
+/// Why a cane boundary operation refused before changing any state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaneQueryError {
+    Sample,
+    Endpoint,
+    Hit,
+    Request,
+}
+
+impl fmt::Display for CaneQueryError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Sample => "poisoned or missing player/camera sample",
+            Self::Endpoint => "derived query endpoint left the pose envelope",
+            Self::Hit => "malformed or poisoned physics answer",
+            Self::Request => "prepared cane command refused",
+        })
+    }
+}
+
+/// A completely decided tap, staged for one adapter install: the spent
+/// intent, the advanced tap clock, the strike target, and the optional
+/// prepared reflecting command. A swish stages no request.
+#[derive(Debug)]
+struct PreparedCaneTap {
+    last_tap: f64,
+    tap_target: Vector3,
+    request: Option<PreparedCaneRequest>,
+}
+
+/// One validated player sample for cane work — position, the support
+/// verticals derived from that same read, and the horizontal facing.
+fn validated_cane_player<P: CaneQueryPort>(
+    port: &mut P,
+) -> Result<(Vector3, CaneVerticals, Vector3), CaneQueryError> {
+    let transform = port.player_transform();
+    ActorTransform::try_new(transform).map_err(|_| CaneQueryError::Sample)?;
+    let position = ActorPosition::try_new(transform.origin).map_err(|_| CaneQueryError::Sample)?;
+    let support = support_elevation_at(position.world()).map_err(|_| CaneQueryError::Sample)?;
+    let axes = PlanarAxes::try_new(-transform.basis.col_c(), transform.basis.col_a())
+        .map_err(|_| CaneQueryError::Sample)?;
+    Ok((
+        position.world(),
+        CaneVerticals::new(support),
+        axes.forward(),
+    ))
+}
+
+/// The rest settle from an already validated player sample: a wall scan
+/// shortens the reach, then a settle probe finds the first supporting
+/// surface below the tip. Every endpoint is validated before the port is
+/// asked, every returned hit before it is used.
+fn cane_rest_probe<P: CaneQueryPort>(
+    port: &mut P,
+    gp: Vector3,
+    verticals: CaneVerticals,
+    direction: Vector3,
+) -> Result<RestProbe, CaneQueryError> {
+    let from = Vector3::new(gp.x, verticals.wall_scan_y(), gp.z);
+    let to = from + direction * CANE_SCAN_LENGTH as f32;
+    PosePoint::try_new(from).map_err(|_| CaneQueryError::Endpoint)?;
+    PosePoint::try_new(to).map_err(|_| CaneQueryError::Endpoint)?;
+    let wall_d = match port.cast_ray(from, to) {
+        CaneRayAnswer::Miss => CANE_SCAN_LENGTH,
+        CaneRayAnswer::Hit { position, .. } => {
+            let wall = PosePoint::try_new(position).map_err(|_| CaneQueryError::Hit)?;
+            f64::from((wall.world() - from).length())
+        }
+        CaneRayAnswer::Malformed => return Err(CaneQueryError::Hit),
+    };
+    let reach = CANE_REACH.min(wall_d - WALL_BACKOFF);
+    let px = f64::from(gp.x) + f64::from(direction.x) * reach;
+    let pz = f64::from(gp.z) + f64::from(direction.z) * reach;
+    let top = Vector3::new(px as f32, verticals.probe_top_y(), pz as f32);
+    let bottom = Vector3::new(px as f32, verticals.probe_bottom_y(), pz as f32);
+    PosePoint::try_new(top).map_err(|_| CaneQueryError::Endpoint)?;
+    PosePoint::try_new(bottom).map_err(|_| CaneQueryError::Endpoint)?;
+    let probe = match port.cast_ray(top, bottom) {
+        CaneRayAnswer::Miss => RestProbe {
+            tip: Vector3::new(px as f32, verticals.unsupported_tip_y(), pz as f32),
+            supported: false,
+        },
+        CaneRayAnswer::Hit { position, .. } => {
+            let down = PosePoint::try_new(position).map_err(|_| CaneQueryError::Hit)?;
+            RestProbe {
+                tip: Vector3::new(
+                    px as f32,
+                    (f64::from(down.world().y) + 0.02) as f32,
+                    pz as f32,
+                ),
+                supported: true,
+            }
+        }
+        CaneRayAnswer::Malformed => return Err(CaneQueryError::Hit),
+    };
+    PosePoint::try_new(probe.tip).map_err(|_| CaneQueryError::Endpoint)?;
+    Ok(probe)
+}
+
+/// The physics-tick cane rest for one sweep offset — published by the
+/// adapter only on complete success.
+fn prepare_cane_rest<P: CaneQueryPort>(
+    port: &mut P,
+    yaw_offset: f64,
+) -> Result<RestProbe, CaneQueryError> {
+    if !yaw_offset.is_finite() {
+        return Err(CaneQueryError::Sample);
+    }
+    let (gp, verticals, forward) = validated_cane_player(port)?;
+    let direction = forward.rotated(Vector3::UP, yaw_offset as f32);
+    cane_rest_probe(port, gp, verticals, direction)
+}
+
+/// One queued tap decided completely — aimed strike, rest tap, or silent
+/// swish — with every vertical judged from the player's own support.
+/// `Ok(None)` is the cooldown swallow: intent spent, nothing else moves.
+fn prepare_cane_tap<P: CaneQueryPort>(
+    port: &mut P,
+    now: PreparedTime,
+    prior_tap: PreparedLastTap,
+) -> Result<Option<PreparedCaneTap>, CaneQueryError> {
+    if now.value() - prior_tap.raw() < TAP_COOLDOWN {
+        return Ok(None);
+    }
+    let Some(camera_transform) = port.camera_transform() else {
+        return Err(CaneQueryError::Sample);
+    };
+    ActorTransform::try_new(camera_transform).map_err(|_| CaneQueryError::Sample)?;
+    let Some(camera_rotation) = port.camera_rotation() else {
+        return Err(CaneQueryError::Sample);
+    };
+    FiniteRotation::try_new(camera_rotation).map_err(|_| CaneQueryError::Sample)?;
+    let (gp, verticals, forward) = validated_cane_player(port)?;
+    let pitch = f64::from(camera_rotation.x);
+    let aim = -camera_transform.basis.col_c();
+    let from = camera_transform.origin;
+    let to = from + aim * CANE_REACH as f32;
+    PosePoint::try_new(from).map_err(|_| CaneQueryError::Endpoint)?;
+    PosePoint::try_new(to).map_err(|_| CaneQueryError::Endpoint)?;
+    match port.cast_ray(from, to) {
+        CaneRayAnswer::Malformed => Err(CaneQueryError::Hit),
+        CaneRayAnswer::Hit { position, normal } => {
+            // aimed strike: the wave is born exactly where you looked
+            let strike = PosePoint::try_new(position).map_err(|_| CaneQueryError::Hit)?;
+            for lane in [normal.x, normal.y, normal.z] {
+                if !lane.is_finite() {
+                    return Err(CaneQueryError::Hit);
+                }
+            }
+            let floorish = f64::from(normal.y) > 0.7 && verticals.is_floorish_hit(strike.world().y);
+            let (max_r, gain) = if floorish { (5.0, 0.85) } else { (6.0, 1.0) };
+            let request = prepare_cane_request(strike, max_r, gain, normal, now)
+                .map_err(|_| CaneQueryError::Request)?;
+            Ok(Some(PreparedCaneTap {
+                last_tap: now.value(),
+                tap_target: strike.world(),
+                request: Some(request),
+            }))
+        }
+        CaneRayAnswer::Miss => {
+            let rest = cane_rest_probe(port, gp, verticals, forward)?;
+            let raised = rest.supported && verticals.is_raised_tip(rest.tip.y);
+            if raised || (rest.supported && pitch <= -0.12) {
+                // no aim needed: tap whatever the cane is physically
+                // resting on — tabletop, chair seat, or the floor
+                let tip = PosePoint::try_new(rest.tip).map_err(|_| CaneQueryError::Endpoint)?;
+                let (max_r, gain) = if raised { (6.0, 1.0) } else { (5.0, 0.85) };
+                let request = prepare_cane_request(tip, max_r, gain, Vector3::UP, now)
+                    .map_err(|_| CaneQueryError::Request)?;
+                Ok(Some(PreparedCaneTap {
+                    last_tap: now.value(),
+                    tap_target: tip.world(),
+                    request: Some(request),
+                }))
+            } else {
+                // air swish: the cane sweeps up through nothing; air
+                // reflects nothing — only the strike animation remembers
+                let flat = Vector3::new(aim.x, 0.0, aim.z).normalized();
+                let swish = from + flat * 1.5;
+                let target = Vector3::new(swish.x, verticals.swish_target_y(pitch) as f32, swish.z);
+                let target = PosePoint::try_new(target).map_err(|_| CaneQueryError::Endpoint)?;
+                Ok(Some(PreparedCaneTap {
+                    last_tap: now.value(),
+                    tap_target: target.world(),
+                    request: None,
+                }))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -236,31 +436,39 @@ trait PlayerMotionPort {
     fn read_probe_contact_count(&mut self) -> i32;
     fn read_probe_contact_geometry(&mut self, contact: i32) -> (Vector3, Vector3);
     fn read_probe_collider(&mut self, contact: i32) -> (bool, u32, u64);
-    fn read_collision_layer(&mut self) -> u32;
-    fn read_collision_mask(&mut self) -> u32;
-    fn write_collision_layer(&mut self, layer: u32);
-    fn write_collision_mask(&mut self, mask: u32);
     fn write_global_transform(&mut self, transform: Transform3D);
     fn disable_physics(&mut self);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// One completed motion tick, carried whole into the callback commit: the
+/// phase the tick left, the state it produced, ONLY the fresh landing
+/// event (never a restored memory), the already prepared audible landing
+/// voice, the accepted support identity, and the derived — not yet
+/// applied — collision pair. It owns a checked reflection fan, so it is
+/// deliberately move-only: `Debug` for diagnostics, nothing else.
+#[derive(Debug)]
 struct PlayerTickSuccess {
+    phase_before: MotionPhase,
     state: MotionState,
+    landing: Option<LandingEvent>,
+    landing_request: Option<PreparedLandingRequest>,
     support_collider_id: Option<u64>,
     collision_layer: u32,
     collision_mask: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 struct PreparedPlayerPreMove {
     saved_transform: Transform3D,
+    now: PreparedTime,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PlayerTickReason {
     Motion(MotionValueError),
     Support(SupportReadError),
+    Clock(&'static str),
+    Landing(LandingPreparationError),
 }
 
 impl fmt::Display for PlayerTickReason {
@@ -268,6 +476,8 @@ impl fmt::Display for PlayerTickReason {
         match self {
             Self::Motion(error) => error.fmt(formatter),
             Self::Support(error) => error.fmt(formatter),
+            Self::Clock(rule) => formatter.write_str(rule),
+            Self::Landing(error) => error.fmt(formatter),
         }
     }
 }
@@ -397,7 +607,19 @@ fn rollback_player_motion<P: PlayerMotionPort>(
 
 fn prepare_player_pre_move<P: PlayerMotionPort>(
     port: &mut P,
+    raw_now: f64,
 ) -> Result<PreparedPlayerPreMove, PlayerTickFault> {
+    let now = match prepare_time(raw_now) {
+        Ok(now) => now,
+        Err(error) => {
+            port.write_velocity(Vector3::ZERO);
+            port.disable_physics();
+            return Err(PlayerTickFault {
+                phase: "current time",
+                reason: PlayerTickReason::Clock(error.rule),
+            });
+        }
+    };
     let saved_transform = port.read_global_transform();
     ActorTransform::try_new(saved_transform)
         .map_err(|error| refuse_player_before_move(port, "physics transform", error))?;
@@ -405,7 +627,10 @@ fn prepare_player_pre_move<P: PlayerMotionPort>(
         .map_err(|error| refuse_player_before_move(port, "physics rotation", error))?;
     ActorVelocity::try_new(port.read_velocity())
         .map_err(|error| refuse_player_before_move(port, "physics velocity", error))?;
-    Ok(PreparedPlayerPreMove { saved_transform })
+    Ok(PreparedPlayerPreMove {
+        saved_transform,
+        now,
+    })
 }
 
 fn controlled_player_tick_from_pre_move<P: PlayerMotionPort>(
@@ -461,15 +686,34 @@ fn controlled_player_tick_from_pre_move<P: PlayerMotionPort>(
         )
     })?;
     let transition = reconcile(prepared, MotionOutcome::new(actual_velocity, support));
+    // the fresh transition event only — never state.last_landing(), which
+    // may be a restored memory of a landing another session already voiced
+    let landing = transition.landing;
+    let landing_request = match landing {
+        None => None,
+        Some(event) => {
+            match crate::hero_visual::prepare_player_landing(event, config, pre_move.now) {
+                Ok(prepared_voice) => prepared_voice,
+                Err(error) => {
+                    return Err(rollback_player_motion(
+                        port,
+                        saved_transform,
+                        "post-move landing",
+                        PlayerTickReason::Landing(error),
+                    ));
+                }
+            }
+        }
+    };
+    // derived only: the callback commit applies the pair beside the other
+    // installed facts, so a refused later phase never leaves a half-applied
+    // layer behind
     let (collision_layer, collision_mask) = collision_pair(transition.state.phase());
-    if port.read_collision_layer() != collision_layer {
-        port.write_collision_layer(collision_layer);
-    }
-    if port.read_collision_mask() != collision_mask {
-        port.write_collision_mask(collision_mask);
-    }
     Ok(PlayerTickSuccess {
+        phase_before: prior.phase(),
         state: transition.state,
+        landing,
+        landing_request,
         support_collider_id: transition.state.support().and(collider_id),
         collision_layer,
         collision_mask,
@@ -479,12 +723,13 @@ fn controlled_player_tick_from_pre_move<P: PlayerMotionPort>(
 #[cfg(test)]
 fn controlled_player_tick<P: PlayerMotionPort>(
     port: &mut P,
+    raw_now: f64,
     prior: MotionState,
     desired_planar: PlanarVelocity,
     raw_dt: f64,
     config: SupportMotionConfig,
 ) -> Result<PlayerTickSuccess, PlayerTickFault> {
-    let pre_move = prepare_player_pre_move(port)?;
+    let pre_move = prepare_player_pre_move(port, raw_now)?;
     controlled_player_tick_from_pre_move(port, pre_move, prior, desired_planar, raw_dt, config)
 }
 
@@ -652,28 +897,58 @@ impl PlayerMotionPort for UnseeingPlayer {
         (valid, layer, id)
     }
 
-    fn read_collision_layer(&mut self) -> u32 {
-        self.base().get_collision_layer()
-    }
-
-    fn read_collision_mask(&mut self) -> u32 {
-        self.base().get_collision_mask()
-    }
-
-    fn write_collision_layer(&mut self, layer: u32) {
-        self.base_mut().set_collision_layer(layer);
-    }
-
-    fn write_collision_mask(&mut self, mask: u32) {
-        self.base_mut().set_collision_mask(mask);
-    }
-
     fn write_global_transform(&mut self, transform: Transform3D) {
         self.base_mut().set_global_transform(transform);
     }
 
     fn disable_physics(&mut self) {
         self.base_mut().set_physics_process(false);
+    }
+}
+
+/// The thin Godot-side cane port: the player body's transform, its own
+/// live eye, and physics-space rays under the closed dictionary mapping.
+/// It owns handles only — no emitter and no scene mutation runs through
+/// it.
+struct GodotCaneQueryPort {
+    player: Gd<UnseeingPlayer>,
+    camera: Option<Gd<Camera3D>>,
+    space: Option<Gd<PhysicsDirectSpaceState3D>>,
+}
+
+impl CaneQueryPort for GodotCaneQueryPort {
+    fn player_transform(&mut self) -> Transform3D {
+        self.player.get_global_transform()
+    }
+
+    fn camera_transform(&mut self) -> Option<Transform3D> {
+        self.camera
+            .as_ref()
+            .map(|camera| camera.get_global_transform())
+    }
+
+    fn camera_rotation(&mut self) -> Option<Vector3> {
+        self.camera.as_ref().map(|camera| camera.get_rotation())
+    }
+
+    fn cast_ray(&mut self, from: Vector3, to: Vector3) -> CaneRayAnswer {
+        let Some(space) = self.space.as_mut() else {
+            return CaneRayAnswer::Miss; // outside a world: nothing to strike
+        };
+        let Some(query) = PhysicsRayQueryParameters3D::create(from, to) else {
+            return CaneRayAnswer::Malformed;
+        };
+        let hit = space.intersect_ray(&query);
+        if hit.is_empty() {
+            return CaneRayAnswer::Miss;
+        }
+        match (
+            hit.get("position").and_then(|v| v.try_to::<Vector3>().ok()),
+            hit.get("normal").and_then(|v| v.try_to::<Vector3>().ok()),
+        ) {
+            (Some(position), Some(normal)) => CaneRayAnswer::Hit { position, normal },
+            _ => CaneRayAnswer::Malformed,
+        }
     }
 }
 
@@ -760,7 +1035,8 @@ impl ICharacterBody3D for UnseeingPlayer {
     }
 
     fn physics_process(&mut self, dt: f64) {
-        let pre_move = match prepare_player_pre_move(self) {
+        let raw_now = self.now;
+        let pre_move = match prepare_player_pre_move(self, raw_now) {
             Ok(prepared) => prepared,
             Err(error) => {
                 godot_error!("UnseeingPlayer: {} refused: {}", error.phase, error.reason);
@@ -790,26 +1066,80 @@ impl ICharacterBody3D for UnseeingPlayer {
                 return;
             }
         };
-        self.motion_state = moved.state;
-        self.support_collider_id = moved.support_collider_id;
-        debug_assert_eq!(self.base().get_collision_layer(), moved.collision_layer);
-        debug_assert_eq!(self.base().get_collision_mask(), moved.collision_mask);
-
-        let probe = self.compute_cane_rest(self.cane_rest_offset);
-        self.publish_cane_rest(&probe);
-        if self.tap_queued {
-            self.tap_queued = false;
-            self.cane_tap();
-        }
-        // other systems' queued waves: emitted here so reflection raycasts
-        // run in physics context
+        // the callback commit, in order: state, support identity, the
+        // derived collision pair, the latch, the prepared landing voice,
+        // then cane intent and the gated queue drain
+        let PlayerTickSuccess {
+            phase_before,
+            state,
+            landing,
+            landing_request,
+            support_collider_id,
+            collision_layer,
+            collision_mask,
+        } = moved;
+        self.motion_state = state;
+        self.support_collider_id = support_collider_id;
+        self.apply_exact_collision_pair(collision_layer, collision_mask);
+        // every fresh event arms the latch, audible or not
+        self.footstep_suppression = self.footstep_suppression.on_transition(landing);
         let space = self.space_state().to_variant();
         let now = self.now;
-        let requests = std::mem::take(&mut self.wave_queue);
-        for w in requests {
-            self.emit_reflecting(
-                w.kind, w.at, w.max_r, w.speed, w.gain, now, &space, w.echoes, w.normal,
-            );
+        if let Some(request) = landing_request {
+            let ((kind, at, max_r, speed, gain, echoes, normal), _now, _wave, _reflection) =
+                request.into_emit_parts();
+            self.emit_reflecting(kind, at, max_r, speed, gain, now, &space, echoes, normal);
+        }
+
+        // cane work goes through the one query port; the rest is
+        // published and the tap installed ONLY on complete success —
+        // malformed world data retains the queued intent and the prior
+        // rest, clock, target, and wave state untouched
+        let mut cane_port = GodotCaneQueryPort {
+            player: self.to_gd(),
+            camera: self
+                .camera
+                .as_ref()
+                .filter(|camera| camera.is_instance_valid())
+                .cloned(),
+            space: self.space_state(),
+        };
+        match prepare_cane_rest(&mut cane_port, self.cane_rest_offset) {
+            Ok(probe) => self.publish_cane_rest(&probe),
+            Err(error) => godot_error!("UnseeingPlayer: cane rest refused: {error}"),
+        }
+        if self.tap_queued {
+            match PreparedLastTap::try_new(self.last_tap, pre_move.now) {
+                Err(error) => godot_error!("UnseeingPlayer: cane tap refused: {error}"),
+                Ok(prior_tap) => match prepare_cane_tap(&mut cane_port, pre_move.now, prior_tap) {
+                    Ok(None) => self.tap_queued = false, // cooldown: swallowed whole
+                    Ok(Some(prepared)) => {
+                        self.tap_queued = false;
+                        self.last_tap = prepared.last_tap;
+                        self.tap_target = prepared.tap_target;
+                        if let Some(request) = prepared.request {
+                            let ((kind, at, max_r, speed, gain, echoes, normal), _now, _w, _r) =
+                                request.into_emit_parts();
+                            self.emit_reflecting(
+                                kind, at, max_r, speed, gain, now, &space, echoes, normal,
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        // the queued intent is retained for the next tick
+                        godot_error!("UnseeingPlayer: cane tap refused: {error}");
+                    }
+                },
+            }
+        }
+        // other systems' queued waves: emitted here so reflection raycasts
+        // run in physics context. A closed gate consumes its request
+        // silently — stale shoe provenance never survives a phase edge.
+        for request in std::mem::take(&mut self.wave_queue) {
+            if !request.gate.allows(phase_before, state.phase(), landing) {
+                continue;
+            }
+            self.emit_request(request, now, &space);
         }
     }
 }
@@ -874,12 +1204,6 @@ impl UnseeingPlayer {
             };
             RestoreValueError::new(path, rule)
         })?;
-        if hero.footstep_suppression_pending {
-            return Err(RestoreValueError::new(
-                "hero.footstep_suppression_pending",
-                "this runtime admits only a clear latch",
-            ));
-        }
         let yaw = exact_f32_lane(hero.yaw, "hero.yaw")?;
         if !hero.pitch.is_finite() || !(-PITCH_LIMIT..=PITCH_LIMIT).contains(&hero.pitch) {
             return Err(RestoreValueError::new(
@@ -899,12 +1223,6 @@ impl UnseeingPlayer {
         let mut wave_queue = Vec::with_capacity(hero.queued_waves.len());
         for (index, wave) in hero.queued_waves.iter().enumerate() {
             let prefix = format!("hero.queued_waves[{index}]");
-            if wave.gate != QueuedWaveGate::Always {
-                return Err(RestoreValueError::new(
-                    format!("{prefix}.gate"),
-                    "this runtime admits only always-open gates",
-                ));
-            }
             let proof = CheckedWave::prepare(
                 wave.kind,
                 wave.at,
@@ -1122,30 +1440,6 @@ impl UnseeingPlayer {
         self.apply_look(relative);
     }
 
-    /// The viewmodel's sweep asks for the cane rest to be computed at
-    /// this yaw offset. One frame of latency BY DESIGN: requested during
-    /// the render frame, honored on the next physics tick, read back
-    /// through `cane_rest` after that — raycasts stay in physics context,
-    /// and the sweep is too slow to notice.
-    #[func]
-    pub(crate) fn request_cane_sweep(&mut self, offset: f64) {
-        self.cane_rest_offset = offset;
-    }
-
-    /// The player owns its camera: the viewmodel reports the walk
-    /// head-bob and the player alone moves the eye around its fixed base
-    /// height. Called by the hero body mid-update, BEFORE the arm anchors
-    /// read the camera transform, so the bob shapes the same frame's
-    /// viewmodel — as it always has.
-    #[func]
-    pub(crate) fn set_head_bob(&mut self, offset: f64) {
-        if let Some(camera) = self.camera.as_mut() {
-            let mut pos = camera.get_position();
-            pos.y = (CAM_BASE_Y + offset) as f32;
-            camera.set_position(pos);
-        }
-    }
-
     /// Other systems (hero footsteps, the demo tap) request waves here;
     /// they are emitted next physics tick so reflection raycasts run
     /// in-context.
@@ -1255,125 +1549,6 @@ impl UnseeingPlayer {
         }
     }
 
-    /// The cane speaks. Executed inside the physics tick, one queued tap
-    /// at a time, cooled down by [`TAP_COOLDOWN`] — the three voices of
-    /// the decision tree in the module docs.
-    fn cane_tap(&mut self) {
-        if self.now - self.last_tap < TAP_COOLDOWN {
-            return;
-        }
-        self.last_tap = self.now;
-        let Some(camera) = self.camera.clone() else {
-            return; // no eye: nothing to aim with (unreachable past _ready)
-        };
-        let pitch = f64::from(camera.get_rotation().x);
-        let aim = -camera.get_global_transform().basis.col_c();
-        let flat = Vector3::new(aim.x, 0.0, aim.z).normalized();
-        let from = camera.get_global_position();
-        let Some(mut space) = self.space_state() else {
-            return; // outside a world: nothing to strike
-        };
-        let hit = PhysicsRayQueryParameters3D::create(from, from + aim * CANE_REACH as f32)
-            .map(|query| space.intersect_ray(&query))
-            .unwrap_or_default();
-        let space_var = space.to_variant();
-        let now = self.now;
-        if let (Some(hit_pos), Some(hit_normal)) = (
-            hit.get("position").and_then(|v| v.try_to::<Vector3>().ok()),
-            hit.get("normal").and_then(|v| v.try_to::<Vector3>().ok()),
-        ) {
-            // aimed strike: the wave is born exactly where you looked
-            self.tap_target = hit_pos;
-            let floorish = f64::from(hit_normal.y) > 0.7 && f64::from(hit_pos.y) < 0.2;
-            let max_r = if floorish { 5.0 } else { 6.0 };
-            let gain = if floorish { 0.85 } else { 1.0 };
-            self.emit_reflecting(0, hit_pos, max_r, 5.5, gain, now, &space_var, 6, hit_normal);
-            return;
-        }
-        let rest = self.compute_cane_rest(0.0);
-        let raised = rest.supported && f64::from(rest.tip.y) > 0.15;
-        if raised || (rest.supported && pitch <= -0.12) {
-            // no aim needed: tap whatever the cane is physically resting
-            // on — tabletop, chair seat, or (when looking down) the floor
-            self.tap_target = rest.tip;
-            let max_r = if raised { 6.0 } else { 5.0 };
-            let gain = if raised { 1.0 } else { 0.85 };
-            self.emit_reflecting(
-                0,
-                rest.tip,
-                max_r,
-                5.5,
-                gain,
-                now,
-                &space_var,
-                6,
-                Vector3::UP,
-            );
-        } else {
-            // air swish: the cane sweeps up through nothing; air reflects
-            // nothing — only the strike animation remembers the arc
-            let swish_y = (EYE + pitch.tan() * 1.5).clamp(0.3, 1.7);
-            let reach = from + flat * 1.5;
-            self.tap_target = Vector3::new(reach.x, swish_y as f32, reach.z);
-        }
-    }
-
-    /// Where the cane tip naturally rests for a given sweep offset: reach
-    /// forward (walls shorten the reach at cane height), then settle onto
-    /// the first supporting surface below — floor, tabletop, chair seat.
-    /// This is the cane "touching" the world; the tap and the visuals
-    /// both use it. Physics-context only: called from the physics tick.
-    fn compute_cane_rest(&mut self, yaw_offset: f64) -> RestProbe {
-        let fw = -self.base().get_global_transform().basis.col_c();
-        let dir = Vector3::new(fw.x, 0.0, fw.z)
-            .normalized()
-            .rotated(Vector3::UP, yaw_offset as f32);
-        let gp = self.base().get_global_position();
-        let from = Vector3::new(gp.x, CANE_SCAN_HEIGHT, gp.z);
-        let mut wall_d = CANE_SCAN_LENGTH;
-        let space = self.space_state();
-        if let (Some(space), Some(query)) = (
-            space.clone(),
-            PhysicsRayQueryParameters3D::create(from, from + dir * CANE_SCAN_LENGTH as f32),
-        ) {
-            let mut space = space;
-            let wall = space.intersect_ray(&query);
-            if let Some(wall_pos) = wall
-                .get("position")
-                .and_then(|v| v.try_to::<Vector3>().ok())
-            {
-                wall_d = f64::from((wall_pos - from).length());
-            }
-        }
-        let reach = CANE_REACH.min(wall_d - WALL_BACKOFF);
-        let px = f64::from(gp.x) + f64::from(dir.x) * reach;
-        let pz = f64::from(gp.z) + f64::from(dir.z) * reach;
-        let down = match (
-            space,
-            PhysicsRayQueryParameters3D::create(
-                Vector3::new(px as f32, 1.05, pz as f32),
-                Vector3::new(px as f32, -0.1, pz as f32),
-            ),
-        ) {
-            (Some(mut space), Some(query)) => space.intersect_ray(&query),
-            _ => VarDictionary::new(),
-        };
-        if let Some(down_pos) = down
-            .get("position")
-            .and_then(|v| v.try_to::<Vector3>().ok())
-        {
-            RestProbe {
-                tip: Vector3::new(px as f32, (f64::from(down_pos.y) + 0.02) as f32, pz as f32),
-                supported: true,
-            }
-        } else {
-            RestProbe {
-                tip: Vector3::new(px as f32, 0.02, pz as f32),
-                supported: false,
-            }
-        }
-    }
-
     /// Publish a probe as the frame's `cane_rest` — a fresh CaneRest per
     /// tick, exactly as the script rebuilt its own.
     fn publish_cane_rest(&mut self, probe: &RestProbe) {
@@ -1426,6 +1601,22 @@ impl UnseeingPlayer {
         );
     }
 
+    /// One drained queue entry into the pool — the request's own lanes,
+    /// the tick's clock, the tick's space.
+    fn emit_request(&mut self, request: WaveRequest, now: f64, space: &Variant) {
+        self.emit_reflecting(
+            request.kind,
+            request.at,
+            request.max_r,
+            request.speed,
+            request.gain,
+            now,
+            space,
+            request.echoes,
+            request.normal,
+        );
+    }
+
     /// The physics space of the player's world, if it stands in one.
     fn space_state(&self) -> Option<Gd<PhysicsDirectSpaceState3D>> {
         self.base()
@@ -1448,29 +1639,26 @@ fn exact_f32_lane(value: f64, path: &'static str) -> Result<f32, RestoreValueErr
     Ok(lane)
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Task 2 publishes the checked player elevation boundary consumed by Task 3"
-    )
-)]
-fn support_elevation_at(world_position: Vector3) -> Result<SupportElevation, MotionValueError> {
+/// The one player-elevation law: a standing root's support surface sits
+/// exactly the authored standing height below it. The hero's visual
+/// boundary derives its support from the same validated position it
+/// sampled, through this shared door.
+pub(super) fn support_elevation_at(
+    world_position: Vector3,
+) -> Result<SupportElevation, MotionValueError> {
     let position = ActorPosition::try_new(world_position)?;
     SupportElevation::try_new(position.world().y - PLAYER_STANDING_ROOT_Y as f32)
 }
 
 fn prepare_last_tap(raw: f64, now: PreparedTime) -> Result<f64, RestoreValueError> {
-    let sentinel = raw.to_bits() == (-10.0_f64).to_bits();
-    let elapsed = raw.is_finite() && raw >= 0.0 && raw <= now.value();
-    if sentinel || elapsed {
-        Ok(raw)
-    } else {
-        Err(RestoreValueError::new(
-            "hero.last_tap",
-            "must be the exact initial sentinel or an elapsed simulation time",
-        ))
-    }
+    PreparedLastTap::try_new(raw, now)
+        .map(PreparedLastTap::raw)
+        .map_err(|_| {
+            RestoreValueError::new(
+                "hero.last_tap",
+                "must be the exact initial sentinel or an elapsed simulation time",
+            )
+        })
 }
 
 impl UnseeingPlayer {
@@ -1482,12 +1670,58 @@ impl UnseeingPlayer {
         self.motion_config
     }
 
-    #[expect(
-        dead_code,
-        reason = "Task 2 publishes the checked player elevation boundary consumed by Task 3"
-    )]
-    pub(crate) fn support_elevation_y(&self) -> Result<SupportElevation, MotionValueError> {
-        support_elevation_at(self.base().get_global_position())
+    /// Whether the given handle is this player's own live eye — the
+    /// narrow adapter identity check the hero proves before sampling.
+    /// False for a missing camera and for either freed handle.
+    pub(super) fn owns_visual_camera(&self, camera: &Gd<Camera3D>) -> bool {
+        let Some(own) = self.camera.as_ref() else {
+            return false;
+        };
+        if !own.is_instance_valid() || !camera.is_instance_valid() {
+            return false;
+        }
+        own.instance_id() == camera.instance_id()
+    }
+
+    /// The installed footstep latch, copied out for the hero's pure
+    /// visual preparation — acknowledged only through the commit door.
+    pub(super) fn footstep_suppression(&self) -> FootstepSuppression {
+        self.footstep_suppression
+    }
+
+    /// The one Rust-only visual commit door: an already-prepared hero
+    /// frame lands here whole — camera-local `CAM_BASE_Y + bob`, the cane
+    /// sweep offset, the acknowledged latch, and the optional checked
+    /// footstep request appended without revalidation. No raw bob or
+    /// sweep door exists beside it.
+    pub(super) fn commit_hero_frame(
+        &mut self,
+        bob: f64,
+        cane_sweep: f64,
+        suppression: FootstepSuppression,
+        footstep: Option<PreparedFootstepRequest>,
+    ) {
+        if let Some(camera) = self.camera.as_mut() {
+            let mut position = camera.get_position();
+            position.y = (CAM_BASE_Y + bob) as f32;
+            camera.set_position(position);
+        }
+        self.cane_rest_offset = cane_sweep;
+        self.footstep_suppression = suppression;
+        if let Some(request) = footstep {
+            let ((kind, at, max_r, speed, gain, echoes, normal, gate), _wave, _reflection) =
+                request.into_player_parts();
+            self.wave_queue.push(WaveRequest {
+                kind,
+                at,
+                max_r,
+                speed,
+                gain,
+                echoes,
+                normal,
+                gate,
+            });
+        }
     }
 
     fn desired_planar_velocity(&self) -> Result<PlanarVelocity, MotionValueError> {
@@ -1580,8 +1814,6 @@ mod tests {
         Probe(Transform3D),
         ReadProbeCount,
         ReadProbeContact(i32),
-        SetLayer(u32),
-        SetMask(u32),
         SetTransform(Transform3D),
         DisablePhysics,
     }
@@ -1601,8 +1833,6 @@ mod tests {
         probe_hit: bool,
         probe_contacts: Vec<RawSupportFact>,
         probe_count_override: Option<i32>,
-        collision_layer: u32,
-        collision_mask: u32,
         trace: Vec<MotionTrace>,
     }
 
@@ -1628,8 +1858,6 @@ mod tests {
                 probe_hit: false,
                 probe_contacts: Vec::new(),
                 probe_count_override: None,
-                collision_layer: 2,
-                collision_mask: 4_294_967_291,
                 trace: Vec::new(),
             }
         }
@@ -1650,8 +1878,6 @@ mod tests {
                         entry,
                         MotionTrace::SetVelocity(_)
                             | MotionTrace::MoveAndSlide
-                            | MotionTrace::SetLayer(_)
-                            | MotionTrace::SetMask(_)
                             | MotionTrace::SetTransform(_)
                             | MotionTrace::DisablePhysics
                     )
@@ -1785,24 +2011,6 @@ mod tests {
             )
         }
 
-        fn read_collision_layer(&mut self) -> u32 {
-            self.collision_layer
-        }
-
-        fn read_collision_mask(&mut self) -> u32 {
-            self.collision_mask
-        }
-
-        fn write_collision_layer(&mut self, layer: u32) {
-            self.trace.push(MotionTrace::SetLayer(layer));
-            self.collision_layer = layer;
-        }
-
-        fn write_collision_mask(&mut self, mask: u32) {
-            self.trace.push(MotionTrace::SetMask(mask));
-            self.collision_mask = mask;
-        }
-
         fn write_global_transform(&mut self, transform: Transform3D) {
             self.trace.push(MotionTrace::SetTransform(transform));
             self.post_transform = transform;
@@ -1900,6 +2108,7 @@ mod tests {
         let mut port = FakePlayerMotionPort::valid();
         let result = controlled_player_tick(
             &mut port,
+            2.0,
             MotionState::initial(),
             PlanarVelocity::try_new(1.0, -2.0).unwrap(),
             1.0 / 60.0,
@@ -1923,89 +2132,11 @@ mod tests {
         assert_eq!(planar_velocity_mps.x_mps().to_bits(), 0.75_f32.to_bits());
         assert_eq!(planar_velocity_mps.z_mps().to_bits(), (-1.25_f32).to_bits());
         assert_eq!(vertical_velocity_mps.mps().to_bits(), (-0.0_f32).to_bits());
+        // the coordinator only DERIVES the airborne pair — applying it is
+        // the callback commit's job, beside every other installed fact
         assert_eq!(
             (result.collision_layer, result.collision_mask),
             (4, 4_294_967_289)
-        );
-        assert_eq!(
-            (port.collision_layer, port.collision_mask),
-            (4, 4_294_967_289)
-        );
-    }
-
-    #[test]
-    fn collision_pair_writes_are_change_only_and_repair_corrupted_lanes() {
-        let airborne_phase = MotionPhase::Airborne {
-            planar_velocity_mps: PlanarVelocity::try_new(0.75, -1.25).unwrap(),
-            vertical_velocity_mps: crate::support_motion::FiniteVelocity::try_new(-1.0).unwrap(),
-        };
-        let airborne = MotionState::restore(airborne_phase, None, None).unwrap();
-        let mut unchanged = FakePlayerMotionPort::valid();
-        unchanged.collision_layer = 4;
-        unchanged.collision_mask = 4_294_967_289;
-        controlled_player_tick(
-            &mut unchanged,
-            airborne,
-            PlanarVelocity::ZERO,
-            1.0 / 60.0,
-            SupportMotionConfig::PLAYER_DEFAULT,
-        )
-        .unwrap();
-        assert!(
-            !unchanged
-                .trace
-                .iter()
-                .any(|entry| matches!(entry, MotionTrace::SetLayer(_) | MotionTrace::SetMask(_)))
-        );
-
-        let mut corrupted = FakePlayerMotionPort::valid();
-        corrupted.on_floor = true;
-        corrupted.slides = vec![Some(vec![world_floor()])];
-        corrupted.collision_layer = 8;
-        corrupted.collision_mask = 16;
-        controlled_player_tick(
-            &mut corrupted,
-            MotionState::initial(),
-            PlanarVelocity::ZERO,
-            1.0 / 60.0,
-            SupportMotionConfig::PLAYER_DEFAULT,
-        )
-        .unwrap();
-        assert_eq!(
-            (corrupted.collision_layer, corrupted.collision_mask),
-            (2, 4_294_967_291)
-        );
-        assert_eq!(
-            corrupted
-                .effect_trace()
-                .into_iter()
-                .filter(|entry| matches!(entry, MotionTrace::SetLayer(_) | MotionTrace::SetMask(_)))
-                .collect::<Vec<_>>(),
-            [
-                MotionTrace::SetLayer(2),
-                MotionTrace::SetMask(4_294_967_291)
-            ]
-        );
-
-        let mut only_mask_corrupt = FakePlayerMotionPort::valid();
-        only_mask_corrupt.on_floor = true;
-        only_mask_corrupt.slides = vec![Some(vec![world_floor()])];
-        only_mask_corrupt.collision_mask = 16;
-        controlled_player_tick(
-            &mut only_mask_corrupt,
-            MotionState::initial(),
-            PlanarVelocity::ZERO,
-            1.0 / 60.0,
-            SupportMotionConfig::PLAYER_DEFAULT,
-        )
-        .unwrap();
-        assert_eq!(
-            only_mask_corrupt
-                .effect_trace()
-                .into_iter()
-                .filter(|entry| matches!(entry, MotionTrace::SetLayer(_) | MotionTrace::SetMask(_)))
-                .collect::<Vec<_>>(),
-            [MotionTrace::SetMask(4_294_967_291)]
         );
     }
 
@@ -2033,6 +2164,7 @@ mod tests {
             assert!(
                 controlled_player_tick(
                     &mut port,
+                    2.0,
                     MotionState::initial(),
                     PlanarVelocity::try_new(1.0, -2.0).unwrap(),
                     1.0 / 60.0,
@@ -2049,10 +2181,6 @@ mod tests {
                     MotionTrace::SetVelocity(Vector3::ZERO),
                     MotionTrace::DisablePhysics,
                 ]
-            );
-            assert_eq!(
-                (port.collision_layer, port.collision_mask),
-                (2, 4_294_967_291)
             );
         }
     }
@@ -2094,6 +2222,7 @@ mod tests {
             assert!(
                 controlled_player_tick(
                     &mut port,
+                    2.0,
                     prior,
                     PlanarVelocity::ZERO,
                     1.0 / 60.0,
@@ -2104,10 +2233,6 @@ mod tests {
             assert_transform_bits_eq(port.post_transform, saved);
             assert_eq!(port.post_velocity, Vector3::ZERO);
             assert_eq!(
-                (port.collision_layer, port.collision_mask),
-                (2, 4_294_967_291)
-            );
-            assert_eq!(
                 port.effect_trace(),
                 [
                     MotionTrace::SetVelocity(Vector3::ZERO),
@@ -2116,12 +2241,6 @@ mod tests {
                     MotionTrace::SetVelocity(Vector3::ZERO),
                     MotionTrace::DisablePhysics,
                 ]
-            );
-            assert!(
-                !port.trace.iter().any(|entry| matches!(
-                    entry,
-                    MotionTrace::SetLayer(_) | MotionTrace::SetMask(_)
-                ))
             );
             assert_eq!(prior, MotionState::initial());
         }
@@ -2441,6 +2560,418 @@ mod tests {
         for poison in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(support_elevation_at(Vector3::new(0.0, poison, 0.0)).is_err());
         }
+    }
+
+    /// An airborne prior about to land on the world floor — the fresh
+    /// landing fixture every event test starts from.
+    fn landing_port(prior_vertical_mps: f32) -> (FakePlayerMotionPort, MotionState) {
+        let mut port = FakePlayerMotionPort::valid();
+        port.on_floor = true;
+        port.slides = vec![Some(vec![world_floor()])];
+        let phase = MotionPhase::Airborne {
+            planar_velocity_mps: PlanarVelocity::try_new(0.75, -1.25).unwrap(),
+            vertical_velocity_mps: crate::support_motion::FiniteVelocity::try_new(
+                prior_vertical_mps,
+            )
+            .unwrap(),
+        };
+        (port, MotionState::restore(phase, None, None).unwrap())
+    }
+
+    #[test]
+    fn invalid_current_time_refuses_before_body_move() {
+        for poisoned in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.25] {
+            let mut port = FakePlayerMotionPort::valid();
+            assert!(
+                controlled_player_tick(
+                    &mut port,
+                    poisoned,
+                    MotionState::initial(),
+                    PlanarVelocity::try_new(1.0, -2.0).unwrap(),
+                    1.0 / 60.0,
+                    SupportMotionConfig::PLAYER_DEFAULT,
+                )
+                .is_err()
+            );
+            assert!(!port.moved);
+            assert_eq!(
+                port.effect_trace(),
+                [
+                    MotionTrace::SetVelocity(Vector3::ZERO),
+                    MotionTrace::DisablePhysics,
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn tick_success_carries_only_the_fresh_landing_event() {
+        let (mut port, prior) = landing_port(-3.0);
+        let success = controlled_player_tick(
+            &mut port,
+            12.5,
+            prior,
+            PlanarVelocity::ZERO,
+            1.0 / 60.0,
+            SupportMotionConfig::PLAYER_DEFAULT,
+        )
+        .unwrap();
+        assert!(matches!(success.phase_before, MotionPhase::Airborne { .. }));
+        let landing = success
+            .landing
+            .expect("an airborne tick onto a world floor must carry its fresh event");
+        assert_eq!(landing.support().point(), world_floor().point);
+        assert_eq!(landing.support().normal(), Vector3::UP);
+        // the commanded fall this tick: -3.0 accelerated one 1/60 step
+        let expected_impact = (f64::from(-3.0_f32) - 9.8 / 60.0).abs() as f32;
+        assert_eq!(
+            landing.impact_speed().mps().to_bits(),
+            expected_impact.to_bits()
+        );
+        assert!(matches!(success.state.phase(), MotionPhase::Controlled));
+        assert!(success.landing_request.is_some());
+    }
+
+    #[test]
+    fn restored_last_landing_never_becomes_a_fresh_event() {
+        let support = SupportContact::try_new(world_floor().point, Vector3::UP).unwrap();
+        let old = crate::support_motion::LandingEvent::try_new(3.25, support).unwrap();
+        let prior =
+            MotionState::restore(MotionPhase::Controlled, Some(support), Some(old)).unwrap();
+        let mut port = FakePlayerMotionPort::valid();
+        port.on_floor = true;
+        port.slides = vec![Some(vec![world_floor()])];
+        let success = controlled_player_tick(
+            &mut port,
+            3.0,
+            prior,
+            PlanarVelocity::ZERO,
+            1.0 / 60.0,
+            SupportMotionConfig::PLAYER_DEFAULT,
+        )
+        .unwrap();
+        assert!(success.landing.is_none());
+        assert!(success.landing_request.is_none());
+        assert_eq!(success.state.last_landing(), Some(old));
+    }
+
+    #[test]
+    fn tick_success_defers_collision_pair_until_callback_commit() {
+        let (mut port, prior) = landing_port(-3.0);
+        let success = controlled_player_tick(
+            &mut port,
+            4.0,
+            prior,
+            PlanarVelocity::ZERO,
+            1.0 / 60.0,
+            SupportMotionConfig::PLAYER_DEFAULT,
+        )
+        .unwrap();
+        // a landing changes the pair airborne → controlled, yet the
+        // coordinator only derives it; the callback commit applies it
+        assert_eq!(
+            (success.collision_layer, success.collision_mask),
+            (2, 4_294_967_291)
+        );
+        assert_eq!(
+            port.effect_trace(),
+            [
+                MotionTrace::SetVelocity(Vector3::new(
+                    0.75,
+                    (f64::from(-3.0_f32) - 9.8 / 60.0) as f32,
+                    -1.25
+                )),
+                MotionTrace::MoveAndSlide,
+            ]
+        );
+    }
+
+    #[test]
+    fn audible_landing_request_owns_wave_and_reflection_proofs_for_current_time() {
+        let (mut port, prior) = landing_port(-3.0);
+        let now = 12.5_f64;
+        let config = SupportMotionConfig::PLAYER_DEFAULT;
+        let success = controlled_player_tick(
+            &mut port,
+            now,
+            prior,
+            PlanarVelocity::ZERO,
+            1.0 / 60.0,
+            config,
+        )
+        .unwrap();
+        let landing = success.landing.expect("the fixture lands");
+        let voice = crate::support_motion::landing_voice(landing, config)
+            .expect("a 3.16 m/s impact is audible");
+        let request = success
+            .landing_request
+            .expect("an audible landing must arrive fully prepared");
+        let (command, prepared_now, wave_proof, reflection_proof) = request.into_emit_parts();
+        let (kind, at, max_r, speed, gain, echoes, normal) = command;
+        assert_eq!(kind, 2);
+        // the support point lifted by the contact birth height, exactly
+        assert_eq!(at, Vector3::new(2.0, 0.04, -3.0));
+        assert_eq!(max_r.to_bits(), voice.range_m().to_bits());
+        assert_eq!(speed.to_bits(), 4.0_f64.to_bits());
+        assert_eq!(gain.to_bits(), voice.gain().to_bits());
+        assert_eq!(echoes, 2);
+        assert_eq!(normal, Vector3::UP);
+        assert_eq!(prepared_now.value().to_bits(), now.to_bits());
+        // the WAVE proof pins the landing's own kind and gain — the
+        // reflection's internal synthetic wave is kind 0 / gain 1.0 and
+        // cannot substitute for it
+        assert_eq!(wave_proof.slot().kind, 2);
+        assert_eq!(wave_proof.slot().pos, at);
+        let expected_packed = (2.0 * 10.0 + voice.gain() * 9.0) as f32;
+        assert_eq!(wave_proof.slot().dat.w.to_bits(), expected_packed.to_bits());
+        assert_eq!(wave_proof.raw_speed().to_bits(), 4.0_f64.to_bits());
+        // the REFLECTION proof pins origin, normal, reach, budget, time
+        let reflected = reflection_proof.request();
+        assert_eq!(reflected.at, at);
+        assert_eq!(reflected.normal, Vector3::UP);
+        assert_eq!(reflected.max_r.to_bits(), voice.range_m().to_bits());
+        assert_eq!(reflected.speed.to_bits(), 4.0_f64.to_bits());
+        assert_eq!(reflected.max_echoes, 2);
+        assert_eq!(reflected.now.to_bits(), now.to_bits());
+    }
+
+    #[test]
+    fn invalid_landing_request_uses_the_exact_post_move_refusal_trace() {
+        let mut out_of_envelope = world_floor();
+        out_of_envelope.point = Vector3::new(0.0, 2_000_000.0, 0.0);
+        let mut overflowing_normal = world_floor();
+        overflowing_normal.normal = Vector3::new(0.0, 3.0e38, 0.0);
+        for fact in [out_of_envelope, overflowing_normal] {
+            let (mut port, prior) = landing_port(-3.0);
+            port.slides = vec![Some(vec![fact])];
+            let saved = port.pre_transform;
+            assert!(
+                controlled_player_tick(
+                    &mut port,
+                    5.0,
+                    prior,
+                    PlanarVelocity::ZERO,
+                    1.0 / 60.0,
+                    SupportMotionConfig::PLAYER_DEFAULT,
+                )
+                .is_err()
+            );
+            assert_transform_bits_eq(port.post_transform, saved);
+            assert_eq!(port.post_velocity, Vector3::ZERO);
+            assert_eq!(
+                port.effect_trace()[1..],
+                [
+                    MotionTrace::MoveAndSlide,
+                    MotionTrace::SetTransform(saved),
+                    MotionTrace::SetVelocity(Vector3::ZERO),
+                    MotionTrace::DisablePhysics,
+                ]
+            );
+        }
+    }
+
+    #[derive(Debug)]
+    struct FakeCaneQueryPort {
+        player_transform: Transform3D,
+        camera: Option<(Transform3D, Vector3)>,
+        answers: Vec<CaneRayAnswer>,
+        rays: Vec<(Vector3, Vector3)>,
+    }
+
+    impl FakeCaneQueryPort {
+        fn standing_at(origin: Vector3) -> Self {
+            Self {
+                player_transform: Transform3D::new(Basis::IDENTITY, origin),
+                camera: Some((
+                    Transform3D::new(Basis::IDENTITY, origin + Vector3::new(0.0, 0.7, 0.0)),
+                    Vector3::ZERO,
+                )),
+                answers: Vec::new(),
+                rays: Vec::new(),
+            }
+        }
+    }
+
+    impl CaneQueryPort for FakeCaneQueryPort {
+        fn player_transform(&mut self) -> Transform3D {
+            self.player_transform
+        }
+
+        fn camera_transform(&mut self) -> Option<Transform3D> {
+            self.camera.map(|(transform, _)| transform)
+        }
+
+        fn camera_rotation(&mut self) -> Option<Vector3> {
+            self.camera.map(|(_, rotation)| rotation)
+        }
+
+        fn cast_ray(&mut self, from: Vector3, to: Vector3) -> CaneRayAnswer {
+            self.rays.push((from, to));
+            if self.answers.is_empty() {
+                CaneRayAnswer::Miss
+            } else {
+                self.answers.remove(0)
+            }
+        }
+    }
+
+    #[test]
+    fn cane_endpoints_translate_once_from_one_checked_support_datum() {
+        let support = 1.35_f32 - 0.9_f32;
+        let mut port = FakeCaneQueryPort::standing_at(Vector3::new(2.0, 1.35, -3.0));
+        port.answers = vec![
+            CaneRayAnswer::Miss,
+            CaneRayAnswer::Hit {
+                position: Vector3::new(2.0, 1.9, -4.7),
+                normal: Vector3::UP,
+            },
+        ];
+        let probe = prepare_cane_rest(&mut port, 0.0).unwrap();
+        assert_eq!(port.rays.len(), 2);
+        let (wall_from, wall_to) = port.rays[0];
+        assert_eq!(wall_from, Vector3::new(2.0, support + 0.85, -3.0));
+        assert_eq!(wall_to.x.to_bits(), 2.0_f32.to_bits());
+        assert_eq!(wall_to.y.to_bits(), (support + 0.85).to_bits());
+        // the scan endpoint: from.z minus the full scan length, exactly
+        assert_eq!(wall_to.z.to_bits(), (-3.0_f32 - 3.4_f32).to_bits());
+        let (down_from, down_to) = port.rays[1];
+        assert_eq!(down_from, Vector3::new(2.0, support + 1.05, -4.7));
+        assert_eq!(down_to, Vector3::new(2.0, support - 0.10, -4.7));
+        assert!(probe.supported);
+        assert_eq!(probe.tip.x.to_bits(), 2.0_f32.to_bits());
+        // legacy settle law, bit for bit: the struck surface plus 0.02
+        assert_eq!(
+            probe.tip.y.to_bits(),
+            ((f64::from(1.9_f32) + 0.02) as f32).to_bits()
+        );
+        assert_eq!(probe.tip.z.to_bits(), (-4.7_f32).to_bits());
+
+        // no strike below: the tip hangs at the raised fallback height
+        let mut open = FakeCaneQueryPort::standing_at(Vector3::new(2.0, 1.35, -3.0));
+        let probe = prepare_cane_rest(&mut open, 0.0).unwrap();
+        assert_eq!(open.rays.len(), 2);
+        assert!(!probe.supported);
+        assert_eq!(probe.tip, Vector3::new(2.0, support + 0.02, -4.7));
+
+        // a cooled-down tap is swallowed with ZERO queries
+        let now = prepare_time(2.0).unwrap();
+        let recent = PreparedLastTap::try_new(1.9, now).unwrap();
+        let mut cooled = FakeCaneQueryPort::standing_at(Vector3::new(2.0, 1.35, -3.0));
+        assert!(
+            prepare_cane_tap(&mut cooled, now, recent)
+                .unwrap()
+                .is_none()
+        );
+        assert!(cooled.rays.is_empty());
+    }
+
+    #[test]
+    fn poisoned_cane_player_or_camera_sample_queries_nothing_and_changes_no_cane_state() {
+        let now = prepare_time(2.0).unwrap();
+        let tap_clock = PreparedLastTap::try_new(-10.0, now).unwrap();
+        let standing = Vector3::new(2.0, 0.9, -3.0);
+        for lane in 0..12 {
+            let mut rest_port = FakeCaneQueryPort::standing_at(standing);
+            rest_port.player_transform = poison_transform_lane(rest_port.player_transform, lane);
+            assert!(prepare_cane_rest(&mut rest_port, 0.0).is_err());
+            assert!(rest_port.rays.is_empty());
+
+            let mut tap_port = FakeCaneQueryPort::standing_at(standing);
+            tap_port.player_transform = poison_transform_lane(tap_port.player_transform, lane);
+            assert!(prepare_cane_tap(&mut tap_port, now, tap_clock).is_err());
+            assert!(tap_port.rays.is_empty());
+
+            let mut camera_port = FakeCaneQueryPort::standing_at(standing);
+            let (camera_transform, camera_rotation) = camera_port.camera.unwrap();
+            camera_port.camera = Some((
+                poison_transform_lane(camera_transform, lane),
+                camera_rotation,
+            ));
+            assert!(prepare_cane_tap(&mut camera_port, now, tap_clock).is_err());
+            assert!(camera_port.rays.is_empty());
+        }
+        for lane in 0..3 {
+            let mut port = FakeCaneQueryPort::standing_at(standing);
+            let (camera_transform, camera_rotation) = port.camera.unwrap();
+            port.camera = Some((camera_transform, poison_vector_lane(camera_rotation, lane)));
+            assert!(prepare_cane_tap(&mut port, now, tap_clock).is_err());
+            assert!(port.rays.is_empty());
+        }
+        let mut missing = FakeCaneQueryPort::standing_at(standing);
+        missing.camera = None;
+        assert!(prepare_cane_tap(&mut missing, now, tap_clock).is_err());
+        assert!(missing.rays.is_empty());
+    }
+
+    #[test]
+    fn poisoned_cane_query_endpoint_queries_nothing_and_changes_no_cane_state() {
+        // a legal actor position whose derived wall-scan endpoint leaves
+        // the pose envelope: refused before the port is asked anything
+        let mut port = FakeCaneQueryPort::standing_at(Vector3::new(0.0, 0.9, -1_000_000.0));
+        assert!(prepare_cane_rest(&mut port, 0.0).is_err());
+        assert!(port.rays.is_empty());
+    }
+
+    #[test]
+    fn poisoned_or_malformed_cane_hit_changes_no_tap_state_or_wave() {
+        let now = prepare_time(2.0).unwrap();
+        let tap_clock = PreparedLastTap::try_new(-10.0, now).unwrap();
+        let standing = Vector3::new(2.0, 0.9, -3.0);
+
+        // malformed aim answer: refused after exactly the one aim query
+        let mut port = FakeCaneQueryPort::standing_at(standing);
+        port.answers = vec![CaneRayAnswer::Malformed];
+        assert!(prepare_cane_tap(&mut port, now, tap_clock).is_err());
+        assert_eq!(port.rays.len(), 1);
+
+        for lane in 0..3 {
+            let mut position_port = FakeCaneQueryPort::standing_at(standing);
+            position_port.answers = vec![CaneRayAnswer::Hit {
+                position: poison_vector_lane(Vector3::new(2.0, 1.0, -4.0), lane),
+                normal: Vector3::UP,
+            }];
+            assert!(prepare_cane_tap(&mut position_port, now, tap_clock).is_err());
+            assert_eq!(position_port.rays.len(), 1);
+
+            let mut normal_port = FakeCaneQueryPort::standing_at(standing);
+            normal_port.answers = vec![CaneRayAnswer::Hit {
+                position: Vector3::new(2.0, 1.0, -4.0),
+                normal: poison_vector_lane(Vector3::UP, lane),
+            }];
+            assert!(prepare_cane_tap(&mut normal_port, now, tap_clock).is_err());
+            assert_eq!(normal_port.rays.len(), 1);
+        }
+
+        // malformed wall answer in the rest path: refused after [wall]
+        let mut wall = FakeCaneQueryPort::standing_at(standing);
+        wall.answers = vec![CaneRayAnswer::Malformed];
+        assert!(prepare_cane_rest(&mut wall, 0.0).is_err());
+        assert_eq!(wall.rays.len(), 1);
+
+        // poisoned down hit: refused after [wall, down]
+        for lane in 0..3 {
+            let mut down = FakeCaneQueryPort::standing_at(standing);
+            down.answers = vec![
+                CaneRayAnswer::Miss,
+                CaneRayAnswer::Hit {
+                    position: poison_vector_lane(Vector3::new(2.0, 0.0, -4.7), lane),
+                    normal: Vector3::UP,
+                },
+            ];
+            assert!(prepare_cane_rest(&mut down, 0.0).is_err());
+            assert_eq!(down.rays.len(), 2);
+        }
+
+        // a malformed rest inside the TAP path: the exact aim/wall/down
+        // trace ends at the malformed answer, and nothing is returned
+        let mut tap_rest = FakeCaneQueryPort::standing_at(standing);
+        tap_rest.answers = vec![
+            CaneRayAnswer::Miss,
+            CaneRayAnswer::Miss,
+            CaneRayAnswer::Malformed,
+        ];
+        assert!(prepare_cane_tap(&mut tap_rest, now, tap_clock).is_err());
+        assert_eq!(tap_rest.rays.len(), 3);
     }
 
     #[test]

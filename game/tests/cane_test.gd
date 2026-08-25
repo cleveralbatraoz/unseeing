@@ -20,6 +20,10 @@ func before_test() -> void:
 	_player.rotation.y = 0.0  # face -Z: deterministic aim for every fixture
 	add_child(_player)
 	_player.tick(NOW)
+	# a small pedestal ONLY under the capsule: the support-relative cane
+	# laws need a standing player, while the tip 1.7 m ahead still hangs
+	# over open air — the unsupported-tip fixtures stay intentional
+	_add_box(Vector3(0, -0.05, 0), Vector3(0.9, 0.1, 0.9))
 
 
 ## One box: a static collider for the cane's rays, freed after the test.
@@ -164,3 +168,85 @@ func test_cane_rest_shortened_by_wall() -> void:
 	assert_bool(reach < UnseeingPlayer.cane_reach()).is_true()  # truly shortened
 	var horizontal := Vector2(rest.tip.x, rest.tip.z).length()
 	assert_float(horizontal).is_equal_approx(reach, 0.01)
+
+
+## An elevated player's cane rest follows the raised support: the down
+## probe runs from the raised probe window and settles the tip on the
+## elevated ground — an absolute-height probe would miss it entirely.
+func test_cane_rest_follows_an_elevated_player() -> void:
+	_add_box(Vector3(0, 1.95, 0), Vector3(20.0, 0.1, 20.0))  # raised ground, top 2.0
+	_player.position = Vector3(0, 2.9, 0)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var rest := _player.cane_rest
+	assert_bool(rest.supported).is_true()
+	assert_vector(rest.tip).is_equal_approx(Vector3(0, 2.02, -1.7), Vector3(0.02, 0.006, 0.02))
+
+
+## Raised-versus-floor is judged from the PLAYER's support, not sea level:
+## on a 2.0 m platform a table at +0.7 above it still taps as a raised
+## surface — full radius 6, full gain, born on the tabletop.
+func test_elevated_table_is_classified_relative_to_the_player() -> void:
+	_add_box(Vector3(0, 1.95, 0), Vector3(20.0, 0.1, 20.0))  # raised ground, top 2.0
+	_add_box(Vector3(0, 2.35, -1.6), Vector3(1.0, 0.7, 1.0))  # table on it, top 2.7
+	_player.position = Vector3(0, 2.9, 0)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	await _tap()
+	assert_int(_pulses.live_count(NOW + 0.1)).is_equal(1)
+	assert_int(int(floorf(_pulses.dat[0].w / 10.0))).is_equal(0)
+	assert_float(_pulses.dat[0].y).is_equal(6.0)
+	assert_float(fmod(_pulses.dat[0].w, 10.0) / 9.0).is_equal_approx(1.0, 0.001)
+	var expected := Vector3(0, 2.72, -1.7)  # cane reach ahead, on the raised top
+	assert_vector(_pulses.pos[0]).is_equal_approx(expected, Vector3(0.03, 0.03, 0.03))
+	# the bare raised ground, looked down at past the rest threshold, is
+	# FLOOR relative to the player — the softer floor voice, not raised
+	_player.rotation.y = PI  # face +Z: open raised ground, no table
+	_player.camera.rotation.x = -0.5
+	_player.tick(NOW + 0.3)
+	await _tap()
+	assert_int(_pulses.live_count(NOW + 0.4)).is_equal(2)
+	assert_float(_pulses.dat[1].y).is_equal(5.0)
+	assert_float(fmod(_pulses.dat[1].w, 10.0) / 9.0).is_equal_approx(0.85, 0.001)
+	assert_float(_pulses.pos[1].y).is_equal_approx(2.02, 0.03)
+	# and an aimed strike into that raised ground is floorish relative to
+	# the player: the aimed ray connects, with the floor strike's voice
+	_player.camera.rotation.x = -1.3
+	_player.tick(NOW + 0.6)
+	await _tap()
+	assert_int(_pulses.live_count(NOW + 0.7)).is_equal(3)
+	assert_float(_pulses.dat[2].y).is_equal(5.0)
+	assert_float(fmod(_pulses.dat[2].w, 10.0) / 9.0).is_equal_approx(0.85, 0.001)
+	assert_float(_pulses.pos[2].y).is_equal_approx(2.0, 0.03)
+
+
+## The air swish is anchored to the player wherever the body is: a falling
+## player's swish target rides the falling support datum instead of a
+## fixed absolute height.
+func test_air_sweeping_target_follows_the_falling_player() -> void:
+	_player.position = Vector3(5.0, 6.0, 5.0)  # far from the pedestal: open air
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	await _tap()
+	assert_float(_player.last_tap).is_equal(NOW)  # the tap did happen
+	assert_int(_pulses.live_count(NOW + 0.1)).is_equal(0)  # air reflects nothing
+	# level gaze: the swish rides at support_y + EYE = root_y + 0.7; the
+	# body kept falling briefly after the tap tick, hence the window
+	var expected_y := _player.global_position.y - 0.9 + 1.6
+	assert_float(absf(_player.tap_target.y - expected_y)).is_less(0.35)
+
+
+## Look and tap stay live in the air: an airborne body still turns its
+## eye and still consumes a queued tap on the next physics tick.
+func test_look_and_tap_remain_live_while_airborne() -> void:
+	_player.position = Vector3(5.0, 6.0, 5.0)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	assert_int(_player.collision_layer).is_equal(4)  # truly airborne
+	var yaw_before := _player.rotation.y
+	var pitch_before := _player.camera.rotation.x
+	_player.look(Vector2(100.0, 50.0))
+	assert_bool(_player.rotation.y != yaw_before).is_true()
+	assert_bool(_player.camera.rotation.x != pitch_before).is_true()
+	await _tap()
+	assert_float(_player.last_tap).is_equal(NOW)  # consumed, clock advanced

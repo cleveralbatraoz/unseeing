@@ -4,6 +4,7 @@ extends GdUnitTestSuite
 ## stop the body.
 
 const TICKS := 30
+const DT := 1.0 / 60.0
 
 var _player: UnseeingPlayer
 
@@ -32,14 +33,31 @@ func _add_box(center: Vector3, size: Vector3) -> void:
 	add_child(body)
 
 
-## The player owns its camera: the viewmodel reports a bob offset, and the
-## player alone moves the eye around the fixed base height.
-func test_head_bob_moves_camera_around_base() -> void:
-	_player.set_head_bob(0.02)
-	var base := UnseeingPlayer.cam_base_y()
-	assert_float(_player.camera.position.y).is_equal_approx(base + 0.02, 0.0001)
-	_player.set_head_bob(0.0)
-	assert_float(_player.camera.position.y).is_equal_approx(base, 0.0001)
+## The eye's height is committed only by an atomic hero frame: a real
+## HeroBody drives one nonzero-bob frame and the camera lands exactly at
+## base + bob — and no raw `set_head_bob` or `request_cane_sweep` door
+## remains registered for anything else to move it through.
+func test_head_bob_is_committed_only_by_an_atomic_hero_frame() -> void:
+	_player.set_physics_process(false)
+	var hero: HeroBody = auto_free(HeroBody.new())
+	hero.player = _player
+	hero.camera = _player.camera
+	hero.pulses = _player.pulses
+	hero.cane_mat = ShaderMaterial.new()
+	hero.body_mat = ShaderMaterial.new()
+	add_child(hero)
+	var now := 0.0
+	for frame: int in 10:
+		now += DT
+		_player.velocity = Vector3(0, 0, -UnseeingPlayer.speed())
+		hero.update(now, DT)
+	assert_bool(hero.bob_offset != 0.0).is_true()
+	# one hand-derived f32 ULP at the eye's ~0.7 magnitude
+	assert_float(_player.camera.position.y).is_equal_approx(
+		UnseeingPlayer.cam_base_y() + hero.bob_offset, 5.960464477539063e-8
+	)
+	assert_bool(ClassDB.class_has_method("UnseeingPlayer", "set_head_bob", true)).is_false()
+	assert_bool(ClassDB.class_has_method("UnseeingPlayer", "request_cane_sweep", true)).is_false()
 
 
 ## No silent nulls: a player without its injected pulse pool reports the miss

@@ -24,11 +24,11 @@ use godot::classes::{
 };
 use godot::prelude::*;
 
-use super::limbs::{LimbBuf, sphere, sphere_lod, tube, tube_res};
 use super::solid::clear_limbs;
 use crate::cat_body::{self, CatPose, PreparedCatPose, PreparedTail, Tail};
 use crate::cat_brain::{CatBrain, PreparedCatBrain, RoamRect};
 use crate::cat_gait::{self, CatGait, PreparedCatGait};
+use crate::limbs::{LimbBuf, sphere, sphere_lod, tube, tube_res};
 use crate::render::{self, Role};
 use crate::reproduce::RestoreValueError;
 use crate::reproduce::blob::CatCapture;

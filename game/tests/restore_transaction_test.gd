@@ -879,20 +879,143 @@ func test_airborne_restore_uses_injected_terminal_config_and_refuses_excess_atom
 	await _assert_atomic_motion_refusal(main, excess, "hero.motion.phase.vertical_velocity")
 
 
-func test_dormant_schema_still_refuses_pending_or_controlled_contact_state() -> void:
-	var main := await _boot_ticked()
+## A quiet booted world — a wall for reflections but no source and no
+## cat, so the pool only ever holds what the hero itself makes and a
+## landing or footstep re-emission cannot hide in ambient waves.
+func _boot_quiet() -> UnseeingGame:
+	var main: UnseeingGame = auto_free(
+		WORLD_FIXTURE.game(WORLD_FIXTURE.DEFAULT_EXTENTS, true, false, false)
+	)
+	add_child(main)
+	main.level.scene_file_path = FIXTURE_SCENE_PATH
+	await _one_frame()
+	return main
+
+
+## Live pulses whose max radius matches exactly — the discriminator
+## between footstep (1.6), a queued fixture wave (6.25), and any landing.
+func _pulse_range_count(main: UnseeingGame, radius: float) -> int:
+	var count := 0
+	var core: WaveCore = main.wave_core
+	for i: int in core.live_count(main.now):
+		if absf(core.pulse_data()[i].y - radius) < 1e-6:
+			count += 1
+	return count
+
+
+## The hero's captured suppression latch, read through the wire format.
+func _hero_pending(main: UnseeingGame) -> bool:
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_bool(blob.has("unavailable")).is_false()
+	return (blob["hero"] as Dictionary)["footstep_suppression_pending"]
+
+
+## Format 2 restores a PENDING suppression latch verbatim, and only a real
+## hero cadence evaluation may spend it: physics ticks alone never do, and
+## the swallowed first step emits no footstep wave.
+func test_format_2_restore_accepts_pending_suppression_until_hero_ack() -> void:
+	var main := await _boot_quiet()
 	await _lively(main)
 	var pending := _copy(main.observer.capture(main.now, main.capture_env()))
 	(pending["hero"] as Dictionary)["footstep_suppression_pending"] = true
 	_install_canonical_hash(main, pending)
-	await _assert_atomic_refusal(main, pending, "hero.footstep_suppression_pending")
+	var verdict: Dictionary = main.restore_blob(pending)
+	assert_str(str(verdict.get("unavailable", ""))).is_empty()
+	assert_bool(_hero_pending(main)).is_true()
+	for _i: int in 5:
+		await _one_frame()
+	assert_bool(_hero_pending(main)).is_true()  # ticks alone never acknowledge
+	Input.action_press("move_forward")
+	var acknowledged := false
+	for i: int in 240:
+		await _one_frame()
+		if i % 5 == 4 and not _hero_pending(main):
+			acknowledged = true
+			break
+	Input.action_release("move_forward")
+	assert_bool(acknowledged).is_true()
+	assert_int(_pulse_range_count(main, 1.6)).is_equal(0)  # the ack was silent
 
-	_queue_one(main, Vector3(4.25, 0.625, -2.75))
+
+## Format 2 restores a controlled-contact queue entry with its future
+## intact: a controlled tick emits it, and a departing tick consumes it
+## silently — exactly the life the original request would have had.
+func test_format_2_restore_preserves_controlled_contact_gate_and_future() -> void:
+	var main := await _boot_quiet()
+	await _lively(main)
 	var gated := _copy(main.observer.capture(main.now, main.capture_env()))
 	var wave: Dictionary = ((gated["hero"] as Dictionary)["queued_waves"] as Array)[0]
 	wave["gate"] = "controlled_contact"
 	_install_canonical_hash(main, gated)
-	await _assert_atomic_refusal(main, gated, "hero.queued_waves[0].gate")
+	var verdict: Dictionary = main.restore_blob(gated)
+	assert_str(str(verdict.get("unavailable", ""))).is_empty()
+	var queued := main.player.queued_waves()
+	assert_int(queued.size()).is_equal(1)
+	var gate: String = queued[0].gate
+	assert_str(gate).is_equal("controlled_contact")
+	# future A: controlled -> controlled, the restored request still fires
+	assert_int(_pulse_range_count(main, 6.25)).is_equal(0)
+	for _i: int in 2:
+		await _one_frame()
+	assert_array(main.player.queued_waves()).is_empty()
+	assert_int(_pulse_range_count(main, 6.25)).is_equal(1)
+	# future B: the same restored gate is consumed silently when the very
+	# next tick leaves support
+	verdict = main.restore_blob(gated)
+	assert_str(str(verdict.get("unavailable", ""))).is_empty()
+	var relocated: Dictionary = main.player.call("relocate", Vector3(2.0, 5.0, 6.0))
+	assert_dict(relocated).is_equal({"relocated": true})
+	for _i: int in 2:
+		await _one_frame()
+	assert_array(main.player.queued_waves()).is_empty()
+	assert_int(_pulse_range_count(main, 6.25)).is_equal(0)
+
+
+## A restored `last_landing` is memory, not an event: nothing re-emits its
+## voice and the suppression latch stays clear.
+func test_restored_old_landing_is_inert() -> void:
+	var main := await _boot_quiet()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	var hero: Dictionary = blob["hero"]
+	_set_controlled_support(hero)
+	var motion: Dictionary = hero["motion"]
+	motion["last_landing"] = {
+		"impact_speed": "3.5",
+		"support": {"point": ["2.0", "0.0", "-3.0"], "normal": ["0.0", "1.0", "0.0"]},
+	}
+	_install_canonical_hash(main, blob)
+	var verdict: Dictionary = main.restore_blob(blob)
+	assert_str(str(verdict.get("unavailable", ""))).is_empty()
+	for _i: int in 5:
+		await _one_frame()
+	# a 3.5 m/s landing would speak at exactly severity 0.8: range 4.0,
+	# kind 2 — no such pulse may exist, and the latch stays clear
+	var relanded := 0
+	var core: WaveCore = main.wave_core
+	for i: int in core.live_count(main.now):
+		var dat: Vector4 = core.pulse_data()[i]
+		if int(floorf(dat.w / 10.0)) == 2 and dat.y == 4.0:
+			relanded += 1
+	assert_int(relanded).is_equal(0)
+	assert_bool(_hero_pending(main)).is_false()
+
+
+## A blob whose PLAYER group is thoroughly non-dormant — pending latch,
+## controlled-contact queue entry — still restores atomically: when a
+## later group refuses, not one prepared player value lands.
+func test_non_dormant_player_preparation_is_still_atomic_when_a_later_group_refuses() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	var hero: Dictionary = blob["hero"]
+	hero["footstep_suppression_pending"] = true
+	var wave: Dictionary = (hero["queued_waves"] as Array)[0]
+	wave["gate"] = "controlled_contact"
+	var appointment: Dictionary = (blob["echoes"] as Array)[0]
+	appointment["at_t"] = "Infinity"
+	_install_canonical_hash(main, blob)
+	await _assert_atomic_refusal(main, blob, "echoes[0].at_t")
 
 
 func _assert_semantically_poisoned_wave_state(main: UnseeingGame) -> void:
@@ -1100,3 +1223,4 @@ func test_restore_preflights_the_observers_exact_graph_live_eye_and_root_rng() -
 		func() -> void: main.player.camera = old_camera,
 		main,
 	)
+# gdlint:ignore = max-file-lines
