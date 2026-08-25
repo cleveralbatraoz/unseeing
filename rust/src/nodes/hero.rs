@@ -145,10 +145,10 @@ impl HeroBody {
         }
         let mut player = player_ref.clone();
         let camera = camera_ref.clone();
-        if !player.bind().owns_visual_camera(&camera) {
+        let Some(eye) = player.bind().prove_visual_camera(&camera) else {
             godot_error!("hero_body: visual camera refused — not the player's live eye");
             return;
-        }
+        };
         let Some(prior_vm) = self.vm else {
             return; // _ready refused: no viewmodel was ever built
         };
@@ -271,7 +271,7 @@ impl HeroBody {
                 self.bob_offset = bob;
                 player
                     .bind_mut()
-                    .commit_hero_frame(bob, cane_sweep, suppression, step);
+                    .commit_hero_frame(eye, bob, cane_sweep, suppression, step);
             }
         }
     }

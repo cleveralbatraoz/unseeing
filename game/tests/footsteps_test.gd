@@ -272,3 +272,20 @@ func test_landing_acknowledgement_allows_next_controlled_footstep() -> void:
 		await _physics_then_hero_frame()
 	# first fire (instant) consumed; second fire (+26 moving frames) emits
 	assert_int(_footstep_pulse_count()).is_equal(1)
+
+
+## The wave that reaches the pool is the wave the proof admitted: a
+## footstep queued at one prepared instant is born at THAT instant, even
+## when the player's clock has moved on before the emitting physics tick.
+func test_footstep_wave_is_born_at_its_prepared_instant() -> void:
+	_add_box(Vector3(0.0, -0.05, 0.0), Vector3(20.0, 0.1, 20.0))  # stay controlled
+	_step(_walk_vel)  # the fresh walker queues its instant first step
+	var prepared := _now
+	assert_int(_player.queued_waves().size()).is_equal(1)
+	_player.tick(5.0)  # the clock moves on before the drain
+	_player.set_physics_process(true)
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	assert_array(_player.queued_waves()).is_empty()
+	assert_int(_pulses.live_count(prepared + 0.05)).is_equal(1)
+	assert_float(_pulses.dat[0].x).is_equal_approx(prepared, 1e-6)

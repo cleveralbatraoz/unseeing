@@ -1003,7 +1003,10 @@ func test_restored_old_landing_is_inert() -> void:
 
 ## A blob whose PLAYER group is thoroughly non-dormant — pending latch,
 ## controlled-contact queue entry — still restores atomically: when a
-## later group refuses, not one prepared player value lands.
+## LATER group refuses, not one prepared player value lands. The poison
+## sits in the cat group, which the restorer prepares AFTER the hero
+## (waves, then hero, then cats, then sources), so the non-dormant player
+## preparation genuinely runs and must still leave the world untouched.
 func test_non_dormant_player_preparation_is_still_atomic_when_a_later_group_refuses() -> void:
 	var main := await _boot_ticked()
 	await _lively(main)
@@ -1012,10 +1015,10 @@ func test_non_dormant_player_preparation_is_still_atomic_when_a_later_group_refu
 	hero["footstep_suppression_pending"] = true
 	var wave: Dictionary = (hero["queued_waves"] as Array)[0]
 	wave["gate"] = "controlled_contact"
-	var appointment: Dictionary = (blob["echoes"] as Array)[0]
-	appointment["at_t"] = "Infinity"
+	var brain: Dictionary = ((blob["cats"] as Array)[0] as Dictionary)["brain"]
+	brain["speed"] = "NaN"
 	_install_canonical_hash(main, blob)
-	await _assert_atomic_refusal(main, blob, "echoes[0].at_t")
+	await _assert_atomic_refusal(main, blob, "cats[0].brain.speed")
 
 
 func _assert_semantically_poisoned_wave_state(main: UnseeingGame) -> void:

@@ -33,9 +33,11 @@ use super::support::{
     SAFE_MARGIN_M, SNAP_PROBE_MAX_CONTACTS, collision_pair, is_actor_layer,
 };
 use crate::hero_visual::{
-    CAM_BASE_Y, CaneVerticals, LandingPreparationError, PLAYER_STANDING_ROOT_Y,
-    PreparedCaneRequest, PreparedFootstepRequest, PreparedLandingRequest, PreparedLastTap,
-    prepare_cane_request,
+    CAM_BASE_Y, CANE_FLOOR_VOICE, CANE_FULL_VOICE, CANE_REACH, CANE_SCAN_LENGTH, CaneVerticals,
+    LandingPreparationError, PLAYER_STANDING_ROOT_Y, PreparedCaneRequest, PreparedFootstepRequest,
+    PreparedLandingRequest, PreparedLastTap, RestTapVerdict, WALL_BACKOFF, aimed_strike_voice,
+    cane_aim_ray, cane_settle_ray, cane_tip_column, cane_wall_scan_ray, horizontal_aim,
+    prepare_cane_request, rest_tap_verdict, settle_cane_rest, swish_target,
 };
 use crate::observe::QueuedWave;
 use crate::observe::reflect::{CheckedReflectionRequest, ReflectionRequest};
@@ -57,9 +59,6 @@ const PLAYER_CAPSULE_CENTER_Y_M: f32 = -0.05;
 /// Walk speed, m/s — a careful walk, not a run.
 pub const SPEED: f64 = 2.1;
 
-/// Arm + white cane: what can truly be touched.
-pub const CANE_REACH: f64 = 1.7;
-
 /// Seconds a too-eager second tap is swallowed for.
 pub const TAP_COOLDOWN: f64 = 0.15;
 
@@ -68,12 +67,6 @@ pub const MOUSE_SENS: f64 = 0.0026;
 
 /// Radians the eye may pitch up or down.
 pub const PITCH_LIMIT: f64 = 1.35;
-
-/// Wall-detection ray length.
-pub const CANE_SCAN_LENGTH: f64 = 3.4;
-
-/// The tip stops this far short of a struck wall face.
-pub const WALL_BACKOFF: f64 = 0.06;
 
 /// Move actions bind PHYSICAL keycodes so WASD works on any keyboard
 /// layout (ЦФЫВ on Russian, ZQSD keys on AZERTY, etc.).
@@ -111,6 +104,11 @@ struct WaveRequest {
     echoes: i64,
     normal: Vector3,
     gate: QueuedWaveGate,
+    /// The instant the request's admission proofs were made, when one
+    /// exists: the emitted wave is born at THAT instant, never a re-read
+    /// clock. General and restored requests carry none and use the
+    /// draining tick's clock, exactly as before.
+    prepared_at: Option<f64>,
 }
 
 struct PreparedWaveRequest {
@@ -184,6 +182,12 @@ impl fmt::Display for CaneQueryError {
     }
 }
 
+/// Proof that a camera handle is this player's own live eye — produced
+/// only by [`UnseeingPlayer::prove_visual_camera`] and consumed exactly
+/// once by the visual commit door. Holding the proven handle itself makes
+/// the door's camera write unconditional.
+pub(super) struct VisualCameraProof(Gd<Camera3D>);
+
 /// A completely decided tap, staged for one adapter install: the spent
 /// intent, the advanced tap clock, the strike target, and the optional
 /// prepared reflecting command. A swish stages no request.
@@ -214,18 +218,17 @@ fn validated_cane_player<P: CaneQueryPort>(
 
 /// The rest settle from an already validated player sample: a wall scan
 /// shortens the reach, then a settle probe finds the first supporting
-/// surface below the tip. Every endpoint is validated before the port is
-/// asked, every returned hit before it is used.
+/// surface below the tip. The coordinator only sequences the two port
+/// queries — every endpoint, answer, and settled tip law lives in the
+/// pure owner.
 fn cane_rest_probe<P: CaneQueryPort>(
     port: &mut P,
     gp: Vector3,
     verticals: CaneVerticals,
     direction: Vector3,
 ) -> Result<RestProbe, CaneQueryError> {
-    let from = Vector3::new(gp.x, verticals.wall_scan_y(), gp.z);
-    let to = from + direction * CANE_SCAN_LENGTH as f32;
-    PosePoint::try_new(from).map_err(|_| CaneQueryError::Endpoint)?;
-    PosePoint::try_new(to).map_err(|_| CaneQueryError::Endpoint)?;
+    let (from, to) =
+        cane_wall_scan_ray(verticals, gp, direction).map_err(|_| CaneQueryError::Endpoint)?;
     let wall_d = match port.cast_ray(from, to) {
         CaneRayAnswer::Miss => CANE_SCAN_LENGTH,
         CaneRayAnswer::Hit { position, .. } => {
@@ -234,33 +237,21 @@ fn cane_rest_probe<P: CaneQueryPort>(
         }
         CaneRayAnswer::Malformed => return Err(CaneQueryError::Hit),
     };
-    let reach = CANE_REACH.min(wall_d - WALL_BACKOFF);
-    let px = f64::from(gp.x) + f64::from(direction.x) * reach;
-    let pz = f64::from(gp.z) + f64::from(direction.z) * reach;
-    let top = Vector3::new(px as f32, verticals.probe_top_y(), pz as f32);
-    let bottom = Vector3::new(px as f32, verticals.probe_bottom_y(), pz as f32);
-    PosePoint::try_new(top).map_err(|_| CaneQueryError::Endpoint)?;
-    PosePoint::try_new(bottom).map_err(|_| CaneQueryError::Endpoint)?;
-    let probe = match port.cast_ray(top, bottom) {
-        CaneRayAnswer::Miss => RestProbe {
-            tip: Vector3::new(px as f32, verticals.unsupported_tip_y(), pz as f32),
-            supported: false,
-        },
-        CaneRayAnswer::Hit { position, .. } => {
-            let down = PosePoint::try_new(position).map_err(|_| CaneQueryError::Hit)?;
-            RestProbe {
-                tip: Vector3::new(
-                    px as f32,
-                    (f64::from(down.world().y) + 0.02) as f32,
-                    pz as f32,
-                ),
-                supported: true,
-            }
-        }
+    let (px, pz) = cane_tip_column(gp, direction, wall_d);
+    let (top, bottom) = cane_settle_ray(verticals, px, pz).map_err(|_| CaneQueryError::Endpoint)?;
+    let struck_y = match port.cast_ray(top, bottom) {
+        CaneRayAnswer::Miss => None,
+        CaneRayAnswer::Hit { position, .. } => Some(
+            PosePoint::try_new(position)
+                .map_err(|_| CaneQueryError::Hit)?
+                .world()
+                .y,
+        ),
         CaneRayAnswer::Malformed => return Err(CaneQueryError::Hit),
     };
-    PosePoint::try_new(probe.tip).map_err(|_| CaneQueryError::Endpoint)?;
-    Ok(probe)
+    let (tip, supported) =
+        settle_cane_rest(verticals, px, pz, struck_y).map_err(|_| CaneQueryError::Endpoint)?;
+    Ok(RestProbe { tip, supported })
 }
 
 /// The physics-tick cane rest for one sweep offset — published by the
@@ -299,10 +290,8 @@ fn prepare_cane_tap<P: CaneQueryPort>(
     let (gp, verticals, forward) = validated_cane_player(port)?;
     let pitch = f64::from(camera_rotation.x);
     let aim = -camera_transform.basis.col_c();
-    let from = camera_transform.origin;
-    let to = from + aim * CANE_REACH as f32;
-    PosePoint::try_new(from).map_err(|_| CaneQueryError::Endpoint)?;
-    PosePoint::try_new(to).map_err(|_| CaneQueryError::Endpoint)?;
+    let (from, to) =
+        cane_aim_ray(camera_transform.origin, aim).map_err(|_| CaneQueryError::Endpoint)?;
     match port.cast_ray(from, to) {
         CaneRayAnswer::Malformed => Err(CaneQueryError::Hit),
         CaneRayAnswer::Hit { position, normal } => {
@@ -313,8 +302,7 @@ fn prepare_cane_tap<P: CaneQueryPort>(
                     return Err(CaneQueryError::Hit);
                 }
             }
-            let floorish = f64::from(normal.y) > 0.7 && verticals.is_floorish_hit(strike.world().y);
-            let (max_r, gain) = if floorish { (5.0, 0.85) } else { (6.0, 1.0) };
+            let (max_r, gain) = aimed_strike_voice(verticals, strike.world().y, normal.y);
             let request = prepare_cane_request(strike, max_r, gain, normal, now)
                 .map_err(|_| CaneQueryError::Request)?;
             Ok(Some(PreparedCaneTap {
@@ -325,31 +313,41 @@ fn prepare_cane_tap<P: CaneQueryPort>(
         }
         CaneRayAnswer::Miss => {
             let rest = cane_rest_probe(port, gp, verticals, forward)?;
-            let raised = rest.supported && verticals.is_raised_tip(rest.tip.y);
-            if raised || (rest.supported && pitch <= -0.12) {
-                // no aim needed: tap whatever the cane is physically
-                // resting on — tabletop, chair seat, or the floor
-                let tip = PosePoint::try_new(rest.tip).map_err(|_| CaneQueryError::Endpoint)?;
-                let (max_r, gain) = if raised { (6.0, 1.0) } else { (5.0, 0.85) };
-                let request = prepare_cane_request(tip, max_r, gain, Vector3::UP, now)
-                    .map_err(|_| CaneQueryError::Request)?;
-                Ok(Some(PreparedCaneTap {
-                    last_tap: now.value(),
-                    tap_target: tip.world(),
-                    request: Some(request),
-                }))
-            } else {
-                // air swish: the cane sweeps up through nothing; air
-                // reflects nothing — only the strike animation remembers
-                let flat = Vector3::new(aim.x, 0.0, aim.z).normalized();
-                let swish = from + flat * 1.5;
-                let target = Vector3::new(swish.x, verticals.swish_target_y(pitch) as f32, swish.z);
-                let target = PosePoint::try_new(target).map_err(|_| CaneQueryError::Endpoint)?;
-                Ok(Some(PreparedCaneTap {
-                    last_tap: now.value(),
-                    tap_target: target.world(),
-                    request: None,
-                }))
+            match rest_tap_verdict(verticals, rest.supported, rest.tip.y, pitch) {
+                verdict @ (RestTapVerdict::Raised | RestTapVerdict::Floor) => {
+                    // no aim needed: tap whatever the cane is physically
+                    // resting on — tabletop, chair seat, or the floor
+                    let tip = PosePoint::try_new(rest.tip).map_err(|_| CaneQueryError::Endpoint)?;
+                    let (max_r, gain) = if verdict == RestTapVerdict::Raised {
+                        CANE_FULL_VOICE
+                    } else {
+                        CANE_FLOOR_VOICE
+                    };
+                    let request = prepare_cane_request(tip, max_r, gain, Vector3::UP, now)
+                        .map_err(|_| CaneQueryError::Request)?;
+                    Ok(Some(PreparedCaneTap {
+                        last_tap: now.value(),
+                        tap_target: tip.world(),
+                        request: Some(request),
+                    }))
+                }
+                RestTapVerdict::Swish => {
+                    // air swish: the cane sweeps up through nothing; air
+                    // reflects nothing — only the strike animation
+                    // remembers. An exactly vertical eye has no swish
+                    // direction: refuse the degenerate camera instead of
+                    // normalizing zero.
+                    let Some(flat) = horizontal_aim(aim) else {
+                        return Err(CaneQueryError::Sample);
+                    };
+                    let target = swish_target(verticals, from, flat, pitch)
+                        .map_err(|_| CaneQueryError::Endpoint)?;
+                    Ok(Some(PreparedCaneTap {
+                        last_tap: now.value(),
+                        tap_target: target.world(),
+                        request: None,
+                    }))
+                }
             }
         }
     }
@@ -1086,9 +1084,19 @@ impl ICharacterBody3D for UnseeingPlayer {
         let space = self.space_state().to_variant();
         let now = self.now;
         if let Some(request) = landing_request {
-            let ((kind, at, max_r, speed, gain, echoes, normal), _now, _wave, _reflection) =
+            let ((kind, at, max_r, speed, gain, echoes, normal), prepared, _wave, _reflection) =
                 request.into_emit_parts();
-            self.emit_reflecting(kind, at, max_r, speed, gain, now, &space, echoes, normal);
+            self.emit_reflecting(
+                kind,
+                at,
+                max_r,
+                speed,
+                gain,
+                prepared.value(),
+                &space,
+                echoes,
+                normal,
+            );
         }
 
         // cane work goes through the one query port; the rest is
@@ -1118,10 +1126,18 @@ impl ICharacterBody3D for UnseeingPlayer {
                         self.last_tap = prepared.last_tap;
                         self.tap_target = prepared.tap_target;
                         if let Some(request) = prepared.request {
-                            let ((kind, at, max_r, speed, gain, echoes, normal), _now, _w, _r) =
+                            let ((kind, at, max_r, speed, gain, echoes, normal), birth, _w, _r) =
                                 request.into_emit_parts();
                             self.emit_reflecting(
-                                kind, at, max_r, speed, gain, now, &space, echoes, normal,
+                                kind,
+                                at,
+                                max_r,
+                                speed,
+                                gain,
+                                birth.value(),
+                                &space,
+                                echoes,
+                                normal,
                             );
                         }
                     }
@@ -1257,6 +1273,7 @@ impl UnseeingPlayer {
                     echoes: wave.echoes,
                     normal: wave.normal,
                     gate: wave.gate,
+                    prepared_at: None,
                 },
                 _wave_proof: proof,
                 _reflection_proof: reflection_proof,
@@ -1510,6 +1527,7 @@ impl UnseeingPlayer {
             echoes: max_echoes,
             normal: origin_normal,
             gate: QueuedWaveGate::Always,
+            prepared_at: None,
         });
     }
 
@@ -1604,13 +1622,14 @@ impl UnseeingPlayer {
     /// One drained queue entry into the pool — the request's own lanes,
     /// the tick's clock, the tick's space.
     fn emit_request(&mut self, request: WaveRequest, now: f64, space: &Variant) {
+        let birth = request.prepared_at.unwrap_or(now);
         self.emit_reflecting(
             request.kind,
             request.at,
             request.max_r,
             request.speed,
             request.gain,
-            now,
+            birth,
             space,
             request.echoes,
             request.normal,
@@ -1670,17 +1689,17 @@ impl UnseeingPlayer {
         self.motion_config
     }
 
-    /// Whether the given handle is this player's own live eye — the
-    /// narrow adapter identity check the hero proves before sampling.
-    /// False for a missing camera and for either freed handle.
-    pub(super) fn owns_visual_camera(&self, camera: &Gd<Camera3D>) -> bool {
-        let Some(own) = self.camera.as_ref() else {
-            return false;
-        };
+    /// Prove the given handle is this player's own live eye — the narrow
+    /// adapter identity check the hero performs before sampling. `None`
+    /// for a missing camera and for either freed handle. The returned
+    /// token is the ONLY way through the visual commit door, so a frame
+    /// can never be committed against an unproven or absent eye.
+    pub(super) fn prove_visual_camera(&self, camera: &Gd<Camera3D>) -> Option<VisualCameraProof> {
+        let own = self.camera.as_ref()?;
         if !own.is_instance_valid() || !camera.is_instance_valid() {
-            return false;
+            return None;
         }
-        own.instance_id() == camera.instance_id()
+        (own.instance_id() == camera.instance_id()).then(|| VisualCameraProof(camera.clone()))
     }
 
     /// The installed footstep latch, copied out for the hero's pure
@@ -1693,15 +1712,18 @@ impl UnseeingPlayer {
     /// frame lands here whole — camera-local `CAM_BASE_Y + bob`, the cane
     /// sweep offset, the acknowledged latch, and the optional checked
     /// footstep request appended without revalidation. No raw bob or
-    /// sweep door exists beside it.
+    /// sweep door exists beside it, and the consumed eye proof makes the
+    /// camera write unconditional: the door cannot half-apply a frame.
     pub(super) fn commit_hero_frame(
         &mut self,
+        eye: VisualCameraProof,
         bob: f64,
         cane_sweep: f64,
         suppression: FootstepSuppression,
         footstep: Option<PreparedFootstepRequest>,
     ) {
-        if let Some(camera) = self.camera.as_mut() {
+        let VisualCameraProof(mut camera) = eye;
+        {
             let mut position = camera.get_position();
             position.y = (CAM_BASE_Y + bob) as f32;
             camera.set_position(position);
@@ -1709,8 +1731,12 @@ impl UnseeingPlayer {
         self.cane_rest_offset = cane_sweep;
         self.footstep_suppression = suppression;
         if let Some(request) = footstep {
-            let ((kind, at, max_r, speed, gain, echoes, normal, gate), _wave, _reflection) =
-                request.into_player_parts();
+            let (
+                (kind, at, max_r, speed, gain, echoes, normal, gate),
+                prepared,
+                _wave,
+                _reflection,
+            ) = request.into_player_parts();
             self.wave_queue.push(WaveRequest {
                 kind,
                 at,
@@ -1720,6 +1746,7 @@ impl UnseeingPlayer {
                 echoes,
                 normal,
                 gate,
+                prepared_at: Some(prepared.value()),
             });
         }
     }
@@ -2863,6 +2890,35 @@ mod tests {
                 .is_none()
         );
         assert!(cooled.rays.is_empty());
+    }
+
+    /// A camera pitched exactly vertical is finite and admitted by every
+    /// sample validator, yet its aim has no horizontal shadow: the swish
+    /// must refuse the degenerate eye explicitly — never panic across the
+    /// FFI on a zero-vector normalization.
+    #[test]
+    fn a_vertical_aim_swish_refuses_the_degenerate_camera_without_panic() {
+        let now = prepare_time(2.0).unwrap();
+        let tap_clock = PreparedLastTap::try_new(-10.0, now).unwrap();
+        let pitch = -std::f64::consts::FRAC_PI_2;
+        let mut port = FakeCaneQueryPort::standing_at(Vector3::new(2.0, 0.9, -3.0));
+        port.camera = Some((
+            Transform3D::new(
+                // exact columns: forward (-col_c) points straight down
+                Basis::from_cols(
+                    Vector3::new(1.0, 0.0, 0.0),
+                    Vector3::new(0.0, 0.0, -1.0),
+                    Vector3::new(0.0, 1.0, 0.0),
+                ),
+                Vector3::new(2.0, 1.6, -3.0),
+            ),
+            Vector3::new(pitch as f32, 0.0, 0.0),
+        ));
+        // straight-down aim misses, the rest finds nothing raised, the
+        // pitch qualifies for nothing supported: the swish is the branch
+        let verdict = prepare_cane_tap(&mut port, now, tap_clock);
+        assert!(verdict.is_err());
+        assert_eq!(port.rays.len(), 3); // aim, wall scan, settle probe
     }
 
     #[test]

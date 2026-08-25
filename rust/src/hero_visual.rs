@@ -172,17 +172,19 @@ pub(crate) struct PreparedFootstepRequest {
 impl PreparedFootstepRequest {
     #[expect(
         clippy::type_complexity,
-        reason = "one consuming door carries the raw command and both proofs"
+        reason = "one consuming door carries the raw command, its prepared instant, and both proofs"
     )]
     pub(crate) fn into_player_parts(
         self,
     ) -> (
         (i64, Vector3, f64, f64, f64, i64, Vector3, QueuedWaveGate),
+        PreparedTime,
         CheckedWave,
         CheckedReflectionRequest,
     ) {
         (
             self.command.into_parts(),
+            self.now,
             self.wave_proof,
             self.reflection_proof,
         )
@@ -285,6 +287,157 @@ impl CaneVerticals {
     pub(crate) fn swish_target_y(self, pitch: f64) -> f64 {
         f64::from(self.support_y) + (EYE + pitch.tan() * 1.5).clamp(0.3, 1.7)
     }
+}
+
+/// Arm + white cane: what can truly be touched.
+pub(crate) const CANE_REACH: f64 = 1.7;
+
+/// Wall-detection ray length.
+pub(crate) const CANE_SCAN_LENGTH: f64 = 3.4;
+
+/// The tip stops this far short of a struck wall face.
+pub(crate) const WALL_BACKOFF: f64 = 0.06;
+
+/// The full strike voice — raised surfaces and aimed strikes: (range, gain).
+pub(crate) const CANE_FULL_VOICE: (f64, f64) = (6.0, 1.0);
+
+/// The softer floor voice — the supporting floor itself: (range, gain).
+pub(crate) const CANE_FLOOR_VOICE: (f64, f64) = (5.0, 0.85);
+
+/// The aim ray from a proven eye, both endpoints proven inside the pose
+/// envelope before any physics query may run.
+pub(crate) fn cane_aim_ray(
+    from: Vector3,
+    aim: Vector3,
+) -> Result<(Vector3, Vector3), MotionValueError> {
+    let to = from + aim * CANE_REACH as f32;
+    PosePoint::try_new(from)?;
+    PosePoint::try_new(to)?;
+    Ok((from, to))
+}
+
+/// The cane's wall scan for one validated player sample: endpoints at the
+/// support-relative scan height, proven before the port is asked.
+pub(crate) fn cane_wall_scan_ray(
+    verticals: CaneVerticals,
+    gp: Vector3,
+    direction: Vector3,
+) -> Result<(Vector3, Vector3), MotionValueError> {
+    let from = Vector3::new(gp.x, verticals.wall_scan_y(), gp.z);
+    let to = from + direction * CANE_SCAN_LENGTH as f32;
+    PosePoint::try_new(from)?;
+    PosePoint::try_new(to)?;
+    Ok((from, to))
+}
+
+/// Where the tip comes to rest horizontally: the full cane reach,
+/// shortened by a struck wall, along the sweep direction.
+pub(crate) fn cane_tip_column(gp: Vector3, direction: Vector3, wall_d: f64) -> (f64, f64) {
+    let reach = CANE_REACH.min(wall_d - WALL_BACKOFF);
+    (
+        f64::from(gp.x) + f64::from(direction.x) * reach,
+        f64::from(gp.z) + f64::from(direction.z) * reach,
+    )
+}
+
+/// The settle probe over the tip column, endpoints proven.
+pub(crate) fn cane_settle_ray(
+    verticals: CaneVerticals,
+    px: f64,
+    pz: f64,
+) -> Result<(Vector3, Vector3), MotionValueError> {
+    let top = Vector3::new(px as f32, verticals.probe_top_y(), pz as f32);
+    let bottom = Vector3::new(px as f32, verticals.probe_bottom_y(), pz as f32);
+    PosePoint::try_new(top)?;
+    PosePoint::try_new(bottom)?;
+    Ok((top, bottom))
+}
+
+/// One settled rest: on a struck surface the tip hovers the frozen 0.02 m
+/// above it; over open air it hangs at the support-relative fallback. The
+/// returned tip is proven before anything may publish it.
+pub(crate) fn settle_cane_rest(
+    verticals: CaneVerticals,
+    px: f64,
+    pz: f64,
+    struck_y: Option<f32>,
+) -> Result<(Vector3, bool), MotionValueError> {
+    let (tip, supported) = match struck_y {
+        Some(surface_y) => (
+            Vector3::new(px as f32, (f64::from(surface_y) + 0.02) as f32, pz as f32),
+            true,
+        ),
+        None => (
+            Vector3::new(px as f32, verticals.unsupported_tip_y(), pz as f32),
+            false,
+        ),
+    };
+    PosePoint::try_new(tip)?;
+    Ok((tip, supported))
+}
+
+/// The aimed strike's voice: the floor voice when the struck face reads
+/// as the supporting floor (an upward-enough normal, low enough relative
+/// to the player's own support), the full voice otherwise.
+pub(crate) fn aimed_strike_voice(
+    verticals: CaneVerticals,
+    hit_y: f32,
+    normal_y: f32,
+) -> (f64, f64) {
+    if f64::from(normal_y) > 0.7 && verticals.is_floorish_hit(hit_y) {
+        CANE_FLOOR_VOICE
+    } else {
+        CANE_FULL_VOICE
+    }
+}
+
+/// The rest tap's three voices, decided from the settle and the eye.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RestTapVerdict {
+    /// A raised surface — tabletop, chair seat: the full voice.
+    Raised,
+    /// The supporting floor, tapped deliberately while looking down.
+    Floor,
+    /// Open air: no wave at all — only the strike animation remembers.
+    Swish,
+}
+
+pub(crate) fn rest_tap_verdict(
+    verticals: CaneVerticals,
+    supported: bool,
+    tip_y: f32,
+    pitch: f64,
+) -> RestTapVerdict {
+    if supported && verticals.is_raised_tip(tip_y) {
+        RestTapVerdict::Raised
+    } else if supported && pitch <= -0.12 {
+        RestTapVerdict::Floor
+    } else {
+        RestTapVerdict::Swish
+    }
+}
+
+/// The silent swish's remembered target: 1.5 m along the flat look, at
+/// the support-relative swish height, proven before it may install.
+pub(crate) fn swish_target(
+    verticals: CaneVerticals,
+    from: Vector3,
+    flat: Vector3,
+    pitch: f64,
+) -> Result<PosePoint, MotionValueError> {
+    let reach = from + flat * 1.5;
+    PosePoint::try_new(Vector3::new(
+        reach.x,
+        verticals.swish_target_y(pitch) as f32,
+        reach.z,
+    ))
+}
+
+/// The aim's horizontal shadow, normalized — or `None` for an eye looking
+/// exactly along the vertical axis, whose swish has no direction at all.
+/// Total: the zero vector never reaches a panicking normalization.
+pub(crate) fn horizontal_aim(aim: Vector3) -> Option<Vector3> {
+    Vector3::new(aim.x, 0.0, aim.z).try_normalized()
 }
 
 /// Why a reflecting cane command could not be prepared.
@@ -1099,6 +1252,48 @@ mod tests {
                 "{actual:?} is farther than one output ULP from {expected:?}"
             );
         }
+    }
+
+    /// The reflecting cane command mirrors the landing's shape: one door,
+    /// the raw lanes, the prepared instant, and BOTH retained admission
+    /// proofs — so no lane and neither proof can drift unpinned.
+    #[test]
+    fn prepared_cane_request_owns_wave_and_reflection_proofs_for_the_strike() {
+        let now = prepare_time(3.25).unwrap();
+        let at = crate::support_motion::PosePoint::try_new(Vector3::new(2.0, 0.5, -4.0)).unwrap();
+        let normal = Vector3::new(0.0, 0.6, 0.8);
+        let request = prepare_cane_request(at, 6.0, 1.0, normal, now).unwrap();
+        let (command, prepared_now, wave_proof, reflection_proof) = request.into_emit_parts();
+        let (kind, world, max_r, speed, gain, echoes, out_normal) = command;
+        assert_eq!(kind, 0);
+        assert_eq!(world, Vector3::new(2.0, 0.5, -4.0));
+        assert_eq!(max_r.to_bits(), 6.0_f64.to_bits());
+        assert_eq!(speed.to_bits(), 5.5_f64.to_bits());
+        assert_eq!(gain.to_bits(), 1.0_f64.to_bits());
+        assert_eq!(echoes, 6);
+        assert_eq!(out_normal, normal);
+        assert_eq!(prepared_now.value().to_bits(), 3.25_f64.to_bits());
+        // the WAVE proof pins the tap's own kind and gain
+        assert_eq!(wave_proof.slot().kind, 0);
+        assert_eq!(wave_proof.slot().pos, world);
+        let expected_packed = (0.0 * 10.0 + 1.0 * 9.0) as f32;
+        assert_eq!(wave_proof.slot().dat.w.to_bits(), expected_packed.to_bits());
+        assert_eq!(wave_proof.raw_speed().to_bits(), 5.5_f64.to_bits());
+        // the REFLECTION proof pins origin, normal, reach, budget, time
+        let reflected = reflection_proof.request();
+        assert_eq!(reflected.at, world);
+        assert_eq!(reflected.normal, normal);
+        assert_eq!(reflected.max_r.to_bits(), 6.0_f64.to_bits());
+        assert_eq!(reflected.speed.to_bits(), 5.5_f64.to_bits());
+        assert_eq!(reflected.max_echoes, 6);
+        assert_eq!(reflected.now.to_bits(), 3.25_f64.to_bits());
+        // and the floor voice's lanes survive the same door
+        let floor = prepare_cane_request(at, 5.0, 0.85, Vector3::UP, now).unwrap();
+        let (floor_command, _, floor_wave, _) = floor.into_emit_parts();
+        assert_eq!(floor_command.2.to_bits(), 5.0_f64.to_bits());
+        assert_eq!(floor_command.4.to_bits(), 0.85_f64.to_bits());
+        let floor_packed = (0.85 * 9.0) as f32;
+        assert_eq!(floor_wave.slot().dat.w.to_bits(), floor_packed.to_bits());
     }
 
     #[test]

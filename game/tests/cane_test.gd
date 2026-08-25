@@ -53,6 +53,8 @@ func _tap() -> void:
 ## is born exactly where the player looked — type 0, radius 6, full gain.
 func test_wall_strike_wave() -> void:
 	_add_box(Vector3(0, 1.5, -1.1), Vector3(3, 3, 0.3))  # face at z = -0.95
+	_add_box(Vector3(0, -0.05, 0), Vector3(20.0, 0.1, 20.0))  # echo floor
+	_add_box(Vector3(0, 1.5, -3.0), Vector3(3, 3, 0.3))  # a wall BEHIND the struck face
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 	await _tap()
@@ -64,6 +66,13 @@ func test_wall_strike_wave() -> void:
 	var expected := Vector3(0, 1.6, -0.95)
 	assert_vector(_pulses.pos[0]).is_equal_approx(expected, Vector3(0.03, 0.03, 0.03))
 	assert_vector(_player.tap_target).is_equal_approx(expected, Vector3(0.03, 0.03, 0.03))
+	# the strike reflects with the STRUCK face's own +Z normal: echoes are
+	# booked, and every appointment answers from in front of the face —
+	# the wall a metre behind it stays silent. The -1.2 bound leaves room
+	# for the fan's grazing shadow tolerance (SHADOW_DOT) over the floor.
+	assert_int(_pulses.pending_echo_count()).is_greater(0)
+	for echo: Pulses.Echo in _pulses.pending_echoes():
+		assert_float(echo.pos.z).is_greater_equal(-1.2)
 
 
 ## Rest tap, raised: the gaze hits nothing, but the cane tip rests on a

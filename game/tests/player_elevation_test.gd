@@ -737,6 +737,18 @@ func test_missing_freed_or_mismatched_visual_camera_refuses_before_mutation() ->
 	hero.update(now + 3.0 * DT, DT)
 	assert_array(_visual_state(player, hero)).is_equal(before)
 
+	# a player whose own eye reference is gone cannot be half-committed:
+	# the proof token cannot be produced, so the whole frame refuses
+	hero.camera = player.camera
+	var stolen: Camera3D = player.camera
+	player.camera = null
+	var orphaned := func() -> void: hero.update(now + 4.0 * DT, DT)
+	await assert_error(orphaned).is_push_error(
+		"hero_body: visual camera refused — not the player's live eye"
+	)
+	player.camera = stolen
+	assert_array(_visual_state(player, hero)).is_equal(before)
+
 
 ## Airborne planar velocity is trajectory, not gait: while the player is
 ## off support the walk cycle must not advance and no footstep may fire,
