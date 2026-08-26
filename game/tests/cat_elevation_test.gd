@@ -63,9 +63,9 @@ func test_floor_cat_keeps_root_collider_paws_and_skin_together() -> void:
 	assert_object(collision).is_not_null()
 	var capsule := collision.shape as CapsuleShape3D
 	assert_object(capsule).is_not_null()
-	assert_float(collision.position.y).is_equal_approx(COLLIDER_CENTER_Y, 1.0e-7)
+	assert_float(collision.position.y).is_equal_approx(COLLIDER_CENTER_Y, F32_ULP_AT_2)
 	assert_float(cat.position.y + collision.position.y - capsule.height * 0.5).is_equal_approx(
-		0.0, 1.0e-7
+		0.0, F32_ULP_AT_2
 	)
 	await get_tree().physics_frame
 	await get_tree().process_frame

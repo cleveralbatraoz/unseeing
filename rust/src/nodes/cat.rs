@@ -2510,6 +2510,42 @@ mod tests {
         assert_eq!(collider_id, None);
     }
 
+    /// An ordinary ledger that saw a floorish contact on *every* slide, but
+    /// only ever an actor's own collider, must read as no support and must
+    /// never fall back to the snap probe — the probe exists to find a
+    /// *hidden* world floor, not to look past an actor floor the ordinary
+    /// ledger already saw and rejected. This is the named case behind
+    /// `read_cat_post_move_support`'s `if saw_floorish { return Ok((None,
+    /// None)); }` early return: every other existing test either supplies a
+    /// genuine world floor somewhere in the ledger (so `candidate` is
+    /// already `Some` before that line is reached) or a non-floorish wall
+    /// contact (so `saw_floorish` never becomes true), so neither one can
+    /// observe this line at all.
+    #[test]
+    fn cat_support_reader_never_probes_when_every_slide_saw_only_an_actor_floor() {
+        let mut port = FakeCatMotionPort::valid();
+        port.on_floor = true;
+        port.slides = vec![Some(vec![cat_actor_floor()]), Some(vec![cat_actor_floor()])];
+        port.probe_hit = true;
+        port.probe_contacts = vec![cat_world_floor()];
+        let transform = ActorTransform::try_new(port.post_transform).unwrap();
+
+        let (support, collider_id) = read_cat_post_move_support(&mut port, transform).unwrap();
+
+        assert_eq!(
+            support, None,
+            "an actor-only floorish ledger must never be read as support"
+        );
+        assert_eq!(collider_id, None);
+        assert!(
+            !port
+                .trace
+                .iter()
+                .any(|event| matches!(event, MotionTrace::Probe(_))),
+            "an actor-only floorish ledger must never fall back to the snap probe"
+        );
+    }
+
     #[test]
     fn cat_support_reader_rejects_every_poisoned_lane_and_bad_count() {
         let mut port = FakeCatMotionPort::valid();
