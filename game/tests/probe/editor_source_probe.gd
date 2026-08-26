@@ -6,14 +6,6 @@ extends SceneTree
 ## without. Each run proves its mode before judging.
 
 const READY_FRAMES := 30
-## One hand-derived f32 ULP at the cat's own scale — the flat collider
-## datum law (`COLLIDER_CENTER_Y = COL_HEIGHT * 0.5`) must hold this tight.
-## `cat_elevation_test.gd` and `player_elevation_test.gd` each hold their
-## own equivalent capsule datum check to a plain `1.0e-7` literal instead,
-## at that same ~0.17 magnitude (`cat_elevation_test.gd` carries the
-## derivation comment; `player_elevation_test.gd` states the literal bare);
-## this probe makes no parity claim against either file's tolerance.
-const F32_ULP := 2.384185791015625e-7
 
 var _fan: Node3D = null
 var _radio: Node3D = null
@@ -129,13 +121,24 @@ func _judge_cat(editor: bool) -> void:
 
 		var capsule := collider.shape as CapsuleShape3D if collider != null else null
 		if capsule != null:
+			# `datum` is a difference near 0.0, assembled from ~0.17-magnitude
+			# operands: `_cat.position.y` (0.0) and `collider.position.y`
+			# (Rust-computed `COL_HEIGHT * 0.5`), minus `capsule.height * 0.5`
+			# (also Rust-computed, read back through the same live collider).
+			# A true single f32 ULP at magnitude ~0.17 is ~1.49e-8, but that
+			# bound isn't honestly claimable here: nothing proves the two
+			# independently-rounded Rust f32 values agree with each other to
+			# the bit. `1.0e-7` is the same cross-language convention
+			# `cat_elevation_test.gd` and `player_elevation_test.gd` each
+			# hold their own equivalent capsule-datum checks to, for the
+			# identical reason.
 			var datum := _cat.position.y + collider.position.y - capsule.height * 0.5
 			_check(
-				"editor: the cat collider bottom meets the flat datum within one f32 ULP",
-				absf(datum) <= F32_ULP
+				"editor: the cat collider bottom meets the flat datum within 1.0e-7",
+				absf(datum) <= 1.0e-7
 			)
 		else:
-			_check("editor: the cat collider bottom meets the flat datum within one f32 ULP", false)
+			_check("editor: the cat collider bottom meets the flat datum within 1.0e-7", false)
 
 		# Typed as WaveCat (not the `_cat: CharacterBody3D` field) so the
 		# direct calls below resolve statically: gdext registers
