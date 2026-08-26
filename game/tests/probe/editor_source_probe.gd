@@ -8,10 +8,11 @@ extends SceneTree
 const READY_FRAMES := 30
 ## One hand-derived f32 ULP at the cat's own scale — the flat collider
 ## datum law (`COLLIDER_CENTER_Y = COL_HEIGHT * 0.5`) must hold this tight.
-## `cat_elevation_test.gd`'s own capsule datum check (`F32_ULP_AT_2`) is
-## wired to this exact value; `player_elevation_test.gd`'s equivalent check
-## instead uses a different, tighter plain `1.0e-7` literal, so this probe
-## makes no parity claim against that file.
+## `cat_elevation_test.gd` and `player_elevation_test.gd` each hold their
+## own equivalent capsule datum check to a plain `1.0e-7` literal instead,
+## at that same ~0.17 magnitude (`cat_elevation_test.gd` carries the
+## derivation comment; `player_elevation_test.gd` states the literal bare);
+## this probe makes no parity claim against either file's tolerance.
 const F32_ULP := 2.384185791015625e-7
 
 var _fan: Node3D = null

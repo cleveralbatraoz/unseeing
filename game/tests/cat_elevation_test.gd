@@ -9,9 +9,6 @@ const WORLD_FIXTURE := preload("res://tests/world_fixture.gd")
 const ELEVATION_FIXTURE := preload("res://tests/character_elevation_fixture.gd")
 
 const DT := 1.0 / 60.0
-## One hand-derived f32 ULP at magnitude 2 — the transported mesh spans
-## y < 2, and a single post-build f32 add stays within half of this.
-const F32_ULP_AT_2 := 2.384185791015625e-7
 const COLLIDER_CENTER_Y := 0.17  # COL_HEIGHT * 0.5, rust/src/nodes/cat.rs
 
 const CAT_CONFIG_FIELDS: Array[String] = [
@@ -63,9 +60,15 @@ func test_floor_cat_keeps_root_collider_paws_and_skin_together() -> void:
 	assert_object(collision).is_not_null()
 	var capsule := collision.shape as CapsuleShape3D
 	assert_object(capsule).is_not_null()
-	assert_float(collision.position.y).is_equal_approx(COLLIDER_CENTER_Y, F32_ULP_AT_2)
+	# player_elevation_test.gd's equivalent capsule-datum check holds this
+	# same plain 1.0e-7 tolerance at this same magnitude (~0.17); an actual
+	# hand-derived single f32 ULP there is ~1.49e-8 (binade [0.125, 0.25)),
+	# tighter than this convention allows for cross-language literal
+	# rounding between the Rust-computed collider position and this
+	# GDScript-authored expected value.
+	assert_float(collision.position.y).is_equal_approx(COLLIDER_CENTER_Y, 1.0e-7)
 	assert_float(cat.position.y + collision.position.y - capsule.height * 0.5).is_equal_approx(
-		0.0, F32_ULP_AT_2
+		0.0, 1.0e-7
 	)
 	await get_tree().physics_frame
 	await get_tree().process_frame
