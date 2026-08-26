@@ -119,6 +119,14 @@ func test_unsupported_player_falls_and_stops_at_terminal_speed() -> void:
 	assert_int(player.collision_mask).is_equal(4_294_967_289)
 	assert_array(player.queued_waves()).is_empty()
 	assert_int(pulses.live_count(0.0)).is_equal(0)
+	# Task 7 cross-check: the observer's own motion dictionary — never
+	# consulted by the assertions above — agrees this is a terminal,
+	# unsupported fall.
+	var motion: Dictionary = ELEVATION_FIXTURE.hero_motion(self, player, pulses, 0.0)
+	assert_str(motion["phase"]).is_equal("airborne")
+	assert_vector(motion["actual_velocity"]).is_equal(player.velocity)
+	assert_bool(motion["support"] == null).is_true()
+	assert_float(motion["held_vertical_velocity"]).is_equal(-20.0)
 
 
 func test_airborne_input_cannot_reverse_the_departure_trajectory() -> void:
@@ -231,6 +239,15 @@ func test_player_returns_to_control_on_lower_world_geometry_once() -> void:
 	assert_int(player.collision_mask).is_equal(4_294_967_291)
 	assert_bool(player.call("support_collider_id") != null).is_true()
 	assert_float(player.global_position.y).is_equal_approx(0.9, 0.0010001192092895508)
+	# Task 7 cross-check: the observer independently reports control
+	# regained on real support, matching the layer/floor state already
+	# pinned above.
+	var pulses := player.pulses as Pulses
+	var motion: Dictionary = ELEVATION_FIXTURE.hero_motion(self, player, pulses, 0.0)
+	assert_str(motion["phase"]).is_equal("controlled")
+	assert_bool(motion["support"] != null).is_true()
+	var support: Dictionary = motion["support"]
+	assert_str(support["collider_id"]).is_equal("%016x" % player.call("support_collider_id"))
 
 
 func test_player_rejects_actor_layer_floor_before_cat_adapter_exists() -> void:
@@ -357,6 +374,12 @@ func test_player_ramp_up_and_down_never_becomes_airborne() -> void:
 	assert_bool(returned_to_datum).is_true()
 	assert_float(player.global_position.y).is_equal_approx(0.9, ROOT_TOLERANCE_M)
 	assert_int(pulses.live_count(0.0)).is_equal(0)
+	# Task 7 cross-check: the ramp round trip never left the observer's own
+	# phase reading — a channel this test never otherwise touches.
+	var motion: Dictionary = ELEVATION_FIXTURE.hero_motion(self, player, pulses, 0.0)
+	assert_str(motion["phase"]).is_equal("controlled")
+	assert_bool(motion["support"] != null).is_true()
+	assert_bool(motion["last_landing"] == null).is_true()
 
 
 func test_poisoned_player_pre_move_transform_or_rotation_refuses_without_move_or_wave() -> void:
@@ -881,6 +904,11 @@ func test_airborne_wall_contact_never_becomes_a_landing_or_step_wave() -> void:
 		assert_int(pulses.live_count(now + 0.05)).is_equal(0)
 		assert_int(pulses.pending_echo_count()).is_equal(0)
 		assert_array(player.queued_waves()).is_empty()
+	# Task 7 cross-check: the wall contact never became a landing in the
+	# observer's own dictionary either.
+	var motion: Dictionary = ELEVATION_FIXTURE.hero_motion(self, player, pulses, now)
+	assert_str(motion["phase"]).is_equal("airborne")
+	assert_bool(motion["last_landing"] == null).is_true()
 
 
 ## A drop under the silent threshold lands without a sound — no pulse, no
@@ -920,6 +948,13 @@ func test_small_player_drop_retains_landing_but_emits_nothing() -> void:
 	# the landing was retained: the instant first step was consumed whole
 	assert_int(pulses.live_count(now + 0.05)).is_equal(0)
 	assert_array(player.queued_waves()).is_empty()
+	# Task 7 cross-check: silent does not mean unrecorded — the observer's
+	# own `last_landing` still carries this landing, the same retained
+	# event the suppressed footstep above already proved indirectly.
+	var motion: Dictionary = ELEVATION_FIXTURE.hero_motion(self, player, pulses, now)
+	assert_bool(motion["last_landing"] != null).is_true()
+	var landing: Dictionary = motion["last_landing"]
+	assert_float(landing["impact_speed"]).is_greater(0.0)
 
 
 ## An audible landing is born once, at the support point lifted by the
@@ -960,6 +995,13 @@ func test_audible_player_landing_uses_support_normal_and_relative_origin_once() 
 	assert_int(pulses.pending_echo_count()).is_greater(0)
 	for echo: Pulses.Echo in pulses.pending_echoes():
 		assert_float(echo.pos.y).is_greater_equal(1.0 - 0.05)
+	# Task 7 cross-check: the observer's own landing dictionary agrees on
+	# the support normal and point the pool's pulse already encoded.
+	var motion: Dictionary = ELEVATION_FIXTURE.hero_motion(self, player, pulses, 0.1)
+	assert_bool(motion["last_landing"] != null).is_true()
+	var landing: Dictionary = motion["last_landing"]
+	assert_vector(landing["normal"]).is_equal(Vector3.UP)
+	assert_float(landing["point"].y).is_equal_approx(1.0, 0.0010001192092895508)
 
 
 ## A hard drop caps the landing voice at the authored maxima: gain 0.85,
@@ -984,6 +1026,13 @@ func test_high_player_drop_caps_gain_and_range() -> void:
 	assert_float(fmod(dat.w, 10.0) / 9.0).is_equal_approx(0.85, 1e-6)  # capped gain
 	var origin: Vector3 = pulses.pos[0]
 	assert_float(origin.y).is_equal_approx(0.04, 0.0010001192092895508)
+	# Task 7 cross-check: the hard drop's real impact speed, read from the
+	# observer's own dictionary — a value the capped gain/range above
+	# never surfaces (they only prove the CLAMPED voice, not the fall).
+	var motion: Dictionary = ELEVATION_FIXTURE.hero_motion(self, player, pulses, 0.1)
+	assert_bool(motion["last_landing"] != null).is_true()
+	var landing: Dictionary = motion["last_landing"]
+	assert_float(landing["impact_speed"]).is_greater(5.0)
 
 
 ## Zero authored landing gain silences every landing completely: neither
@@ -1004,6 +1053,22 @@ func test_zero_player_landing_gain_consumes_no_pulse_or_echo() -> void:
 	assert_bool(landed).is_true()
 	assert_int(game.wave_core.live_count(game.now)).is_equal(0)
 	assert_int(game.wave_core.pending_echo_count()).is_equal(0)
+	# Task 7 cross-check: zero gain silenced the VOICE, not the motion fact
+	# — the real composition root's own observer still records the landing.
+	# `landed` above answers as soon as Godot's own on-floor flag agrees,
+	# which can still be the pre-relocate reading for one tick; poll the
+	# observer's OWN support fact so this proves a settled Rust-side
+	# state, not that stale flag.
+	var settled: bool = await ELEVATION_FIXTURE.poll_physics(
+		get_tree(),
+		func() -> bool:
+			var motion: Dictionary = game.observer.snapshot(game.now)["hero"]["motion"]
+			return motion["phase"] == "controlled" and motion["support"] != null,
+		240
+	)
+	assert_bool(settled).is_true()
+	var motion: Dictionary = game.observer.snapshot(game.now)["hero"]["motion"]
+	assert_bool(motion["last_landing"] != null).is_true()
 
 
 ## Zero authored landing range is the same silence through the other knob.
@@ -1023,3 +1088,19 @@ func test_zero_player_landing_range_consumes_no_pulse_or_echo() -> void:
 	assert_bool(landed).is_true()
 	assert_int(game.wave_core.live_count(game.now)).is_equal(0)
 	assert_int(game.wave_core.pending_echo_count()).is_equal(0)
+	# Task 7 cross-check: zero range silenced the VOICE, not the motion
+	# fact — the real composition root's own observer still records the
+	# landing. `landed` above answers as soon as Godot's own on-floor flag
+	# agrees, which can still be the pre-relocate reading for one tick;
+	# poll the observer's OWN support fact so this proves a settled
+	# Rust-side state, not that stale flag.
+	var settled: bool = await ELEVATION_FIXTURE.poll_physics(
+		get_tree(),
+		func() -> bool:
+			var motion: Dictionary = game.observer.snapshot(game.now)["hero"]["motion"]
+			return motion["phase"] == "controlled" and motion["support"] != null,
+		240
+	)
+	assert_bool(settled).is_true()
+	var motion: Dictionary = game.observer.snapshot(game.now)["hero"]["motion"]
+	assert_bool(motion["last_landing"] != null).is_true()

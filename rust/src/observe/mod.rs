@@ -14,6 +14,8 @@ pub mod pool;
 pub mod ray;
 pub mod reflect;
 
+use std::num::NonZeroU64;
+
 use godot::builtin::{Basis, Vector3, Vector4};
 
 use self::evict::{EvictionPlan, explain_eviction};
@@ -21,7 +23,125 @@ use self::pool::{SlotObservation, SlotState, slots};
 use crate::echo_queue::EchoQueue;
 use crate::pulse_pool::PulsePool;
 use crate::sight::MAXW;
-use crate::support_motion::QueuedWaveGate;
+use crate::support_motion::{
+    ActorPosition, ActorVelocity, LandingEvent, MotionPhase, MotionState, MotionValueError,
+    QueuedWaveGate, SupportContact,
+};
+
+/// One actor's motion as an agent reads it: the phase/support/landing
+/// projected from a single private [`MotionState`], plus the physical
+/// velocity the engine actually measured and the transient engine collider
+/// identity behind its accepted support — never captured, per the campaign
+/// ruling that a restorable blob must never carry a host-instance id.
+///
+/// `try_new` reads its three inputs exactly once and either builds a
+/// wholly valid observation or refuses: a poisoned velocity, a zero
+/// collider id, or an identity reported for a phase that carries no
+/// accepted support are all impossible states this type does not let a
+/// caller construct.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActorMotionObservation {
+    state: MotionState,
+    actual_velocity_mps: ActorVelocity,
+    support_collider_id: Option<NonZeroU64>,
+}
+
+impl ActorMotionObservation {
+    pub fn try_new(
+        state: MotionState,
+        raw_velocity_mps: Vector3,
+        support_collider_id: Option<u64>,
+    ) -> Result<Self, MotionValueError> {
+        let actual_velocity_mps = ActorVelocity::try_new(raw_velocity_mps)?;
+        let support_collider_id = match support_collider_id {
+            None => None,
+            Some(raw) => Some(
+                NonZeroU64::new(raw)
+                    .ok_or_else(|| MotionValueError::out_of_range("support_collider_id"))?,
+            ),
+        };
+        if support_collider_id.is_some() && state.support().is_none() {
+            return Err(MotionValueError::inconsistent_state("support_collider_id"));
+        }
+        Ok(Self {
+            state,
+            actual_velocity_mps,
+            support_collider_id,
+        })
+    }
+
+    pub fn phase(self) -> MotionPhase {
+        self.state.phase()
+    }
+
+    pub fn actual_velocity(self) -> ActorVelocity {
+        self.actual_velocity_mps
+    }
+
+    pub fn support(self) -> Option<SupportContact> {
+        self.state.support()
+    }
+
+    /// `None` means unavailable identity — either no support at all, or a
+    /// server-backed support with no Object behind it — and can never be
+    /// confused with an invalid zero id, which [`Self::try_new`] refuses
+    /// outright rather than storing.
+    pub fn support_collider_id(self) -> Option<u64> {
+        self.support_collider_id.map(NonZeroU64::get)
+    }
+
+    pub fn last_landing(self) -> Option<LandingEvent> {
+        self.state.last_landing()
+    }
+}
+
+/// One cat's motion, named and placed — the census entry
+/// [`cat_motion_observations`] builds, and [`FrameObservation::cat_motion`]
+/// carries in the exact order the level's recursive census supplies.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatMotionObservation {
+    pub name: String,
+    pub position: ActorPosition,
+    pub motion: ActorMotionObservation,
+}
+
+/// One cat's raw, not-yet-checked motion facts, in the shape the boundary
+/// reads them off a node before [`cat_motion_observations`] checks them:
+/// name, world position, private motion state, physical velocity, and
+/// transient collider identity.
+pub type RawCatMotion = (String, Vector3, MotionState, Vector3, Option<u64>);
+
+/// Every cat's motion, in the exact order its caller supplies — the level's
+/// own recursive census order, preserved rather than re-sorted. Total over
+/// already-decoded raw values: nothing here reaches into a node, and each
+/// tuple is read from its actor exactly once by the boundary before this
+/// runs.
+///
+/// The first entry whose position or motion is not a valid physical value
+/// refuses the WHOLE list rather than skipping it or returning a partial
+/// one — a snapshot that silently dropped one poisoned cat would misreport
+/// the census it claims to be exact about. The refusal names the failing
+/// entry's index and name, because "the third cat" and "the cat named
+/// Fixture" are both facts a reader chasing the fault needs.
+pub fn cat_motion_observations(raw: &[RawCatMotion]) -> Result<Vec<CatMotionObservation>, String> {
+    raw.iter()
+        .enumerate()
+        .map(
+            |(index, (name, raw_position, state, raw_velocity, support_collider_id))| {
+                let position = ActorPosition::try_new(*raw_position)
+                    .map_err(|error| format!("cat_motion[{index}] ({name}).position {error}"))?;
+                let motion =
+                    ActorMotionObservation::try_new(*state, *raw_velocity, *support_collider_id)
+                        .map_err(|error| format!("cat_motion[{index}] ({name}).motion {error}"))?;
+                Ok(CatMotionObservation {
+                    name: name.clone(),
+                    position,
+                    motion,
+                })
+            },
+        )
+        .collect()
+}
 
 /// One sound source as an agent reads it. Built at the boundary, where
 /// the source nodes live; carried through here unchanged.
@@ -130,8 +250,13 @@ pub struct QueuedWave {
 /// across frames, so the "one instant" guarantee never covered the hero.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HeroObservation {
-    pub position: Vector3,
-    pub velocity: Vector3,
+    pub position: ActorPosition,
+    /// Phase, physical velocity and collider identity, checked once at the
+    /// boundary. The Godot snapshot's `hero.velocity` key and its
+    /// `hero.motion.actual_velocity` key are both projected from
+    /// [`ActorMotionObservation::actual_velocity`] — one measurement, two
+    /// names, never a second raw field that could drift from it.
+    pub motion: ActorMotionObservation,
     /// Body yaw, radians — the way the hero faces.
     pub yaw: f64,
     /// Eye pitch, radians, as the look law last clamped it.
@@ -159,6 +284,8 @@ pub struct SceneObservation {
     pub eye: EyeObservation,
     pub spawn: SpawnObservation,
     pub hero: Option<HeroObservation>,
+    /// Every cat's motion, in recursive census order.
+    pub cat_motion: Vec<CatMotionObservation>,
 }
 
 /// The whole state vector for one frame.
@@ -191,6 +318,9 @@ pub struct FrameObservation {
     pub eye: EyeObservation,
     pub spawn: SpawnObservation,
     pub hero: Option<HeroObservation>,
+    /// Every cat's motion, in recursive census order — carried through
+    /// from [`SceneObservation::cat_motion`] unchanged.
+    pub cat_motion: Vec<CatMotionObservation>,
 }
 
 /// Compose one frame's observation from parts the boundary supplies.
@@ -224,6 +354,7 @@ pub fn frame(
         eye: scene.eye,
         spawn: scene.spawn,
         hero: scene.hero,
+        cat_motion: scene.cat_motion,
     }
 }
 
@@ -253,6 +384,7 @@ mod tests {
     use super::*;
     use crate::echo_queue::EchoQueue;
     use crate::pulse_pool::PulsePool;
+    use crate::support_motion::{FiniteVelocity, MotionValueProblem, PlanarVelocity};
     use godot::builtin::{Basis, Vector3, Vector4};
 
     /// An eye with a field of view nothing else in these tests produces,
@@ -285,6 +417,7 @@ mod tests {
             eye: test_eye(),
             spawn: test_spawn(),
             hero: None,
+            cat_motion: Vec::new(),
         }
     }
 
@@ -421,9 +554,15 @@ mod tests {
     #[test]
     fn a_frame_carries_the_hero_when_the_scene_has_one() {
         let pool = PulsePool::new();
+        let motion = ActorMotionObservation::try_new(
+            MotionState::initial(),
+            Vector3::new(0.0, 0.0, -2.1),
+            None,
+        )
+        .unwrap();
         let hero = HeroObservation {
-            position: Vector3::new(1.0, 0.9, -2.0),
-            velocity: Vector3::new(0.0, 0.0, -2.1),
+            position: ActorPosition::try_new(Vector3::new(1.0, 0.9, -2.0)).unwrap(),
+            motion,
             yaw: 0.7,
             pitch: -0.3,
             last_tap: 4.5,
@@ -445,5 +584,163 @@ mod tests {
         let f = frame(&pool, &EchoQueue::new(), 0.0, 1.0, scene);
         assert_eq!(f.hero, Some(hero));
         assert_eq!(empty_frame(&pool, 0.0).hero, None);
+    }
+
+    /// A poisoned physical velocity is refused on every lane and every
+    /// non-finite shape — the same `ActorVelocity` contract, read through
+    /// the checked observation rather than duplicated here.
+    #[test]
+    fn actor_motion_observation_rejects_poisoned_velocity() {
+        for lane in 0..3 {
+            for poison in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let mut lanes = [0.0_f32, 0.0, 0.0];
+                lanes[lane] = poison;
+                let velocity = Vector3::new(lanes[0], lanes[1], lanes[2]);
+                let error = ActorMotionObservation::try_new(MotionState::initial(), velocity, None)
+                    .unwrap_err();
+                assert_eq!(error.problem(), MotionValueProblem::NonFinite);
+            }
+        }
+    }
+
+    /// A zero collider id is refused as out of range regardless of
+    /// support, and a nonzero id reported for a phase carrying no accepted
+    /// support is refused as inconsistent — while a genuinely supported
+    /// state accepts both a real id and the legitimate absence of one a
+    /// server-backed body may report.
+    #[test]
+    fn actor_motion_observation_rejects_zero_or_unsupported_identity() {
+        let unsupported = MotionState::initial();
+        let zero_id =
+            ActorMotionObservation::try_new(unsupported, Vector3::ZERO, Some(0)).unwrap_err();
+        assert_eq!(zero_id.problem(), MotionValueProblem::OutOfRange);
+        assert_eq!(zero_id.field(), "support_collider_id");
+
+        let unsupported_id =
+            ActorMotionObservation::try_new(unsupported, Vector3::ZERO, Some(7)).unwrap_err();
+        assert_eq!(
+            unsupported_id.problem(),
+            MotionValueProblem::InconsistentState
+        );
+        assert_eq!(unsupported_id.field(), "support_collider_id");
+
+        let support = SupportContact::try_new(Vector3::ZERO, Vector3::UP).unwrap();
+        let supported = MotionState::restore(MotionPhase::Controlled, Some(support), None).unwrap();
+        let with_id = ActorMotionObservation::try_new(supported, Vector3::ZERO, Some(7)).unwrap();
+        assert_eq!(with_id.support_collider_id(), Some(7));
+        let server_backed =
+            ActorMotionObservation::try_new(supported, Vector3::ZERO, None).unwrap();
+        assert_eq!(server_backed.support_collider_id(), None);
+    }
+
+    /// Every phase/support/landing getter projects the one private
+    /// `MotionState`, and the physical velocity travels through untouched
+    /// — a controlled, never-landed actor; an airborne actor whose held
+    /// planar and vertical velocities differ from its just-measured
+    /// physical one; and a controlled, landed actor carrying its last
+    /// landing event and a real collider identity.
+    #[test]
+    fn actor_motion_observation_projects_controlled_airborne_never_landed_and_landed_cases() {
+        let never_landed = MotionState::initial();
+        let idle = ActorMotionObservation::try_new(never_landed, Vector3::new(1.0, 0.0, 2.0), None)
+            .unwrap();
+        assert_eq!(idle.phase(), MotionPhase::Controlled);
+        assert_eq!(idle.support(), None);
+        assert_eq!(idle.last_landing(), None);
+        assert_eq!(idle.actual_velocity().world(), Vector3::new(1.0, 0.0, 2.0));
+
+        let planar = PlanarVelocity::try_new(3.0, -1.0).unwrap();
+        let vertical = FiniteVelocity::try_new(-4.0).unwrap();
+        let airborne_phase = MotionPhase::Airborne {
+            planar_velocity_mps: planar,
+            vertical_velocity_mps: vertical,
+        };
+        let airborne_state = MotionState::restore(airborne_phase, None, None).unwrap();
+        let airborne =
+            ActorMotionObservation::try_new(airborne_state, Vector3::new(3.0, -4.0, -1.0), None)
+                .unwrap();
+        assert_eq!(airborne.phase(), airborne_phase);
+        assert_eq!(
+            airborne.actual_velocity().world(),
+            Vector3::new(3.0, -4.0, -1.0)
+        );
+
+        let support = SupportContact::try_new(Vector3::new(1.0, 2.0, 3.0), Vector3::UP).unwrap();
+        let landing = LandingEvent::try_new(6.0, support).unwrap();
+        let landed_state =
+            MotionState::restore(MotionPhase::Controlled, Some(support), Some(landing)).unwrap();
+        let landed = ActorMotionObservation::try_new(landed_state, Vector3::ZERO, Some(9)).unwrap();
+        assert_eq!(landed.support(), Some(support));
+        assert_eq!(landed.last_landing(), Some(landing));
+        assert_eq!(landed.support_collider_id(), Some(9));
+    }
+
+    /// Every cat's motion comes back in the exact order it was supplied,
+    /// and a poisoned position anywhere in the list refuses the WHOLE
+    /// list — naming the failing entry's census index and name — rather
+    /// than silently dropping it or returning a partial census.
+    #[test]
+    fn cat_motion_observations_preserve_census_order() {
+        let alpha = (
+            "Alpha".to_string(),
+            Vector3::new(1.0, 0.0, 0.0),
+            MotionState::initial(),
+            Vector3::ZERO,
+            None,
+        );
+        let beta = (
+            "Beta".to_string(),
+            Vector3::new(2.0, 0.0, 0.0),
+            MotionState::initial(),
+            Vector3::ZERO,
+            None,
+        );
+        let ordered = cat_motion_observations(&[alpha.clone(), beta.clone()]).unwrap();
+        assert_eq!(ordered.len(), 2);
+        assert_eq!(ordered[0].name, "Alpha");
+        assert_eq!(ordered[1].name, "Beta");
+        assert_eq!(ordered[0].position.world(), Vector3::new(1.0, 0.0, 0.0));
+        assert_eq!(ordered[1].position.world(), Vector3::new(2.0, 0.0, 0.0));
+
+        let poisoned = (
+            "Ghost".to_string(),
+            Vector3::new(f32::NAN, 0.0, 0.0),
+            MotionState::initial(),
+            Vector3::ZERO,
+            None,
+        );
+        let error = cat_motion_observations(&[alpha, poisoned]).unwrap_err();
+        assert!(error.contains("cat_motion[1]"));
+        assert!(error.contains("Ghost"));
+    }
+
+    /// The composer carries every cat's motion through in census order,
+    /// same as it does the hero — and no cats is an empty list, never a
+    /// missing key.
+    #[test]
+    fn a_frame_carries_cat_motion_in_census_order() {
+        let pool = PulsePool::new();
+        let raw = [
+            (
+                "First".to_string(),
+                Vector3::new(1.0, 0.0, 0.0),
+                MotionState::initial(),
+                Vector3::ZERO,
+                None,
+            ),
+            (
+                "Second".to_string(),
+                Vector3::new(2.0, 0.0, 0.0),
+                MotionState::initial(),
+                Vector3::ZERO,
+                None,
+            ),
+        ];
+        let cats = cat_motion_observations(&raw).unwrap();
+        let mut scene = test_scene(Vec::new());
+        scene.cat_motion = cats.clone();
+        let f = frame(&pool, &EchoQueue::new(), 0.0, 1.0, scene);
+        assert_eq!(f.cat_motion, cats);
+        assert!(empty_frame(&pool, 0.0).cat_motion.is_empty());
     }
 }

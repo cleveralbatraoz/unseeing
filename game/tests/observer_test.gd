@@ -1214,3 +1214,85 @@ func test_the_composition_root_injects_the_hero() -> void:
 	var hero: Dictionary = snap["hero"]
 	assert_vector(hero["position"]).is_equal(main.player.global_position)
 	assert_bool((snap["unknown"] as Array).has("hero")).is_false()
+
+
+## Task 7's checked motion surface: the hero's own `hero.motion` dictionary
+## agrees with the physical velocity the engine actually holds and with the
+## long-standing `hero.velocity` key, and every level cat's `cats_motion`
+## entry appears in the level's own recursive census order — the same
+## order `inject()` walks — each carrying its own name, position and
+## checked motion.
+func test_actor_motion_snapshot_exposes_checked_player_and_ordered_cats() -> void:
+	var pulses := Pulses.new()
+	var data_mat := ShaderMaterial.new()
+	data_mat.set_shader_parameter("u_flick", FLICK)
+	var level: WaveLevel = auto_free(WaveLevel.new())
+	level.add_child(_spawn_marker())
+	var first_cat := WaveCat.new()
+	first_cat.name = "FirstCat"
+	first_cat.position = Vector3(1.0, 0.0, 1.0)
+	level.add_child(first_cat)
+	var second_cat := WaveCat.new()
+	second_cat.name = "SecondCat"
+	second_cat.position = Vector3(2.0, 0.0, 2.0)
+	level.add_child(second_cat)
+	# inject BEFORE add_child: exactly the order `WaveLevel.inject`'s own
+	# doc comment requires, and the only order under which each cat's
+	# `_ready` (fired when `level` enters the tree below) finds its
+	# pulses/data_mat already set and builds its brain, gait and pose.
+	level.inject(data_mat, ShaderMaterial.new(), pulses)
+	add_child(level)
+	var player: UnseeingPlayer = auto_free(UnseeingPlayer.new())
+	player.pulses = pulses
+	player.position = Vector3(5.0, 0.9, 3.0)
+	add_child(player)
+	var obs: WaveObserver = auto_free(WaveObserver.new())
+	obs.inject(level, player.camera)
+	obs.inject_hero(player)
+	add_child(obs)
+
+	var snap: Dictionary = obs.snapshot(0.0)
+	assert_bool(snap.has("unavailable")).is_false()
+
+	var hero: Dictionary = snap["hero"]
+	var motion: Dictionary = hero["motion"]
+	assert_str(motion["phase"]).is_equal("controlled")
+	assert_vector(motion["actual_velocity"]).is_equal(player.velocity)
+	# one measurement, two names: the long-standing key and the new one
+	# must never be able to drift apart.
+	assert_vector(hero["velocity"]).is_equal(motion["actual_velocity"])
+	assert_bool(motion.has("support")).is_true()
+	assert_bool(motion.has("last_landing")).is_true()
+	assert_bool(motion.has("held_planar_velocity")).is_true()
+	assert_bool(motion.has("held_vertical_velocity")).is_true()
+
+	var cats_motion: Array = snap["cats_motion"]
+	assert_int(cats_motion.size()).is_equal(2)
+	assert_str(cats_motion[0]["name"]).is_equal("FirstCat")
+	assert_str(cats_motion[1]["name"]).is_equal("SecondCat")
+	assert_vector(cats_motion[0]["position"]).is_equal(first_cat.global_position)
+	assert_vector(cats_motion[1]["position"]).is_equal(second_cat.global_position)
+	assert_str(cats_motion[0]["motion"]["phase"]).is_equal("controlled")
+	assert_str(cats_motion[1]["motion"]["phase"]).is_equal("controlled")
+
+
+## A poisoned physical velocity read straight off the live engine refuses
+## the WHOLE snapshot rather than folding into `unknown`: a hero standing
+## right there with garbage in its velocity channel is a different fact
+## from no hero being there at all, and this layer must not conflate them.
+func test_a_poisoned_hero_velocity_refuses_the_whole_snapshot() -> void:
+	var pulses := Pulses.new()
+	var level := _empty_level(pulses)
+	var player: UnseeingPlayer = auto_free(UnseeingPlayer.new())
+	player.pulses = pulses
+	add_child(player)
+	var obs: WaveObserver = auto_free(WaveObserver.new())
+	obs.inject(level, player.camera)
+	obs.inject_hero(player)
+	add_child(obs)
+	# set directly, with no intervening physics tick: the engine's own
+	# velocity channel, poisoned before the observer ever reads it.
+	player.velocity = Vector3(NAN, 0.0, 0.0)
+	var snap: Dictionary = obs.snapshot(0.0)
+	assert_int(snap.size()).is_equal(1)
+	assert_str(snap["unavailable"]).contains("hero motion")

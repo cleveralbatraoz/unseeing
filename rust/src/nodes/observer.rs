@@ -49,8 +49,9 @@ use crate::observe::reflect::{
     ReflectionExplanation, ReflectionRequest,
 };
 use crate::observe::{
-    EchoObservation, EyeObservation, FrameObservation, HeroObservation, QueuedWave,
-    SceneObservation, SourceObservation, SpawnObservation, frame,
+    ActorMotionObservation, CatMotionObservation, EchoObservation, EyeObservation,
+    FrameObservation, HeroObservation, QueuedWave, RawCatMotion, SceneObservation,
+    SourceObservation, SpawnObservation, frame,
 };
 use crate::pulse_pool::{MAXP, SlotCapture};
 use crate::ray_fan;
@@ -60,8 +61,8 @@ use crate::reproduce::{
     first_divergence, state_hash,
 };
 use crate::support_motion::{
-    FiniteVelocity, GodotRotation, LandingEvent, MotionPhase, MotionState, PlanarVelocity,
-    QueuedWaveGate, SupportContact,
+    ActorPosition, FiniteVelocity, GodotRotation, LandingEvent, MotionPhase, MotionState,
+    PlanarVelocity, QueuedWaveGate, SupportContact,
 };
 use crate::viewmodel::ViewmodelCapture;
 
@@ -130,6 +131,28 @@ const DEAD_BODY: &str = "the injected hero body has been freed";
 /// mid-stride as one standing still.
 const NO_VM: &str = "the hero body never built its viewmodel — the game is not running";
 
+/// [`GodotRotation::canonicalize_replacing_yaw`] found the hero's body
+/// rotation is not the stable Basis/Euler spelling. Classified as an
+/// ABSENCE (folds into a snapshot's `unknown`) rather than an invalid
+/// motion value: it is a fact about the ROTATION channel, not the
+/// position/velocity/identity invariant [`ActorMotionObservation`] checks.
+const NONCANONICAL_HERO_BODY: &str = "the hero body does not preserve its configured X/Z rotation";
+
+/// The eye's own rotation, under the same rule as [`NONCANONICAL_HERO_BODY`].
+const NONCANONICAL_HERO_EYE: &str = "the hero eye does not preserve its configured Y/Z rotation";
+
+/// The hero's own world position failed [`ActorPosition::try_new`] — a
+/// poisoned physical value, never a legitimate absence, and refuses the
+/// WHOLE snapshot exactly as a poisoned cat position does.
+const INVALID_HERO_POSITION: &str = "the hero position is not a valid physical value";
+
+/// The hero's motion — its private phase, its just-measured physical
+/// velocity, and its transient collider identity — failed
+/// [`ActorMotionObservation::try_new`]. A poisoned physical value, never a
+/// legitimate absence, so it refuses the WHOLE snapshot rather than
+/// folding into `unknown`.
+const INVALID_HERO_MOTION: &str = "the hero motion is not a valid physical value";
+
 /// A cat in the level never built its mind, gait, tail and pose. Refused
 /// rather than defaulted: a defaulted cat is a cat with a different life.
 const UNBUILT_CAT: &str = "a level cat was never built — capture refuses a defaulted cat";
@@ -142,6 +165,29 @@ const NO_APPOINTMENT: &str = "a source holds no beat appointment — the level h
 /// The env group is the caller's own dictionary — the one group no type
 /// signature guards — so the refusal names the key rather than the group.
 const BAD_ENV: &str = "the env group is missing or malformed: ";
+
+/// The two ways [`WaveObserver::read_hero`] can fail to hand back a
+/// [`HeroObservation`], kept distinct because a snapshot and a capture
+/// treat them differently. `Absent` covers every way the hero is
+/// legitimately not there to read this frame — never injected, freed, no
+/// eye built yet, a rotation Godot has not yet canonicalized — and a
+/// snapshot folds it into `unknown`. `Invalid` covers a poisoned physical
+/// value the engine handed back: never a legitimate absence, so it
+/// refuses the WHOLE snapshot exactly as a capture already refuses on any
+/// `read_hero` failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HeroReadError {
+    Absent(&'static str),
+    Invalid(&'static str),
+}
+
+impl HeroReadError {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Absent(reason) | Self::Invalid(reason) => reason,
+        }
+    }
+}
 
 /// The agent's window into the running wave engine: it reads every system
 /// and drives none.
@@ -259,6 +305,18 @@ impl WaveObserver {
                 Ok(sources) => sources,
                 Err(reason) => return unavailable(&reason),
             };
+        let hero = match self.hero_observation() {
+            Ok(hero) => hero,
+            Err(reason) => return unavailable(reason),
+        };
+        let raw_cats = match cat_motion_raw(&level) {
+            Ok(raw) => raw,
+            Err(reason) => return unavailable(&reason),
+        };
+        let cat_motion = match crate::observe::cat_motion_observations(&raw_cats) {
+            Ok(cats) => cats,
+            Err(reason) => return unavailable(&reason),
+        };
         // one bind, so the pool and the echo book are read from the same
         // core at the same instant rather than from two borrows of it
         let core = core.bind();
@@ -282,7 +340,8 @@ impl WaveObserver {
                     position: level.spawn_pos(),
                     yaw: level.spawn_yaw(),
                 },
-                hero: self.hero_observation(),
+                hero,
+                cat_motion,
             },
         );
         frame_dict(&observation, flick.is_some())
@@ -647,43 +706,56 @@ impl WaveObserver {
     /// invented for an eyeless hero would be a guess, and the group is
     /// all-or-nothing like the capture blob it feeds.
     ///
-    /// The reason is DROPPED here and kept by [`Self::read_hero`], because
-    /// the two callers need different things from the same fetch: a
-    /// snapshot names the group in `unknown` and reports the world around
-    /// it, while a capture refuses the whole blob and must say which of
-    /// the three absences it hit. One fetch, so they can never drift.
-    fn hero_observation(&self) -> Option<HeroObservation> {
-        self.read_hero().ok()
+    /// The reason is CLASSIFIED here and kept by [`Self::read_hero`],
+    /// because the two callers need different things from the same fetch:
+    /// a snapshot names an ABSENT hero in `unknown` and reports the world
+    /// around it, while an INVALID one (a poisoned physical velocity, a
+    /// poisoned position, or an identity invariant a real engine can never
+    /// produce) is evidence the engine handed back garbage and refuses the
+    /// WHOLE snapshot exactly as a capture already does. One fetch, so the
+    /// two verdicts can never drift apart.
+    fn hero_observation(&self) -> Result<Option<HeroObservation>, &'static str> {
+        match self.read_hero() {
+            Ok(hero) => Ok(Some(hero)),
+            Err(HeroReadError::Absent(_)) => Ok(None),
+            Err(HeroReadError::Invalid(reason)) => Err(reason),
+        }
     }
 
-    /// The hero group or the reason there is none.
+    /// The hero group, the reason it is absent, or the reason its motion is
+    /// invalid.
     ///
     /// Validity is checked on the borrowed reference and the handle is
     /// never cloned at all, the same discipline `live_level`/`live_camera`
     /// use: cloning a `Gd<T>` for a freed instance panics rather than
     /// returning a dead handle, so a freed hero must be caught before any
     /// clone could happen, not after taking ownership of a copy.
-    fn read_hero(&self) -> Result<HeroObservation, &'static str> {
-        let player = self.player.as_ref().ok_or(NO_HERO)?;
+    fn read_hero(&self) -> Result<HeroObservation, HeroReadError> {
+        let player = self.player.as_ref().ok_or(HeroReadError::Absent(NO_HERO))?;
         if !player.is_instance_valid() {
-            return Err(DEAD_HERO);
+            return Err(HeroReadError::Absent(DEAD_HERO));
         }
-        let position = player.get_global_position();
+        let position = ActorPosition::try_new(player.get_global_position())
+            .map_err(|_| HeroReadError::Invalid(INVALID_HERO_POSITION))?;
         let velocity = player.get_velocity();
         let body_rotation = player.get_rotation();
         let yaw = GodotRotation::canonicalize_replacing_yaw(body_rotation, body_rotation.y)
-            .map_err(|_| "the hero body does not preserve its configured X/Z rotation")?
+            .map_err(|_| HeroReadError::Absent(NONCANONICAL_HERO_BODY))?
             .world()
             .y;
         let bound = player.bind();
-        let eye_rotation = bound.eye_rotation().ok_or(NO_EYE)?;
+        let eye_rotation = bound.eye_rotation().ok_or(HeroReadError::Absent(NO_EYE))?;
         let pitch = GodotRotation::canonicalize_replacing_pitch(eye_rotation, eye_rotation.x)
-            .map_err(|_| "the hero eye does not preserve its configured Y/Z rotation")?
+            .map_err(|_| HeroReadError::Absent(NONCANONICAL_HERO_EYE))?
             .world()
             .x;
+        let motion_state = bound.motion_state();
+        let support_collider_id = read_support_collider_id(player);
+        let motion = ActorMotionObservation::try_new(motion_state, velocity, support_collider_id)
+            .map_err(|_| HeroReadError::Invalid(INVALID_HERO_MOTION))?;
         Ok(HeroObservation {
             position,
-            velocity,
+            motion,
             yaw: f64::from(yaw),
             pitch: f64::from(pitch),
             last_tap: bound.last_tap,
@@ -765,11 +837,11 @@ impl WaveObserver {
         }
         let body = self.live_body()?;
         let viewmodel = body.bind().capture_vm().ok_or(NO_VM)?;
-        let hero = self.read_hero()?;
+        let hero = self.read_hero().map_err(HeroReadError::reason)?;
         let player = player_handle.bind();
         Ok(HeroCapture {
-            position: hero.position,
-            velocity: hero.velocity,
+            position: hero.position.world(),
+            velocity: hero.motion.actual_velocity().world(),
             motion: player.motion_state(),
             yaw: hero.yaw,
             pitch: hero.pitch,
@@ -962,6 +1034,67 @@ fn capture_cats(level: &WaveLevel) -> Result<Vec<CatCapture>, String> {
         .collect()
 }
 
+/// Every cat's raw motion facts, in the level's own recursive census order
+/// — position, phase, physical velocity and transient collider identity,
+/// read through the SAME [`super::cat::WaveCat::capture_state`] door
+/// [`capture_cats`] already uses. There is no lighter one: a cat's private
+/// `MotionState` has no separate accessor, because nothing but a capture
+/// has ever needed it before this snapshot did.
+///
+/// A cat that never beat — its brain, gait, tail or pose never built —
+/// refuses the WHOLE snapshot, under the same [`UNBUILT_CAT`] reason a
+/// capture already refuses on. Unlike [`capture_cats`], processing is NOT
+/// required to be enabled: a snapshot reports the state a paused or
+/// disabled cat is actually holding, exactly as [`Self::hero_observation`]
+/// asks nothing of the hero's own processing flag.
+fn cat_motion_raw(level: &WaveLevel) -> Result<Vec<RawCatMotion>, String> {
+    level
+        .cat_handles()
+        .iter()
+        .map(|cat| {
+            if !cat.is_instance_valid() {
+                return Err("a level cat has been freed — snapshot refused".to_string());
+            }
+            let name = cat.get_name().to_string();
+            let capture = cat
+                .bind()
+                .capture_state()
+                .map_err(|reason| format!("{UNBUILT_CAT}: {reason} ({name})"))?;
+            let support_collider_id = read_support_collider_id(cat);
+            Ok((
+                name,
+                capture.position,
+                capture.motion,
+                capture.velocity,
+                support_collider_id,
+            ))
+        })
+        .collect()
+}
+
+/// The engine's own transient collider identity for a controlled actor,
+/// read through the SAME registered call every GDScript caller already
+/// uses (`support_collider_id`) rather than a second internal door into
+/// `player.rs`/`cat.rs`'s private field — both keep that field private,
+/// and this boundary has no business reaching past it. Total: any Variant
+/// shape other than an integer or nil reads as "no identity" — Godot never
+/// returns anything else from this call, but a dynamic dispatch boundary
+/// must stay defensive about it regardless.
+fn read_support_collider_id<T>(handle: &Gd<T>) -> Option<u64>
+where
+    T: GodotClass + Inherits<Node>,
+{
+    let mut node = handle.clone().upcast::<Node>();
+    let raw = node.call("support_collider_id", &[]);
+    if raw.is_nil() {
+        None
+    } else {
+        raw.try_to::<i64>()
+            .ok()
+            .and_then(|id| u64::try_from(id).ok())
+    }
+}
+
 /// One half of the standing acoustic image a source's limbs are actually
 /// carrying — whichever instance uniform `param` names, read back off the
 /// mesh the level pushed it to. Every limb of one source is pushed the same
@@ -1030,6 +1163,9 @@ fn frame_dict(observation: &FrameObservation, flick_known: bool) -> VarDictionar
         }
         None => unknown.push("hero"),
     }
+    let cats_motion: Array<VarDictionary> =
+        observation.cat_motion.iter().map(cat_motion_dict).collect();
+    state.set("cats_motion", &cats_motion);
     state.set("unknown", &unknown);
     state
 }
@@ -1123,8 +1259,13 @@ fn spawn_dict(spawn: &SpawnObservation) -> VarDictionary {
 
 fn hero_dict(hero: &HeroObservation) -> VarDictionary {
     let mut entry = VarDictionary::new();
-    entry.set("position", hero.position);
-    entry.set("velocity", hero.velocity);
+    entry.set("position", hero.position.world());
+    // one measurement, two names: the long-standing "velocity" key and the
+    // new "motion.actual_velocity" key are both projected from the SAME
+    // checked `ActorMotionObservation`, never a second raw field that
+    // could drift from it.
+    entry.set("velocity", hero.motion.actual_velocity().world());
+    entry.set("motion", &actor_motion_dict(hero.motion));
     entry.set("yaw", hero.yaw);
     entry.set("pitch", hero.pitch);
     entry.set("last_tap", hero.last_tap);
@@ -1132,6 +1273,98 @@ fn hero_dict(hero: &HeroObservation) -> VarDictionary {
     entry.set("tap_queued", hero.tap_queued);
     let queued: Array<VarDictionary> = hero.queued_waves.iter().map(queued_wave_dict).collect();
     entry.set("queued_waves", &queued);
+    entry
+}
+
+/// One actor's checked motion, native-valued (never text): `phase` as a
+/// spelled-out string, the physical velocity the engine measured, the
+/// airborne-only nullable held planar/vertical velocities the phase is
+/// still carrying, nullable support (`point`/`normal`/`collider_id`), and
+/// a nullable last landing (`impact_speed`/`point`/`normal`).
+///
+/// Deliberately a SEPARATE function from the capture format's own
+/// `motion_dict`/`phase_dict`: that pair is Task 6's frozen text-spelled
+/// wire, read back by `parse_blob`, and this dict is the snapshot's own
+/// native-valued shape with a different key set (`held_planar_velocity`
+/// rather than an absent-when-controlled `planar_velocity`, a
+/// `collider_id` the capture format must never carry at all). Sharing one
+/// function between them would mean every future change to either format
+/// risks silently changing the other.
+fn actor_motion_dict(motion: ActorMotionObservation) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("phase", motion_phase_name(motion.phase()));
+    entry.set("actual_velocity", motion.actual_velocity().world());
+    let (held_planar, held_vertical) = match motion.phase() {
+        MotionPhase::Controlled => (Variant::nil(), Variant::nil()),
+        MotionPhase::Airborne {
+            planar_velocity_mps,
+            vertical_velocity_mps,
+        } => (
+            Vector3::new(
+                planar_velocity_mps.x_mps(),
+                0.0,
+                planar_velocity_mps.z_mps(),
+            )
+            .to_variant(),
+            f64::from(vertical_velocity_mps.mps()).to_variant(),
+        ),
+    };
+    entry.set("held_planar_velocity", &held_planar);
+    entry.set("held_vertical_velocity", &held_vertical);
+    entry.set(
+        "support",
+        &motion.support().map_or_else(Variant::nil, |support| {
+            actor_support_dict(support, motion.support_collider_id()).to_variant()
+        }),
+    );
+    entry.set(
+        "last_landing",
+        &motion.last_landing().map_or_else(Variant::nil, |landing| {
+            actor_landing_dict(landing).to_variant()
+        }),
+    );
+    entry
+}
+
+fn motion_phase_name(phase: MotionPhase) -> &'static str {
+    match phase {
+        MotionPhase::Controlled => "controlled",
+        MotionPhase::Airborne { .. } => "airborne",
+    }
+}
+
+/// A checked support, native-valued — `collider_id` is the engine's own
+/// transient identity, spelled the same stable 16-lowercase-hex
+/// [`hex64`] uses elsewhere; absent identity is NIL, never an empty or
+/// zero string, so a reader cannot mistake "no id" for a valid one.
+fn actor_support_dict(support: SupportContact, collider_id: Option<u64>) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("point", support.point());
+    entry.set("normal", support.normal());
+    entry.set(
+        "collider_id",
+        &collider_id.map_or_else(Variant::nil, |id| hex64(id).to_variant()),
+    );
+    entry
+}
+
+/// A checked landing, native-valued.
+fn actor_landing_dict(landing: LandingEvent) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("impact_speed", f64::from(landing.impact_speed().mps()));
+    entry.set("point", landing.support().point());
+    entry.set("normal", landing.support().normal());
+    entry
+}
+
+/// One cat's motion, named and placed: `{ "name": String, "position":
+/// Vector3, "motion": Dictionary }`, in the exact census order
+/// [`CatMotionObservation`] carries.
+fn cat_motion_dict(cat: &CatMotionObservation) -> VarDictionary {
+    let mut entry = VarDictionary::new();
+    entry.set("name", cat.name.as_str());
+    entry.set("position", cat.position.world());
+    entry.set("motion", &actor_motion_dict(cat.motion));
     entry
 }
 

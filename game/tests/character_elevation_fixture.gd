@@ -107,3 +107,77 @@ static func poll_physics(tree: SceneTree, predicate: Callable, max_ticks: int) -
 		if predicate.call():
 			return true
 	return false
+
+
+## Task 7 cross-check: reads the SAME hero the caller just drove through
+## `WaveObserver.snapshot`, a channel none of these tests' own assertions
+## produced. Builds and tears down its own throwaway level so callers that
+## never wrapped their player in one (most of this suite) can still prove
+## the observer's motion dictionary agrees with the state they already
+## pinned directly. `null` on any refusal (poisoned position/velocity/
+## identity, or an absent hero).
+static func hero_motion(
+	parent: Node, player: UnseeingPlayer, pulses: Pulses, now: float
+) -> Variant:
+	var level := WaveLevel.new()
+	level.add_child(WaveSpawn.new())
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), pulses)
+	parent.add_child(level)
+	var observer := WaveObserver.new()
+	parent.add_child(observer)
+	observer.inject(level, player.camera)
+	observer.inject_hero(player)
+	var snap: Dictionary = observer.snapshot(now)
+	observer.queue_free()
+	level.queue_free()
+	if snap.has("unavailable"):
+		return null
+	var hero: Dictionary = snap.get("hero", {})
+	return hero.get("motion")
+
+
+## Task 7 cross-check, the cat's side of `hero_motion`: a cat census only
+## finds cats parented under the SAME `WaveLevel` an observer was injected
+## with, but this suite's own fixtures parent cats directly under the test
+## root (matching the level-free floors/tables/beds they stand on). Rather
+## than disturb that shared layout, this reparents the cat under a
+## throwaway level just long enough to read it back, then restores its
+## original parent — `global_position` is preserved by `reparent`'s default
+## `keep_global_transform`.
+##
+## `WaveLevel` census-walks its subtree exactly once, at its own `_ready`
+## (`derive()`, `rust/src/nodes/level.rs`) — never again at runtime, by
+## design, so a running level pays no per-frame O(scene) walk. Reparenting
+## the cat in AFTER that first derive leaves the level's cached
+## `cat_children` still empty; `rederive()` (the same `#[func]` the editor's
+## own drag-a-node watch calls) re-runs that walk on demand without
+## touching the cat's own already-established motion state — `derive()`
+## only reads and stores handles, the pulses/data_mat injection that DOES
+## write to a cat's properties lives in the separate `inject()` this helper
+## already called before the cat ever joined. `null` on any refusal or
+## missing entry.
+static func cat_motion(parent: Node, cat: WaveCat, pulses: Pulses, now: float) -> Variant:
+	var level := WaveLevel.new()
+	level.add_child(WaveSpawn.new())
+	level.inject(ShaderMaterial.new(), ShaderMaterial.new(), pulses)
+	parent.add_child(level)
+	var original_parent := cat.get_parent()
+	cat.reparent(level)
+	level.rederive()
+	var camera := Camera3D.new()
+	parent.add_child(camera)
+	var observer := WaveObserver.new()
+	parent.add_child(observer)
+	observer.inject(level, camera)
+	var snap: Dictionary = observer.snapshot(now)
+	cat.reparent(original_parent)
+	observer.queue_free()
+	camera.queue_free()
+	level.queue_free()
+	if snap.has("unavailable"):
+		return null
+	var cats: Array = snap.get("cats_motion", [])
+	if cats.is_empty():
+		return null
+	var entry: Dictionary = cats[0]
+	return entry.get("motion")

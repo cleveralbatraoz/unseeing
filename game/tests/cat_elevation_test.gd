@@ -92,6 +92,15 @@ func test_stationary_cat_stands_on_table_support() -> void:
 		ELEVATION_FIXTURE.TABLE_TOP_Y, 0.0010001192092895508
 	)
 	assert_int(cat.collision_layer).is_equal(2)
+	# Task 7 cross-check: the observer's own motion dictionary agrees the
+	# cat is controlled and supported on the table, at the table's height.
+	var motion: Dictionary = ELEVATION_FIXTURE.cat_motion(self, cat, cat.pulses as Pulses, 0.0)
+	assert_str(motion["phase"]).is_equal("controlled")
+	assert_bool(motion["support"] != null).is_true()
+	var support: Dictionary = motion["support"]
+	assert_float(support["point"].y).is_equal_approx(
+		ELEVATION_FIXTURE.TABLE_TOP_Y, 0.0010001192092895508
+	)
 
 
 ## A cat dropped onto a bed settles on its frame top, the bed's authored
@@ -109,6 +118,15 @@ func test_stationary_cat_stands_on_bed_support() -> void:
 		ELEVATION_FIXTURE.BED_TOP_Y, 0.0010001192092895508
 	)
 	assert_int(cat.collision_layer).is_equal(2)
+	# Task 7 cross-check: the observer's own motion dictionary agrees the
+	# cat is controlled and supported on the bed, at the bed's height.
+	var motion: Dictionary = ELEVATION_FIXTURE.cat_motion(self, cat, cat.pulses as Pulses, 0.0)
+	assert_str(motion["phase"]).is_equal("controlled")
+	assert_bool(motion["support"] != null).is_true()
+	var support: Dictionary = motion["support"]
+	assert_float(support["point"].y).is_equal_approx(
+		ELEVATION_FIXTURE.BED_TOP_Y, 0.0010001192092895508
+	)
 
 
 ## The one transport law, end to end, for the cat's whole silhouette (paws,
@@ -566,6 +584,14 @@ func test_no_floor_cat_stays_finite_at_terminal_speed() -> void:
 	assert_bool(cat.velocity.is_finite()).is_true()
 	assert_bool(cat.is_on_floor()).is_false()
 	assert_int(cat.collision_layer).is_equal(4)
+	# Task 7 cross-check: the observer's own motion dictionary — a channel
+	# none of the assertions above consulted — agrees this is a terminal,
+	# unsupported fall.
+	var motion: Dictionary = ELEVATION_FIXTURE.cat_motion(self, cat, cat.pulses as Pulses, 0.0)
+	assert_str(motion["phase"]).is_equal("airborne")
+	assert_vector(motion["actual_velocity"]).is_equal(cat.velocity)
+	assert_bool(motion["support"] == null).is_true()
+	assert_float(motion["held_vertical_velocity"]).is_equal(-20.0)
 
 
 ## A cat confined to a ramp-and-platform patch never becomes airborne while
@@ -652,6 +678,13 @@ func test_cat_landing_is_audible_above_threshold() -> void:
 	var dat: Vector4 = pulses.dat[0]
 	assert_int(int(floorf(dat.w / 10.0))).is_equal(2)
 	assert_float(fmod(dat.w, 10.0) / 9.0).is_greater(0.0)
+	# Task 7 cross-check: the observer's own landing dictionary agrees a
+	# real landing occurred, with the floor's own UP support normal.
+	var motion: Dictionary = ELEVATION_FIXTURE.cat_motion(self, cat, pulses, 0.1)
+	assert_bool(motion["last_landing"] != null).is_true()
+	var landing: Dictionary = motion["last_landing"]
+	assert_vector(landing["normal"]).is_equal(Vector3.UP)
+	assert_float(landing["impact_speed"]).is_greater(0.0)
 
 
 ## A hard drop caps the landing voice at the cat's own authored maxima:

@@ -33,6 +33,15 @@ func test_two_controlled_actors_block_each_other_on_world_floor() -> void:
 		player.global_position.z - cat.global_position.z
 	)
 	assert_float(delta.length()).is_greater_equal(0.35 + 0.11 - 0.02)
+	# Task 7 cross-check: the observer's own motion dictionary agrees the
+	# player is controlled and supported by real world ground, never by
+	# the cat it just settled beside.
+	var pulses := player.pulses as Pulses
+	var motion: Dictionary = ELEVATION_FIXTURE.hero_motion(self, player, pulses, 0.0)
+	assert_str(motion["phase"]).is_equal("controlled")
+	assert_bool(motion["support"] != null).is_true()
+	var support: Dictionary = motion["support"]
+	assert_str(support["collider_id"]).is_not_equal("%016x" % cat.get_instance_id())
 
 
 ## An actor standing on its own real support at one elevation never reports
@@ -89,6 +98,12 @@ func test_centred_airborne_cat_passes_through_player_and_lands_on_world() -> voi
 	assert_int(player.collision_layer).is_equal(2)
 	assert_bool(player.is_on_floor()).is_true()
 	assert_float(player.global_position.y).is_equal_approx(0.9, 0.001)
+	# Task 7 cross-check: the observer's own dictionary agrees the pass-
+	# through never registered as a landing on the player it fell through.
+	var pulses := player.pulses as Pulses
+	var motion: Dictionary = ELEVATION_FIXTURE.hero_motion(self, player, pulses, 0.0)
+	assert_str(motion["phase"]).is_equal("controlled")
+	assert_bool(motion["last_landing"] == null).is_true()
 
 
 ## A controlled player dropped onto a live cat's body never accepts the
@@ -112,3 +127,9 @@ func test_controlled_player_walking_off_world_onto_cat_rejects_actor_support() -
 		300
 	)
 	assert_bool(fell_through).is_true()
+	# Task 7 cross-check: the observer's own dictionary agrees this is a
+	# genuine, unsupported fall — the cat's body never accepted as floor.
+	var pulses := player.pulses as Pulses
+	var motion: Dictionary = ELEVATION_FIXTURE.hero_motion(self, player, pulses, 0.0)
+	assert_str(motion["phase"]).is_equal("airborne")
+	assert_bool(motion["support"] == null).is_true()
