@@ -2,11 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Provision `hp-local` reproducibly, prove Unseeing's native, Web and Linux-player builds, and publish a complete tracked onboarding/change ledger.
+**Goal:** Provision `hp-local` reproducibly, prove Unseeing's native, Web,
+Linux-player, actual Godot-editor and structured live-MCP paths, and publish a
+complete tracked onboarding/change ledger.
 
-**Architecture:** Treat the repository's pinned bootstrap and pipeline as the behavioral authority, keep host dependencies at system or user scope according to their owner, and build one clean, commit-pinned clone whose sole submodule is verified before initialization. Store no generated artifact in Git; preserve only the design, plan, onboarding guide and README link in the isolated task worktree, while drafting the separate wiki update without pushing it.
+**Architecture:** Treat the repository's pinned bootstrap, pipeline and MCP
+configuration as behavioral authority; keep host dependencies at system or
+user scope according to their owner; and build one clean, commit-pinned clone
+whose sole submodule is verified before initialization. Prove the GUI/MCP path
+only in a separately bootstrapped remote task worktree, restore every temporary
+tracked editor change, and keep its evidence outside the Task-2/5 ledger. Store
+no generated artifact in Git; preserve only tracked documentation in the
+isolated local task worktree, while drafting the separate wiki update without
+pushing it.
 
-**Tech Stack:** Debian 13, POSIX shell, Git, Godot 4.7.1, rustup/Rust, gdtoolkit, Emscripten 4.0.20, Chromium, Brotli, Godot GDExtension and Web export.
+**Tech Stack:** Debian 13, POSIX shell, Git, Godot 4.7.1, rustup/Rust,
+gdtoolkit, Emscripten 4.0.20, Chromium, Brotli, Node 20/npm 9,
+`@satelliteoflove/godot-mcp@4.1.0`, Godot GDExtension and Web export.
 
 **Spec:** `docs/superpowers/specs/2026-08-24-hp-local-development-setup-design.md`
 
@@ -459,51 +471,519 @@ Give a reviewer the four full logs, exit statuses, artifact manifest and clean
 tracked status. Resolve every verified Critical or Important evidence gap;
 never substitute a skipped gate.
 
+### Task 4A: Prove the actual Godot editor and repository-pinned MCP loop
+
+**Files:**
+- Modify: `docs/superpowers/mcp/godot-mcp-loop.md`
+- Remote persistent: `/home/galchenko/src/unseeing/.worktrees/hp-local-mcp-setup/`, its dedicated branch/worktree admin state in the durable clone's common Git directory, ignored worktree-local release output, and ignored `game/addons/godot_mcp/`
+- Remote persistent: `/home/galchenko/.local/state/unseeing/mcp-setup/2026-08-25/`
+- Remote generated/shared: `~/.npm/` delta and Godot cache/config/user-data deltas, retained rather than broadly removed
+- Remote temporary: the task worktree's MCP-only `game/project.godot` diff, ignored `game/override.cfg`, and one named transient user-systemd unit; all restored/removed before completion
+- Controller shared: pre-existing `/Users/dmgalchenko/.godot-mcp/usage.log`, retained and required byte-unchanged
+- Controller temporary: one loopback-only leased SSH forward and one ignored owned MCP-controller directory/process pair, always signal-cleaned
+- Controller read-only source: exact existing NPX tree `/Users/dmgalchenko/.npm/_npx/e9af8ac9cd94a1c8/`
+- Ignored only: reviewed session-supervisor, forward-lease and owned-MCP-controller helpers; real-filesystem/process tests; mutation harnesses; and Task-4A execution report under this plan's SDD workspace
+
+**Interfaces:**
+- Consumes: the reviewed clean remote `main`, official Godot `4.7.1.stable.official.a13da4feb`, checked-in bootstrap and MCP pins, active uid-1000 Wayland user-manager session, ordinary target Node `20.19.2` and npm/npx `9.2.0`, exact controller Node `22.23.2`, the validated controller cache containing exact Godot MCP 4.1.0 and MCP SDK 1.30.0, and Task 4's build proof.
+- Produces: an isolated, separately sealed proof of the actual editor UI and owned structured MCP loop on proof-only port 16550, an exact tracked-file restoration verdict, unchanged unrelated controller MCP state, a retained ignored 4.1.0 addon for this worktree only, and factual evidence for Task 5.
+
+- [ ] **Step 1: Build and review the bounded lifecycle helpers before host mutation**
+
+In the ignored local SDD workspace, use strict TDD with Python's standard
+library plus the installed Node runtime only where the MCP SDK boundary
+requires it; use real temporary files/symlinks/processes, no mock and no
+network. Build one fixed-path session supervisor, one fixed loopback-forward
+lease wrapper and one owned MCP controller. Their live modes accept no caller-
+controlled project, deletion target, executable, unit, port, evidence path,
+package tree or tool sequence.
+
+The supervisor must refuse a wrong canonical worktree/project, dirty initial
+`game/project.godot`, wrong owner/type/mode/device/inode/hash, unexpected addon
+version, output collision or live diff. It captures the exact tracked preimage,
+adds only the reviewed 4.1.0 enabled row and proof settings
+`godot_mcp/port_override_enabled=true` and
+`godot_mcp/port_override=16550`, creates only the exact ignored 1280x720
+override, launches only the exact editor child, and owns a bounded always-run
+cleanup path. Dated automated cleanup stops only that editor child while the
+plugin is still enabled, accepts only the enabled row plus `MCPGameBridge`
+autoload and four `godot_mcp/*` settings, removes only that override, and
+restores the preimage directly. It never disables the plugin or creates a
+post-disable validation phase. If unrelated bytes appear, it preserves them and
+emits a blocking recovery artifact rather than overwriting them.
+
+The three helpers share one absolute monotonic 1200-second deadline, a
+1170-second mutation-capable work cutoff, and a final fixed 30-second cleanup
+reserve. No mutation-capable work may start after the cutoff. The clock begins
+before any supervisor/editor, tunnel or controller startup and ends only after
+cleanup, project restoration and listener-absence proof. No helper may mint,
+restart or extend either endpoint. The lease wrapper fixes both 16550 loopback endpoints,
+the complete SSH argument vector and that deadline, owns the PID, and closes it
+on normal exit and every handled signal. It validates both base and full
+`ssh -G` effective configurations, exact listener owners, and refuses inherited
+forwards, control sockets, fork-after-authentication, proxies and local
+commands. The owned MCP controller validates the fixed cached NPX tree's lock,
+package files, Godot MCP integrity and resolved SDK integrity without executing
+npm or using network. Ordinary addon installation still requires Node 20 or
+newer; the dated controller requires exact Node `22.23.2` and its direct
+executable identity. It copies descriptor-held bytes into a private execution
+capsule, imports the SDK from a held `Buffer` through `registerHooks()`,
+gives the child the same held-byte preload, and checks sealed parent and child
+resolution ledgers before `process.execPath` starts the staged `dist/cli.js`.
+It owns that child and closes it on every exit. It permits only the SDK's
+present safe inherited environment
+names (`HOME`, `LOGNAME`, `PATH`, `SHELL`, `TERM`, `USER`) plus fixed
+`GODOT_HOST`, `GODOT_PORT` and `GODOT_MCP_USAGE_LOG` overrides.
+
+Observe named RED before minimal production for every branch, then full GREEN.
+Mutation-check live paths/commands, project-diff classification, restore and
+refusal branches, override bytes/target, editor child/unit identity, base/full
+SSH effective configuration, tunnel bind/options/listener owner, lease expiry
+and signal cleanup, cached package/SDK identity and integrity, safe-plus-fixed
+environment, stdio child ownership/close-on-failure, exact tool sequence and
+assertions, the single 1200-second startup-through-cleanup deadline, failure
+records and last-write seal. Request independent read-only
+review of the amended design/plan/MCP-loop and all three helper/test/mutation
+pairs. No `hp-local` write is authorized before that review accepts every
+Critical/Important finding.
+
+- [ ] **Step 2: Create the separate evidence boundary and isolated worktree**
+
+Require the evidence path
+`/home/galchenko/.local/state/unseeing/mcp-setup/2026-08-25` and exact worktree
+path `/home/galchenko/src/unseeing/.worktrees/hp-local-mcp-setup` to be absent,
+not symlinks. Revalidate the durable clone's canonical path, clean `main`,
+reviewed HEAD/origin and owner; prove its `.worktrees/` parent is ignored; and
+require the dedicated branch name to be unused. Under `umask 077`, exclusively
+create the owner-only evidence root and create the named task branch/worktree
+from reviewed `main`. Record the full before/after shared common-Git worktree,
+branch and admin delta even though the durable tracked tree stays unchanged.
+
+Capture deterministic complete before manifests for the task-worktree MCP
+boundary, `~/.npm`, Cargo, Rustup and mutable Godot cache/config/user-data
+roots. Cover every ignored worktree output, including `rust/target`,
+`game/.godot`, the addon and temporary override boundary. Record only
+`DISPLAY`, `WAYLAND_DISPLAY`, `XDG_RUNTIME_DIR` and the user D-Bus address from
+the uid-1000 user manager, never a raw environment. On the controller, capture
+the existing usage log's path, device, inode, UID, mode, link count, 594-line /
+92,992-byte baseline, SHA-256
+`4a470e3854b12fdb0db7915ffc6940c1b6332d77f14f570cfaadeb15a1ff7929`,
+and exact descriptor `mtime_ns` `1787340988551255243`; reject the rounded
+`1787340988000000000` transcription;
+do not copy its contents to the host or tracked documentation, and require the
+same complete metadata/content boundary after the proof. Capture the exact NPX
+tree's canonical path, owner/type/mode, package lock and complete regular-file
+manifest before any controller child starts; no task process may modify it.
+
+- [ ] **Step 3: Bootstrap this worktree and install exact addon 4.1.0**
+
+Ignored native output does not cross worktrees. From the new task worktree,
+source `~/.cargo/env` and run the checked-in bootstrap with the same bounded
+resource setting:
+
+```sh
+. "$HOME/.cargo/env"
+CARGO_BUILD_JOBS=4 CARGO_NET_OFFLINE=true RUSTUP_AUTO_INSTALL=0 \
+  tools/bootstrap.sh
+```
+
+Preserve the complete log, literal status and duration. Require the exact
+release GDExtension in this worktree, `probe: PASS (19 checks)`, and
+`bootstrap: OK`; never point it at another checkout's binary.
+
+Verify Node `20.19.2`, npm/npx `9.2.0`, the matching exact 4.1.0 literals in
+`.mcp.json` and `tools/setup-mcp.sh`, absent addon path and no target listener
+on proof-only port 16550. From the task worktree run exactly:
+
+```sh
+/usr/bin/env -u GODOT_MCP_VERSION ./tools/setup-mcp.sh
+```
+
+Record stdout/stderr/status/duration, complete installed-addon metadata and
+regular-file hashes, `plugin.cfg` version `4.1.0`, registry integrity
+`sha512-uq3Gh5n7fos8vIoXpr32/K7r9tL9eYLbERr+Tolksg3Y+FC5coYEkRkbJ1JktMMhoH/BnGWsWhE5E+XJ/nMEPg==`,
+the complete npm-cache delta, ignored verdict and clean tracked status. Install
+does not authorize an enabled row or any other tracked project change.
+
+- [ ] **Step 4: Start the owned graphical editor session**
+
+Transfer and re-hash the reviewed supervisor through one new guarded mode-0700
+temporary directory. It must capture a byte-for-byte HEAD-identical
+`game/project.godot`, add only the required plugin row plus
+`godot_mcp/port_override_enabled=true` and
+`godot_mcp/port_override=16550`, and create this exact ignored override before
+editor boot:
+
+```text
+[display]
+
+window/size/mode=0
+window/size/viewport_width=1280
+window/size/viewport_height=720
+```
+
+Start it as uid 1000 through one uniquely
+named transient user-systemd unit in the already active GNOME Wayland session.
+Poll—never sleep—for the owned child process, unit state, and target
+`127.0.0.1:16550` listener. Prove the child is official Godot
+`4.7.1.stable.official.a13da4feb` in editor mode with project path
+`/home/galchenko/src/unseeing/.worktrees/hp-local-mcp-setup/game`; record only
+the named unit's journal. Require that exact child to own the listener. Verify
+the resulting complete live project diff is still limited to the enabled row,
+autoload and four settings.
+
+- [ ] **Step 5: Prove SSH configuration and lease the isolated forward**
+
+Consume Step 3's recorded pre-editor absence proof. Now require controller port
+16550 unused and target port 16550 owned only by the supervisor's Godot child.
+Capture base `ssh -G hp-local` and stop if its effective output
+contains any local, remote or dynamic forward; control path/master/persistence;
+fork-after-authentication; proxy command/jump; or local command. Capture the
+complete proposed command through `ssh -G` too; require exactly one local
+forward with the literal mapping below, `ForkAfterAuthentication=no`, and no
+other forward or forbidden setting. Both base and full effective configurations
+reject `ClearAllForwardings=yes`: OpenSSH would also discard the required
+`-L`.
+
+Start the reviewed foreground lease wrapper around exactly this transport:
+
+```sh
+ssh -N -T \
+  -o BatchMode=yes \
+  -o ExitOnForwardFailure=yes \
+  -o ForkAfterAuthentication=no \
+  -o ControlMaster=no \
+  -o ControlPath=none \
+  -o ControlPersist=no \
+  -o PermitLocalCommand=no \
+  -o UpdateHostKeys=no \
+  -o StrictHostKeyChecking=yes \
+  -o ServerAliveInterval=15 \
+  -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:16550:127.0.0.1:16550 \
+  hp-local
+```
+
+Record its exact command, PID, endpoints and the shared absolute deadline
+locally. Prove both listeners loopback-only, the exact SSH PID owns the
+controller listener, and the supervisor's exact Godot child owns the target
+listener. Never bind a wildcard/non-loopback address, extend the 1200-second
+startup-through-cleanup deadline or touch unrelated default-port clients.
+
+- [ ] **Step 6: Start one owned offline MCP client/server pair**
+
+From a new ignored controller directory, validate exact existing NPX root
+`/Users/dmgalchenko/.npm/_npx/e9af8ac9cd94a1c8`, its package lock and complete
+package-file manifest. Require `@satelliteoflove/godot-mcp@4.1.0` integrity
+`sha512-uq3Gh5n7fos8vIoXpr32/K7r9tL9eYLbERr+Tolksg3Y+FC5coYEkRkbJ1JktMMhoH/BnGWsWhE5E+XJ/nMEPg==`
+and resolved `@modelcontextprotocol/sdk@1.30.0` integrity
+`sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA==`.
+Do not run npm/npx or contact a registry.
+
+Run the reviewed Node controller through the exact Node/capsule/held-byte and
+resolution-ledger boundary above; never fall back to ordinary pathname module
+loading. Its transport uses `process.execPath` with the staged Godot MCP
+`dist/cli.js`. Set fixed
+`GODOT_HOST=127.0.0.1`, `GODOT_PORT=16550`, and
+`GODOT_MCP_USAGE_LOG=0`. Accept only present SDK-safe inherited names `HOME`,
+`LOGNAME`, `PATH`, `SHELL`, `TERM`, and `USER` plus those three fixed values;
+reject every other child-environment name. Record parent/child PIDs, exact
+argv/executable identities and the whitelisted environment. Require the shared
+usage-log boundary unchanged. List available tools and verify the expected
+Godot tool surface before editor/game mutation. Package source and fixed
+overrides prove the endpoint; never treat `addon_status` as an endpoint
+diagnostic.
+
+- [ ] **Step 7: Exercise the actual UI and structured MCP boundary**
+
+Through only the owned MCP client/server pair, require exact server/addon
+version compatibility, project path, Godot version, configured main scene and
+editor state. Open `res://scenes/level_02.tscn`; inspect the edited-scene tree;
+select one returned child and read back that selection. Capture exactly one
+640-pixel-wide 3D editor viewport because the user explicitly requested actual
+UI validation. Inspect it transiently and retain only canonical dimensions and
+tool-result hash, not screenshot bytes, in evidence.
+
+Run configured main frozen under the supervisor-owned 1280x720 override.
+After the game starts, call exactly `godot_input {action:"get_map"}`—not
+`godot_project get_settings`—and require the running game's returned
+`move_forward` action to contain at least one event. Step two initialization
+frames, take a structured snapshot through the running current scene's
+`WaveObserver.snapshot(main.now)`, then make one `godot_game_time` request with
+`action:"step"`, `frames:30`, and
+`inputs:[{action_name:"move_forward",start_ms:0,duration_ms:500}]`; take the
+matching after snapshot. This request is `frames:30`; Godot MCP 4.1.0's
+accepted reply is `frames:31`, comprising the 30 requested frames plus one
+input-settle frame, and both values are required exactly. A separate
+frozen-time input injection is forbidden
+because its edge is not consumed by the stepped frames. Require the snapshot's
+own hero/eye position to move by more than `0.25 m`; source or time evolution
+is not a valid control. Run `godot_validate_meshes` against configured main.
+Version 4.1.0 returns a plain text value, not `structuredContent`;
+require the complete value anchored to exactly:
+
+```text
+Checked 144 meshes (144 surfaces) — no integrity problems. This rules out winding, dropped triangles, degenerate UVs/tangents, and NaN data. If rendering still looks wrong, the cause is lighting or materials, not mesh data — note that SDFGI replaces constant ambient light, so shadow-side fill must come from a shadowless fill DirectionalLight rather than ambient_light_energy.
+```
+
+Require no editor or game errors. Before SDK import, consume a fresh supervisor
+contract binding the absent named unit, journal cursor, unit/Godot start
+identities, exact project/evidence roots and pending gate. Controller success
+may report only `controller_lane_status:"passed"` with
+`integrated_proof_status:"pending_game_log_gate"`. After game stop, the
+supervisor-owned game-process journal finalizer inspects only that unit and
+cursor interval, sanitizes/hashes the result, requires zero game-process errors,
+and binds the terminal gate back to the contract. Do not call the integrated
+proof successful before that result. Do not save or edit any scene, node,
+resource, project setting or game source.
+
+- [ ] **Step 8: Stop, restore and inventory every delta**
+
+Stop the game through the owned MCP client. Close that client and require its
+`finally` path to stop only its exact stdio child. Stop the named transient
+supervisor unit while the addon remains enabled. Its bounded cleanup stops only
+its editor child, validates the complete stopped-editor diff as exactly the
+enabled row, `MCPGameBridge` autoload and four settings, removes only the exact
+ignored override, and restores captured `project.godot` directly with exact
+bytes/SHA-256/UID/GID/mode verification. Device plus original/replacement inode
+identities are facts without an equality requirement; timestamps are outside
+the restoration contract. It must not disable the plugin or create a
+post-disable phase. Then close the leased SSH forward through its owner and
+prove both controller and target port 16550 released before the one absolute
+1200-second deadline. Prove the task worktree and durable primary tracked-
+clean; neither path may use `assume-unchanged` or `skip-worktree`.
+
+Retain the installed ignored addon and worktree-local build output for later
+sessions in this task worktree. Retain generated npm/Godot caches and the
+controller's pre-existing usage log; capture deterministic after/delta
+manifests and prove its path/device/inode/UID/mode/link count/size/line
+count/SHA-256/exact `mtime_ns` boundary unchanged. Remove only guarded
+transfer/controller directories. Record that a
+future task worktree must run both its own bootstrap and `tools/setup-mcp.sh`;
+neither ignored state propagates.
+
+Record, but do not invoke, the retained-worktree rollback. Require the exact
+canonical path, dedicated branch, reviewed HEAD, clean tracked status,
+restored `project.godot`, stopped editor/unit/client/tunnel and only
+inventoried ignored outputs. Guardedly delete each exact manifest-authorized
+ignored root—`rust/target`, `game/.godot`, `game/addons/godot_mcp`,
+`game/override.cfg`, and any reviewed controller directory—after canonical
+path/type/owner/mode/file-hash verification; stop on residue or mismatch. Only then may the
+durable checkout use non-forced `git worktree remove`, prove path and common-
+Git admin entry absent, and remove a no-unique-commit proof branch with safe
+`git branch -d`. Never use `--force` or recursive manual deletion.
+
+- [ ] **Step 9: Seal and independently review Task-4A evidence**
+
+Write canonical summaries, before/after/delta manifests, exact commands,
+statuses and durations—including every failed attempt and cleanup
+disposition—plus tool-result hashes, restore/absence proofs and rollback facts
+under the separate evidence root. Exclude exactly the final manifest and its
+digest from a bytewise-sorted relative SHA-256 manifest, fsync the digest last,
+then perform only read-only regeneration. Do not store credentials, raw
+environment, screenshot bytes, build output, private user content or the
+controller's historical usage log.
+
+Request independent read-only review of the full evidence seal, structured
+MCP results and anchored mesh text, exact project restoration, unchanged
+controller usage log, both clean worktrees, retained ignored state and
+controller/transfer/forward/unit cleanup. Resolve every verified Critical or
+Important finding through systematic debugging; do not retry a state-changing
+step ad hoc. Task 4A makes no repository commit and never pushes, merges,
+publishes the wiki or changes any game/platform law.
+
+#### Observed Task-4A disposition — 2026-08-26
+
+Attempt 7 passed an explicitly editor-only fallback, not Steps 6--9's full
+runtime game protocol. Attempts 1--6 were each cleaned before the next:
+excessive clock skew led to exact Debian `systemd-timesyncd` installation;
+the real `0600` worktree mode replaced a mistaken `0644` assumption; a launch
+`TypeError` was totalized and then traced to the version-probe callback
+boundary; and the held `/dev/fd/<ssh-fd>` transport plus Godot's atomic inode
+replacement led to direct-owned Godot/SSH with guarded content/metadata
+restoration.
+
+The successful scope proved the full editor/addon handshake, opened level 02,
+selected `/root/Level02/Room`, captured and retired one reviewed editor image,
+kept editor errors and the complete usage-log boundary unchanged, restored the
+project exactly, and left no owned unit/process/listener/override residue. The
+isolated tracked-clean worktree and exact ignored development outputs remain
+intentionally retained. No runtime-game MCP claim is made: no game, movement,
+runtime snapshot, 144-mesh result, or supervisor game-journal terminal gate
+ran. The earlier native/Web run and export proof is independent. Task 5 must
+record this scoped result and all seven attempts without marking the unchecked
+runtime steps complete.
+
 ### Task 5: Write the complete onboarding and change ledger
 
 **Files:**
 - Create: `docs/hp-local-development-setup.md`
 - Modify: `README.md`
+- Modify: `docs/superpowers/mcp/godot-mcp-loop.md`
+- Modify: `docs/superpowers/specs/2026-08-24-hp-local-development-setup-design.md`
+- Modify: `docs/superpowers/plans/2026-08-24-hp-local-development-setup.md`
+- Modify: `tools/setup-mcp.sh` (behavior change: reject any present
+  `GODOT_MCP_VERSION` before Node/npx and keep exact 4.1.0)
+- Modify: `.gitignore` (comments only)
+- Modify: `test/repo_hygiene.sh` (static guidance checks plus an executable
+  fake-Node/npx regression proving override exit 2 and no npx invocation)
+- Ignored only: `.superpowers/sdd/2026-08-24-hp-local-development-setup/task-5-cleanup-seal.py`
+- Ignored only: `.superpowers/sdd/2026-08-24-hp-local-development-setup/task-5-cleanup-seal-test.py`
+- Ignored only: `.superpowers/sdd/2026-08-24-hp-local-development-setup/task-5-cleanup-seal-mutations.py`
+- Ignored only: `.superpowers/sdd/2026-08-24-hp-local-development-setup/task-5-phase-a-report.md`
 
 **Interfaces:**
-- Consumes: factual before/after package and filesystem evidence plus fresh build results from Tasks 2–4.
-- Produces: a self-contained fresh-host procedure, rollback guide and dated proof record discoverable from the root README.
+- Consumes: factual before/after package/filesystem evidence, fresh build results from Tasks 2–4, and the separately sealed actual-editor/MCP results from Task 4A.
+- Produces: a self-contained fresh-host procedure, rollback guide, corrected live-MCP loop and dated proof record discoverable from the root README.
 
-- [ ] **Step 1: Write the guide from observed evidence**
+- [ ] **Step 1: Draft the tracked Phase-A contract and guide without remote mutation**
 
-Include host role and baseline SHA, pre-existing inventory, exact persistent
-changes, apt dependency transaction, user-level installs, repository-local
-settings, removed temporary state, ignored artifacts, unperformed optional
-steps, four build gates, artifact hashes, daily workflow, update workflow,
-troubleshooting, security, rollback and GitHub-auth limitation. Name the file
-owning every quoted pin.
+Amend the design with the historical pre-cleanup-checkpoint versus current
+post-cleanup-final-seal distinction. Draft the guide from Tasks 2--4A's factual
+reports and narrowly scoped read-only evidence checks. Include host role and
+baseline SHA; pre-existing inventory; exact persistent changes and no-change
+results; the exact APT transaction; user-level installs; repository-local
+settings; removed temporary state; retained ignored artifacts; unperformed
+optional steps; four build gates and complete artifact hashes; daily/editor,
+update, troubleshooting and security workflows; guarded rollback; and the
+GitHub-auth limitation. Name the checked-in owner of every quoted pin and
+distinguish supported reproduction ranges from exact 2026-08-24 resolutions.
+Account separately for every Task-4-generated Cargo/rustup, Godot, gdtoolkit,
+Chromium and PKI user-state root without relabelling it as Task-2 installed
+state. Rollback fences are independently fail-fast; APT removal requires an
+exact reviewed simulation; later Cargo state forbids broad rustup uninstall;
+and shared/sensitive-capable state has no deletion without a complete
+unchanged-boundary proof.
+
+Include Task 4A's actual Godot UI and MCP boundary without copying a raw tool
+transcript: isolated worktree/common-Git delta and per-worktree bootstrap;
+Node/npm and exact 4.1.0 pin/integrity; install versus per-session enable;
+temporary `project.godot` autoload/settings and `override.cfg` lifecycle;
+local default-port use versus remote owned-client, isolated-port and leased
+loopback-SSH use; collision-free one-client-per-port behavior; validated cached
+controller package/SDK with no live npm; exact editor-only UI/tool results and
+an explicit absence of any runtime movement/snapshot/144-mesh claim; the dated
+owned-controller's unchanged usage-log boundary (not a promise for ordinary clients);
+generated ignored addon/build/npm/Godot state; separate evidence seal;
+troubleshooting, update and guarded uninstall. Correct stale MCP-owner comments
+and setup guidance in `tools/setup-mcp.sh`, `.gitignore` and
+`test/repo_hygiene.sh`: no retired `deploy.sh`/droplet path, unpinned/latest
+version, queued client, once-per-machine enablement, or deletion-only uninstall
+may remain. Pin the per-worktree Enable and exact-restore guidance with the
+static hygiene assertion. Never claim addon-tree deletion alone reverses the
+tracked project settings.
+
+Make ordinary manual use actionable as Disable, close editor, validate exactly
+the post-disable autoload-plus-four-settings residue, then restore captured
+bytes/SHA-256/UID/GID/mode while recording device plus original and replacement
+inode identities as facts without requiring equality; timestamps are outside
+the restoration contract. Addon removal deletes only exact entries from its
+private install manifest after canonical path/type/owner/mode/file-hash checks;
+no unbounded recursive deletion is permitted. Daily authoring and verification
+run in an explicitly selected task worktree, never the durable primary.
+
+The reusable path explicitly selects one unused evidence date, refuses reuse,
+clones the then-current public `main`, records its observed SHA and consumes
+pins from that clone. Every standalone fence reconstructs its date/root/PATH
+and fails fast. It records concrete post-state/deltas, installed-root
+manifests, status-preserving four-gate logs and artifacts, then performs its
+own exact scratch cleanup and non-self-referential digest-last seal. It does
+not assert that moving `main` equals the dated baseline or reuse Task 5's
+historical helper.
+
+The Phase-A guide may contain one clearly delimited final-seal table whose
+values are awaiting the observed Phase-B run. It contains no other placeholder
+or invented cleanup result.
 
 - [ ] **Step 2: Add one README link**
 
 Under `README.md` Setup, link the hp-local guide without duplicating its host
 transcript or changing generic setup commands.
 
-- [ ] **Step 3: Review the onboarding diff before committing**
+- [ ] **Step 3: Build the ignored cleanup/seal helper with strict TDD**
 
-Request independent read-only review of the guide and README against the spec,
-the retained host evidence and actual four build logs. Resolve every verified
-Critical or Important issue.
+Use Python's standard library only, real temporary files/directories/symlinks,
+and no mock or network. Observe a named RED before production code for every
+required branch. The executable accepts only literal `--live`; its live paths,
+owner, 490-entry checkpoint and checkpoint digest are hard-coded and it accepts
+no caller-provided deletion target.
 
-- [ ] **Step 4: Remove only download scratch**
+Before any removal it must reject a wrong canonical path, owner, mode, type,
+symlink, directory identity/link count, checkpoint file/count/digest/content,
+reviewed helper/digest pair, unsafe filename, or cleanup/final-seal output
+collision. It must preserve and later re-hash every non-download checkpoint
+entry, exclusively create and fsync the complete sorted JSON cleanup and
+conditional/prospective supersession record, invoke only the exact bounded
+downloads removal, and prove the target absent. It then creates a deterministic
+sorted relative manifest of every remaining regular evidence file excluding
+exactly its own
+manifest and digest, fsyncs the digest last, and performs no evidence-root
+write afterward. Every filesystem/process failure returns a bounded nonzero
+result rather than an uncaught exception.
 
-Resolve the recorded download directory with `realpath`, require it to equal
-`/home/galchenko/.local/state/unseeing/setup/2026-08-24/downloads`, require
-owner `galchenko` and mode `700`, then remove that one exact directory and
-confirm it is absent. The evidence directory, its manifests and their hashes
-remain. Do not remove build artifacts; they remain useful and ignored.
+Mutate realistic path/type/owner/mode/checkpoint/digest/source/output-collision
+guards, held identities/link counts, the removal target/result, preservation
+check, exact live `/usr/bin/rm`, cleanup-record conditional semantics, absence
+proof and both seal exclusions. Each mutation must fail its named test. Do not
+copy or execute the helper on
+`hp-local` in Phase A.
 
-The removal command, after those guards, is exactly:
+- [ ] **Step 4: Stop for independent Phase-A review**
+
+Run the full helper suite, syntax check, helper mutations, `git diff --check`,
+and inspect the complete uncommitted tracked diff. Write the ignored Phase-A
+report with the tracked-file summary, guide source/evidence map, exact
+RED/GREEN/mutation output, helper/test hashes, validation results, remote
+non-mutation proof, and self-review. Request independent read-only review of
+the amended design/plan, guide, README, helper, tests and report. Resolve every
+verified Critical or Important issue before Phase B.
+
+- [ ] **Step 5: Phase B preflight — verify the historical checkpoint**
+
+Before any remote write, revalidate the current 490-entry pre-cleanup checkpoint
+against every current evidence file except exactly its manifest/digest, and
+require its manifest SHA-256 to remain
+`ad0a3c2626a4c7c85e8a0f04a7f15bffa0fd5affe1d7065c1da8f4b5fd272385`.
+Revalidate the exact canonical evidence/download paths, non-symlink directory
+types, owner `galchenko`, mode `0700`, and absence of every planned Task-5
+source, record and final-seal output. Any mismatch stops before mutation.
+
+- [ ] **Step 6: Install the reviewed helper pair, clean once, and seal last**
+
+Copy the reviewed helper to its hard-coded evidence-root path and exclusively
+create its matching digest record, both owner `galchenko`, non-symlink regular
+files with link count one and mode `0600`. Revalidate the copied source/digest
+against the reviewed local hash. Execute its literal `--live` entry point
+exactly once.
+
+The helper ordering is exact: checkpoint/source/output guards; complete
+cleanup/supersession record creation and fsync; final target/parent identity
+guards; the one semantic operation
 
 ```sh
 rm -rf -- /home/galchenko/.local/state/unseeing/setup/2026-08-24/downloads
 ```
 
-- [ ] **Step 5: Verify and commit the onboarding task**
+then absence proof; complete non-download preservation proof; deterministic
+final-manifest creation; final-digest creation and fsync; read-only seal
+regeneration and digest verification. The retained historical checkpoint files
+remain. No evidence-root write follows the final digest. Do not remove Task 4
+build artifacts. If any live result is unexpected, stop without retry or ad
+hoc repair and invoke systematic debugging.
+
+- [ ] **Step 7: Complete the factual guide and review the final evidence**
+
+Using read-only verification only, replace the guide's single Phase-A table
+with the observed removal verdict, reviewed helper hash, cleanup-record
+path/hash, final manifest entry count, total regular-file count and full final
+digest. Put the final manifest's exact 64-hex SHA-256 as the first backticked
+value in its completion-table result so the destructive evidence rollback can
+consume that independently reviewed literal and fail closed while it is
+absent. Recheck every installation, build, no-change and rollback fact against
+its named evidence source. Request a second independent documentation/evidence
+review and resolve every verified Critical or Important issue.
+
+- [ ] **Step 8: Verify and commit the onboarding task**
 
 Run at minimum:
 
@@ -512,17 +992,21 @@ git diff --check
 test/repo_hygiene.sh
 ```
 
-Inspect the staged diff and staged file list, then make one documentation
-commit with no generated output.
+Stage only the design, plan, MCP-loop document, onboarding guide, README, and
+the reviewed MCP guidance/comment/static-assertion corrections in
+`tools/setup-mcp.sh`, `.gitignore` and `test/repo_hygiene.sh`. Inspect the
+staged diff and staged file list, then make one documentation commit with no
+generated output.
 
 ### Task 6: Draft and review the wiki write-back
 
 **Files:**
 - External modify: `Engineering-Setup.md` in a fresh clone of `https://github.com/cleveralbatraoz/unseeing.wiki.git`
+- External modify: `Engineering-Debug-Tooling-Install.md` in the same fresh wiki clone
 
 **Interfaces:**
 - Consumes: current wiki master, shipped setup scripts and verified hp-local evidence.
-- Produces: one local wiki commit describing current generic setup and the dated successful host proof; nothing is pushed.
+- Produces: one local wiki commit describing current generic setup, safe MCP install/session/uninstall behavior and the dated successful host proof; nothing is pushed.
 
 - [ ] **Step 1: Refresh a clean wiki clone**
 
@@ -535,14 +1019,18 @@ separate disposable repository, never a worktree of Unseeing.
 - [ ] **Step 2: Update only current setup behavior**
 
 Update `Engineering-Setup.md` with any generic correction proven by the run,
-the exact four proof commands and a concise 2026-08-24 hp-local evidence note.
-Point to `docs/hp-local-development-setup.md` for the host transcript. Do not
-copy stale test counts and do not rewrite unrelated mechanics pages.
+the exact four build proof commands and concise 2026-08-24/25 hp-local evidence
+notes. Update `Engineering-Debug-Tooling-Install.md` with the exact 4.1.0 pin,
+isolated-worktree install, local versus loopback-forward connection, temporary
+enable/project restore, one-client rule, generated-state ownership and guarded
+uninstall. Point to `docs/hp-local-development-setup.md` for the host ledger and
+the tracked MCP-loop document for interactive semantics. Do not copy stale test
+counts and do not rewrite unrelated mechanics pages.
 
 - [ ] **Step 3: Review and commit locally**
 
 Run `git diff --check`, request an independent read-only documentation review,
-resolve Critical/Important findings, and commit the single wiki file locally
+resolve Critical/Important findings, and commit only the two wiki files locally
 with the mandated identity and no attribution. Do not push.
 
 - [ ] **Step 4: Retain the wiki clone for the publication choice**
@@ -556,13 +1044,15 @@ publish or preserve that independent commit.
 **Files:** all changed task files; no new files.
 
 **Interfaces:**
-- Consumes: repository commits, wiki draft commit, remote build evidence and the original user request.
+- Consumes: repository commits, wiki draft commit, remote build and actual-editor/MCP evidence, and the original user request.
 - Produces: reviewed, reproducible work plus the required user-controlled integration choice.
 
 - [ ] **Step 1: Verify the requirements line by line**
 
 Re-read the spec and plan, inspect the repository and wiki diffs, compare the
-onboarding ledger to the captured before/after evidence, and verify no secret or
+onboarding ledger to the captured before/after evidence, regenerate both the
+Task-4A MCP seal and Task-5 setup seal read-only, confirm the retained MCP
+worktree and durable primary are tracked-clean, and verify no secret or
 assistant attribution appears.
 
 - [ ] **Step 2: Transfer the exact handoff tree without a Git push**
@@ -606,8 +1096,16 @@ canonical-path, owner and mode checks applied to remote temporary cleanup.
 
 - [ ] **Step 3: Run fresh final gates on the exact handoff tree**
 
-From that remote standalone clone run, with `CARGO_BUILD_JOBS=4` and
-`~/.cargo/env` sourced:
+Before running, verify the completed Task-5 digest and manifest read-only and
+prove that no `final/` path or other post-seal output exists in the persistent
+dated evidence root. Create a non-overwriting mode-`0700` `verification/`
+directory under the already guarded `$remote_parent`; it is the sole remote
+owner of Task-7 logs, statuses and manifests. Run the following from the remote
+standalone clone with `CARGO_BUILD_JOBS=4` and `~/.cargo/env` sourced. The
+implementation
+must use a status-preserving wrapper that writes and fsyncs the complete log
+and literal status before returning a command's real status; the block below
+shows the two semantic commands, not permission to omit that wrapper:
 
 ```sh
 . "$HOME/.cargo/env"
@@ -618,25 +1116,26 @@ CARGO_BUILD_JOBS=4 tools/export_linux.sh \
 
 Do not set `SKIP_EXPORT` or `SKIP_SMOKE`. Confirm both the temporary clone and
 durable `main` checkout remain tracked-clean, then regenerate and hash the
-complete raw/compressed Web and Linux artifact manifest. Copy the final logs,
-exit statuses, tree SHA and manifest into a new, non-overwriting `final/`
-child of the persistent dated evidence directory. Keep this final rerun
-evidence in the host ledger and cite it in the handoff; do not copy it back
-into the tracked guide. The guide already records Task 4's full setup proof,
-and editing it with Task 7's result would change the exact handoff tree just
-verified and create a self-referential verification loop.
-
-After the evidence is copied into the persistent host ledger, re-resolve the temporary
-verification directory, require it to match
-`/home/galchenko/.cache/unseeing-final.*`, require owner `galchenko` and mode
-`700`, and remove that one exact directory with `rm -rf -- "$resolved"`.
-Record its removal. The durable main checkout's Task 4 artifacts remain.
+complete raw/compressed Web and Linux artifact manifest. Preserve each
+command's real status and full log directly in
+`$remote_parent/verification/`; record its tree SHA and hashes in the ignored
+local SDD handoff report. Do not copy any Task-7 output into the sealed Task-2/5
+evidence root or tracked guide. The guide already records Task 4's full setup
+proof, and editing it with Task 7's result would change the exact handoff tree
+just verified and create a self-referential verification loop.
 
 - [ ] **Step 4: Request final independent code/documentation review**
 
-Give a read-only reviewer the requirements, base/head SHAs and a diff package.
-Fix every verified Critical or Important issue, rerun affected gates, and
-commit the fix separately if required.
+Give a read-only reviewer the requirements, base/head SHAs, diff package, and
+read-only access to the still-temporary exact-tree logs, statuses and artifact
+manifest. Fix every verified Critical or Important issue, rerun affected gates
+in a new non-overwriting temporary tree, and commit the fix separately if
+required. After review accepts the final run, re-resolve the one remote parent,
+require it to match `/home/galchenko/.cache/unseeing-final.*`, owner
+`galchenko`, mode `0700`, and the recorded inode, then remove that exact
+temporary parent. Record its absence verdict and retained log/manifest hashes
+in the ignored local SDD report. No second persistent remote ledger remains;
+the durable main checkout's Task 4 artifacts remain.
 
 - [ ] **Step 5: Invoke finishing-a-development-branch**
 

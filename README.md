@@ -75,6 +75,14 @@ tools/bootstrap.sh                 # macOS and Linux
 git config core.hooksPath .githooks
 ```
 
+For a fully reproducible Debian 13 workstation, including checksum-verified
+installs, build proof, security notes, rollback, and the separately scoped
+editor-only MCP proof, see the
+[hp-local development setup guide](docs/hp-local-development-setup.md).
+That dated MCP result validates the actual editor UI and addon transport; it
+does not claim a runtime-game MCP session. Native player and Web run proof are
+recorded separately in the same guide.
+
 ```powershell
 .\tools\bootstrap.cmd              # Windows
 git config core.hooksPath .githooks
