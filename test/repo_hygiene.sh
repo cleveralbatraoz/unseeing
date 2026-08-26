@@ -10,17 +10,12 @@
 # Pure POSIX sh, no network, no Godot — runs anywhere ci/pipeline.sh runs.
 set -eu
 
-# Git exports GIT_DIR into every hook it runs, and it is RELATIVE ("."), so it
-# outranks both `-C` and the cwd: inherited, every git call below addresses
-# whatever repo the caller was in rather than the one it names, and the scratch
-# `git init` and its `git add` land on a bare repo with no work tree. That is
-# how this gate broke the production deploy.
-#
-# infra/post-receive now scrubs the environment before running the pipeline,
-# which fixes the deploy path at its source. This stays anyway: a gate that
-# spawns its own repos must be correct wherever it is invoked from, not only
-# where someone remembered to clean up first. The self-checks below pin the
-# property here, so it cannot regress silently if that hook is ever rewritten.
+# Git hooks and other callers may export a relative GIT_DIR (often "."), which
+# outranks both `-C` and the cwd. Inherited, every git call below would address
+# the caller's repository rather than the one it names, and the scratch
+# `git init` and `git add` could land on a bare repository with no work tree.
+# This gate owns its boundary: it must be correct in a checkout, in CI, and in
+# the git-less source-export self-check below without trusting caller cleanup.
 # (POSIX `unset` is silent for names that were never set.)
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY \
   GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH GIT_PREFIX \
@@ -41,9 +36,9 @@ ok() { echo "hygiene: OK   $1"; }
 bad() { echo "hygiene: FAIL $1"; FAIL=1; }
 skip() { echo "hygiene: SKIP $1"; }
 
-# Half these checks interrogate the index, and the droplet's deploy work tree
-# is a `git archive | tar -x` extract with NO git metadata (infra/post-receive).
-# Run there unguarded they do not merely fail — `git ls-files` fatals to an
+# Half these checks interrogate the index, while a source archive extracted by
+# a user has no Git metadata. Run there unguarded they do not merely fail —
+# `git ls-files` fatals to an
 # EMPTY list, and an empty list satisfies "no file is too large", so the
 # invariant reports OK while checking nothing. A vacuous pass is worse than a
 # failure, so ask once and skip loudly rather than let git answer from nothing.
@@ -72,13 +67,15 @@ if git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1; then HAVE_INDEX=1; fi
 # creates for itself.
 #
 # game/addons/godot_mcp/ is the godot-mcp editor addon: a developer tool, and
-# the one tenant of game/addons/ that must never be committed. deploy.sh ships
-# the tree by `git archive` into a bare repo, so a committed addon reaches the
-# droplet checkout even though every game export preset excludes addons/*. Its
-# project.godot enablement is deliberately local too: a tracked reference to an
-# ignored per-machine addon makes fresh editors rewrite the project differently.
+# the one tenant of game/addons/ that must never be committed. Tracking it would
+# pollute every source clone and Git archive even though export presets exclude
+# addons/*. On each push to `main`, `.github/workflows/test.yml` tests the Web
+# export and uploads only `game/build/web` to GitHub Pages. Enabling exact 4.1.0
+# is worktree-local temporary state:
+# it writes a plugin row, autoload and four project settings, all of which the
+# owning session must restore rather than treating addon deletion as uninstall.
 if [ "$HAVE_INDEX" = 0 ]; then
-  skip "ignore rules (no git metadata — deploy work tree is a tar extract)"
+  skip "ignore rules (no git metadata — exported source tree)"
 else
   for p in .claude/settings.json .claude/worktrees/some-task/README.md \
            .worktrees/some-task/README.md \
@@ -118,11 +115,10 @@ else
     || bad "Superpowers metadata or gitlink violates the pin"
 fi
 
-# --- developer-only MCP tooling stays in a checkout, not a deployment ------
-# The client manifest and addon installer are useful in a developer checkout,
-# but deploy.sh ships `git archive` output.  Assert both halves of that
-# boundary: the tracked files remain available locally while export-ignore
-# removes them from the exact archive mechanism used for deployment.
+# --- developer-only MCP tooling stays out of source archives ----------------
+# The client manifest and addon installer are useful in a developer checkout.
+# Assert both halves of the `.gitattributes` contract: the tracked files remain
+# available locally while export-ignore removes them from a source archive.
 if [ "${HYGIENE_NESTED:-0}" = 1 ]; then
   skip "developer-only MCP archive boundary (nested scratch tree carries no MCP tooling)"
 elif [ "$HAVE_INDEX" = 0 ]; then
@@ -138,8 +134,58 @@ else
     bad "developer checkout must retain .mcp.json and executable tools/setup-mcp.sh"
   fi
 
+  if [ "$(sed -n '2p' "$DIR/tools/setup-mcp.sh")" = \
+    '# Installs the godot-mcp editor addon, so any MCP-capable development client' ]; then
+    ok "setup-mcp describes an MCP-capable client without vendor coupling"
+  else
+    bad "setup-mcp must describe an MCP-capable client without vendor coupling"
+  fi
+
+  # A worktree-local ignored addon and tracked project preimage make Enable a
+  # per-worktree session step. "Once per machine" strands later worktrees with
+  # neither addon nor a safe restoration boundary.
+  if grep -Fqx \
+    'echo "setup-mcp: addon installed — one manual Enable step per worktree session:"' \
+    "$DIR/tools/setup-mcp.sh"; then
+    ok "setup-mcp names the per-worktree session Enable boundary"
+  else
+    bad "setup-mcp must not describe Enable as a once-per-machine step"
+  fi
+  if grep -Fqx \
+    'echo "setup-mcp:   Disable, close the editor, and verify only the autoload plus four settings remain"' \
+    "$DIR/tools/setup-mcp.sh" \
+    && grep -Fqx \
+    'echo "setup-mcp:   then restore captured clean project.godot before commit"' \
+    "$DIR/tools/setup-mcp.sh"; then
+    ok "setup-mcp names the exact tracked-project restoration boundary"
+  else
+    bad "setup-mcp must require tracked project restoration after the session"
+  fi
+
+  MCP_PIN_TMP="$(mktemp -d)"
+  mkdir "$MCP_PIN_TMP/bin"
+  printf '%s\n' '#!/bin/sh' "printf '%s\\n' v20.19.2" > "$MCP_PIN_TMP/bin/node"
+  printf '%s\n' '#!/bin/sh' \
+    'printf '\''%s\n'\'' "$@" > "$UNSEEING_MCP_NPX_CAPTURE"' > "$MCP_PIN_TMP/bin/npx"
+  chmod 700 "$MCP_PIN_TMP/bin/node" "$MCP_PIN_TMP/bin/npx"
+  MCP_PIN_STATUS=0
+  PATH="$MCP_PIN_TMP/bin:/usr/bin:/bin" \
+    GODOT_MCP_VERSION=9.9.9 \
+    UNSEEING_MCP_NPX_CAPTURE="$MCP_PIN_TMP/npx.args" \
+    sh "$DIR/tools/setup-mcp.sh" > "$MCP_PIN_TMP/output" 2>&1 \
+    || MCP_PIN_STATUS=$?
+  if [ "$MCP_PIN_STATUS" -eq 2 ] \
+    && grep -Fq 'GODOT_MCP_VERSION overrides are unsupported' "$MCP_PIN_TMP/output" \
+    && [ ! -e "$MCP_PIN_TMP/npx.args" ] \
+    && grep -Fq '"args": ["-y", "@satelliteoflove/godot-mcp@4.1.0"]' "$DIR/.mcp.json"; then
+    ok "setup-mcp rejects version overrides before npx and stays lockstep-pinned at 4.1.0"
+  else
+    bad "setup-mcp must reject version overrides before npx and stay lockstep-pinned at 4.1.0"
+  fi
+  rm -rf "$MCP_PIN_TMP"
+
   # Read the candidate .gitattributes from the working tree so the fix can be
-  # proved before commit; after commit this is identical to deploy's archive.
+  # proved before commit; after commit this is the repository archive contract.
   MCP_ARCHIVE_PATHS="$(git -C "$DIR" archive --worktree-attributes HEAD | tar -tf - \
     | grep -E '^(\.mcp\.json|tools/setup-mcp\.sh)$' || true)"
   if [ -z "$MCP_ARCHIVE_PATHS" ]; then
@@ -150,11 +196,11 @@ else
   fi
 fi
 
-# --- developer-agent tooling stays in a checkout, not a deployment ---------
+# --- developer-agent tooling stays in a checkout, out of source archives ---
 # The setup entry points and their own behavior test need the pinned submodule
-# and host CLIs. The deployment keeps only the small context gate and the test
-# that proves that gate, so production can establish the omission explicitly
-# without executing or depending on developer tooling.
+# and host CLIs. A source archive keeps only the small context gate and the
+# test that proves that boundary, without executing or depending on developer
+# tooling. The Pages workflow publishes only `game/build/web` separately.
 if [ "${HYGIENE_NESTED:-0}" = 1 ]; then
   skip "developer-agent archive boundary (nested scratch tree carries no agent tooling)"
 elif [ "$HAVE_INDEX" = 0 ]; then
@@ -200,7 +246,7 @@ else
     if printf '%s\n' "$AGENT_ARCHIVE" | grep -qx "$required"; then
       ok "git archive retains $required"
     else
-      bad "git archive lost required deployment gate $required"
+      bad "git archive lost required source-archive gate $required"
     fi
   done
 fi
@@ -221,7 +267,7 @@ else
   if [ -z "$mcp" ]; then
     ok "game/addons/godot_mcp/ is not tracked"
   else
-    bad "godot-mcp addon is TRACKED — it would pollute the repository and droplet checkout:"
+    bad "godot-mcp addon is TRACKED — it would pollute the repository and source archives:"
     echo "$mcp" | sed 's/^/hygiene:      /'
   fi
 fi
@@ -241,9 +287,9 @@ RES_PROBE="$DIR/game/tests/probe/restore_probe.gd"
 canon_block() { # canon_block <file>
   sed -n '/# canonicalize-mirror: BEGIN/,/# canonicalize-mirror: END/p' "$1" | sed '1d;$d'
 }
-# The tar-extract self-check further below copies only test/ and .githooks/
-# into its scratch tree, never game/ — a real deploy work tree (and every
-# other invocation of this script) has the full tree, so a missing probe
+# The source-export self-check further below copies only test/ and .githooks/
+# into its scratch tree, never game/. Every normal checkout invocation has the
+# full tree, so a missing probe
 # file means something different in each case. HYGIENE_NESTED is the same
 # signal the self-check section already uses to stop its own recursion.
 if [ "${HYGIENE_NESTED:-0}" = 1 ]; then
@@ -418,29 +464,28 @@ else
   fi
 fi
 
-# --- the tar-extract contract -----------------------------------------------
-# This gate runs FIRST in ci/pipeline.sh, so if it cannot survive a tree with
-# no git metadata it takes the whole production deploy down with it. Prove that
-# here rather than discover it on the droplet: re-run self against an extract
-# of HEAD, exactly as infra/post-receive builds its work tree.
+# --- the git-less source-export contract ------------------------------------
+# This gate runs first in ci/pipeline.sh and is also retained in source
+# archives. Prove that its index-dependent checks skip loudly when Git metadata
+# is absent by rerunning it against a deliberately minimal extract.
 # HYGIENE_NESTED stops the recursion at one level.
 if [ "${HYGIENE_NESTED:-0}" = 1 ]; then
   :
 elif [ "$HAVE_INDEX" = 0 ]; then
-  skip "tar-extract self-check (already running without an index)"
+  skip "git-less source-export self-check (already running without an index)"
 else
   # Copied from the WORKING TREE, not `git archive HEAD`: the contract must be
   # provable for the code in hand, or a fix for this very bug could never go
   # green before it was committed. -p keeps the hook's exec bit, which the
-  # nested run checks. What the droplet gets differs only by uncommitted work.
+  # nested run checks. A committed source archive differs only by uncommitted
+  # working-tree changes.
   X="$(mktemp -d)"
   mkdir -p "$X/test" "$X/.githooks"
   cp -p "$DIR/test/repo_hygiene.sh" "$X/test/repo_hygiene.sh"
   cp -p "$DIR/.githooks/pre-commit" "$X/.githooks/pre-commit"
 
-  # Two environments, because the first fix only covered the first one. A bare
-  # extract is what the work tree LOOKS like; GIT_DIR=. is what the hook that
-  # builds it actually exports. Only the second reproduces the deploy failure.
+  # Exercise both a genuinely absent GIT_DIR and a poisoned inherited value;
+  # either must lead to the same explicit git-less behavior.
   extract_probe() { # extract_probe <label> [GIT_DIR value]
     lbl="$1"
     egot=0
@@ -462,7 +507,7 @@ else
     if [ "$egot" -eq 0 ]; then
       ok "$lbl"
     else
-      bad "$lbl — this breaks the production deploy:"
+      bad "$lbl — this breaks the git-less source-export contract:"
       sed 's/^/hygiene:      /' "$X/.out"
     fi
     # A vacuous pass is the failure mode that hides here, so demand the skips.
@@ -474,8 +519,8 @@ else
     fi
   }
 
-  extract_probe "survives a git-less tar extract (the droplet's work tree)"
-  extract_probe "survives GIT_DIR inherited from the post-receive hook" .
+  extract_probe "survives a git-less source archive"
+  extract_probe "survives an inherited GIT_DIR value" .
   rm -rf "$X"
 fi
 

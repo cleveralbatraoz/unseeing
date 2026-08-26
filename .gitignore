@@ -22,12 +22,13 @@ game/override.cfg
 # The godot-mcp editor addon — a DEVELOPER TOOL, never a shipped dependency,
 # and the one thing under game/addons/ that must never be committed.
 #
-# deploy.sh ships the tracked tree by `git archive` into the droplet checkout.
-# Every export preset excludes addons/*, so tracking this Node-backed editor
-# tool would pollute the repository and server checkout for no shipped benefit.
-# Its enabled-plugin row is deliberately local too: a tracked reference to an
-# ignored per-machine addon leaves fresh clones with a broken plugin row and
-# makes Godot rewrite project.godot according to local install state.
+# Main's tracked tree is cloned by developers; `.github/workflows/test.yml`
+# tests and publishes only its Web export to GitHub Pages. Every export preset
+# excludes `addons/*`, but tracking this Node-backed editor tool would still
+# pollute every source clone and Git archive for no shipped benefit. Its session
+# state is local too:
+# enabling 4.1.0 writes a plugin row, an autoload, and four settings to tracked
+# project.godot, so each worktree must restore that exact pre-session file.
 #
 # Install the pinned version with tools/setup-mcp.sh and leave it untracked.
 # test/repo_hygiene.sh pins both halves of that: nothing under the path is
