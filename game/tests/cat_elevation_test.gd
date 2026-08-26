@@ -203,6 +203,16 @@ func test_cat_walks_off_a_platform_with_fixed_trajectory() -> void:
 	assert_bool(departed).is_true()
 	var vx := cat.velocity.x
 	var vz := cat.velocity.z
+	# Task 7 cross-check: the observer's own motion dictionary — read
+	# through the Rust MotionState/FFI door rather than the CharacterBody3D
+	# velocity the loop below checks directly — agrees this is a genuine,
+	# unsupported departure, holding the SAME frozen planar velocity the
+	# loop is about to prove `cat.velocity.x/z` keep for the next 15 ticks.
+	var motion: Dictionary = ELEVATION_FIXTURE.cat_motion(self, cat, cat.pulses as Pulses, 0.0)
+	assert_str(motion["phase"]).is_equal("airborne")
+	assert_vector(motion["actual_velocity"]).is_equal(cat.velocity)
+	assert_bool(motion["support"] == null).is_true()
+	assert_vector(motion["held_planar_velocity"]).is_equal(Vector3(vx, 0.0, vz))
 	for _tick: int in 15:
 		await get_tree().physics_frame
 		assert_int(cat.collision_layer).is_equal(4)
@@ -705,6 +715,13 @@ func test_cat_landing_caps_gain_and_range() -> void:
 	assert_float(dat.y).is_equal(2.5)
 	assert_float(dat.z).is_equal(4.0)
 	assert_float(fmod(dat.w, 10.0) / 9.0).is_equal_approx(0.60, 1e-6)
+	# Task 7 cross-check: the hard drop's real impact speed, read from the
+	# observer's own dictionary — a value the capped gain/range above
+	# never surfaces (they only prove the CLAMPED voice, not the fall).
+	var motion: Dictionary = ELEVATION_FIXTURE.cat_motion(self, cat, pulses, 0.1)
+	assert_bool(motion["last_landing"] != null).is_true()
+	var landing: Dictionary = motion["last_landing"]
+	assert_float(landing["impact_speed"]).is_greater(5.0)
 
 
 ## Zero authored landing gain silences every landing completely.

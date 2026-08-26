@@ -1104,3 +1104,62 @@ func test_zero_player_landing_range_consumes_no_pulse_or_echo() -> void:
 	assert_bool(settled).is_true()
 	var motion: Dictionary = game.observer.snapshot(game.now)["hero"]["motion"]
 	assert_bool(motion["last_landing"] != null).is_true()
+
+
+## Task 7's "capture/restore future" case: the observer's motion surface
+## reads the player's LIVE engine transform/velocity plus its restored
+## private `MotionState`, never a value the capture format itself stored —
+## so a restore must reconstruct enough of the real world for that live
+## read to come out right again, not merely round-trip its own dictionary.
+## This drifts the live world to a DIFFERENT, observably airborne phase
+## after capturing a genuine landing, then restores: a restore that
+## silently dropped the accepted support or the landing event, or restored
+## the wrong actor, would leave the live world in the drifted airborne
+## phase this test already proved distinct from the captured one.
+func test_a_restored_player_landing_reports_the_captured_motion() -> void:
+	var game: UnseeingGame = auto_free(WORLD_FIXTURE.game())
+	add_child(game)
+	await get_tree().process_frame
+	await get_tree().physics_frame
+	var verdict: Dictionary = game.player.call("relocate", Vector3(2.0, 5.0, 6.0))
+	assert_dict(verdict).is_equal({"relocated": true})
+	var settled: bool = await ELEVATION_FIXTURE.poll_physics(
+		get_tree(),
+		func() -> bool:
+			var m: Dictionary = game.observer.snapshot(game.now)["hero"]["motion"]
+			return m["phase"] == "controlled" and m["support"] != null,
+		240
+	)
+	assert_bool(settled).is_true()
+	var captured_motion: Dictionary = game.observer.snapshot(game.now)["hero"]["motion"]
+	assert_bool(captured_motion["last_landing"] != null).is_true()
+	var captured_landing: Dictionary = captured_motion["last_landing"]
+
+	var blob: Dictionary = game.observer.capture(game.now, game.capture_env())
+	assert_bool(blob.has("unavailable")).is_false()
+	var hash_result: Dictionary = game.observer.canonical_hash_of(blob)
+	assert_str(str(hash_result.get("unavailable", ""))).is_empty()
+	blob["hash"] = hash_result["hash"]
+
+	# Drift the live world away from the captured instant: the SAME
+	# relocate target that produced the landing above, called again, sends
+	# the player back into open air — an observably different phase this
+	# test confirms before the restore below overwrites it.
+	game.player.call("relocate", Vector3(2.0, 5.0, 6.0))
+	for _tick: int in 3:
+		await get_tree().physics_frame
+	var drifted_motion: Dictionary = game.observer.snapshot(game.now)["hero"]["motion"]
+	assert_str(drifted_motion["phase"]).is_equal("airborne")
+
+	var restore_verdict: Dictionary = game.restore_blob(blob)
+	if str(restore_verdict.get("unavailable", "")) != "":
+		fail("restore refused: %s" % restore_verdict["unavailable"])
+		return
+
+	var restored_motion: Dictionary = game.observer.snapshot(game.now)["hero"]["motion"]
+	assert_str(restored_motion["phase"]).is_equal("controlled")
+	assert_bool(restored_motion["support"] != null).is_true()
+	assert_bool(restored_motion["last_landing"] != null).is_true()
+	var restored_landing: Dictionary = restored_motion["last_landing"]
+	assert_float(restored_landing["impact_speed"]).is_equal(captured_landing["impact_speed"])
+	assert_vector(restored_landing["point"]).is_equal(captured_landing["point"])
