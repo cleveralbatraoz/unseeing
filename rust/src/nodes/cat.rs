@@ -18,15 +18,24 @@
 //! for the silhouette. The clock is handed, never poked: the composition
 //! root will advance `tick(now)` like it does the player's.
 
+use std::fmt;
+use std::num::NonZeroU64;
+
+use godot::classes::character_body_3d::{MotionMode, PlatformOnLeave};
 use godot::classes::{
     ArrayMesh, CapsuleShape3D, CharacterBody3D, CollisionShape3D, Engine, ICharacterBody3D,
-    Material, MeshInstance3D,
+    Material, MeshInstance3D, PhysicsServer3D, PhysicsTestMotionParameters3D,
+    PhysicsTestMotionResult3D,
 };
 use godot::prelude::*;
 
 use super::solid::clear_limbs;
+use super::support::{
+    FLOOR_MAX_ANGLE_RAD, FLOOR_SNAP_M, MAX_SLIDES, MOTION_RESULT_MAX_CONTACTS, PLATFORM_LAYERS,
+    SAFE_MARGIN_M, SNAP_PROBE_MAX_CONTACTS, collision_pair, is_actor_layer,
+};
 use crate::cat_body::{self, CatPose, PreparedCatPose, PreparedTail, Tail};
-use crate::cat_brain::{CatBrain, PreparedCatBrain, RoamRect};
+use crate::cat_brain::{CatBrain, Mood, PreparedCatBrain, RoamRect};
 use crate::cat_gait::{self, CatGait, PreparedCatGait};
 use crate::limbs::{LimbBuf, sphere, sphere_lod, tube, tube_res};
 use crate::render::{self, Role};
@@ -35,9 +44,12 @@ use crate::reproduce::blob::CatCapture;
 use crate::sound_source::{Cadence, PreparedCadence};
 use crate::support_motion::{
     ActorPosition, ActorTransform, ActorVelocity, ActorYaw, FiniteMeasure, FiniteRotation,
-    GodotRotation, MotionState, MotionValueError, PosePoint, StepDuration,
+    GodotRotation, LandingEvent, MotionConfigError, MotionConfigField, MotionOutcome, MotionPhase,
+    MotionRestoreError, MotionState, MotionValueError, PlanarVelocity, PosePoint, QueuedWaveGate,
+    StepDuration, SupportContact, SupportMotionConfig, landing_voice, prepare, reconcile,
+    validate_restore,
 };
-use crate::temporal::{PreparedTime, prepare_time};
+use crate::temporal::PreparedTime;
 
 /// Collider radius — small enough to slip between furniture legs.
 const COL_RADIUS: f32 = 0.11;
@@ -45,6 +57,10 @@ const COL_RADIUS: f32 = 0.11;
 /// Collider height; its bottom floats a hair above the floor, like the
 /// player's capsule — the flat map means nothing ever presses down.
 const COL_HEIGHT: f32 = 0.34;
+
+/// Collider centre height above the cat's own support datum — the capsule's
+/// bottom meets the floor exactly, with no `+0.02` fudge above it.
+const COLLIDER_CENTER_Y: f32 = COL_HEIGHT * 0.5;
 
 /// The sit blend's ease rate, 1/s — a cat settles, it does not snap.
 const SIT_EASE: f64 = 3.0;
@@ -98,6 +114,65 @@ pub struct WaveCat {
     #[export(range = (1.0, 30.0, 0.5, suffix = " m"))]
     #[init(val = Vector2::new(6.0, 6.0))]
     roam_size: Vector2,
+    /// Downward acceleration in metres per second squared, applied only
+    /// while this cat is airborne. Authored per cat so two cats may fall
+    /// differently; staged into the active configuration only once the
+    /// complete authored set of six motion fields is mutually valid.
+    #[export(range = (0.1, 30.0, 0.1, suffix = " m/s²"))]
+    #[var(get = get_fall_acceleration, set = set_fall_acceleration)]
+    #[init(val = 9.8)]
+    fall_acceleration: f64,
+    /// Maximum downward speed in metres per second this cat may reach
+    /// while falling. Authored per cat; staged into the active
+    /// configuration only once the complete authored set is mutually
+    /// valid.
+    #[export(range = (0.5, 50.0, 0.5, suffix = " m/s"))]
+    #[var(get = get_terminal_fall_speed, set = set_terminal_fall_speed)]
+    #[init(val = 20.0)]
+    terminal_fall_speed: f64,
+    /// Landing speed in metres per second at or below which this cat's
+    /// landing makes no sound. It must remain below Landing Full Speed;
+    /// either threshold may be edited first — an out-of-order pair stages
+    /// this scalar, keeps the prior active configuration live, and raises
+    /// this cat's editor warning until the complementary edit repairs it.
+    #[export(range = (0.0, 10.0, 0.1, suffix = " m/s"))]
+    #[var(get = get_landing_silent_speed, set = set_landing_silent_speed)]
+    #[init(val = 1.5)]
+    landing_silent_speed: f64,
+    /// Landing speed in metres per second at which this cat's landing
+    /// voice reaches full strength. It must exceed Landing Silent Speed;
+    /// either threshold may be edited first — an out-of-order pair
+    /// stages this scalar, keeps the prior active configuration live,
+    /// and raises this cat's editor warning until the complementary
+    /// edit repairs it.
+    #[export(range = (0.1, 20.0, 0.1, suffix = " m/s"))]
+    #[var(get = get_landing_full_speed, set = set_landing_full_speed)]
+    #[init(val = 4.0)]
+    landing_full_speed: f64,
+    /// Maximum authored landing-wave gain for this cat, unitless. Staged
+    /// into the active configuration only once the complete authored set
+    /// of six motion fields is mutually valid.
+    #[export(range = (0.0, 1.0, 0.01))]
+    #[var(get = get_landing_max_gain, set = set_landing_max_gain)]
+    #[init(val = 0.60)]
+    landing_max_gain: f64,
+    /// Maximum authored landing-wave radius in metres for this cat. Staged
+    /// into the active configuration only once the complete authored set
+    /// of six motion fields is mutually valid.
+    #[export(range = (0.0, 10.0, 0.1, suffix = " m"))]
+    #[var(get = get_landing_max_range, set = set_landing_max_range)]
+    #[init(val = 2.5)]
+    landing_max_range: f64,
+    /// The always-valid active motion configuration this cat's physics
+    /// tick actually uses — distinct from the six authored scalars above,
+    /// which may transiently disagree with each other (an out-of-order
+    /// threshold pair) without ever installing an invalid active config.
+    #[init(val = SupportMotionConfig::CAT_DEFAULT)]
+    motion_config: SupportMotionConfig,
+    /// The one editor warning this node can raise on itself: an
+    /// out-of-order landing threshold pair, naming both. `None` when the
+    /// six authored scalars last agreed.
+    threshold_warning: Option<String>,
     #[init(val = ArrayMesh::new_gd())]
     mesh: Gd<ArrayMesh>,
     /// The frame's raw triangle geometry — cleared and refilled every
@@ -127,7 +202,11 @@ pub struct WaveCat {
     mesh_dirty: bool,
     #[init(val = MotionState::initial())]
     motion_state: MotionState,
-    support_collider_id: Option<i64>,
+    support_collider_id: Option<u64>,
+    #[init(val = PhysicsTestMotionParameters3D::new_gd())]
+    snap_params: Gd<PhysicsTestMotionParameters3D>,
+    #[init(val = PhysicsTestMotionResult3D::new_gd())]
+    snap_result: Gd<PhysicsTestMotionResult3D>,
     base: Base<CharacterBody3D>,
 }
 
@@ -157,6 +236,10 @@ fn prepare_cat_ready(
 /// The narrow physical capability used by the controlled cat tick. The
 /// production adapter and the deterministic fault-injection fake execute the
 /// same coordinator; no test-only copy of the boundary transaction exists.
+/// It carries only the raw physical transaction (transform/rotation/
+/// velocity, one move, and the post-move support scan) — brain, gait, tail
+/// and wave emission are pure values the tick and its caller carry
+/// alongside it, never behind this port.
 trait CatMotionPort {
     fn read_global_transform(&mut self) -> Transform3D;
     fn read_global_rotation(&mut self) -> Vector3;
@@ -164,9 +247,21 @@ trait CatMotionPort {
     fn write_global_rotation(&mut self, rotation: Vector3);
     fn write_velocity(&mut self, velocity: Vector3);
     fn move_and_slide_once(&mut self);
+    fn is_on_floor(&mut self) -> bool;
+    fn read_slide_collision_count(&mut self) -> i32;
+    fn read_slide_contact_count(&mut self, slide: i32) -> Option<i32>;
+    fn read_slide_contact_geometry(
+        &mut self,
+        slide: i32,
+        contact: i32,
+    ) -> Option<(Vector3, Vector3)>;
+    fn read_slide_collider(&mut self, slide: i32, contact: i32) -> Option<(bool, u32, u64)>;
+    fn probe_snap(&mut self, post_transform: Transform3D) -> bool;
+    fn read_probe_contact_count(&mut self) -> i32;
+    fn read_probe_contact_geometry(&mut self, contact: i32) -> (Vector3, Vector3);
+    fn read_probe_collider(&mut self, contact: i32) -> (bool, u32, u64);
     fn write_global_transform(&mut self, transform: Transform3D);
     fn disable_processing(&mut self);
-    fn emit_cat_wave(&mut self, at: Vector3, range: f64, gain: f64, now: f64);
 }
 
 impl CatMotionPort for WaveCat {
@@ -194,6 +289,99 @@ impl CatMotionPort for WaveCat {
         self.base_mut().move_and_slide();
     }
 
+    fn is_on_floor(&mut self) -> bool {
+        self.base().is_on_floor()
+    }
+
+    fn read_slide_collision_count(&mut self) -> i32 {
+        self.base().get_slide_collision_count()
+    }
+
+    fn read_slide_contact_count(&mut self, slide: i32) -> Option<i32> {
+        self.base()
+            .get_slide_collision(slide)
+            .map(|collision| collision.get_collision_count())
+    }
+
+    fn read_slide_contact_geometry(
+        &mut self,
+        slide: i32,
+        contact: i32,
+    ) -> Option<(Vector3, Vector3)> {
+        self.base().get_slide_collision(slide).map(|collision| {
+            (
+                collision.get_position_ex().collision_index(contact).done(),
+                collision.get_normal_ex().collision_index(contact).done(),
+            )
+        })
+    }
+
+    fn read_slide_collider(&mut self, slide: i32, contact: i32) -> Option<(bool, u32, u64)> {
+        self.base().get_slide_collision(slide).map(|collision| {
+            let rid = collision
+                .get_collider_rid_ex()
+                .collision_index(contact)
+                .done();
+            let valid = rid.is_valid();
+            let layer = if valid {
+                PhysicsServer3D::singleton().body_get_collision_layer(rid)
+            } else {
+                0
+            };
+            let id = collision
+                .get_collider_id_ex()
+                .collision_index(contact)
+                .done();
+            (valid, layer, id)
+        })
+    }
+
+    fn probe_snap(&mut self, post_transform: Transform3D) -> bool {
+        self.snap_params.set_from(post_transform);
+        let body = self.base().get_rid();
+        PhysicsServer3D::singleton()
+            .body_test_motion_ex(body, &self.snap_params)
+            .result(&self.snap_result)
+            .done()
+    }
+
+    fn read_probe_contact_count(&mut self) -> i32 {
+        self.snap_result.get_collision_count()
+    }
+
+    fn read_probe_contact_geometry(&mut self, contact: i32) -> (Vector3, Vector3) {
+        (
+            self.snap_result
+                .get_collision_point_ex()
+                .collision_index(contact)
+                .done(),
+            self.snap_result
+                .get_collision_normal_ex()
+                .collision_index(contact)
+                .done(),
+        )
+    }
+
+    fn read_probe_collider(&mut self, contact: i32) -> (bool, u32, u64) {
+        let rid = self
+            .snap_result
+            .get_collider_rid_ex()
+            .collision_index(contact)
+            .done();
+        let valid = rid.is_valid();
+        let layer = if valid {
+            PhysicsServer3D::singleton().body_get_collision_layer(rid)
+        } else {
+            0
+        };
+        let id = self
+            .snap_result
+            .get_collider_id_ex()
+            .collision_index(contact)
+            .done();
+        (valid, layer, id)
+    }
+
     fn write_global_transform(&mut self, transform: Transform3D) {
         self.base_mut().set_global_transform(transform);
     }
@@ -201,10 +389,6 @@ impl CatMotionPort for WaveCat {
     fn disable_processing(&mut self) {
         self.base_mut().set_physics_process(false);
         self.base_mut().set_process(false);
-    }
-
-    fn emit_cat_wave(&mut self, at: Vector3, range: f64, gain: f64, now: f64) {
-        self.emit_wave(at, range, gain, now);
     }
 }
 
@@ -217,197 +401,498 @@ struct CatControlledState {
     sit: f64,
     sim_t: f64,
     last_pos: Vector3,
+    motion: MotionState,
 }
 
 struct CatTickSuccess {
     state: CatControlledState,
     pose: CatPose,
     frame: cat_gait::GaitFrame,
+    phase_before: MotionPhase,
+    landing: Option<LandingEvent>,
+    support_collider_id: Option<u64>,
 }
 
-#[derive(Debug)]
+/// Why one cat-owned support scan refused, before any commit. Mirrors the
+/// player's own [`super::player`] ledger scan one to one — same bounded
+/// ledger, same conditional cached snap fallback, same refusal shapes —
+/// but is a cat-owned copy: the cat proves its own port wiring and scratch
+/// ownership rather than resting on the player adapter's evidence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CatSupportReadError {
+    InvalidOuterCount(i32),
+    MissingSlide(i32),
+    InvalidInnerCount { slide: i32, count: i32 },
+    InvalidOrdinaryRid { slide: i32, contact: i32 },
+    InvalidProbeCount(i32),
+    InvalidProbeRid(i32),
+    InvalidValue(MotionValueError),
+}
+
+impl From<MotionValueError> for CatSupportReadError {
+    fn from(error: MotionValueError) -> Self {
+        Self::InvalidValue(error)
+    }
+}
+
+impl fmt::Display for CatSupportReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidOuterCount(count) => {
+                write!(
+                    formatter,
+                    "slide collision count {count} is outside 0..={MAX_SLIDES}"
+                )
+            }
+            Self::MissingSlide(slide) => {
+                write!(formatter, "slide collision {slide} is missing")
+            }
+            Self::InvalidInnerCount { slide, count } => write!(
+                formatter,
+                "slide collision {slide} contact count {count} is outside 1..={MOTION_RESULT_MAX_CONTACTS}"
+            ),
+            Self::InvalidOrdinaryRid { slide, contact } => write!(
+                formatter,
+                "slide collision {slide} contact {contact} has an invalid collider RID"
+            ),
+            Self::InvalidProbeCount(count) => write!(
+                formatter,
+                "snap probe contact count {count} is outside 1..={SNAP_PROBE_MAX_CONTACTS}"
+            ),
+            Self::InvalidProbeRid(contact) => {
+                write!(
+                    formatter,
+                    "snap probe contact {contact} has an invalid collider RID"
+                )
+            }
+            Self::InvalidValue(error) => error.fmt(formatter),
+        }
+    }
+}
+
+fn cat_floor_angle_accepts(contact: SupportContact) -> bool {
+    let normal = contact.normal();
+    let x = f64::from(normal.x);
+    let y = f64::from(normal.y);
+    let z = f64::from(normal.z);
+    let length = (x * x + y * y + z * z).sqrt();
+    let cosine = (y / length).clamp(-1.0, 1.0);
+    cosine.acos() <= f64::from(FLOOR_MAX_ANGLE_RAD)
+}
+
+/// The cat-owned support door: bounded ordinary-ledger scan plus a
+/// conditional cached snap-fact probe, run only when `is_on_floor()`
+/// reports a floor with no floorish contact in the public ledger. Every
+/// indexed point/normal and every floor collider fact is validated before
+/// the first retained world candidate is returned; an actor-only ordinary
+/// floor yields no support and no fallback probe.
+fn read_cat_post_move_support<P: CatMotionPort>(
+    port: &mut P,
+    post_transform: ActorTransform,
+) -> Result<(Option<SupportContact>, Option<u64>), CatSupportReadError> {
+    if !port.is_on_floor() {
+        return Ok((None, None));
+    }
+
+    let slide_count = port.read_slide_collision_count();
+    if !(0..=MAX_SLIDES).contains(&slide_count) {
+        return Err(CatSupportReadError::InvalidOuterCount(slide_count));
+    }
+    let mut candidate = None;
+    let mut saw_floorish = false;
+    for slide in 0..slide_count {
+        let contact_count = port
+            .read_slide_contact_count(slide)
+            .ok_or(CatSupportReadError::MissingSlide(slide))?;
+        if !(1..=MOTION_RESULT_MAX_CONTACTS).contains(&contact_count) {
+            return Err(CatSupportReadError::InvalidInnerCount {
+                slide,
+                count: contact_count,
+            });
+        }
+        for contact_index in 0..contact_count {
+            let (point, normal) = port
+                .read_slide_contact_geometry(slide, contact_index)
+                .ok_or(CatSupportReadError::MissingSlide(slide))?;
+            let contact = SupportContact::try_new(point, normal)?;
+            if !cat_floor_angle_accepts(contact) {
+                continue;
+            }
+            saw_floorish = true;
+            let (collider_rid_valid, collider_layer, collider_id) = port
+                .read_slide_collider(slide, contact_index)
+                .ok_or(CatSupportReadError::MissingSlide(slide))?;
+            if !collider_rid_valid {
+                return Err(CatSupportReadError::InvalidOrdinaryRid {
+                    slide,
+                    contact: contact_index,
+                });
+            }
+            if !is_actor_layer(collider_layer) && candidate.is_none() {
+                candidate = Some((contact, NonZeroU64::new(collider_id).map(NonZeroU64::get)));
+            }
+        }
+    }
+    if let Some((support, collider_id)) = candidate {
+        return Ok((Some(support), collider_id));
+    }
+    if saw_floorish {
+        return Ok((None, None));
+    }
+
+    if !port.probe_snap(post_transform.world()) {
+        return Ok((None, None));
+    }
+    let contact_count = port.read_probe_contact_count();
+    if !(1..=SNAP_PROBE_MAX_CONTACTS).contains(&contact_count) {
+        return Err(CatSupportReadError::InvalidProbeCount(contact_count));
+    }
+    let mut candidate = None;
+    for contact_index in 0..contact_count {
+        let (point, normal) = port.read_probe_contact_geometry(contact_index);
+        let contact = SupportContact::try_new(point, normal)?;
+        if !cat_floor_angle_accepts(contact) {
+            continue;
+        }
+        let (collider_rid_valid, collider_layer, collider_id) =
+            port.read_probe_collider(contact_index);
+        if !collider_rid_valid {
+            return Err(CatSupportReadError::InvalidProbeRid(contact_index));
+        }
+        if !is_actor_layer(collider_layer) && candidate.is_none() {
+            candidate = Some((contact, NonZeroU64::new(collider_id).map(NonZeroU64::get)));
+        }
+    }
+    Ok(candidate.map_or((None, None), |(support, collider_id)| {
+        (Some(support), collider_id)
+    }))
+}
+
+/// The one place a cat's brain and yaw may or may not advance. Only
+/// [`CatControlPolicy::AdvanceBrain`] may call [`CatBrain::advance`] and
+/// produce a fresh yaw command; [`CatControlPolicy::Frozen`] always keeps
+/// the cat's planar velocity at zero and its yaw command at `None` — no
+/// airborne path may invoke a yaw setter, even to rewrite the same value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CatControlPolicy {
+    AdvanceBrain,
+    Frozen { yaw: ActorYaw, sitting: bool },
+}
+
+fn cat_control_policy(phase: MotionPhase, current_yaw: ActorYaw, mood: Mood) -> CatControlPolicy {
+    match phase {
+        MotionPhase::Controlled => CatControlPolicy::AdvanceBrain,
+        MotionPhase::Airborne { .. } => CatControlPolicy::Frozen {
+            yaw: current_yaw,
+            sitting: matches!(mood, Mood::Sit),
+        },
+    }
+}
+
+/// Why one controlled cat tick refused — a physical value error at any
+/// stage, or a poisoned/malformed post-move support scan.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CatTickReason {
+    Motion(MotionValueError),
+    Support(CatSupportReadError),
+}
+
+impl fmt::Display for CatTickReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Motion(error) => error.fmt(formatter),
+            Self::Support(error) => error.fmt(formatter),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct CatTickFault {
     phase: &'static str,
-    error: MotionValueError,
+    reason: CatTickReason,
 }
 
-fn refuse_before_move<P: CatMotionPort>(
+fn refuse_cat_motion<P: CatMotionPort>(
     port: &mut P,
     phase: &'static str,
-    error: MotionValueError,
+    reason: CatTickReason,
 ) -> CatTickFault {
     port.disable_processing();
-    CatTickFault { phase, error }
+    CatTickFault { phase, reason }
 }
 
-fn rollback_after_move<P: CatMotionPort>(
+fn rollback_cat_motion<P: CatMotionPort>(
     port: &mut P,
     saved_transform: Transform3D,
     phase: &'static str,
-    error: MotionValueError,
+    reason: CatTickReason,
 ) -> CatTickFault {
     // Order is part of the transaction: reinstate the complete body pose,
     // stop every commanded lane, then make the refusal inert.
     port.write_global_transform(saved_transform);
     port.write_velocity(Vector3::ZERO);
     port.disable_processing();
-    CatTickFault { phase, error }
+    CatTickFault { phase, reason }
 }
 
+/// One controlled cat's physics tick — the same two-phase support law as
+/// the player's, adapted to a mind that must freeze whole in the air.
+/// `prior` is read by value only; `self`'s own components are never
+/// mutated until the caller commits a returned success, so a refusal at
+/// any stage leaves brain, gait, tail and motion state exactly as they
+/// were before this call.
 fn controlled_cat_tick<P: CatMotionPort>(
     port: &mut P,
     prior: &CatControlledState,
     raw_dt: f64,
-    now: f64,
+    config: SupportMotionConfig,
 ) -> Result<CatTickSuccess, CatTickFault> {
+    let duration = StepDuration::from_raw(raw_dt);
     let saved_transform = port.read_global_transform();
-    let pre_transform = ActorTransform::try_new(saved_transform)
-        .map_err(|error| refuse_before_move(port, "physics transform", error))?;
-    let pre_rotation = FiniteRotation::try_new(port.read_global_rotation())
-        .map_err(|error| refuse_before_move(port, "physics rotation", error))?;
-    ActorVelocity::try_new(port.read_velocity())
-        .map_err(|error| refuse_before_move(port, "physics velocity", error))?;
-    let last_pos = ActorPosition::try_new(prior.last_pos)
-        .map_err(|error| refuse_before_move(port, "physics prior position", error))?;
+    let transform_before = ActorTransform::try_new(saved_transform).map_err(|error| {
+        refuse_cat_motion(port, "physics transform", CatTickReason::Motion(error))
+    })?;
+    let before = transform_before.position();
+    let last_pos = ActorPosition::try_new(prior.last_pos).map_err(|error| {
+        refuse_cat_motion(port, "physics prior position", CatTickReason::Motion(error))
+    })?;
+    let rotation_before =
+        FiniteRotation::try_new(port.read_global_rotation()).map_err(|error| {
+            refuse_cat_motion(port, "physics rotation", CatTickReason::Motion(error))
+        })?;
+    ActorVelocity::try_new(port.read_velocity()).map_err(|error| {
+        refuse_cat_motion(port, "physics velocity", CatTickReason::Motion(error))
+    })?;
     if !prior.sit.is_finite() {
-        return Err(refuse_before_move(
+        return Err(refuse_cat_motion(
             port,
             "physics sit",
-            MotionValueError::non_finite("cat.sit"),
+            CatTickReason::Motion(MotionValueError::non_finite("cat.sit")),
         ));
     }
     if !(0.0..=1.0).contains(&prior.sit) {
-        return Err(refuse_before_move(
+        return Err(refuse_cat_motion(
             port,
             "physics sit",
-            MotionValueError::out_of_range("cat.sit"),
+            CatTickReason::Motion(MotionValueError::out_of_range("cat.sit")),
         ));
     }
-    FiniteMeasure::try_new(prior.sim_t, "cat.sim_t")
-        .map_err(|error| refuse_before_move(port, "physics simulation time", error))?;
-    let now = prepare_time(now)
-        .map_err(|_| {
-            let error = if now.is_finite() {
-                MotionValueError::out_of_range("cat.now")
-            } else {
-                MotionValueError::non_finite("cat.now")
+    FiniteMeasure::try_new(prior.sim_t, "cat.sim_t").map_err(|error| {
+        refuse_cat_motion(
+            port,
+            "physics simulation time",
+            CatTickReason::Motion(error),
+        )
+    })?;
+
+    let body_yaw = rotation_before.yaw();
+    let mut brain = prior.brain;
+    let mut gait = prior.gait.clone();
+    let mut tail = prior.tail;
+    let phase_before = prior.motion.phase();
+
+    let policy = cat_control_policy(phase_before, body_yaw, brain.mood());
+    let (desired, yaw, sitting, yaw_command) = match policy {
+        CatControlPolicy::AdvanceBrain => {
+            let progress = before.planar_distance(last_pos);
+            let drive = brain.advance(duration, before, progress).map_err(|error| {
+                refuse_cat_motion(port, "brain advance", CatTickReason::Motion(error))
+            })?;
+            let desired = match PlanarVelocity::try_new(
+                (-drive.yaw.radians().sin() * drive.speed.value()) as f32,
+                (-drive.yaw.radians().cos() * drive.speed.value()) as f32,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(refuse_cat_motion(
+                        port,
+                        "commanded velocity",
+                        CatTickReason::Motion(error),
+                    ));
+                }
             };
-            refuse_before_move(port, "physics clock", error)
-        })?
-        .value();
-    // The raw engine callback is narrowed before any owner advances. Invalid,
-    // negative and oversized values become the law's bounded zero/capped step.
-    let step = StepDuration::from_raw(raw_dt);
-    let pre_position = pre_transform.position();
-    let progress = pre_position.planar_distance(last_pos);
+            (desired, drive.yaw, drive.sitting, Some(drive.yaw))
+        }
+        CatControlPolicy::Frozen { yaw, sitting } => (PlanarVelocity::ZERO, yaw, sitting, None),
+    };
 
-    let mut next = prior.clone();
-    let drive = next
-        .brain
-        .advance(step, pre_position, progress)
-        .map_err(|error| refuse_before_move(port, "brain advance", error))?;
+    // Every fallible pre-move conversion is complete. Only now may yaw
+    // mutate — and only when the policy actually produced a command.
+    if let Some(command) = yaw_command {
+        let mut commanded_rotation = rotation_before.world();
+        commanded_rotation.y = command.godot_lane();
+        port.write_global_rotation(commanded_rotation);
+    }
 
-    // Ordinary motion preserves the live X/Z rotation lanes verbatim. The
-    // restore-only GodotRotation canonicalizer must never repair this path.
-    let mut commanded_rotation = pre_rotation.world();
-    commanded_rotation.y = drive.yaw.godot_lane();
-    FiniteRotation::try_new(commanded_rotation)
-        .map_err(|error| refuse_before_move(port, "commanded rotation", error))?;
-    let commanded_velocity = forward(drive.yaw.radians()) * (drive.speed.value() as f32);
-    ActorVelocity::try_new(commanded_velocity)
-        .map_err(|error| refuse_before_move(port, "commanded velocity", error))?;
-    port.write_global_rotation(commanded_rotation);
-    port.write_velocity(commanded_velocity);
+    let prepared = prepare(prior.motion, desired, duration, config);
+    port.write_velocity(prepared.command().world_velocity());
     port.move_and_slide_once();
 
-    let post_transform =
-        ActorTransform::try_new(port.read_global_transform()).map_err(|error| {
-            rollback_after_move(port, saved_transform, "post-move transform", error)
-        })?;
-    FiniteRotation::try_new(port.read_global_rotation())
-        .map_err(|error| rollback_after_move(port, saved_transform, "post-move rotation", error))?;
-    ActorVelocity::try_new(port.read_velocity())
-        .map_err(|error| rollback_after_move(port, saved_transform, "post-move velocity", error))?;
-
-    let post_position = post_transform.position();
-    let moved = post_position.planar_distance(pre_position);
-    let actual_speed = if step.seconds() > 0.0 {
-        FiniteMeasure::try_new(moved.value() / step.seconds(), "cat.actual_speed")
-            .map_err(|error| rollback_after_move(port, saved_transform, "post-move speed", error))?
-    } else {
-        FiniteMeasure::ZERO
+    let transform_after = match ActorTransform::try_new(port.read_global_transform()) {
+        Ok(value) => value,
+        Err(error) => {
+            return Err(rollback_cat_motion(
+                port,
+                saved_transform,
+                "post-move transform",
+                CatTickReason::Motion(error),
+            ));
+        }
     };
-    let frame = next
-        .gait
-        .advance(step, post_position, drive.yaw, actual_speed)
-        .map_err(|error| rollback_after_move(port, saved_transform, "gait advance", error))?;
+    if let Err(error) = FiniteRotation::try_new(port.read_global_rotation()) {
+        return Err(rollback_cat_motion(
+            port,
+            saved_transform,
+            "post-move rotation",
+            CatTickReason::Motion(error),
+        ));
+    }
+    let new_position = transform_after.position();
+    let (support, collider_id) = match read_cat_post_move_support(port, transform_after) {
+        Ok(value) => value,
+        Err(error) => {
+            return Err(rollback_cat_motion(
+                port,
+                saved_transform,
+                "post-move support",
+                CatTickReason::Support(error),
+            ));
+        }
+    };
+    let actual_velocity = match ActorVelocity::try_new(port.read_velocity()) {
+        Ok(value) => value,
+        Err(error) => {
+            return Err(rollback_cat_motion(
+                port,
+                saved_transform,
+                "post-move velocity",
+                CatTickReason::Motion(error),
+            ));
+        }
+    };
+    let outcome = MotionOutcome::new(actual_velocity, support);
+    let transition = reconcile(prepared, outcome);
+
+    let actual_speed = if duration.seconds() == 0.0 {
+        FiniteMeasure::ZERO
+    } else {
+        match FiniteMeasure::try_new(
+            new_position.planar_distance(before).value() / duration.seconds(),
+            "cat.actual_speed",
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(rollback_cat_motion(
+                    port,
+                    saved_transform,
+                    "post-move speed",
+                    CatTickReason::Motion(error),
+                ));
+            }
+        }
+    };
+    let frame = match gait.advance(duration, new_position, yaw, actual_speed) {
+        Ok(frame) => frame,
+        Err(error) => {
+            return Err(rollback_cat_motion(
+                port,
+                saved_transform,
+                "gait advance",
+                CatTickReason::Motion(error),
+            ));
+        }
+    };
 
     let next_sit = prior.sit
-        + ((if drive.sitting { 1.0 } else { 0.0 }) - prior.sit)
-            * (step.seconds() * SIT_EASE).min(1.0);
-    let next_sim_t = prior.sim_t + step.seconds();
+        + ((if sitting { 1.0 } else { 0.0 }) - prior.sit)
+            * (duration.seconds() * SIT_EASE).min(1.0);
+    let next_sim_t = prior.sim_t + duration.seconds();
     let sway = 0.22 * (frame.phase * std::f64::consts::TAU).sin() * frame.amp
         + 0.10 * (next_sim_t * 0.9).sin() * (1.0 - frame.amp);
-    let pose = CatPose::try_from_gait(post_position, drive.yaw, &frame, next_sit)
-        .map_err(|error| rollback_after_move(port, saved_transform, "pose", error))?;
-    let skeleton = cat_body::skeleton(&pose)
-        .map_err(|error| rollback_after_move(port, saved_transform, "skeleton", error))?;
-    let tail_root = PosePoint::try_new(skeleton.tail_root)
-        .map_err(|error| rollback_after_move(port, saved_transform, "tail root", error))?;
-    next.tail
-        .transport_y(frame.support_delta_y)
-        .map_err(|error| {
-            rollback_after_move(port, saved_transform, "tail support transport", error)
-        })?;
-    next.tail
-        .advance(
-            step,
-            tail_root,
-            drive.yaw,
-            post_position.elevation(),
-            next_sit,
-            sway,
-        )
-        .map_err(|error| rollback_after_move(port, saved_transform, "tail advance", error))?;
-
-    next.sit = next_sit;
-    next.sim_t = next_sim_t;
-    // The next progress sample spans exactly this move: retain the position
-    // sampled before move_and_slide, never its post-move endpoint.
-    next.last_pos = pre_position.world();
-
-    // All engine and pure outputs have now been checked. Only this final
-    // section is permitted to mutate cadence or cross the wave boundary.
-    for contact in frame
-        .contacts
-        .iter()
-        .filter(|contact| cat_gait::paw_sounds(contact.leg))
-    {
-        port.emit_cat_wave(
-            Vector3::new(contact.at.x, contact.at.y + 0.02, contact.at.z),
-            cat_gait::PAW_RANGE,
-            cat_gait::PAW_GAIN,
-            now,
-        );
+    let pose = match CatPose::try_from_gait(new_position, yaw, &frame, next_sit) {
+        Ok(pose) => pose,
+        Err(error) => {
+            return Err(rollback_cat_motion(
+                port,
+                saved_transform,
+                "pose",
+                CatTickReason::Motion(error),
+            ));
+        }
+    };
+    let skeleton = match cat_body::skeleton(&pose) {
+        Ok(skeleton) => skeleton,
+        Err(error) => {
+            return Err(rollback_cat_motion(
+                port,
+                saved_transform,
+                "skeleton",
+                CatTickReason::Motion(error),
+            ));
+        }
+    };
+    let tail_root = match PosePoint::try_new(skeleton.tail_root) {
+        Ok(root) => root,
+        Err(error) => {
+            return Err(rollback_cat_motion(
+                port,
+                saved_transform,
+                "tail root",
+                CatTickReason::Motion(error),
+            ));
+        }
+    };
+    if let Err(error) = tail.transport_y(frame.support_delta_y) {
+        return Err(rollback_cat_motion(
+            port,
+            saved_transform,
+            "tail support transport",
+            CatTickReason::Motion(error),
+        ));
     }
-    if next.presence.beat(now).is_some() {
-        let raw_post = post_position.world();
-        port.emit_cat_wave(
-            Vector3::new(
-                raw_post.x,
-                raw_post.y + cat_gait::PRESENCE_HEIGHT as f32,
-                raw_post.z,
-            ),
-            cat_gait::PRESENCE_RANGE,
-            cat_gait::PRESENCE_GAIN,
-            now,
-        );
+    if let Err(error) = tail.advance(
+        duration,
+        tail_root,
+        yaw,
+        new_position.elevation(),
+        next_sit,
+        sway,
+    ) {
+        return Err(rollback_cat_motion(
+            port,
+            saved_transform,
+            "tail advance",
+            CatTickReason::Motion(error),
+        ));
     }
+
+    // While airborne, and on the landing tick itself, keep the brain's next
+    // progress sample pinned to the body's actual position: a resumed brain
+    // must never read the whole flight as walked distance.
+    let airborne_or_landing = matches!(transition.state.phase(), MotionPhase::Airborne { .. })
+        || transition.landing.is_some();
+    let next_last_pos = if airborne_or_landing {
+        new_position.world()
+    } else {
+        before.world()
+    };
 
     Ok(CatTickSuccess {
-        state: next,
+        state: CatControlledState {
+            brain,
+            gait,
+            tail,
+            presence: prior.presence,
+            sit: next_sit,
+            sim_t: next_sim_t,
+            last_pos: next_last_pos,
+            motion: transition.state,
+        },
         pose,
         frame,
+        phase_before,
+        landing: transition.landing,
+        support_collider_id: collider_id,
     })
 }
 
@@ -415,6 +900,28 @@ fn controlled_cat_tick<P: CatMotionPort>(
 impl ICharacterBody3D for WaveCat {
     fn ready(&mut self) {
         clear_limbs(self, &LIMBS);
+        // All eleven solver values from the shared table, applied before the
+        // editor/runtime split: an editor-frozen cat never moves, so these
+        // are harmless there, and the runtime cat needs every one of them
+        // configured before its first physics tick.
+        self.base_mut().set_motion_mode(MotionMode::GROUNDED);
+        self.base_mut().set_up_direction(Vector3::UP);
+        self.base_mut().set_floor_snap_length(FLOOR_SNAP_M);
+        self.base_mut().set_floor_max_angle(FLOOR_MAX_ANGLE_RAD);
+        self.base_mut().set_safe_margin(SAFE_MARGIN_M);
+        self.base_mut().set_max_slides(MAX_SLIDES);
+        self.base_mut().set_floor_stop_on_slope_enabled(true);
+        self.base_mut().set_floor_constant_speed_enabled(false);
+        self.base_mut().set_platform_floor_layers(PLATFORM_LAYERS);
+        self.base_mut().set_platform_wall_layers(PLATFORM_LAYERS);
+        self.base_mut()
+            .set_platform_on_leave(PlatformOnLeave::DO_NOTHING);
+        self.apply_collision_pair();
+        self.snap_params.set_motion(Vector3::DOWN * FLOOR_SNAP_M);
+        self.snap_params.set_margin(SAFE_MARGIN_M);
+        self.snap_params.set_max_collisions(SNAP_PROBE_MAX_CONTACTS);
+        self.snap_params.set_recovery_as_collision_enabled(true);
+        self.snap_params.set_collide_separation_ray_enabled(true);
         if Engine::singleton().is_editor_hint() {
             // blueprint mode: one standing pose, frozen. The mesh is built
             // in LOCAL space (pose seeded at the origin) so the silhouette
@@ -435,6 +942,27 @@ impl ICharacterBody3D for WaveCat {
             self.base_mut().set_physics_process(false);
             self.base_mut().set_process(false);
             return;
+        }
+
+        // The final authored six, validated fresh — never the possibly
+        // stale active config an out-of-order edit sequence could leave
+        // behind. An invalid final pair disables motion outright rather
+        // than silently keeping whatever the active config last was.
+        match SupportMotionConfig::try_new(
+            self.fall_acceleration,
+            self.terminal_fall_speed,
+            self.landing_silent_speed,
+            self.landing_full_speed,
+            self.landing_max_gain,
+            self.landing_max_range,
+        ) {
+            Ok(config) => self.motion_config = config,
+            Err(error) => {
+                godot_error!("WaveCat: invalid motion configuration — {error}");
+                self.base_mut().set_physics_process(false);
+                self.base_mut().set_process(false);
+                return;
+            }
         }
 
         // Narrow every designer/scene-owned motion fact before constructing a
@@ -460,7 +988,7 @@ impl ICharacterBody3D for WaveCat {
         capsule.set_radius(COL_RADIUS);
         capsule.set_height(COL_HEIGHT);
         col.set_shape(&capsule);
-        col.set_position(Vector3::new(0.0, COL_HEIGHT * 0.5 + 0.02, 0.0));
+        col.set_position(Vector3::new(0.0, COLLIDER_CENTER_Y, 0.0));
         self.base_mut().add_child(&col);
 
         let mut mi = MeshInstance3D::new_alloc();
@@ -563,30 +1091,86 @@ impl ICharacterBody3D for WaveCat {
             sit: self.sit,
             sim_t: self.sim_t,
             last_pos: self.last_pos,
+            motion: self.motion_state,
         };
-        let now = self.now;
-        let success = match controlled_cat_tick(self, &prior, dt, now) {
+        let config = self.motion_config;
+        let success = match controlled_cat_tick(self, &prior, dt, config) {
             Ok(success) => success,
             Err(fault) => {
-                godot_error!("WaveCat: {} refused: {}", fault.phase, fault.error);
+                godot_error!("WaveCat: {} refused: {}", fault.phase, fault.reason);
                 return;
             }
         };
 
-        let CatTickSuccess { state, pose, frame } = success;
-        // The frame has already driven tail and voice commands inside the
-        // transaction; consuming it here makes that one-frame output's
-        // lifetime explicit for the future physical adapter.
-        let _validated_frame = frame;
+        let CatTickSuccess {
+            state,
+            pose,
+            frame,
+            phase_before,
+            landing,
+            support_collider_id,
+        } = success;
         self.pose = Some(pose);
         self.brain = Some(state.brain);
         self.gait = Some(state.gait);
         self.tail = Some(state.tail);
-        self.presence = state.presence;
         self.sit = state.sit;
         self.sim_t = state.sim_t;
         self.last_pos = state.last_pos;
+        self.motion_state = state.motion;
+        self.support_collider_id = support_collider_id;
+        self.apply_collision_pair();
         self.mesh_dirty = true;
+
+        // Voices last: every value/component/layer install above has
+        // already committed, so a wave never fires against half-applied
+        // state. A paw contact fires only across an unbroken controlled
+        // stretch with no landing on it — the same law the player's queued
+        // waves obey, never a second copy of the phase boolean.
+        let now = self.now;
+        for contact in frame
+            .contacts
+            .iter()
+            .filter(|contact| cat_gait::paw_sounds(contact.leg))
+        {
+            if !QueuedWaveGate::ControlledContact.allows(
+                phase_before,
+                state.motion.phase(),
+                landing,
+            ) {
+                continue;
+            }
+            self.emit_wave(
+                Vector3::new(contact.at.x, contact.at.y + 0.02, contact.at.z),
+                cat_gait::PAW_RANGE,
+                cat_gait::PAW_GAIN,
+                now,
+            );
+        }
+        if self.presence.beat(now).is_some() {
+            let raw_post = pose.pos;
+            self.emit_wave(
+                Vector3::new(
+                    raw_post.x,
+                    raw_post.y + cat_gait::PRESENCE_HEIGHT as f32,
+                    raw_post.z,
+                ),
+                cat_gait::PRESENCE_RANGE,
+                cat_gait::PRESENCE_GAIN,
+                now,
+            );
+        }
+        if let Some(event) = landing
+            && let Some(voice) = landing_voice(event, config)
+        {
+            let point = event.support().point();
+            self.emit_wave(
+                Vector3::new(point.x, point.y + 0.02, point.z),
+                voice.range_m(),
+                voice.gain(),
+                now,
+            );
+        }
     }
 
     fn process(&mut self, _dt: f64) {
@@ -602,6 +1186,16 @@ impl ICharacterBody3D for WaveCat {
         }
         self.mesh_dirty = false;
     }
+
+    /// The Scene-dock warning triangle: an out-of-order landing threshold
+    /// pair, naming both — `None` staged means no warning at all.
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        let mut warnings = PackedStringArray::new();
+        if let Some(message) = self.threshold_warning.as_ref() {
+            warnings.push(message.as_str());
+        }
+        warnings
+    }
 }
 
 #[godot_api]
@@ -615,6 +1209,102 @@ impl WaveCat {
     #[func]
     pub(super) fn tick(&mut self, now_t: f64) {
         self.now = now_t;
+    }
+
+    /// The six active authored motion scalars in constructor order — the
+    /// same read-only observability door Task 2 defined for the player.
+    /// Exported authored getters alone are not injection evidence: this is
+    /// the ACTIVE config a valid stage installed, which may transiently
+    /// differ from the raw authored scalars during an out-of-order edit.
+    #[func]
+    fn motion_config_snapshot(&self) -> PackedFloat64Array {
+        let config = self.motion_config;
+        PackedFloat64Array::from(
+            &[
+                config.fall_acceleration_mps2(),
+                config.terminal_fall_speed_mps(),
+                config.landing_silent_speed_mps(),
+                config.landing_full_speed_mps(),
+                config.landing_max_gain(),
+                config.landing_max_range_m(),
+            ][..],
+        )
+    }
+
+    /// The registered callable twin of the virtual warning read — the
+    /// dual-channel contract every warning-bearing node keeps.
+    #[func]
+    fn get_configuration_warnings(&self) -> PackedStringArray {
+        ICharacterBody3D::get_configuration_warnings(self)
+    }
+
+    #[func]
+    fn get_fall_acceleration(&self) -> f64 {
+        self.fall_acceleration
+    }
+
+    #[func]
+    fn set_fall_acceleration(&mut self, value: f64) {
+        self.try_stage_motion_field(MotionConfigField::FallAcceleration, value);
+    }
+
+    #[func]
+    fn get_terminal_fall_speed(&self) -> f64 {
+        self.terminal_fall_speed
+    }
+
+    #[func]
+    fn set_terminal_fall_speed(&mut self, value: f64) {
+        self.try_stage_motion_field(MotionConfigField::TerminalFallSpeed, value);
+    }
+
+    #[func]
+    fn get_landing_silent_speed(&self) -> f64 {
+        self.landing_silent_speed
+    }
+
+    #[func]
+    fn set_landing_silent_speed(&mut self, value: f64) {
+        self.try_stage_motion_field(MotionConfigField::LandingSilentSpeed, value);
+    }
+
+    #[func]
+    fn get_landing_full_speed(&self) -> f64 {
+        self.landing_full_speed
+    }
+
+    #[func]
+    fn set_landing_full_speed(&mut self, value: f64) {
+        self.try_stage_motion_field(MotionConfigField::LandingFullSpeed, value);
+    }
+
+    #[func]
+    fn get_landing_max_gain(&self) -> f64 {
+        self.landing_max_gain
+    }
+
+    #[func]
+    fn set_landing_max_gain(&mut self, value: f64) {
+        self.try_stage_motion_field(MotionConfigField::LandingMaxGain, value);
+    }
+
+    #[func]
+    fn get_landing_max_range(&self) -> f64 {
+        self.landing_max_range
+    }
+
+    #[func]
+    fn set_landing_max_range(&mut self, value: f64) {
+        self.try_stage_motion_field(MotionConfigField::LandingMaxRange, value);
+    }
+
+    /// Accepted world-support identity, if the engine supplied one. A
+    /// server-backed support may lawfully have no Object id.
+    #[func]
+    fn support_collider_id(&self) -> Variant {
+        self.support_collider_id
+            .and_then(|id| i64::try_from(id).ok())
+            .map_or_else(Variant::nil, |id| id.to_variant())
     }
 
     /// Paw wave reach in meters — the voice constant, served as a static
@@ -665,7 +1355,6 @@ impl WaveCat {
     /// The current mood as an integer: 0 roaming, 1 pausing, 2 sitting.
     #[func]
     fn mood(&self) -> i64 {
-        use crate::cat_brain::Mood;
         match self.brain.as_ref().map(CatBrain::mood) {
             Some(Mood::Roam) => 0,
             Some(Mood::Pause) => 1,
@@ -741,12 +1430,23 @@ impl WaveCat {
                 "must be finite",
             )
         })?;
-        if capture.motion != MotionState::initial() {
-            return Err(RestoreValueError::new(
-                "motion",
-                "this runtime admits only initial controlled motion",
-            ));
-        }
+        validate_restore(capture.motion, velocity, self.motion_config).map_err(|error| {
+            let (path, rule) = match error {
+                MotionRestoreError::AirbornePlanarMismatch { axis } => (
+                    format!("motion.phase.planar_velocity.{axis}"),
+                    "must match the corresponding physical velocity lane bit-exactly while airborne",
+                ),
+                MotionRestoreError::AirborneTerminalExceeded => (
+                    "motion.phase.vertical_velocity".to_string(),
+                    "must remain between zero and the injected terminal fall speed",
+                ),
+                MotionRestoreError::Physical(_) => (
+                    "motion".to_string(),
+                    "contains an invalid physical value",
+                ),
+            };
+            RestoreValueError::new(path, rule)
+        })?;
         let rotation = prepare_cat_snapshot_links(
             self.base().get_global_rotation(),
             CatSnapshotLinks {
@@ -871,7 +1571,7 @@ impl WaveCat {
         capsule.set_radius(COL_RADIUS);
         capsule.set_height(COL_HEIGHT);
         col.set_shape(&capsule);
-        col.set_position(Vector3::new(0.0, COL_HEIGHT * 0.5 + 0.02, 0.0));
+        col.set_position(Vector3::new(0.0, COLLIDER_CENTER_Y, 0.0));
         self.base_mut().add_child(&col);
 
         let mut mi = MeshInstance3D::new_alloc();
@@ -913,6 +1613,89 @@ impl WaveCat {
         godot_error!("WaveCat: {phase} refused: {error}");
         self.base_mut().set_physics_process(false);
         self.base_mut().set_process(false);
+    }
+
+    fn apply_collision_pair(&mut self) {
+        let (layer, mask) = collision_pair(self.motion_state.phase());
+        self.apply_exact_collision_pair(layer, mask);
+    }
+
+    fn apply_exact_collision_pair(&mut self, layer: u32, mask: u32) {
+        if self.base().get_collision_layer() != layer {
+            self.base_mut().set_collision_layer(layer);
+        }
+        if self.base().get_collision_mask() != mask {
+            self.base_mut().set_collision_mask(mask);
+        }
+    }
+
+    /// The six authored motion scalars, in constructor order — never the
+    /// active config, which may transiently lag an out-of-order edit.
+    fn authored_motion_scalars(&self) -> [f64; 6] {
+        [
+            self.fall_acceleration,
+            self.terminal_fall_speed,
+            self.landing_silent_speed,
+            self.landing_full_speed,
+            self.landing_max_gain,
+            self.landing_max_range,
+        ]
+    }
+
+    fn assign_motion_field(&mut self, field: MotionConfigField, value: f64) {
+        match field {
+            MotionConfigField::FallAcceleration => self.fall_acceleration = value,
+            MotionConfigField::TerminalFallSpeed => self.terminal_fall_speed = value,
+            MotionConfigField::LandingSilentSpeed => self.landing_silent_speed = value,
+            MotionConfigField::LandingFullSpeed => self.landing_full_speed = value,
+            MotionConfigField::LandingMaxGain => self.landing_max_gain = value,
+            MotionConfigField::LandingMaxRange => self.landing_max_range = value,
+        }
+    }
+
+    fn set_threshold_warning(&mut self, message: String) {
+        self.threshold_warning = Some(message);
+        self.base_mut()
+            .call_deferred("update_configuration_warnings", &[]);
+    }
+
+    fn clear_threshold_warning(&mut self) {
+        if self.threshold_warning.take().is_some() {
+            self.base_mut()
+                .call_deferred("update_configuration_warnings", &[]);
+        }
+    }
+
+    /// One exported scalar's edit, staged against the complete candidate
+    /// six-tuple: a `NonFinite`/`OutOfRange` verdict on the field just
+    /// edited rejects that scalar outright (the active config and every
+    /// other authored scalar are untouched); a `ThresholdOrder` verdict
+    /// stages the individually valid scalar, keeps the prior active config
+    /// live, and raises this cat's own editor warning; a fully valid
+    /// candidate stages the scalar, installs the new active config, and
+    /// clears that warning.
+    fn try_stage_motion_field(&mut self, field: MotionConfigField, value: f64) {
+        let mut candidate = self.authored_motion_scalars();
+        candidate[motion_field_index(field)] = value;
+        match SupportMotionConfig::try_new(
+            candidate[0],
+            candidate[1],
+            candidate[2],
+            candidate[3],
+            candidate[4],
+            candidate[5],
+        ) {
+            Ok(config) => {
+                self.assign_motion_field(field, value);
+                self.motion_config = config;
+                self.clear_threshold_warning();
+            }
+            Err(error @ MotionConfigError::ThresholdOrder { .. }) => {
+                self.assign_motion_field(field, value);
+                self.set_threshold_warning(error.to_string());
+            }
+            Err(_) => {}
+        }
     }
 
     /// The whole silhouette, rebuilt for this frame's skeleton: torso
@@ -968,6 +1751,19 @@ impl WaveCat {
 
 fn terminal_field(path: &str) -> &str {
     path.rsplit('.').next().unwrap_or(path)
+}
+
+/// The constructor-order index of one motion field within the six-tuple
+/// [`WaveCat::authored_motion_scalars`] carries.
+fn motion_field_index(field: MotionConfigField) -> usize {
+    match field {
+        MotionConfigField::FallAcceleration => 0,
+        MotionConfigField::TerminalFallSpeed => 1,
+        MotionConfigField::LandingSilentSpeed => 2,
+        MotionConfigField::LandingFullSpeed => 3,
+        MotionConfigField::LandingMaxGain => 4,
+        MotionConfigField::LandingMaxRange => 5,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1031,11 +1827,6 @@ fn prepare_cat_snapshot_links(
     })
 }
 
-/// The heading's forward vector — Godot yaw convention: yaw 0 faces -Z.
-fn forward(yaw: f64) -> Vector3 {
-    Vector3::new((-yaw.sin()) as f32, 0.0, (-yaw.cos()) as f32)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1048,14 +1839,38 @@ mod tests {
         SetRotation(Vector3),
         SetVelocity(Vector3),
         MoveAndSlide,
+        Probe(Transform3D),
+        ReadProbeCount,
+        ReadProbeContact(i32),
         SetTransform(Transform3D),
         Disable,
-        EmitWave {
-            at: Vector3,
-            range: f64,
-            gain: f64,
-            now: f64,
-        },
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct CatRawSupportFact {
+        point: Vector3,
+        normal: Vector3,
+        collider_rid_valid: bool,
+        collider_layer: u32,
+        collider_id: u64,
+    }
+
+    fn cat_world_floor() -> CatRawSupportFact {
+        CatRawSupportFact {
+            point: Vector3::new(2.0, 0.0, -3.0),
+            normal: Vector3::UP,
+            collider_rid_valid: true,
+            collider_layer: 1,
+            collider_id: 41,
+        }
+    }
+
+    fn cat_actor_floor() -> CatRawSupportFact {
+        CatRawSupportFact {
+            collider_layer: 2,
+            collider_id: 17,
+            ..cat_world_floor()
+        }
     }
 
     #[derive(Clone)]
@@ -1067,6 +1882,13 @@ mod tests {
         post_rotation: Vector3,
         post_velocity: Vector3,
         moved: bool,
+        on_floor: bool,
+        slides: Vec<Option<Vec<CatRawSupportFact>>>,
+        outer_count_override: Option<i32>,
+        inner_count_override: Option<(i32, i32)>,
+        probe_hit: bool,
+        probe_contacts: Vec<CatRawSupportFact>,
+        probe_count_override: Option<i32>,
         trace: Vec<MotionTrace>,
     }
 
@@ -1088,8 +1910,32 @@ mod tests {
                 post_rotation: rotation,
                 post_velocity: Vector3::new(0.125, 0.0, -0.25),
                 moved: false,
+                on_floor: false,
+                slides: Vec::new(),
+                outer_count_override: None,
+                inner_count_override: None,
+                probe_hit: false,
+                probe_contacts: Vec::new(),
+                probe_count_override: None,
                 trace: Vec::new(),
             }
+        }
+
+        fn effect_trace(&self) -> Vec<MotionTrace> {
+            self.trace
+                .iter()
+                .copied()
+                .filter(|entry| {
+                    matches!(
+                        entry,
+                        MotionTrace::SetRotation(_)
+                            | MotionTrace::SetVelocity(_)
+                            | MotionTrace::MoveAndSlide
+                            | MotionTrace::SetTransform(_)
+                            | MotionTrace::Disable
+                    )
+                })
+                .collect()
         }
     }
 
@@ -1140,6 +1986,89 @@ mod tests {
             self.moved = true;
         }
 
+        fn is_on_floor(&mut self) -> bool {
+            self.on_floor
+        }
+
+        fn read_slide_collision_count(&mut self) -> i32 {
+            self.outer_count_override
+                .unwrap_or_else(|| i32::try_from(self.slides.len()).unwrap_or(i32::MAX))
+        }
+
+        fn read_slide_contact_count(&mut self, slide: i32) -> Option<i32> {
+            if let Some((target, count)) = self.inner_count_override
+                && slide == target
+            {
+                return Some(count);
+            }
+            self.slides
+                .get(usize::try_from(slide).ok()?)?
+                .as_ref()
+                .map(|contacts| i32::try_from(contacts.len()).unwrap_or(i32::MAX))
+        }
+
+        fn read_slide_contact_geometry(
+            &mut self,
+            slide: i32,
+            contact: i32,
+        ) -> Option<(Vector3, Vector3)> {
+            self.slides
+                .get(usize::try_from(slide).ok()?)?
+                .as_ref()?
+                .get(usize::try_from(contact).ok()?)
+                .copied()
+                .map(|fact| (fact.point, fact.normal))
+        }
+
+        fn read_slide_collider(&mut self, slide: i32, contact: i32) -> Option<(bool, u32, u64)> {
+            self.slides
+                .get(usize::try_from(slide).ok()?)?
+                .as_ref()?
+                .get(usize::try_from(contact).ok()?)
+                .copied()
+                .map(|fact| {
+                    (
+                        fact.collider_rid_valid,
+                        fact.collider_layer,
+                        fact.collider_id,
+                    )
+                })
+        }
+
+        fn probe_snap(&mut self, post_transform: Transform3D) -> bool {
+            self.trace.push(MotionTrace::Probe(post_transform));
+            self.probe_hit
+        }
+
+        fn read_probe_contact_count(&mut self) -> i32 {
+            self.trace.push(MotionTrace::ReadProbeCount);
+            self.probe_count_override
+                .unwrap_or_else(|| i32::try_from(self.probe_contacts.len()).unwrap_or(i32::MAX))
+        }
+
+        fn read_probe_contact_geometry(&mut self, contact: i32) -> (Vector3, Vector3) {
+            self.trace.push(MotionTrace::ReadProbeContact(contact));
+            let fact = self
+                .probe_contacts
+                .get(usize::try_from(contact).unwrap_or(usize::MAX))
+                .copied()
+                .unwrap_or_else(cat_world_floor);
+            (fact.point, fact.normal)
+        }
+
+        fn read_probe_collider(&mut self, contact: i32) -> (bool, u32, u64) {
+            let fact = self
+                .probe_contacts
+                .get(usize::try_from(contact).unwrap_or(usize::MAX))
+                .copied()
+                .unwrap_or_else(cat_world_floor);
+            (
+                fact.collider_rid_valid,
+                fact.collider_layer,
+                fact.collider_id,
+            )
+        }
+
         fn write_global_transform(&mut self, transform: Transform3D) {
             self.trace.push(MotionTrace::SetTransform(transform));
             self.post_transform = transform;
@@ -1147,15 +2076,6 @@ mod tests {
 
         fn disable_processing(&mut self) {
             self.trace.push(MotionTrace::Disable);
-        }
-
-        fn emit_cat_wave(&mut self, at: Vector3, range: f64, gain: f64, now: f64) {
-            self.trace.push(MotionTrace::EmitWave {
-                at,
-                range,
-                gain,
-                now,
-            });
         }
     }
 
@@ -1212,15 +2132,6 @@ mod tests {
         }
     }
 
-    fn ordered_f32_bits(value: f32) -> u32 {
-        let bits = value.to_bits();
-        if bits & 0x8000_0000 == 0 {
-            bits | 0x8000_0000
-        } else {
-            !bits
-        }
-    }
-
     fn controlled_state(port: &FakeCatMotionPort) -> CatControlledState {
         let pos = ActorPosition::try_new(port.pre_transform.origin).unwrap();
         let yaw = ActorYaw::try_new(f64::from(port.pre_rotation.y)).unwrap();
@@ -1246,6 +2157,7 @@ mod tests {
             sit: 0.0,
             sim_t: 0.0,
             last_pos: port.pre_transform.origin,
+            motion: MotionState::initial(),
         }
     }
 
@@ -1256,6 +2168,7 @@ mod tests {
         assert_eq!(actual.presence.next_at(), expected.presence.next_at());
         assert_eq!(actual.sit.to_bits(), expected.sit.to_bits());
         assert_eq!(actual.sim_t.to_bits(), expected.sim_t.to_bits());
+        assert_eq!(actual.motion, expected.motion);
         for (actual_lane, expected_lane) in [
             (actual.last_pos.x, expected.last_pos.x),
             (actual.last_pos.y, expected.last_pos.y),
@@ -1306,270 +2219,431 @@ mod tests {
     }
 
     #[test]
-    fn cat_physics_refuses_clock_outside_renderer_horizon_before_owner_or_engine_advance() {
-        let valid = FakeCatMotionPort::valid();
-        let prior = controlled_state(&valid);
+    fn cat_valid_tick_calls_move_and_slide_once() {
+        let seed = FakeCatMotionPort::valid();
+        let prior = controlled_state(&seed);
+        let mut port = seed.clone();
+        let success = controlled_cat_tick(
+            &mut port,
+            &prior,
+            1.0 / 60.0,
+            SupportMotionConfig::CAT_DEFAULT,
+        )
+        .expect("a completely finite tick must commit");
+        assert_eq!(
+            port.trace
+                .iter()
+                .filter(|entry| matches!(entry, MotionTrace::MoveAndSlide))
+                .count(),
+            1
+        );
+        assert!(
+            matches!(success.state.motion.phase(), MotionPhase::Airborne { .. }),
+            "an unsupported controlled tick must depart to airborne, not stay planted"
+        );
+    }
 
-        for (now, problem) in [
-            (-0.25, crate::support_motion::MotionValueProblem::OutOfRange),
-            (
-                262_144.000_000_000_06,
-                crate::support_motion::MotionValueProblem::OutOfRange,
-            ),
-            (
-                f64::INFINITY,
-                crate::support_motion::MotionValueProblem::NonFinite,
-            ),
-            (
-                f64::NAN,
-                crate::support_motion::MotionValueProblem::NonFinite,
-            ),
-        ] {
-            let mut port = valid.clone();
+    /// A departing (Controlled-to-Airborne) tick must carry the brain's
+    /// next progress sample forward to the ACHIEVED post-move position, not
+    /// leave it pinned at the pre-move sample: a resumed brain's `progress`
+    /// is `before.planar_distance(last_pos)`, so a stale `last_pos` left one
+    /// tick behind would silently misreport how far the body has actually
+    /// travelled once support is regained. `cat_valid_tick_calls_move_and_
+    /// slide_once` already proves this exact fixture departs to Airborne;
+    /// this test reuses it to pin the carried value bit-exact against
+    /// `FakeCatMotionPort::valid()`'s deliberately distinct post transform.
+    #[test]
+    fn cat_departing_tick_carries_last_pos_to_the_achieved_position_not_the_stale_one() {
+        let seed = FakeCatMotionPort::valid();
+        let prior = controlled_state(&seed);
+        let mut port = seed.clone();
+        let success = controlled_cat_tick(
+            &mut port,
+            &prior,
+            1.0 / 60.0,
+            SupportMotionConfig::CAT_DEFAULT,
+        )
+        .expect("a completely finite tick must commit");
+        assert!(
+            matches!(success.state.motion.phase(), MotionPhase::Airborne { .. }),
+            "this fixture is proven elsewhere to depart to airborne; a stale-last_pos test needs \
+             that exact branch exercised"
+        );
+        let achieved = seed.post_transform.origin;
+        assert_eq!(success.state.last_pos.x.to_bits(), achieved.x.to_bits());
+        assert_eq!(success.state.last_pos.z.to_bits(), achieved.z.to_bits());
+    }
+
+    /// The gait's own leg-aim math (`cat_gait::step_leg`/`anchor`) anchors a
+    /// swinging paw to whatever position it is fed THIS tick, so wiring in
+    /// the pre-move `before` instead of the achieved `new_position` would
+    /// aim every swinging paw at where the body USED to be. Leg 0 (LF) is
+    /// guaranteed mid-swing the instant this fresh gait's phase leaves
+    /// 0.0 (`OFFSET[0] = 0.25` puts `lp` at `0.75`, already past
+    /// `DUTY = 0.70`), and `FakeCatMotionPort::valid()`'s pre/post
+    /// displacement is fast enough to clear the walk-gate on this very
+    /// first tick. Replay the same tick's gait state against the stale
+    /// position on a clone: if production ever goes back to feeding
+    /// `advance` a position that discards the achieved post-slide
+    /// displacement, the two paw targets collapse to the same value.
+    #[test]
+    fn cat_gait_paw_targets_reflect_the_achieved_post_move_position_not_the_stale_one() {
+        let seed = FakeCatMotionPort::valid();
+        let prior = controlled_state(&seed);
+        let stale_pos = ActorPosition::try_new(seed.pre_transform.origin).unwrap();
+        let yaw = ActorYaw::try_new(f64::from(seed.pre_rotation.y)).unwrap();
+        let duration = StepDuration::from_raw(1.0 / 60.0);
+        let actual_speed = FiniteMeasure::try_new(
+            ActorPosition::try_new(seed.post_transform.origin)
+                .unwrap()
+                .planar_distance(stale_pos)
+                .value()
+                / duration.seconds(),
+            "test.speed",
+        )
+        .unwrap();
+        let mut reference_gait = prior.gait.clone();
+        let stale_frame = reference_gait
+            .advance(duration, stale_pos, yaw, actual_speed)
+            .expect("a completely finite reference tick must commit");
+
+        let mut port = seed.clone();
+        let success = controlled_cat_tick(
+            &mut port,
+            &prior,
+            1.0 / 60.0,
+            SupportMotionConfig::CAT_DEFAULT,
+        )
+        .expect("a completely finite tick must commit");
+
+        assert_ne!(
+            success.frame.paws[0].x.to_bits(),
+            stale_frame.paws[0].x.to_bits(),
+            "leg 0's swing aim must move with the achieved post-slide position, not stay pinned \
+             to the stale pre-move sample: {:?} vs {:?}",
+            success.frame.paws[0],
+            stale_frame.paws[0]
+        );
+    }
+
+    /// The frozen airborne policy must never invoke a yaw setter, not even
+    /// to write back the exact value already there: comparing rotation
+    /// VALUES before and after (as the GDScript suite does) cannot catch a
+    /// policy that recommits the same yaw every tick, so this asserts the
+    /// port's own effect trace carries no `SetRotation` at all while
+    /// airborne.
+    #[test]
+    fn cat_airborne_policy_never_calls_a_yaw_setter_even_to_write_the_same_value() {
+        let seed = FakeCatMotionPort::valid();
+        let mut prior = controlled_state(&seed);
+        prior.motion = MotionState::restore(
+            MotionPhase::Airborne {
+                planar_velocity_mps: PlanarVelocity::ZERO,
+                vertical_velocity_mps: crate::support_motion::FiniteVelocity::try_new(-1.0)
+                    .unwrap(),
+            },
+            None,
+            None,
+        )
+        .unwrap();
+        let mut port = seed.clone();
+        controlled_cat_tick(
+            &mut port,
+            &prior,
+            1.0 / 60.0,
+            SupportMotionConfig::CAT_DEFAULT,
+        )
+        .expect("a completely finite airborne tick must commit");
+        assert!(
+            !port
+                .trace
+                .iter()
+                .any(|event| matches!(event, MotionTrace::SetRotation(_))),
+            "an airborne tick must never invoke a yaw setter, even to write back the same \
+             value: {:?}",
+            port.trace
+        );
+    }
+
+    #[test]
+    fn cat_pre_move_poison_disables_without_move_or_support_scan() {
+        let seed = FakeCatMotionPort::valid();
+        let base_prior = controlled_state(&seed);
+        let mut cases: Vec<(FakeCatMotionPort, CatControlledState)> = Vec::new();
+        for lane in 0..12 {
+            let mut port = seed.clone();
+            port.pre_transform = poison_transform_lane(port.pre_transform, lane);
+            cases.push((port, base_prior.clone()));
+        }
+        for lane in 0..3 {
+            let mut port = seed.clone();
+            port.pre_rotation = poison_vector_lane(port.pre_rotation, lane);
+            cases.push((port, base_prior.clone()));
+        }
+        for lane in 0..3 {
+            let mut port = seed.clone();
+            port.pre_velocity = poison_vector_lane(port.pre_velocity, lane);
+            cases.push((port, base_prior.clone()));
+        }
+        for lane in 0..3 {
+            let mut poisoned_prior = base_prior.clone();
+            poisoned_prior.last_pos = poison_vector_lane(poisoned_prior.last_pos, lane);
+            cases.push((seed.clone(), poisoned_prior));
+        }
+
+        for (mut port, prior) in cases {
             let before = prior.clone();
-            let Err(error) = controlled_cat_tick(&mut port, &prior, 1.0 / 60.0, now) else {
-                panic!("an invalid renderer-visible clock must be refused");
-            };
-
-            assert_eq!(error.phase, "physics clock");
-            assert_eq!(error.error.field(), "cat.now");
-            assert_eq!(error.error.problem(), problem);
+            let result = controlled_cat_tick(
+                &mut port,
+                &prior,
+                1.0 / 60.0,
+                SupportMotionConfig::CAT_DEFAULT,
+            );
+            assert!(result.is_err(), "a poisoned pre-move sample was accepted");
             assert_state_bits_eq(&prior, &before);
+            assert!(
+                !port
+                    .trace
+                    .iter()
+                    .any(|event| matches!(event, MotionTrace::MoveAndSlide)),
+                "a pre-move refusal must never call move_and_slide: {:?}",
+                port.trace
+            );
             assert_eq!(
-                port.trace,
-                [
-                    MotionTrace::ReadTransform,
-                    MotionTrace::ReadRotation,
-                    MotionTrace::ReadVelocity,
-                    MotionTrace::Disable,
-                ],
-                "clock {now:?} crossed the movement boundary"
+                port.effect_trace(),
+                [MotionTrace::Disable],
+                "a pre-move refusal must disable and touch no other effect lane"
             );
         }
     }
 
     #[test]
-    fn cat_physics_rejects_poisoned_pre_or_post_move_sample_without_advancing_brain_gait_tail_or_waves()
-     {
-        let valid = FakeCatMotionPort::valid();
-        let prior = controlled_state(&valid);
-
+    fn cat_post_move_poison_writes_exact_saved_transform_then_zero_velocity_then_disables() {
+        let seed = FakeCatMotionPort::valid();
+        let prior = controlled_state(&seed);
+        let mut cases = Vec::new();
         for lane in 0..12 {
-            let mut port = valid.clone();
-            port.pre_transform = poison_transform_lane(port.pre_transform, lane);
-            let before = prior.clone();
-            let result = controlled_cat_tick(&mut port, &prior, 1.0 / 60.0, 2.0);
-            assert!(result.is_err(), "pre transform lane {lane} was accepted");
-            assert_state_bits_eq(&prior, &before);
-            assert_eq!(
-                port.trace,
-                [MotionTrace::ReadTransform, MotionTrace::Disable]
-            );
+            let mut port = seed.clone();
+            port.post_transform = poison_transform_lane(port.post_transform, lane);
+            cases.push(port);
         }
         for lane in 0..3 {
-            let mut port = valid.clone();
-            port.pre_rotation = poison_vector_lane(port.pre_rotation, lane);
-            let before = prior.clone();
-            let result = controlled_cat_tick(&mut port, &prior, 1.0 / 60.0, 2.0);
-            assert!(result.is_err(), "pre rotation lane {lane} was accepted");
-            assert_state_bits_eq(&prior, &before);
-            assert_eq!(
-                port.trace,
-                [
-                    MotionTrace::ReadTransform,
-                    MotionTrace::ReadRotation,
-                    MotionTrace::Disable,
-                ]
-            );
+            let mut port = seed.clone();
+            port.post_rotation = poison_vector_lane(port.post_rotation, lane);
+            cases.push(port);
         }
         for lane in 0..3 {
-            let mut port = valid.clone();
-            port.pre_velocity = poison_vector_lane(port.pre_velocity, lane);
-            let before = prior.clone();
-            let result = controlled_cat_tick(&mut port, &prior, 1.0 / 60.0, 2.0);
-            assert!(result.is_err(), "pre velocity lane {lane} was accepted");
-            assert_state_bits_eq(&prior, &before);
-            assert_eq!(
-                port.trace,
-                [
-                    MotionTrace::ReadTransform,
-                    MotionTrace::ReadRotation,
-                    MotionTrace::ReadVelocity,
-                    MotionTrace::Disable,
-                ]
-            );
+            let mut port = seed.clone();
+            port.post_velocity = poison_vector_lane(port.post_velocity, lane);
+            cases.push(port);
         }
-        for lane in 0..3 {
-            let mut poisoned_state = prior.clone();
-            poisoned_state.last_pos = poison_vector_lane(poisoned_state.last_pos, lane);
-            let before = poisoned_state.clone();
-            let mut port = valid.clone();
-            let result = controlled_cat_tick(&mut port, &poisoned_state, 1.0 / 60.0, 2.0);
-            assert!(result.is_err(), "prior position lane {lane} was accepted");
-            assert_state_bits_eq(&poisoned_state, &before);
-            assert_eq!(
-                port.trace,
-                [
-                    MotionTrace::ReadTransform,
-                    MotionTrace::ReadRotation,
-                    MotionTrace::ReadVelocity,
-                    MotionTrace::Disable,
-                ]
-            );
+        for lane in 0..6 {
+            let mut port = seed.clone();
+            port.on_floor = true;
+            let mut fact = cat_world_floor();
+            if lane < 3 {
+                fact.point = poison_vector_lane(fact.point, lane);
+            } else {
+                fact.normal = poison_vector_lane(fact.normal, lane - 3);
+            }
+            port.slides = vec![Some(vec![fact])];
+            cases.push(port);
         }
 
-        for kind in 0..3 {
-            let lanes = if kind == 0 { 12 } else { 3 };
-            for lane in 0..lanes {
-                let mut port = valid.clone();
-                match kind {
-                    0 => port.post_transform = poison_transform_lane(port.post_transform, lane),
-                    1 => port.post_rotation = poison_vector_lane(port.post_rotation, lane),
-                    _ => port.post_velocity = poison_vector_lane(port.post_velocity, lane),
-                }
-                let saved = port.pre_transform;
-                let before = prior.clone();
-                let result = controlled_cat_tick(&mut port, &prior, 1.0 / 60.0, 2.0);
-                assert!(
-                    result.is_err(),
-                    "post sample kind {kind} lane {lane} was accepted"
-                );
-                assert_state_bits_eq(&prior, &before);
-                let mut expected = vec![
-                    MotionTrace::ReadTransform,
-                    MotionTrace::ReadRotation,
-                    MotionTrace::ReadVelocity,
-                    MotionTrace::SetRotation(valid.pre_rotation),
+        for mut port in cases {
+            let saved = port.pre_transform;
+            let result = controlled_cat_tick(
+                &mut port,
+                &prior,
+                1.0 / 60.0,
+                SupportMotionConfig::CAT_DEFAULT,
+            );
+            assert!(result.is_err(), "a poisoned post-move sample was accepted");
+            assert_transform_bits_eq(port.post_transform, saved);
+            assert_eq!(port.post_velocity, Vector3::ZERO);
+            assert_eq!(
+                port.effect_trace(),
+                [
+                    MotionTrace::SetRotation(seed.pre_rotation),
                     MotionTrace::SetVelocity(Vector3::ZERO),
                     MotionTrace::MoveAndSlide,
-                    MotionTrace::ReadTransform,
-                ];
-                if kind >= 1 {
-                    expected.push(MotionTrace::ReadRotation);
-                }
-                if kind >= 2 {
-                    expected.push(MotionTrace::ReadVelocity);
-                }
-                expected.extend([
                     MotionTrace::SetTransform(saved),
                     MotionTrace::SetVelocity(Vector3::ZERO),
                     MotionTrace::Disable,
-                ]);
-                assert_eq!(port.trace, expected);
-                let rollback = &port.trace[port.trace.len() - 3..];
-                let MotionTrace::SetTransform(restored) = rollback[0] else {
-                    panic!("rollback must restore the saved full transform first");
-                };
-                assert_transform_bits_eq(restored, saved);
-                assert_eq!(rollback[1], MotionTrace::SetVelocity(Vector3::ZERO));
-                assert_eq!(rollback[2], MotionTrace::Disable);
-            }
+                ],
+                "a post-move refusal must restore the saved transform, zero velocity, then disable"
+            );
         }
+    }
 
-        let mut successful_port = valid.clone();
-        let success = controlled_cat_tick(&mut successful_port, &prior, 1.0 / 60.0, 2.0)
-            .expect("a completely finite tick must commit");
+    #[test]
+    fn cat_support_reader_scans_nested_contacts_actor_then_world_and_preserves_zero_id() {
+        let mut port = FakeCatMotionPort::valid();
+        port.on_floor = true;
+        port.slides = vec![
+            Some(vec![cat_actor_floor()]),
+            Some(vec![
+                CatRawSupportFact {
+                    collider_id: 0,
+                    ..cat_world_floor()
+                },
+                cat_world_floor(),
+            ]),
+        ];
+        let transform = ActorTransform::try_new(port.post_transform).unwrap();
+        let (support, collider_id) = read_cat_post_move_support(&mut port, transform).unwrap();
+        assert!(support.is_some(), "the first non-actor floor must be kept");
         assert_eq!(
-            successful_port
+            collider_id, None,
+            "a zero collider id must surface as no id, never a fabricated one"
+        );
+
+        port.slides = vec![Some(vec![cat_actor_floor(), cat_world_floor()])];
+        let (support, collider_id) = read_cat_post_move_support(&mut port, transform).unwrap();
+        assert!(support.is_some());
+        assert_eq!(collider_id, Some(cat_world_floor().collider_id));
+
+        port.on_floor = false;
+        port.slides = vec![Some(vec![cat_world_floor()])];
+        let (support, collider_id) = read_cat_post_move_support(&mut port, transform).unwrap();
+        assert_eq!(support, None, "a hidden floor must never be read at all");
+        assert_eq!(collider_id, None);
+    }
+
+    #[test]
+    fn cat_support_reader_rejects_every_poisoned_lane_and_bad_count() {
+        let mut port = FakeCatMotionPort::valid();
+        port.on_floor = true;
+        let transform = ActorTransform::try_new(port.post_transform).unwrap();
+
+        port.outer_count_override = Some(MAX_SLIDES + 1);
+        assert_eq!(
+            read_cat_post_move_support(&mut port, transform),
+            Err(CatSupportReadError::InvalidOuterCount(MAX_SLIDES + 1))
+        );
+        port.outer_count_override = None;
+
+        port.slides = vec![None];
+        assert_eq!(
+            read_cat_post_move_support(&mut port, transform),
+            Err(CatSupportReadError::MissingSlide(0))
+        );
+
+        port.slides = vec![Some(vec![cat_world_floor()])];
+        port.inner_count_override = Some((0, MOTION_RESULT_MAX_CONTACTS + 1));
+        assert_eq!(
+            read_cat_post_move_support(&mut port, transform),
+            Err(CatSupportReadError::InvalidInnerCount {
+                slide: 0,
+                count: MOTION_RESULT_MAX_CONTACTS + 1
+            })
+        );
+        port.inner_count_override = None;
+
+        let mut invalid_rid = cat_world_floor();
+        invalid_rid.collider_rid_valid = false;
+        port.slides = vec![Some(vec![invalid_rid])];
+        assert_eq!(
+            read_cat_post_move_support(&mut port, transform),
+            Err(CatSupportReadError::InvalidOrdinaryRid {
+                slide: 0,
+                contact: 0
+            })
+        );
+
+        let mut poisoned = cat_world_floor();
+        poisoned.point.x = f32::NAN;
+        port.slides = vec![Some(vec![poisoned])];
+        assert!(matches!(
+            read_cat_post_move_support(&mut port, transform),
+            Err(CatSupportReadError::InvalidValue(_))
+        ));
+
+        // An empty contact list is a distinct, explicit refusal from a
+        // missing slide entirely: zero contacts fails the inner count
+        // range, it is never silently read as "no slide here".
+        port.slides = vec![Some(vec![])];
+        assert_eq!(
+            read_cat_post_move_support(&mut port, transform),
+            Err(CatSupportReadError::InvalidInnerCount { slide: 0, count: 0 })
+        );
+    }
+
+    #[test]
+    fn cat_snap_probe_runs_only_for_a_hidden_floor_and_rejects_its_own_poisoned_lanes() {
+        let mut port = FakeCatMotionPort::valid();
+        let transform = ActorTransform::try_new(port.post_transform).unwrap();
+
+        // No ordinary ledger contact at all, and the physics floor flag is
+        // false: the probe must never fire.
+        port.on_floor = false;
+        port.probe_hit = true;
+        port.probe_contacts = vec![cat_world_floor()];
+        let (support, _) = read_cat_post_move_support(&mut port, transform).unwrap();
+        assert_eq!(support, None);
+        assert!(
+            !port
                 .trace
                 .iter()
-                .filter(|event| **event == MotionTrace::MoveAndSlide)
-                .count(),
-            1
-        );
-        let emitted: Vec<Vector3> = successful_port
-            .trace
-            .iter()
-            .filter_map(|event| match event {
-                MotionTrace::EmitWave { at, .. } => Some(*at),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            emitted.iter().any(|at| {
-                at.x.to_bits() == 1.265_625_f32.to_bits()
-                    && at.y.to_bits() == 0.93_f32.to_bits()
-                    && at.z.to_bits() == (-2.531_25_f32).to_bits()
-            }),
-            "the elevated presence voice must follow the post-move root"
-        );
-        for (actual, expected) in [
-            (success.state.last_pos.x, valid.pre_transform.origin.x),
-            (success.state.last_pos.y, valid.pre_transform.origin.y),
-            (success.state.last_pos.z, valid.pre_transform.origin.z),
-        ] {
-            assert_eq!(actual.to_bits(), expected.to_bits());
-        }
-        let commanded_rotation = successful_port
-            .trace
-            .iter()
-            .find_map(|event| match event {
-                MotionTrace::SetRotation(rotation) => Some(*rotation),
-                _ => None,
-            })
-            .expect("a successful tick must set its ordinary world yaw");
-        assert_eq!(
-            commanded_rotation.x.to_bits(),
-            valid.pre_rotation.x.to_bits()
-        );
-        assert_eq!(
-            commanded_rotation.z.to_bits(),
-            valid.pre_rotation.z.to_bits()
+                .any(|event| matches!(event, MotionTrace::Probe(_))),
+            "an unset floor flag must never run the cached snap probe"
         );
 
-        let mut raised_port = valid.clone();
-        raised_port.post_transform.origin.y = 1.5;
-        let raised = controlled_cat_tick(&mut raised_port, &prior, 1.0 / 60.0, 2.0)
-            .expect("a uniform elevated post-move sample must commit");
-        assert_eq!(raised.frame.support_delta_y.to_bits(), 0.75_f32.to_bits());
-        assert_eq!(raised.pose.pos.y.to_bits(), 1.5_f32.to_bits());
-        for (flat, elevated) in success
-            .state
-            .tail
-            .nodes()
-            .iter()
-            .zip(raised.state.tail.nodes())
-        {
-            assert!(
-                ordered_f32_bits(flat.x).abs_diff(ordered_f32_bits(elevated.x)) <= 1,
-                "one support transport must preserve tail X"
-            );
-            assert!(
-                ordered_f32_bits(flat.z).abs_diff(ordered_f32_bits(elevated.z)) <= 1,
-                "one support transport must preserve tail Z"
-            );
-            assert!(
-                ((elevated.y - flat.y) - 0.75).abs() <= f32::EPSILON,
-                "one support transport must lift every tail node exactly once"
-            );
-        }
+        // A floor flag with a wall-only ordinary ledger (no floorish contact)
+        // must fall back to the probe.
+        let mut wall = cat_world_floor();
+        wall.normal = Vector3::new(1.0, 0.0, 0.0);
+        port.on_floor = true;
+        port.slides = vec![Some(vec![wall])];
+        port.probe_hit = true;
+        port.probe_contacts = vec![cat_world_floor()];
+        let (support, collider_id) = read_cat_post_move_support(&mut port, transform).unwrap();
+        assert!(support.is_some(), "the probe fallback must be read");
+        assert_eq!(collider_id, Some(cat_world_floor().collider_id));
 
-        let mut contact_prior = prior.clone();
-        let position = ActorPosition::try_new(valid.pre_transform.origin).unwrap();
-        let yaw = ActorYaw::try_new(f64::from(valid.pre_rotation.y)).unwrap();
-        for _ in 0..7 {
-            contact_prior
-                .gait
-                .advance(
-                    StepDuration::from_raw(1.0 / 60.0),
-                    position,
-                    yaw,
-                    FiniteMeasure::try_new(0.6, "test.speed").unwrap(),
-                )
-                .unwrap();
-        }
-        assert!(contact_prior.gait.capture().in_swing[0]);
-        let mut contact_port = valid.clone();
-        controlled_cat_tick(&mut contact_port, &contact_prior, 1.0 / 60.0, 2.0)
-            .expect("the elevated touchdown tick must commit");
-        assert!(
-            contact_port.trace.iter().any(|event| matches!(
-                event,
-                MotionTrace::EmitWave { at, .. } if at.y.to_bits() == 0.77_f32.to_bits()
-            )),
-            "the elevated paw voice must follow its contact support: {:?}",
-            contact_port.trace
+        // A floor flag whose probe misses yields no support and no error.
+        port.probe_hit = false;
+        let (support, collider_id) = read_cat_post_move_support(&mut port, transform).unwrap();
+        assert_eq!(support, None);
+        assert_eq!(collider_id, None);
+
+        // The probe's own count and RID lanes are validated exactly like the
+        // ordinary ledger's.
+        port.probe_hit = true;
+        port.probe_count_override = Some(SNAP_PROBE_MAX_CONTACTS + 1);
+        assert_eq!(
+            read_cat_post_move_support(&mut port, transform),
+            Err(CatSupportReadError::InvalidProbeCount(
+                SNAP_PROBE_MAX_CONTACTS + 1
+            ))
         );
+        port.probe_count_override = None;
+
+        let mut invalid_probe_rid = cat_world_floor();
+        invalid_probe_rid.collider_rid_valid = false;
+        port.probe_contacts = vec![invalid_probe_rid];
+        assert_eq!(
+            read_cat_post_move_support(&mut port, transform),
+            Err(CatSupportReadError::InvalidProbeRid(0))
+        );
+    }
+
+    /// The snap-probe fallback must skip an actor-layer contact exactly
+    /// like the ordinary ledger scan does — a cat probing under itself and
+    /// finding another actor's collider before the world floor must not
+    /// accept that actor as support (`actor_support_test.gd`'s "walking off
+    /// world onto cat" law depends on this holding at both call sites, not
+    /// only the first one the ordinary ledger scan reaches).
+    #[test]
+    fn cat_snap_probe_skips_an_actor_layer_contact_and_keeps_the_world_floor() {
+        let mut port = FakeCatMotionPort::valid();
+        let transform = ActorTransform::try_new(port.post_transform).unwrap();
+        port.on_floor = true;
+        port.probe_hit = true;
+        port.probe_contacts = vec![cat_actor_floor(), cat_world_floor()];
+        let (support, collider_id) = read_cat_post_move_support(&mut port, transform).unwrap();
+        assert!(support.is_some(), "the first non-actor floor must be kept");
+        assert_eq!(collider_id, Some(cat_world_floor().collider_id));
     }
 
     #[test]
@@ -1654,6 +2728,30 @@ mod tests {
             )
             .expect_err("contradictory copied state must be refused");
             assert_eq!(error.path, path);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "editor-docs"))]
+mod editor_docs_tests {
+    #[test]
+    fn cat_motion_property_purpose_units_and_threshold_rule_reach_editor_docs() {
+        let xml = godot::docs::gather_xml_docs()
+            .find(|xml| xml.contains("<class name=\"WaveCat\""))
+            .expect("WaveCat must register an editor-docs XML class");
+        for phrase in [
+            "Downward acceleration in metres per second squared",
+            "Maximum downward speed in metres per second this cat may reach",
+            "must remain below Landing Full Speed",
+            "must exceed Landing Silent Speed",
+            "Maximum authored landing-wave gain for this cat, unitless",
+            "Maximum authored landing-wave radius in metres for this cat",
+            "staged into the active configuration only once the",
+        ] {
+            assert!(
+                xml.contains(phrase),
+                "WaveCat editor XML omitted `{phrase}`: {xml}"
+            );
         }
     }
 }
