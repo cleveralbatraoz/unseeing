@@ -2301,6 +2301,34 @@ mod tests {
         assert_eq!(success.state.tail.nodes(), expected_tail.nodes());
     }
 
+    /// A grounded tick must carry the actual world floor's collider
+    /// identity out through `CatTickSuccess.support_collider_id`, not drop
+    /// it: that identity is what lets the caller tell the cat's own body
+    /// apart from the ground it stands on (see the sibling player/cat
+    /// cross-identity gdUnit probe). Reuses the same real, floor-supported
+    /// fixture as the transport-count test above so the tick is proven
+    /// grounded on `cat_world_floor()` before its collider id is checked.
+    #[test]
+    fn cat_grounded_tick_carries_the_floors_collider_identity_through() {
+        let mut seed = FakeCatMotionPort::valid();
+        seed.on_floor = true;
+        seed.slides = vec![Some(vec![cat_world_floor()])];
+
+        let prior = controlled_state(&seed);
+        let mut port = seed.clone();
+        let success = controlled_cat_tick(&mut port, &prior, 0.0, SupportMotionConfig::CAT_DEFAULT)
+            .expect("a grounded tick across a real, floor-supported step must commit");
+
+        assert!(
+            matches!(success.state.motion.phase(), MotionPhase::Controlled),
+            "a floor-supported step must stay grounded, not depart to airborne"
+        );
+        assert_eq!(
+            success.support_collider_id,
+            Some(cat_world_floor().collider_id)
+        );
+    }
+
     /// A departing (Controlled-to-Airborne) tick must carry the brain's
     /// next progress sample forward to the ACHIEVED post-move position, not
     /// leave it pinned at the pre-move sample: a resumed brain's `progress`

@@ -71,9 +71,12 @@ func test_controlled_actors_at_different_elevations_do_not_create_contact() -> v
 	if player_support != null:
 		var player_support_id: int = player_support
 		assert_int(player_support_id).is_not_equal(cat.get_instance_id())
-	if cat_support != null:
-		var cat_support_id: int = cat_support
-		assert_int(cat_support_id).is_not_equal(player.get_instance_id())
+	# The cat is genuinely floor-settled here (cat_settled above already
+	# proves is_on_floor()), so unlike the player half this half is never
+	# vacuous: assert its identity check unconditionally.
+	assert_bool(cat_support != null).is_true()
+	var cat_support_id: int = cat_support
+	assert_int(cat_support_id).is_not_equal(player.get_instance_id())
 
 
 ## An airborne cat (layer 4, mask excludes both actor layers) falls clean
