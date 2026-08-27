@@ -353,6 +353,14 @@ func test_airborne_cat_with_a_completed_stride_still_emits_no_paw_voice() -> voi
 ## walked progress. The canonical capture blob's own `last_pos` field is
 ## the direct witness: if it ever fell behind the live body while airborne,
 ## a landing's `progress` would read the whole flight as one tick's walk.
+## Y, not X or Z, is the lane that actually witnesses this. Flight freezes
+## the cat's planar velocity at a modest speed (this test only requires
+## > 0.2 m/s), so one tick of horizontal drift is a few millimetres —
+## comfortably inside tolerance even if `last_pos` quietly lagged a full
+## tick behind. Y is the axis the body is actually falling along, and that
+## fall accelerates, so a one-tick-stale sample grows worse every tick this
+## loop runs: a regression that pins `last_pos` to the pre-flight body would
+## sail past an X/Z-only check.
 func test_first_resumed_brain_tick_receives_zero_flight_progress() -> void:
 	var main: UnseeingGame = auto_free(
 		WORLD_FIXTURE.game(WORLD_FIXTURE.DEFAULT_EXTENTS, false, false, true)
@@ -380,9 +388,18 @@ func test_first_resumed_brain_tick_receives_zero_flight_progress() -> void:
 		var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
 		var last_pos: Array = (blob["cats"] as Array)[0]["last_pos"]
 		var last_pos_x: String = last_pos[0]
+		var last_pos_y: String = last_pos[1]
 		var last_pos_z: String = last_pos[2]
 		assert_float(last_pos_x.to_float()).is_equal_approx(cat.global_position.x, 0.01)
 		assert_float(last_pos_z.to_float()).is_equal_approx(cat.global_position.z, 0.01)
+		# Measured against this exact scenario (fall_acceleration = 9.8 m/s²
+		# at 60 ticks/s): a correct sample matches the live body's Y to
+		# float32 round-trip noise, ~0.000001 m. A one-tick-stale sample
+		# instead lags by that tick's own fall distance, which grows from
+		# ~0.005 m at this loop's first tick to ~0.054 m by its last. 0.02 m
+		# sits far above the honest noise floor and comfortably below the
+		# lag once the fall has picked up speed.
+		assert_float(last_pos_y.to_float()).is_equal_approx(cat.global_position.y, 0.02)
 		checked += 1
 	assert_int(checked).is_greater(0)
 
