@@ -2752,6 +2752,15 @@ mod tests {
         let expected_packed = (2.0 * 10.0 + voice.gain() * 9.0) as f32;
         assert_eq!(wave_proof.slot().dat.w.to_bits(), expected_packed.to_bits());
         assert_eq!(wave_proof.raw_speed().to_bits(), 4.0_f64.to_bits());
+        // the ring's birth instant — nothing else pinned this proof's t0,
+        // so a wrong `now` reaching `CheckedWave::prepare` slipped through
+        // undetected; `slot().end` is not pinned separately because at this
+        // call site it is `t0 + max_r/speed + fade_tail(kind)` and every one
+        // of those other inputs (max_r, the 4.0 speed literal, kind 2) is
+        // already bit-pinned above or fixed in the source — asserting `end`
+        // too would just restate that arithmetic against already-known
+        // values, not add independent coverage.
+        assert_eq!(wave_proof.slot().t0.to_bits(), now.to_bits());
         // the REFLECTION proof pins origin, normal, reach, budget, time
         let reflected = reflection_proof.request();
         assert_eq!(reflected.at, at);

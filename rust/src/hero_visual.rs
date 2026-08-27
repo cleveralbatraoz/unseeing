@@ -1279,6 +1279,12 @@ mod tests {
         let expected_packed = (0.0 * 10.0 + 1.0 * 9.0) as f32;
         assert_eq!(wave_proof.slot().dat.w.to_bits(), expected_packed.to_bits());
         assert_eq!(wave_proof.raw_speed().to_bits(), 5.5_f64.to_bits());
+        // the ring's birth instant — see the landing test's sibling
+        // assertion for why `slot().end` is deliberately left unpinned here:
+        // it is `t0 + max_r/speed + fade_tail(kind)` and every other input
+        // (max_r, the 5.5 speed literal, kind 0) is already bit-pinned
+        // above, so asserting it too would only mirror this assertion.
+        assert_eq!(wave_proof.slot().t0.to_bits(), 3.25_f64.to_bits());
         // the REFLECTION proof pins origin, normal, reach, budget, time
         let reflected = reflection_proof.request();
         assert_eq!(reflected.at, world);
