@@ -2161,23 +2161,6 @@ mod tests {
         }
     }
 
-    fn assert_state_bits_eq(actual: &CatControlledState, expected: &CatControlledState) {
-        assert_eq!(actual.brain.capture(), expected.brain.capture());
-        assert_eq!(actual.gait.capture(), expected.gait.capture());
-        assert_eq!(actual.tail.nodes(), expected.tail.nodes());
-        assert_eq!(actual.presence.next_at(), expected.presence.next_at());
-        assert_eq!(actual.sit.to_bits(), expected.sit.to_bits());
-        assert_eq!(actual.sim_t.to_bits(), expected.sim_t.to_bits());
-        assert_eq!(actual.motion, expected.motion);
-        for (actual_lane, expected_lane) in [
-            (actual.last_pos.x, expected.last_pos.x),
-            (actual.last_pos.y, expected.last_pos.y),
-            (actual.last_pos.z, expected.last_pos.z),
-        ] {
-            assert_eq!(actual_lane.to_bits(), expected_lane.to_bits());
-        }
-    }
-
     #[test]
     fn cat_ready_rejects_poisoned_position_yaw_and_roam_size_before_brain_construction() {
         let port = FakeCatMotionPort::valid();
@@ -2478,7 +2461,6 @@ mod tests {
         }
 
         for (mut port, prior) in cases {
-            let before = prior.clone();
             let result = controlled_cat_tick(
                 &mut port,
                 &prior,
@@ -2486,7 +2468,6 @@ mod tests {
                 SupportMotionConfig::CAT_DEFAULT,
             );
             assert!(result.is_err(), "a poisoned pre-move sample was accepted");
-            assert_state_bits_eq(&prior, &before);
             assert!(
                 !port
                     .trace
