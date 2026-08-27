@@ -2243,6 +2243,64 @@ mod tests {
         );
     }
 
+    /// A grounded tick whose achieved Y differs from the prior tick's — a
+    /// real step up or down, not a hover at constant elevation — must carry
+    /// the tail's `transport_y(support_delta_y)` exactly once. A doubled
+    /// call at the site in `controlled_cat_tick` survives all fixtures that
+    /// hold elevation constant (delta 0 makes `transport_y`'s early return
+    /// a no-op whichever number of times it runs), so this fixture forces a
+    /// genuine nonzero delta through a full tick.
+    ///
+    /// The zero step duration is deliberate, not incidental: it makes every
+    /// per-node ease step in `Tail::advance_nodes` a hard no-op (its rate
+    /// factor is `(dt * rate).min(1.0)`), so the expected tail below can be
+    /// predicted by calling the *same* already-tested `transport_y`/
+    /// `advance` once each — without needing this test to also reproduce
+    /// the internal yaw the brain would have driven, since yaw only reaches
+    /// the eased (here suppressed) target.
+    #[test]
+    fn cat_controlled_tick_with_a_real_support_change_transports_the_tail_exactly_once() {
+        let mut seed = FakeCatMotionPort::valid();
+        seed.on_floor = true;
+        seed.slides = vec![Some(vec![cat_world_floor()])];
+        let step_up: f32 = 0.5;
+        seed.post_transform.origin.y = seed.pre_transform.origin.y + step_up;
+
+        let prior = controlled_state(&seed);
+        let mut port = seed.clone();
+        let success = controlled_cat_tick(&mut port, &prior, 0.0, SupportMotionConfig::CAT_DEFAULT)
+            .expect("a grounded tick across a real, floor-supported step must commit");
+
+        // confirm this fixture actually exercises a nonzero delta and stays
+        // grounded — otherwise the test would prove nothing about
+        // transport_y's call count
+        assert_eq!(success.frame.support_delta_y.to_bits(), step_up.to_bits());
+        assert!(
+            matches!(success.state.motion.phase(), MotionPhase::Controlled),
+            "a floor-supported step must stay grounded, not depart to airborne"
+        );
+
+        // independently predict the single-application tail by calling the
+        // production Tail::transport_y/advance once each on a fresh copy of
+        // the prior tail. `success.pose` is unaffected by how many times
+        // the tick's own transport_y ran (it is built from position, yaw,
+        // gait frame and sit — never from the tail), so re-deriving the
+        // root through it, rather than through the tick's tail, keeps this
+        // prediction independent of the very call this test is checking.
+        let root =
+            PosePoint::try_new(cat_body::skeleton(&success.pose).unwrap().tail_root).unwrap();
+        let yaw = ActorYaw::try_new(f64::from(seed.pre_rotation.y)).unwrap();
+        let support =
+            crate::support_motion::SupportElevation::try_new(seed.post_transform.origin.y).unwrap();
+        let mut expected_tail = prior.tail;
+        expected_tail.transport_y(step_up).unwrap();
+        expected_tail
+            .advance(StepDuration::from_raw(0.0), root, yaw, support, 0.0, 0.0)
+            .unwrap();
+
+        assert_eq!(success.state.tail.nodes(), expected_tail.nodes());
+    }
+
     /// A departing (Controlled-to-Airborne) tick must carry the brain's
     /// next progress sample forward to the ACHIEVED post-move position, not
     /// leave it pinned at the pre-move sample: a resumed brain's `progress`
