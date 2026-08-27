@@ -2413,4 +2413,20 @@ mod tests {
             MotionValueProblem::Negative
         );
     }
+
+    #[test]
+    fn a_landing_strictly_below_the_silent_threshold_stays_silent() {
+        // Below `landing_silent_speed_mps`, severity is negative, so the
+        // trailing `gain == 0.0 || range_m == 0.0` fallback never fires (it
+        // would need to compare against a negative, not zero). Only the
+        // early return can silence this speed; without it the function
+        // would hand back `Some(LandingVoice { gain: -0.17, range_m: -1.0 })`
+        // for the player and a matching negative pair for the cat.
+        let event = LandingEvent::try_new(1.0, support()).unwrap();
+        assert_eq!(
+            landing_voice(event, SupportMotionConfig::PLAYER_DEFAULT),
+            None
+        );
+        assert_eq!(landing_voice(event, SupportMotionConfig::CAT_DEFAULT), None);
+    }
 }
