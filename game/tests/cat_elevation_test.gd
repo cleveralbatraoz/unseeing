@@ -89,7 +89,7 @@ func test_stationary_cat_stands_on_table_support() -> void:
 	for _tick: int in 10:
 		await get_tree().physics_frame
 	assert_float(cat.global_position.y).is_equal_approx(
-		ELEVATION_FIXTURE.TABLE_TOP_Y, 0.0010001192092895508
+		ELEVATION_FIXTURE.TABLE_TOP_Y, ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M
 	)
 	assert_int(cat.collision_layer).is_equal(2)
 	# Task 7 cross-check: the observer's own motion dictionary agrees the
@@ -99,7 +99,7 @@ func test_stationary_cat_stands_on_table_support() -> void:
 	assert_bool(motion["support"] != null).is_true()
 	var support: Dictionary = motion["support"]
 	assert_float(support["point"].y).is_equal_approx(
-		ELEVATION_FIXTURE.TABLE_TOP_Y, 0.0010001192092895508
+		ELEVATION_FIXTURE.TABLE_TOP_Y, ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M
 	)
 
 
@@ -115,7 +115,7 @@ func test_stationary_cat_stands_on_bed_support() -> void:
 	for _tick: int in 10:
 		await get_tree().physics_frame
 	assert_float(cat.global_position.y).is_equal_approx(
-		ELEVATION_FIXTURE.BED_TOP_Y, 0.0010001192092895508
+		ELEVATION_FIXTURE.BED_TOP_Y, ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M
 	)
 	assert_int(cat.collision_layer).is_equal(2)
 	# Task 7 cross-check: the observer's own motion dictionary agrees the
@@ -125,7 +125,7 @@ func test_stationary_cat_stands_on_bed_support() -> void:
 	assert_bool(motion["support"] != null).is_true()
 	var support: Dictionary = motion["support"]
 	assert_float(support["point"].y).is_equal_approx(
-		ELEVATION_FIXTURE.BED_TOP_Y, 0.0010001192092895508
+		ELEVATION_FIXTURE.BED_TOP_Y, ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M
 	)
 
 

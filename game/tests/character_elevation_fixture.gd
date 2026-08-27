@@ -10,6 +10,17 @@ const TABLE_SCENE := preload("res://scenes/props/table.tscn")
 const TABLE_TOP_Y := 0.75  # Top centre 0.725 + half-height 0.025.
 const BED_TOP_Y := 0.48  # BedFrame centre 0.42 + half-height 0.06.
 
+## Settled-contact tolerance for every support-height assertion these
+## suites make: `SAFE_MARGIN_M` (0.001, `rust/src/nodes/support.rs`) plus
+## one f32 ULP taken in the binade [1, 2) (2^-23, 1.1920928955078125e-07),
+## not the ULP at each assertion's own magnitude. It is deliberately a
+## SINGLE shared bound covering every support height these suites assert,
+## from `BED_TOP_Y` (0.48) up through the player's 0.9, so it is
+## conservative rather than exact — larger than the true ULP at each of
+## those magnitudes (2^-24 or 2^-25), never smaller — and can neither
+## tighten a test into flakiness nor loosen one enough to hide a defect.
+const SETTLED_CONTACT_TOLERANCE_M := 0.0010001192092895508
+
 
 static func add_box(
 	parent: Node, centre: Vector3, size: Vector3, body_name: String

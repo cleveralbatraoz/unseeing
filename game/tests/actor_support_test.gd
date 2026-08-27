@@ -64,7 +64,7 @@ func test_controlled_actors_at_different_elevations_do_not_create_contact() -> v
 	assert_bool(cat_settled).is_true()
 	assert_float(player.global_position.y).is_equal_approx(0.9, 0.001)
 	assert_float(cat.global_position.y).is_equal_approx(
-		ELEVATION_FIXTURE.TABLE_TOP_Y, 0.0010001192092895508
+		ELEVATION_FIXTURE.TABLE_TOP_Y, ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M
 	)
 	var player_support: Variant = player.call("support_collider_id")
 	var cat_support: Variant = cat.call("support_collider_id")

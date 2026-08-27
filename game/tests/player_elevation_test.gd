@@ -238,7 +238,9 @@ func test_player_returns_to_control_on_lower_world_geometry_once() -> void:
 	assert_int(transitions).is_equal(1)
 	assert_int(player.collision_mask).is_equal(4_294_967_291)
 	assert_bool(player.call("support_collider_id") != null).is_true()
-	assert_float(player.global_position.y).is_equal_approx(0.9, 0.0010001192092895508)
+	assert_float(player.global_position.y).is_equal_approx(
+		0.9, ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M
+	)
 	# Task 7 cross-check: the observer independently reports control
 	# regained on real support, matching the layer/floor state already
 	# pinned above.
@@ -324,13 +326,14 @@ func test_snap_only_step_down_stays_controlled() -> void:
 	Input.action_release("move_right")
 	assert_bool(reached_lower).is_true()
 	assert_int(player.collision_mask).is_equal(4_294_967_291)
-	assert_float(player.global_position.y).is_equal_approx(0.82, 0.0010001192092895508)
+	assert_float(player.global_position.y).is_equal_approx(
+		0.82, ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M
+	)
 	assert_bool(player.call("support_collider_id") != null).is_true()
 
 
 func test_player_ramp_up_and_down_never_becomes_airborne() -> void:
 	const PLATFORM_ROOT_Y := 1.35
-	const ROOT_TOLERANCE_M := 0.0010001192092895508
 	var datum := Vector3.ZERO
 	auto_free(
 		ELEVATION_FIXTURE.add_box(
@@ -358,7 +361,9 @@ func test_player_ramp_up_and_down_never_becomes_airborne() -> void:
 			break
 	Input.action_release("move_right")
 	assert_bool(reached_platform).is_true()
-	assert_float(absf(player.global_position.y - PLATFORM_ROOT_Y)).is_less_equal(ROOT_TOLERANCE_M)
+	assert_float(absf(player.global_position.y - PLATFORM_ROOT_Y)).is_less_equal(
+		ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M
+	)
 	Input.action_press("move_left")
 	var returned_to_datum := false
 	for _tick: int in 120:
@@ -372,7 +377,9 @@ func test_player_ramp_up_and_down_never_becomes_airborne() -> void:
 			break
 	Input.action_release("move_left")
 	assert_bool(returned_to_datum).is_true()
-	assert_float(player.global_position.y).is_equal_approx(0.9, ROOT_TOLERANCE_M)
+	assert_float(player.global_position.y).is_equal_approx(
+		0.9, ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M
+	)
 	assert_int(pulses.live_count(0.0)).is_equal(0)
 	# Task 7 cross-check: the ramp round trip never left the observer's own
 	# phase reading — a channel this test never otherwise touches.
@@ -986,7 +993,9 @@ func test_audible_player_landing_uses_support_normal_and_relative_origin_once() 
 	assert_int(pulses.live_count(0.1)).is_equal(1)
 	# support-relative origin: platform top + 0.04, under the capsule
 	var origin: Vector3 = pulses.pos[0]
-	assert_float(origin.y).is_equal_approx(1.0 + 0.04, 0.0010001192092895508)
+	assert_float(origin.y).is_equal_approx(
+		1.0 + 0.04, ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M
+	)
 	assert_float(absf(origin.x)).is_less(0.4)
 	assert_float(absf(origin.z)).is_less(0.4)
 	# the reflecting emitter ran with the UP support normal: echoes exist
@@ -1001,7 +1010,9 @@ func test_audible_player_landing_uses_support_normal_and_relative_origin_once() 
 	assert_bool(motion["last_landing"] != null).is_true()
 	var landing: Dictionary = motion["last_landing"]
 	assert_vector(landing["normal"]).is_equal(Vector3.UP)
-	assert_float(landing["point"].y).is_equal_approx(1.0, 0.0010001192092895508)
+	assert_float(landing["point"].y).is_equal_approx(
+		1.0, ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M
+	)
 
 
 ## A hard drop caps the landing voice at the authored maxima: gain 0.85,
@@ -1025,7 +1036,7 @@ func test_high_player_drop_caps_gain_and_range() -> void:
 	assert_float(dat.z).is_equal(4.0)  # the wave law speed
 	assert_float(fmod(dat.w, 10.0) / 9.0).is_equal_approx(0.85, 1e-6)  # capped gain
 	var origin: Vector3 = pulses.pos[0]
-	assert_float(origin.y).is_equal_approx(0.04, 0.0010001192092895508)
+	assert_float(origin.y).is_equal_approx(0.04, ELEVATION_FIXTURE.SETTLED_CONTACT_TOLERANCE_M)
 	# Task 7 cross-check: the hard drop's real impact speed, read from the
 	# observer's own dictionary — a value the capped gain/range above
 	# never surfaces (they only prove the CLAMPED voice, not the fall).
