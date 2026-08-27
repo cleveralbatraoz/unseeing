@@ -155,6 +155,18 @@ const INVALID_HERO_MOTION: &str = "the hero motion is not a valid physical value
 
 /// A cat in the level never built its mind, gait, tail and pose. Refused
 /// rather than defaulted: a defaulted cat is a cat with a different life.
+///
+/// Both call sites below open their `format!` with a LITERAL — "cat
+/// capture refused — " — before interpolating this constant, rather than
+/// interpolating it first. `test/ci_boot_error_gate.sh`'s boot census can
+/// only read a message's opening off a string literal in the source; a
+/// format string that opened straight on this constant, colon right after,
+/// would put a synthesised token where the census expects to read one, and
+/// the gate bans that shape outright rather than trying to chase it — it
+/// cannot tell this constant apart from one that resolves to a real class
+/// name at a call site the census never sees. Leading with a literal keeps
+/// the opening honestly readable without changing what this constant says
+/// or where it is said.
 const UNBUILT_CAT: &str = "a level cat was never built — capture refuses a defaulted cat";
 
 /// A source is keeping no beat appointment, so there is no date to carry.
@@ -1019,10 +1031,12 @@ fn capture_cats(level: &WaveLevel) -> Result<Vec<CatCapture>, String> {
             if !cat.is_instance_valid() {
                 return Err("a level cat has been freed — capture refused".to_string());
             }
-            let capture = cat
-                .bind()
-                .capture_state()
-                .map_err(|reason| format!("{UNBUILT_CAT}: {reason} ({})", cat.get_name()))?;
+            let capture = cat.bind().capture_state().map_err(|reason| {
+                format!(
+                    "cat capture refused — {UNBUILT_CAT}: {reason} ({})",
+                    cat.get_name()
+                )
+            })?;
             if !cat.is_physics_processing() || !cat.is_processing() {
                 return Err(format!(
                     "cat {} has disabled processing — capture refused",
@@ -1056,10 +1070,9 @@ fn cat_motion_raw(level: &WaveLevel) -> Result<Vec<RawCatMotion>, String> {
                 return Err("a level cat has been freed — snapshot refused".to_string());
             }
             let name = cat.get_name().to_string();
-            let capture = cat
-                .bind()
-                .capture_state()
-                .map_err(|reason| format!("{UNBUILT_CAT}: {reason} ({name})"))?;
+            let capture = cat.bind().capture_state().map_err(|reason| {
+                format!("cat capture refused — {UNBUILT_CAT}: {reason} ({name})")
+            })?;
             let support_collider_id = read_support_collider_id(cat);
             Ok((
                 name,
