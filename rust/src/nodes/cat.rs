@@ -2707,9 +2707,31 @@ mod tests {
         )
         .unwrap();
 
+        // A body_yaw that already IS the canonical f32 engine image of some
+        // yaw (so the trailing `try_replacing_yaw` guard would accept it on
+        // its own terms) but of a DIFFERENT yaw than brain_yaw (so it is not
+        // the canonical image the cross-owner equality guard demands). Only
+        // the first guard can reject this value; if that guard were deleted,
+        // the second would wave it through. Derived through
+        // `canonicalize_replacing_yaw` at test runtime, never a hard-coded
+        // bit pattern, per the cross-platform-libm caution on this file.
+        let other_yaw = 0.9_f32;
+        let owned_by_other_yaw = f64::from(
+            GodotRotation::canonicalize_replacing_yaw(current_full, other_yaw)
+                .unwrap()
+                .world()
+                .y,
+        );
+        assert_ne!(
+            owned_by_other_yaw.to_bits(),
+            canonical_body_yaw.to_bits(),
+            "the isolating case must not silently collapse onto brain_yaw's own canonical image"
+        );
+
         let cases = [
             (
                 "pose.yaw",
+                "must match brain.yaw bit-for-bit",
                 [
                     canonical_body_yaw,
                     brain_yaw,
@@ -2722,6 +2744,7 @@ mod tests {
             ),
             (
                 "pose.amp",
+                "must match gait.amp bit-for-bit",
                 [
                     canonical_body_yaw,
                     brain_yaw,
@@ -2734,6 +2757,7 @@ mod tests {
             ),
             (
                 "pose.sit",
+                "must match the cat sit blend bit-for-bit",
                 [
                     canonical_body_yaw,
                     brain_yaw,
@@ -2746,10 +2770,24 @@ mod tests {
             ),
             (
                 "yaw",
+                "must match the canonical f32 engine image of brain.yaw",
                 [0.2, brain_yaw, brain_yaw, 0.375, 0.375, 0.625, 0.625],
             ),
+            (
+                "yaw",
+                "must match the canonical f32 engine image of brain.yaw",
+                [
+                    owned_by_other_yaw,
+                    brain_yaw,
+                    brain_yaw,
+                    0.375,
+                    0.375,
+                    0.625,
+                    0.625,
+                ],
+            ),
         ];
-        for (path, values) in cases {
+        for (path, rule, values) in cases {
             let error = prepare_cat_snapshot_links(
                 current_full,
                 CatSnapshotLinks {
@@ -2764,6 +2802,7 @@ mod tests {
             )
             .expect_err("contradictory copied state must be refused");
             assert_eq!(error.path, path);
+            assert_eq!(error.rule, rule);
         }
     }
 }
