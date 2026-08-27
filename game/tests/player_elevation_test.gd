@@ -8,7 +8,8 @@ const ELEVATION_FIXTURE := preload("res://tests/character_elevation_fixture.gd")
 
 const DT := 1.0 / 60.0
 ## One hand-derived f32 ULP at magnitude 2 — the transported body spans
-## y < 2, and a single post-build f32 add stays within half of this.
+## y < 2, and both checks below allow a single post-build f32 add to land
+## anywhere within this full ULP, not half of it.
 const F32_ULP_AT_2 := 2.384185791015625e-7
 
 const PLAYER_CONFIG_FIELDS: Array[String] = [

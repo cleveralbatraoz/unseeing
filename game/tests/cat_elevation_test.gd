@@ -145,8 +145,8 @@ func test_stationary_cat_stands_on_bed_support() -> void:
 ## a probe sweep found at most ~6.3e-7 m of X/Z drift after 90 ticks
 ## (settling to exactly 0 by 300), never the ~centimetre-scale error a
 ## genuinely broken translation would produce. `MESH_TRANSPORT_TOLERANCE_M`
-## keeps three more orders of magnitude of margin under that measured
-## ceiling. Voices ride the same root (already pinned by
+## keeps about 160x (~2.2 orders of magnitude) of margin under that
+## measured ceiling. Voices ride the same root (already pinned by
 ## `cat_test.gd::test_elevated_cat_pose_and_voices_share_root_support`).
 func test_walking_elevated_cat_transports_paws_tail_and_voices() -> void:
 	const MESH_TRANSPORT_TOLERANCE_M := 1.0e-4
