@@ -1459,6 +1459,82 @@ mod tests {
         }
     }
 
+    /// `support_elevation_at` (nodes/player.rs) computes `world_position.y -
+    /// PLAYER_STANDING_ROOT_Y`, which is negative whenever the hero stands
+    /// below the authored zero plane — a sunken room, not a hypothetical.
+    /// The single transport pass must sink the body by that same negative
+    /// amount, not skip it: a guard narrowed to `support_y > 0.0` would
+    /// leave the sunken hero's body floating at the flat baseline instead
+    /// of sinking to the actual floor.
+    #[test]
+    fn prepared_visual_sinks_every_body_vertex_when_support_is_negative() {
+        let prior = walking_vm(0.3);
+        let (flat, _) = prepare_hero_visual(
+            sample(
+                3.0,
+                0.0,
+                Vector3::new(1.0, 0.0, 0.0),
+                true,
+                Vector3::ZERO,
+                Vector3::ZERO,
+            ),
+            prior,
+            FootstepSuppression::CLEAR,
+            Vec::new(),
+            Vec::new(),
+            CountingPreparer::UNCALLED,
+        )
+        .unwrap();
+        let (sunken, _) = prepare_hero_visual(
+            sample(
+                3.0,
+                -0.45,
+                Vector3::new(1.0, 0.0, 0.0),
+                true,
+                Vector3::ZERO,
+                Vector3::ZERO,
+            ),
+            prior,
+            FootstepSuppression::CLEAR,
+            Vec::new(),
+            Vec::new(),
+            CountingPreparer::UNCALLED,
+        )
+        .unwrap();
+
+        assert_eq!(flat.body_vertices.len(), sunken.body_vertices.len());
+        for (index, (flat, sunken)) in flat
+            .body_vertices
+            .iter()
+            .zip(&sunken.body_vertices)
+            .enumerate()
+        {
+            assert_eq!(flat.0.x.to_bits(), sunken.0.x.to_bits());
+            assert_eq!(flat.0.z.to_bits(), sunken.0.z.to_bits());
+            assert_eq!(flat.1, sunken.1);
+            assert_eq!(flat.2.to_bits(), sunken.2.to_bits());
+            let expected = f64::from(flat.0.y) + f64::from(-0.45_f32);
+            assert!(
+                (f64::from(sunken.0.y) - expected).abs()
+                    <= lane_tolerance(flat.0.y) + lane_tolerance(sunken.0.y),
+                "vertex {index}: flat={}, sunken={}, expected={expected}, tolerance={}",
+                flat.0.y,
+                sunken.0.y,
+                lane_tolerance(flat.0.y) + lane_tolerance(sunken.0.y),
+            );
+        }
+        // Both shoes ride the same single transport as the vertices.
+        for (flat_shoe, sunken_shoe) in flat.shoes.into_iter().zip(sunken.shoes) {
+            assert_eq!(flat_shoe.x.to_bits(), sunken_shoe.x.to_bits());
+            assert_eq!(flat_shoe.z.to_bits(), sunken_shoe.z.to_bits());
+            let expected = f64::from(flat_shoe.y) + f64::from(-0.45_f32);
+            assert!(
+                (f64::from(sunken_shoe.y) - expected).abs()
+                    <= lane_tolerance(flat_shoe.y) + lane_tolerance(sunken_shoe.y)
+            );
+        }
+    }
+
     #[test]
     fn airborne_visual_advances_look_and_cane_but_not_walk_or_cadence() {
         let mut capture = walking_vm(crate::viewmodel::STOP_GRACE).capture();
