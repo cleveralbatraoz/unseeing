@@ -2340,6 +2340,7 @@ mod tests {
         );
         let achieved = seed.post_transform.origin;
         assert_eq!(success.state.last_pos.x.to_bits(), achieved.x.to_bits());
+        assert_eq!(success.state.last_pos.y.to_bits(), achieved.y.to_bits());
         assert_eq!(success.state.last_pos.z.to_bits(), achieved.z.to_bits());
     }
 
