@@ -153,21 +153,15 @@ const INVALID_HERO_POSITION: &str = "the hero position is not a valid physical v
 /// folding into `unknown`.
 const INVALID_HERO_MOTION: &str = "the hero motion is not a valid physical value";
 
-/// A cat in the level never built its mind, gait, tail and pose. Refused
-/// rather than defaulted: a defaulted cat is a cat with a different life.
-///
-/// Both call sites below open their `format!` with a LITERAL — "cat
-/// capture refused — " — before interpolating this constant, rather than
-/// interpolating it first. `test/ci_boot_error_gate.sh`'s boot census can
-/// only read a message's opening off a string literal in the source; a
-/// format string that opened straight on this constant, colon right after,
-/// would put a synthesised token where the census expects to read one, and
-/// the gate bans that shape outright rather than trying to chase it — it
-/// cannot tell this constant apart from one that resolves to a real class
-/// name at a call site the census never sees. Leading with a literal keeps
-/// the opening honestly readable without changing what this constant says
-/// or where it is said.
-const UNBUILT_CAT: &str = "a level cat was never built — capture refuses a defaulted cat";
+/// The POLICY clause both call sites below assert, and assert only once: a
+/// cat in the level never built its mind, gait, tail and pose is refused
+/// rather than defaulted, because a defaulted cat is a cat with a
+/// different life. This constant holds that clause alone, not the fact
+/// that led to it — each call site states its own fact (that the cat was
+/// never built, naming which cat and why) before interpolating this
+/// constant as its verdict, so the shared sentence is said in exactly one
+/// place no matter how many sites assert it.
+const UNBUILT_CAT: &str = "capture refuses a defaulted cat";
 
 /// A source is keeping no beat appointment, so there is no date to carry.
 /// Restoring it would leave the gate to book a fresh one off the restored
@@ -1023,6 +1017,17 @@ fn capture_sources(level: &WaveLevel) -> Result<Vec<SourceCapture>, String> {
 /// the two clocks — through the one door [`super::cat::WaveCat`] opens.
 /// The order is the blob's precondition, not a convenience: cats are
 /// encoded and compared positionally.
+///
+/// A cat whose capture fails opens the message on the LITERAL "a level cat
+/// was never built", names the cat and the reason its own
+/// [`super::cat::WaveCat::capture_state`] refused, and ends on
+/// [`UNBUILT_CAT`]. `test/ci_boot_error_gate.sh`'s boot census can only
+/// read a message's opening off a string literal in the source; a format
+/// string that opened straight on an interpolated constant would put a
+/// synthesised token where the census expects to read one, and the gate
+/// bans that shape outright rather than chasing it case by case — it
+/// cannot tell this constant apart from one that resolves to a real class
+/// name at a call site the census never sees.
 fn capture_cats(level: &WaveLevel) -> Result<Vec<CatCapture>, String> {
     level
         .cat_handles()
@@ -1033,7 +1038,7 @@ fn capture_cats(level: &WaveLevel) -> Result<Vec<CatCapture>, String> {
             }
             let capture = cat.bind().capture_state().map_err(|reason| {
                 format!(
-                    "cat capture refused — {UNBUILT_CAT}: {reason} ({})",
+                    "a level cat was never built — {reason} ({}) — {UNBUILT_CAT}",
                     cat.get_name()
                 )
             })?;
@@ -1071,7 +1076,7 @@ fn cat_motion_raw(level: &WaveLevel) -> Result<Vec<RawCatMotion>, String> {
             }
             let name = cat.get_name().to_string();
             let capture = cat.bind().capture_state().map_err(|reason| {
-                format!("cat capture refused — {UNBUILT_CAT}: {reason} ({name})")
+                format!("a level cat was never built — {reason} ({name}) — {UNBUILT_CAT}")
             })?;
             let support_collider_id = read_support_collider_id(cat);
             Ok((
