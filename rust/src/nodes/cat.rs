@@ -46,8 +46,8 @@ use crate::support_motion::{
     ActorPosition, ActorTransform, ActorVelocity, ActorYaw, FiniteMeasure, FiniteRotation,
     GodotRotation, LandingEvent, MotionConfigError, MotionConfigField, MotionOutcome, MotionPhase,
     MotionRestoreError, MotionState, MotionValueError, PlanarVelocity, PosePoint, QueuedWaveGate,
-    StepDuration, SupportContact, SupportMotionConfig, landing_voice, prepare, reconcile,
-    validate_restore,
+    StepDuration, SupportContact, SupportMotionConfig, ancestor_rotation_warning,
+    first_non_identity_ancestor, landing_voice, prepare, reconcile, validate_restore,
 };
 use crate::temporal::PreparedTime;
 
@@ -173,6 +173,11 @@ pub struct WaveCat {
     /// out-of-order landing threshold pair, naming both. `None` when the
     /// six authored scalars last agreed.
     threshold_warning: Option<String>,
+    /// The rotation seam's placement-law warning: set when some ancestor
+    /// between this cat and the scene root does not carry an identity
+    /// basis, naming that ancestor. `None` when the whole chain is
+    /// admissible — see [`support_motion::first_non_identity_ancestor`].
+    ancestor_warning: Option<String>,
     #[init(val = ArrayMesh::new_gd())]
     mesh: Gd<ArrayMesh>,
     /// The frame's raw triangle geometry — cleared and refilled every
@@ -899,6 +904,11 @@ fn controlled_cat_tick<P: CatMotionPort>(
 #[godot_api]
 impl ICharacterBody3D for WaveCat {
     fn ready(&mut self) {
+        // Checked first and unconditionally: the placement law is
+        // independent of injection status and of editor-vs-runtime, so a
+        // designer sees the warning triangle the moment a rotated ancestor
+        // is the problem, not only once pulses/data_mat are wired.
+        self.check_ancestor_placement();
         clear_limbs(self, &LIMBS);
         // All eleven solver values from the shared table, applied before the
         // editor/runtime split: an editor-frozen cat never moves, so these
@@ -1188,10 +1198,14 @@ impl ICharacterBody3D for WaveCat {
     }
 
     /// The Scene-dock warning triangle: an out-of-order landing threshold
-    /// pair, naming both — `None` staged means no warning at all.
+    /// pair naming both, then a rotated/scaled/sheared ancestor naming it —
+    /// `None` staged in either means no warning from that law.
     fn get_configuration_warnings(&self) -> PackedStringArray {
         let mut warnings = PackedStringArray::new();
         if let Some(message) = self.threshold_warning.as_ref() {
+            warnings.push(message.as_str());
+        }
+        if let Some(message) = self.ancestor_warning.as_ref() {
             warnings.push(message.as_str());
         }
         warnings
@@ -1613,6 +1627,59 @@ impl WaveCat {
         godot_error!("WaveCat: {phase} refused: {error}");
         self.base_mut().set_physics_process(false);
         self.base_mut().set_process(false);
+    }
+
+    /// Every Node3D ancestor's own LOCAL basis between this cat and the
+    /// scene root, nearest first — the same nearest-Node3D-parent walk
+    /// Godot's own global-transform composition performs
+    /// (`Node3D::get_parent_node_3d` already skips past a non-spatial
+    /// grouping `Node` to find it), read here as VALUES so the admissibility
+    /// decision itself stays a pure function of them. Bounded by the real
+    /// scene tree's depth, which is finite by construction — a node cannot
+    /// be its own ancestor.
+    fn ancestor_chain(&self) -> Vec<(String, Basis)> {
+        let mut chain = Vec::new();
+        let mut cursor = self.base().get_parent_node_3d();
+        while let Some(ancestor) = cursor {
+            chain.push((ancestor.get_name().to_string(), ancestor.get_basis()));
+            cursor = ancestor.get_parent_node_3d();
+        }
+        chain
+    }
+
+    /// Checks this cat's placement against the rotation seam's identity-
+    /// ancestor law and raises or clears the dual-channel warning. Called
+    /// once from `ready()` (editor and runtime alike): a level's ancestor
+    /// chain is authored geometry and does not change after scene load, the
+    /// same assumption `WaveWall`'s own ancestor law makes at its own entry
+    /// points.
+    fn check_ancestor_placement(&mut self) {
+        let chain = self.ancestor_chain();
+        let bases: Vec<Basis> = chain.iter().map(|(_, basis)| *basis).collect();
+        let warning = first_non_identity_ancestor(&bases)
+            .map(|index| ancestor_rotation_warning(&chain[index].0));
+        self.set_ancestor_warning(warning);
+    }
+
+    /// Keep one stable invalid episode, exactly `WaveWall`'s
+    /// `set_transform_warning` shape: editor mode stores the repair on the
+    /// warning triangle and stays out of the output panel; runtime says it
+    /// once, naming this cat by its own node name so the log line is
+    /// findable among several cats.
+    fn set_ancestor_warning(&mut self, warning: Option<String>) {
+        if self.ancestor_warning == warning {
+            return;
+        }
+        self.ancestor_warning = warning;
+        if let Some(warning) = self.ancestor_warning.as_deref()
+            && self.base().is_inside_tree()
+            && !Engine::singleton().is_editor_hint()
+        {
+            let detail = warning.strip_prefix("WaveCat: ").unwrap_or(warning);
+            godot_warn!("WaveCat '{}': {}", self.base().get_name(), detail);
+        }
+        self.base_mut()
+            .call_deferred("update_configuration_warnings", &[]);
     }
 
     fn apply_collision_pair(&mut self) {

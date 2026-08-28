@@ -1153,6 +1153,59 @@ pub fn validate_restore(
     Ok(())
 }
 
+/// The cat's placement law (Decision 2, `docs/superpowers/specs/`
+/// `2026-08-28-deterministic-rotation-wire-design.md`): the rotation seam
+/// stores and reads local euler verbatim, which is a faithful record of
+/// what the pure motion law commanded only when nothing between the cat and
+/// the scene root recomposes that local frame — that is, only when
+/// every ancestor between the cat and the scene root contributes no
+/// rotation, scale or shear at all — an ancestor's ORIGIN is irrelevant and
+/// is never read here, because translation never touches rotation
+/// composition.
+///
+/// Returns the index of the first ancestor (in the caller's own order,
+/// nearest first by convention) whose basis is not bit-for-bit
+/// [`Basis::IDENTITY`], or `None` when the whole chain is admissible —
+/// including the empty chain, when the cat sits directly under the scene
+/// root. Every lane is compared by exact bit pattern, never by tolerance or
+/// plain `==`: a basis that is numerically identity but spells one lane
+/// `-0.0` where identity spells it `+0.0` still breaks the seam's bit-exact
+/// guarantee, and `==` alone would miss it (`-0.0 == 0.0` is `true` in
+/// IEEE 754).
+pub fn first_non_identity_ancestor(ancestor_bases: &[Basis]) -> Option<usize> {
+    ancestor_bases
+        .iter()
+        .position(|basis| !basis_is_identity(*basis))
+}
+
+fn basis_is_identity(basis: Basis) -> bool {
+    let identity = Basis::IDENTITY;
+    vector3_bits_equal(basis.col_a(), identity.col_a())
+        && vector3_bits_equal(basis.col_b(), identity.col_b())
+        && vector3_bits_equal(basis.col_c(), identity.col_c())
+}
+
+fn vector3_bits_equal(a: Vector3, b: Vector3) -> bool {
+    a.x.to_bits() == b.x.to_bits()
+        && a.y.to_bits() == b.y.to_bits()
+        && a.z.to_bits() == b.z.to_bits()
+}
+
+/// The dual-channel message a WaveCat raises when
+/// [`first_non_identity_ancestor`] finds a violation on its own placement —
+/// a pure formatter, so the words (not only the decision) are cargo-tested.
+/// Makes no engine call of its own: `ancestor_name` is whatever Godot
+/// already called the offending node, handed in by the adapter that walked
+/// the chain.
+pub fn ancestor_rotation_warning(ancestor_name: &str) -> String {
+    format!(
+        "WaveCat: cat rotation is stored as local euler, so every ancestor between this cat \
+         and the scene root must carry an identity basis; ancestor '{ancestor_name}' does not. \
+         Move this cat under an untransformed ancestor, or clear that ancestor's own rotation, \
+         scale, or shear, to satisfy the placement law and clear this warning."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2428,5 +2481,88 @@ mod tests {
             None
         );
         assert_eq!(landing_voice(event, SupportMotionConfig::CAT_DEFAULT), None);
+    }
+
+    /// A hand-verified 90-degree yaw about Y, the same quadrant-basis
+    /// literal convention `level_plan.rs`'s own `quadrant_basis(1)` uses: no
+    /// trig, only unit columns of 0 and +/-1.
+    fn rotated_basis() -> Basis {
+        Basis::from_cols(
+            Vector3::new(0.0, 0.0, -1.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+        )
+    }
+
+    #[test]
+    fn an_empty_ancestor_chain_is_admissible() {
+        // The cat sits directly under the scene root: no ancestor to check.
+        assert_eq!(first_non_identity_ancestor(&[]), None);
+    }
+
+    #[test]
+    fn an_all_identity_ancestor_chain_is_admissible() {
+        let chain = [Basis::IDENTITY, Basis::IDENTITY, Basis::IDENTITY];
+        assert_eq!(first_non_identity_ancestor(&chain), None);
+    }
+
+    #[test]
+    fn a_translated_only_ancestor_is_admissible() {
+        // Translation lives in Transform3D::origin, never in Basis; an
+        // ancestor that only carries the cat somewhere else in the world
+        // still has an identity basis and must not trip the law.
+        let transform = Transform3D::new(Basis::IDENTITY, Vector3::new(5.0, -3.0, 2.0));
+        let chain = [transform.basis];
+        assert_eq!(first_non_identity_ancestor(&chain), None);
+    }
+
+    #[test]
+    fn a_rotated_ancestor_basis_is_inadmissible() {
+        let chain = [Basis::IDENTITY, rotated_basis()];
+        assert_eq!(first_non_identity_ancestor(&chain), Some(1));
+    }
+
+    #[test]
+    fn the_first_offending_ancestor_is_reported_not_the_last() {
+        // Two ancestors deviate; the nearer one (index 1) must be reported,
+        // not the farther one (index 2) — a caller fixing the wrong
+        // ancestor first would otherwise still see the warning persist.
+        let chain = [Basis::IDENTITY, rotated_basis(), rotated_basis()];
+        assert_eq!(first_non_identity_ancestor(&chain), Some(1));
+    }
+
+    #[test]
+    fn a_deviation_confined_to_the_up_column_is_still_inadmissible() {
+        // col_a and col_c stay exactly identity; only col_b (the "up"
+        // column) leans, proving the predicate checks every column rather
+        // than a subset that happens to catch a planar yaw.
+        let leaning = Basis::from_cols(
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.99, 0.02),
+            Vector3::new(0.0, 0.0, 1.0),
+        );
+        assert_eq!(first_non_identity_ancestor(&[leaning]), Some(0));
+    }
+
+    #[test]
+    fn a_basis_one_bit_off_identity_is_inadmissible() {
+        // Numerically identical to Basis::IDENTITY under `==`
+        // (`-0.0 == 0.0` is true in IEEE 754) but one bit off under
+        // `to_bits()` — proves the comparison is bit-exact, not `==`, which
+        // matters because the seam's whole guarantee is bit-exactness.
+        let negative_zero = Basis::from_cols(
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 1.0, 0.0),
+            Vector3::new(-0.0, 0.0, 1.0),
+        );
+        assert_eq!(first_non_identity_ancestor(&[negative_zero]), Some(0));
+    }
+
+    #[test]
+    fn ancestor_rotation_warning_names_the_law_and_the_offending_ancestor() {
+        let message = ancestor_rotation_warning("TiltedRoom");
+        assert!(message.contains("TiltedRoom"));
+        assert!(message.contains("local euler"));
+        assert!(message.contains("identity basis"));
     }
 }

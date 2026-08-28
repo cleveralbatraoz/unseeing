@@ -49,6 +49,17 @@ func _paw_voice_count(pulses: Pulses, now: float) -> int:
 	return count
 
 
+## Bit-exact float comparison, the same encode-and-hex idiom
+## restore_transaction_test.gd's own `_f32_bits` uses: GDScript's `==` alone
+## cannot distinguish -0.0 from 0.0 nor pin an exact bit pattern, and the
+## rotation seam's whole guarantee is bit-exactness, not approximate equality.
+func _f32_bits(value: float) -> String:
+	var bytes := PackedByteArray()
+	bytes.resize(4)
+	bytes.encode_float(0, value)
+	return bytes.hex_encode()
+
+
 ## The runtime collider bottom meets the same authored flat datum as the
 ## player's: `position.y + collider.position.y - capsule.height * 0.5 == 0`.
 ## Paws and the baked skin ride the same floor, one silhouette, one root.
@@ -899,6 +910,44 @@ func test_valid_complementary_threshold_edit_clears_both_warning_channels() -> v
 	cat.set("landing_full_speed", 7.0)
 	assert_int(cat.get_configuration_warnings().size()).is_equal(1)
 	cat.set("landing_full_speed", 9.0)
+	assert_array(cat.get_configuration_warnings()).is_empty()
+	assert_array(cat.call("get_configuration_warnings")).is_empty()
+
+
+## The rotation seam's placement law (issue #64/#82, Decision 2 —
+## docs/superpowers/specs/2026-08-28-deterministic-rotation-wire-design.md):
+## writing/reading the cat's own body rotation as LOCAL euler is valid only
+## when nothing between the cat and the scene root rotates, scales or
+## shears it. A cat born under a rotated ancestor says so on both channels,
+## the exact same dual-channel contract WaveWall keeps for its own
+## ancestor-transform law (props_test.gd's
+## test_wall_refuses_a_singular_authored_parent_at_ready).
+func test_cat_under_a_rotated_ancestor_raises_the_placement_warning() -> void:
+	var room: Node3D = auto_free(Node3D.new())
+	room.name = "TiltedRoom"
+	room.rotation = Vector3(0.0, PI / 2.0, 0.0)
+	var cat := WaveCat.new()
+	cat.name = "TiltedCat"
+	cat.pulses = Pulses.new()
+	cat.data_mat = ShaderMaterial.new()
+	room.add_child(cat)
+	var authored_warning := (
+		"WaveCat: cat rotation is stored as local euler, so every ancestor between this cat "
+		+ "and the scene root must carry an identity basis; ancestor 'TiltedRoom' does not. "
+		+ "Move this cat under an untransformed ancestor, or clear that ancestor's own "
+		+ "rotation, scale, or shear, to satisfy the placement law and clear this warning."
+	)
+	var runtime_warning := "WaveCat 'TiltedCat': " + authored_warning.trim_prefix("WaveCat: ")
+	var enter := func() -> void: add_child(room)
+	await assert_error(enter).is_push_warning(runtime_warning)
+	assert_array(cat.get_configuration_warnings()).contains([authored_warning])
+	assert_array(cat.call("get_configuration_warnings")).contains([authored_warning])
+
+
+## Every shipped cat sits at level root under transform-less ancestors (the
+## spec's own evidence) — the common case, and it must stay silent.
+func test_cat_at_scene_root_stays_silent_on_the_placement_warning() -> void:
+	var cat := _add_cat_direct(Vector3.ZERO)
 	assert_array(cat.get_configuration_warnings()).is_empty()
 	assert_array(cat.call("get_configuration_warnings")).is_empty()
 
