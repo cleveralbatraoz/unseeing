@@ -442,6 +442,15 @@ impl GodotRotation {
 /// correction and corrupt an exact fixed point into a value near negative
 /// pi. Checking domain membership first, in f32, and returning
 /// bit-identically on a hit is what keeps `+PI_F32` and `-PI_F32` exact.
+///
+/// Assumes `lane` is finite: a non-finite input reaches the `%` operator
+/// unfiltered and IEEE 754 `fmod` returns NaN for a NaN or infinite
+/// dividend, which this function would then hand back unchanged (NaN is
+/// its own domain-membership check's failure and its own zero check's
+/// failure). Total behaviour is a property of this lane's sole caller,
+/// [`GodotRotation::canonicalize`], which narrows through
+/// [`FiniteRotation::try_new`] before ever calling here — never of this
+/// function in isolation.
 fn canonicalize_lane(lane: f32) -> f32 {
     if lane == 0.0 {
         // `+0.0 == -0.0` under IEEE 754, so this one comparison catches
@@ -1697,6 +1706,50 @@ mod tests {
     }
 
     #[test]
+    fn godot_rotation_wraps_negative_four_radians_to_the_f32_image_of_tau_minus_four() {
+        // The positive-lane test above
+        // (godot_rotation_wraps_four_radians_to_the_f32_image_of_four_minus_tau)
+        // only ever exercises the `wrapped > PI_F64` branch's `-= TAU`
+        // correction. This fixture is its mirror image, hand-derived from
+        // scratch (not by negating the other test's bits), to exercise the
+        // untested sibling: `wrapped < -PI_F64`'s `+= TAU` correction.
+        //   lane = -4.0; lane_f64 = f64::from(lane) = -4.0 exactly (widen).
+        //   m = lane_f64 % TAU_f64                    -- fmod is exact, and
+        //     matches the dividend's sign: |-4.0| < TAU_f64 (~6.283185307),
+        //     so m = -4.0 unchanged.
+        //   m > PI_F64 (~3.14159265)? no. m < -PI_F64? yes (4.0 > pi), so
+        //     wrapped = m + TAU_f64 = TAU_f64 - 4.0.
+        //   TAU_f64 - 4.0 is an exact subtraction by Sterbenz's lemma
+        //     (4.0 / 2 = 2.0 <= TAU_f64 <= 2 * 4.0 = 8.0), and it is the
+        //     exact negation of the other test's `4.0 - TAU_f64` (also
+        //     Sterbenz-exact there): IEEE negation is a sign-bit flip with
+        //     no rounding, so TAU_f64 - 4.0 = -(4.0 - TAU_f64) bit-for-bit.
+        //     The other test derived 4.0 - TAU_f64 as bits
+        //     0xC00243F6A8885A30 (-2.2831853071795862...), so
+        //     TAU_f64 - 4.0 is bits 0x400243F6A8885A30 (+2.2831853071795862),
+        //     the same bits with the sign bit cleared.
+        //   Cast that f64 to f32 (correctly rounded). Round-to-nearest is
+        //     antisymmetric (round(-x) = -round(x) exactly), and the other
+        //     test's cast of -2.2831853071795862 landed on bits 0xC0121FB5,
+        //     so this cast of the exact positive counterpart lands on bits
+        //     0x40121FB5 (same exponent and mantissa, sign bit clear).
+        let canonical = GodotRotation::canonicalize(Vector3::new(0.0, -4.0, 0.0))
+            .expect("an out-of-domain finite yaw still canonicalizes")
+            .world();
+        assert_eq!(canonical.y.to_bits(), 0x4012_1FB5_u32);
+        assert!(canonical.y.abs() <= PI_F32);
+        assert!(GodotRotation::try_canonical(Vector3::new(0.0, -4.0, 0.0)).is_err());
+
+        // Idempotence: 2.2831852436065674 (bits 0x40121FB5) is well inside
+        // the closed domain, so a second pass must take the identity
+        // branch and return the same bits.
+        let repeated = GodotRotation::canonicalize(Vector3::new(0.0, canonical.y, 0.0))
+            .expect("canonicalization must remain total at its own output")
+            .world();
+        assert_eq!(repeated.y.to_bits(), canonical.y.to_bits());
+    }
+
+    #[test]
     fn godot_rotation_wrap_is_total_over_the_extreme_finite_f32_lanes() {
         // f32::MAX and -f32::MAX are the most extreme finite lanes the
         // domain admits (FiniteRotation rejects only non-finite values).
@@ -1791,13 +1844,18 @@ mod tests {
     }
 
     #[test]
-    fn godot_rotation_canonicalization_is_idempotent_for_observed_pitch_and_wrapped_yaw() {
+    // Renamed from `..._is_idempotent_for_observed_pitch_and_wrapped_yaw`:
+    // "observed pitch" named where the fixture value used to come from
+    // (an engine trig roundtrip's asin() output) rather than what this test
+    // actually pins under the arithmetic wire law — an already-in-domain
+    // lane that needs no wrap, alongside an out-of-domain lane that does.
+    fn godot_rotation_canonicalize_is_idempotent_for_an_in_domain_and_an_out_of_domain_lane() {
         for (requested, changed_axis, changes) in [
             (Vector3::new(-0.2, 0.0, 0.0), 0, false),
             (Vector3::new(0.0, 4.0, 0.0), 1, true),
         ] {
             let canonical = GodotRotation::canonicalize(requested)
-                .expect("finite observed rotations must reach a fixed point");
+                .expect("finite rotations must reach a fixed point");
             let canonical_world = canonical.world();
             let requested_lane = [requested.x, requested.y, requested.z][changed_axis];
             let canonical_lane =
@@ -1808,7 +1866,7 @@ mod tests {
             } else {
                 assert_eq!(canonical_lane.to_bits(), requested_lane.to_bits());
                 GodotRotation::try_canonical(requested)
-                    .expect("the observed pitch is already a fixed point");
+                    .expect("the in-domain lane is already a fixed point");
             }
 
             let admitted = GodotRotation::try_canonical(canonical_world)
@@ -1822,6 +1880,45 @@ mod tests {
                 assert_eq!(once.to_bits(), twice.to_bits());
             }
         }
+    }
+
+    #[test]
+    fn godot_rotation_pitch_domain_is_widened_past_the_retired_trig_laws_asin_range() {
+        // The retired `Basis` roundtrip law could only ever produce a pitch
+        // lane from `asin`, whose range is the closed `[-pi/2, pi/2]` —
+        // about `[-1.5707964, 1.5707964]` in f32. Decision 1 defines
+        // canonical rotation as a normal form over engine EULER TRIPLES, not
+        // over SO(3) elements, and gives pitch the SAME closed domain as
+        // every other lane: `[-PI_F32, PI_F32]`. 2.0 rad is dyadic (exact in
+        // both f32 and f64, so no rounding enters this fixture at all),
+        // strictly greater than f32's `FRAC_PI_2` (~1.5707964), and strictly
+        // less than `PI_F32` (~3.1415927) — a value the old law could never
+        // have accepted as a pitch lane, and the widened wire domain must
+        // admit bit-identically (the identity branch: an in-domain lane is
+        // its own canonical image).
+        let pitch = 2.0_f32;
+        assert!(
+            pitch > std::f32::consts::FRAC_PI_2,
+            "fixture must exceed the retired asin range"
+        );
+        assert!(
+            pitch <= PI_F32,
+            "fixture must still sit inside the widened closed domain"
+        );
+        let current_full = Vector3::new(0.0, 0.25, -0.5);
+
+        let canonical =
+            GodotRotation::canonicalize(Vector3::new(pitch, current_full.y, current_full.z))
+                .expect("a pitch beyond the retired asin range is canonicalizable under Decision 1")
+                .world();
+        assert_eq!(canonical.x.to_bits(), pitch.to_bits());
+
+        let installed = GodotRotation::try_replacing_pitch(current_full, pitch).expect(
+            "the widened pitch domain must accept this lane, not refuse it as the old law would",
+        );
+        assert_eq!(installed.world().x.to_bits(), pitch.to_bits());
+        assert_eq!(installed.world().y.to_bits(), current_full.y.to_bits());
+        assert_eq!(installed.world().z.to_bits(), current_full.z.to_bits());
     }
 
     #[test]
