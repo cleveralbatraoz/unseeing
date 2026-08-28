@@ -1917,6 +1917,18 @@ struct CatSnapshotLinks {
     pose_sit: f64,
 }
 
+/// Checks that a restored cat's copied-state cross-references still hold —
+/// pose mirrors brain/gait/sit bit-for-bit, and body.yaw is exactly the wire
+/// law's canonical f32 image of brain.yaw — then returns the rotation to
+/// install. The equality check against `canonical.world().y` (not against
+/// `brain_lane` itself) is the part of this function that actually rejects
+/// an in-domain but mismatched body_yaw: under the arithmetic wire law an
+/// in-domain lane is its own canonical image, so the trailing
+/// `try_replacing_yaw` call below is identity-satisfied for ANY in-domain
+/// `body_yaw` — it exists to refuse an out-of-domain one, not to catch a
+/// cross-owner mismatch. The cross-owner equality guard above it is the only
+/// check standing between this function and an artifact that copied one
+/// cat's in-domain yaw onto another's brain.
 fn prepare_cat_snapshot_links(
     current_full: Vector3,
     links: CatSnapshotLinks,
@@ -3135,6 +3147,61 @@ mod tests {
             assert_eq!(error.path, path);
             assert_eq!(error.rule, rule);
         }
+    }
+
+    /// `copied_cat_state_requires_the_exact_producer_relationships` only ever
+    /// exercises in-domain brain yaws (0.1, 0.2), so it never reaches
+    /// `prepare_cat_snapshot_links`'s call into
+    /// `GodotRotation::canonicalize_replacing_yaw`'s WRAP branch — every
+    /// brain yaw it tries is already its own canonical image. This test
+    /// picks an out-of-domain brain yaw and pins that the cross-owner guard
+    /// re-derives the wire law's wrap deterministically, and refuses the
+    /// brain's own unwrapped spelling.
+    #[test]
+    fn cross_owner_guard_accepts_the_wire_laws_wrapped_image_of_an_out_of_domain_brain_yaw() {
+        let current_full = Vector3::new(0.25, 0.0, 0.125);
+        let links_with = |body_yaw: f64, brain_yaw: f64| CatSnapshotLinks {
+            body_yaw,
+            brain_yaw,
+            pose_yaw: brain_yaw,
+            gait_amp: 0.375,
+            pose_amp: 0.375,
+            cat_sit: 0.625,
+            pose_sit: 0.625,
+        };
+
+        // brain_yaw = 4.0 rad lies outside the closed wire domain
+        // [-PI_F32, PI_F32] (PI_F32 ~= 3.14159274). The brain lane narrows
+        // losslessly to 4.0_f32 (dyadic, exact — no rounding on the f64-to-
+        // f32 narrow), and the wire law wraps that exactly as hand-derived
+        // in support_motion.rs's
+        // godot_rotation_wraps_four_radians_to_the_f32_image_of_four_minus_tau:
+        //   4.0 % TAU_f64 = 4.0                     -- fmod is exact, no
+        //     reduction needed (0 <= 4.0 < TAU_f64).
+        //   4.0 > PI_F64? yes, so wrapped = 4.0 - TAU_f64 -- an exact
+        //     same-exponent (Sterbenz) subtraction, f64 bits
+        //     0xC00243F6A8885A30.
+        //   Cast to f32 (correctly rounded): bits 0xC0121FB5.
+        // The capture-side contract (`CatSnapshotLinks::body_yaw`'s
+        // producer) is that body_yaw is that wrapped f32 image WIDENED BACK
+        // to f64 — not the raw 4.0 the brain itself still holds.
+        let brain_yaw = 4.0_f64;
+        let wrapped_body_yaw = f64::from(f32::from_bits(0xC012_1FB5));
+
+        prepare_cat_snapshot_links(current_full, links_with(wrapped_body_yaw, brain_yaw))
+            .expect("the guard must re-derive the wire law's own wrap deterministically");
+
+        // The unwrapped spelling — the brain's own raw out-of-domain
+        // yaw — must be refused: it is not the wire law's canonical image
+        // of itself, so nothing about "it's finite and it's what the brain
+        // actually holds" satisfies the cross-owner equality guard.
+        let error = prepare_cat_snapshot_links(current_full, links_with(brain_yaw, brain_yaw))
+            .expect_err("the unwrapped brain yaw must not satisfy the wire law's wrap path");
+        assert_eq!(error.path, "yaw");
+        assert_eq!(
+            error.rule,
+            "must match the wire law's canonical f32 image of brain.yaw"
+        );
     }
 }
 
