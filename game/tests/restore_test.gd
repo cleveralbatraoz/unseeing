@@ -12,22 +12,58 @@ func test_a_restored_cat_resumes_the_same_life() -> void:
 	if cats.is_empty():
 		fail("the explicit restore fixture carries no cat")
 		return
-	var cat: WaveCat = cats[0]
-	# let the cat live a little, on real physics — main's own process()
-	# advances the clock and ticks every cat in the tree each frame, so
-	# no manual clock-driving is needed here (see observer_test's helpers
-	# for the same idiom)
-	for _i in 30:
+	var target_env: Dictionary = main.capture_env()
+	target_env["now"] = 8.0
+	main.apply_env(target_env)
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var captured_cat: Dictionary = (blob["cats"] as Array)[0]
+	captured_cat["presence_next"] = "8.0"
+	var hash_result: Dictionary = main.observer.canonical_hash_of(blob)
+	assert_str(str(hash_result.get("unavailable", ""))).is_empty()
+	blob["hash"] = hash_result["hash"]
+
+	# Let the composition root inject a later clock before rewinding. The
+	# restored physics tick below then runs with root processing disabled, so
+	# only the cat's prepared private clock can date the due pulse.
+	for _i in 8:
 		await get_tree().process_frame
-	var mood_at_capture: int = cat.mood()
-	var paws_at_capture: PackedVector3Array = cat.paw_positions()
-	# the capture_state/restore_state doors built this task are pub(crate)
-	# Rust, with no #[func] surface yet — the real equivalence gates are
-	# the cargo lockstep tests (cat_brain, cat_gait, cat_body) plus Task
-	# 9/10's blob round trip; this test only pins that a live scene cat is
-	# capturable at all, i.e. never in the "never built" refusal state.
-	assert_int(mood_at_capture).is_not_equal(-1)
-	assert_int(paws_at_capture.size()).is_equal(4)
+	assert_float(main.now).is_greater(8.0)
+	main.set_process(false)
+	var was_paused := get_tree().paused
+	get_tree().paused = true
+	var verdict: Dictionary = main.restore_blob(blob)
+	assert_str(str(verdict.get("unavailable", ""))).is_empty()
+	main.player.tap()
+	get_tree().paused = false
+	await get_tree().physics_frame
+	await get_tree().process_frame
+	get_tree().paused = true
+	var fresh: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_str(str(fresh.get("unavailable", ""))).is_empty()
+	var restored_last_tap := str((fresh["hero"] as Dictionary)["last_tap"]).to_float()
+	assert_float(restored_last_tap).is_equal(8.0)
+
+	var snap: Dictionary = main.observer.snapshot(8.0)
+	assert_str(str(snap.get("unavailable", ""))).is_empty()
+	var matching_presence := 0
+	for slot_value: Variant in snap["slots"] as Array:
+		var slot: Dictionary = slot_value
+		var state: String = slot["state"]
+		var kind: int = slot["kind"]
+		var birth: float = slot["birth"]
+		var max_r: float = slot["max_r"]
+		var gain: float = slot["gain"]
+		if (
+			state == "Live"
+			and kind == 2
+			and is_equal_approx(birth, 8.0)
+			and is_equal_approx(max_r, WaveCat.presence_range())
+			and is_equal_approx(gain, WaveCat.presence_gain())
+		):
+			matching_presence += 1
+	assert_int(matching_presence).is_equal(1)
+	main.set_process(true)
+	get_tree().paused = was_paused
 
 
 ## A world that has actually run: sources hold appointments, the hero body
@@ -57,10 +93,15 @@ func test_capture_is_total_and_carries_its_own_hash() -> void:
 	var main := await _boot_ticked()
 	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
 	assert_bool(blob.has("unavailable")).is_false()
-	assert_int(blob["format_version"]).is_equal(1)
+	assert_int(blob["format_version"]).is_equal(2)
 	assert_int((blob["slots"] as Array).size()).is_equal(64)
 	assert_int((blob["cats"] as Array).size()).is_equal(main.cats().size())
 	assert_str(blob["hash"]).has_length(16)
+	var hero: Dictionary = blob["hero"]
+	assert_bool(hero.has("support_collider_id")).is_false()
+	for cat_value: Variant in blob["cats"] as Array:
+		var cat: Dictionary = cat_value
+		assert_bool(cat.has("support_collider_id")).is_false()
 	# hero group carries the viewmodel clocks snapshot() never had
 	var vm: Dictionary = blob["hero"]["viewmodel"]
 	assert_bool(vm.has("step_t")).is_true()
@@ -199,6 +240,125 @@ func test_a_negative_zero_survives_the_journey() -> void:
 ## original the comparison is made against untouched.
 func _copy(blob: Dictionary) -> Dictionary:
 	return JSON.parse_string(JSON.stringify(blob, "", true, true)) as Dictionary
+
+
+## The diagnostic hashes syntax only: it is safe to use while constructing a
+## deliberately invalid semantic fixture, and it never changes the world it
+## inspects. That independence is what lets the transaction suite prove each
+## preflight refusal without inheriting the original blob's stale hash.
+func test_canonical_hash_of_is_read_only_and_names_syntax_faults() -> void:
+	var main := await _boot_ticked()
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var before_env: Dictionary = main.capture_env()
+	var before_hash: String = blob["hash"]
+	var diagnostic: Dictionary = main.observer.canonical_hash_of(_copy(blob))
+	assert_str(str(diagnostic.get("unavailable", ""))).is_empty()
+	assert_str(diagnostic["hash"]).is_equal(before_hash)
+	assert_dict(main.capture_env()).is_equal(before_env)
+	var after: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_str(after["hash"]).is_equal(before_hash)
+
+	var broken := _copy(blob)
+	((broken["hero"] as Dictionary)["motion"] as Dictionary).erase("phase")
+	var refused: Dictionary = main.observer.canonical_hash_of(broken)
+	assert_str(refused["unavailable"]).contains("hero.motion.phase: missing")
+
+
+## Motion's wire is deliberately narrower than a Godot Vector: planar
+## velocity has exactly two f32 text lanes and every optional group is either
+## null or a dictionary. Each damaged value is independent and must name its
+## own dotted location instead of being defaulted to dormant state.
+func test_motion_wire_refuses_missing_wrong_and_inconsistent_values_by_path() -> void:
+	var main := await _boot_ticked()
+	var blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var cases: Array[Array] = []
+
+	var missing_motion := _copy(blob)
+	(missing_motion["hero"] as Dictionary).erase("motion")
+	cases.append([missing_motion, "hero.motion: missing"])
+	var wrong_optional := _copy(blob)
+	((wrong_optional["hero"] as Dictionary)["motion"] as Dictionary)["support"] = []
+	cases.append([wrong_optional, "hero.motion.support: expected null or a dictionary"])
+	var unknown_phase := _copy(blob)
+	var unknown_phase_group: Dictionary = (
+		(unknown_phase["hero"] as Dictionary)["motion"] as Dictionary
+	)["phase"]
+	unknown_phase_group["kind"] = "floating"
+	cases.append([unknown_phase, 'hero.motion.phase.kind: unknown motion phase "floating"'])
+	var short_planar := _copy(blob)
+	var short_motion: Dictionary = (short_planar["hero"] as Dictionary)["motion"]
+	short_motion["phase"] = {
+		"kind": "airborne", "planar_velocity": ["1.0"], "vertical_velocity": "-1.0"
+	}
+	short_motion["support"] = null
+	cases.append([short_planar, "hero.motion.phase.planar_velocity: expected 2 entries, found 1"])
+	var wrong_planar_lane := _copy(blob)
+	var wrong_lane_motion: Dictionary = (wrong_planar_lane["hero"] as Dictionary)["motion"]
+	wrong_lane_motion["phase"] = {
+		"kind": "airborne", "planar_velocity": ["1.0", true], "vertical_velocity": "-1.0"
+	}
+	wrong_lane_motion["support"] = null
+	cases.append([wrong_planar_lane, "hero.motion.phase.planar_velocity[1]: expected a string"])
+	var nonfinite := _copy(blob)
+	var nonfinite_motion: Dictionary = (nonfinite["hero"] as Dictionary)["motion"]
+	nonfinite_motion["phase"] = {
+		"kind": "airborne", "planar_velocity": ["NaN", "0.0"], "vertical_velocity": "-1.0"
+	}
+	nonfinite_motion["support"] = null
+	cases.append([nonfinite, "hero.motion.phase.planar_velocity[0]: must be finite"])
+	var positive_y := _copy(blob)
+	var positive_motion: Dictionary = (positive_y["hero"] as Dictionary)["motion"]
+	positive_motion["phase"] = {
+		"kind": "airborne", "planar_velocity": ["0.0", "0.0"], "vertical_velocity": "0.25"
+	}
+	positive_motion["support"] = null
+	cases.append([positive_y, "hero.motion.phase.vertical_velocity: is inconsistent"])
+	var airborne_support := _copy(blob)
+	var supported_motion: Dictionary = (airborne_support["hero"] as Dictionary)["motion"]
+	supported_motion["phase"] = {
+		"kind": "airborne", "planar_velocity": ["0.0", "0.0"], "vertical_velocity": "-0.25"
+	}
+	supported_motion["support"] = {"point": ["0.0", "0.0", "0.0"], "normal": ["0.0", "1.0", "0.0"]}
+	cases.append([airborne_support, "hero.motion.support: is inconsistent"])
+	var zero_normal := _copy(blob)
+	var zero_motion: Dictionary = (zero_normal["hero"] as Dictionary)["motion"]
+	zero_motion["support"] = {"point": ["0.0", "0.0", "0.0"], "normal": ["0.0", "0.0", "0.0"]}
+	cases.append([zero_normal, "hero.motion.support.normal: must be a nonzero vector"])
+	var negative_landing := _copy(blob)
+	var landing_motion: Dictionary = (negative_landing["hero"] as Dictionary)["motion"]
+	landing_motion["last_landing"] = {
+		"impact_speed": "-0.25",
+		"support": {"point": ["0.0", "0.0", "0.0"], "normal": ["0.0", "1.0", "0.0"]}
+	}
+	cases.append([negative_landing, "hero.motion.last_landing.impact_speed: must be non-negative"])
+	# Gates, the player latch, and gait support are required schema fields too.
+	# Their spellings and common support datum are parser questions, not live
+	# adapter capability questions.
+	main.player.queue_wave(2, Vector3(1.0, 0.5, 2.0), 3.0, 4.0, 0.5, 0, Vector3.UP)
+	var queued_blob: Dictionary = main.observer.capture(main.now, main.capture_env())
+	var missing_gate := _copy(queued_blob)
+	var wave: Dictionary = ((missing_gate["hero"] as Dictionary)["queued_waves"] as Array)[0]
+	wave.erase("gate")
+	cases.append([missing_gate, "hero.queued_waves[0].gate: missing"])
+	var unknown_gate := _copy(queued_blob)
+	var other_wave: Dictionary = ((unknown_gate["hero"] as Dictionary)["queued_waves"] as Array)[0]
+	other_wave["gate"] = "perhaps"
+	cases.append([unknown_gate, 'hero.queued_waves[0].gate: unknown queued-wave gate "perhaps"'])
+	var missing_suppression := _copy(queued_blob)
+	(missing_suppression["hero"] as Dictionary).erase("footstep_suppression_pending")
+	cases.append([missing_suppression, "hero.footstep_suppression_pending: missing"])
+	var missing_support_y := _copy(queued_blob)
+	var gait: Dictionary = ((missing_support_y["cats"] as Array)[0] as Dictionary)["gait"]
+	gait.erase("support_y")
+	cases.append([missing_support_y, "cats[0].gait.support_y: missing"])
+	var poisoned_support_y := _copy(queued_blob)
+	var poisoned_gait: Dictionary = ((poisoned_support_y["cats"] as Array)[0] as Dictionary)["gait"]
+	poisoned_gait["support_y"] = "NaN"
+	cases.append([poisoned_support_y, "cats[0].gait.support_y: must be finite"])
+
+	for one: Array in cases:
+		var refusal: Dictionary = main.observer.canonical_hash_of(one[0] as Dictionary)
+		assert_str(refusal["unavailable"]).contains(str(one[1]))
 
 
 ## The marker a hand-built level needs to have somewhere to wake the hero

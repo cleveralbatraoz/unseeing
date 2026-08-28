@@ -65,3 +65,45 @@ func test_cat_roam_size_is_a_bounded_vector_in_metres() -> void:
 	var p := _hint_of("WaveCat", "roam_size")
 	assert_int(p["hint"]).is_equal(PROPERTY_HINT_RANGE)
 	assert_str(p["hint_string"]).contains("suffix")
+
+
+func test_player_motion_knobs_keep_their_exact_authored_ranges_and_units() -> void:
+	var expected: Dictionary = {
+		"player_fall_acceleration": ["0.1", "30", "0.1", "suffix: m/s²"],
+		"player_terminal_fall_speed": ["0.5", "50", "0.5", "suffix: m/s"],
+		"player_landing_silent_speed": ["0", "10", "0.1", "suffix: m/s"],
+		"player_landing_full_speed": ["0.1", "20", "0.1", "suffix: m/s"],
+		"player_landing_max_gain": ["0", "1", "0.01"],
+		"player_landing_max_range": ["0", "10", "0.1", "suffix: m"],
+	}
+	for property_name: String in expected:
+		var property := _hint_of("UnseeingGame", property_name)
+		assert_int(property["type"]).is_equal(TYPE_FLOAT)
+		assert_int(property["hint"]).is_equal(PROPERTY_HINT_RANGE)
+		var hint_string: String = property["hint_string"]
+		var tokens: PackedStringArray = hint_string.split(",")
+		for token: String in expected[property_name]:
+			assert_bool(tokens.has(token)).is_true()
+
+
+## Each cat is its own actor: unlike the player's single motion knobs hosted
+## on UnseeingGame, every WaveCat instance carries its own six exported
+## scalars — same authored ranges/units as the player's equivalents, but
+## installed per placed cat rather than once for the whole scene.
+func test_cat_motion_knobs_keep_their_exact_authored_ranges_and_units() -> void:
+	var expected: Dictionary = {
+		"fall_acceleration": ["0.1", "30", "0.1", "suffix: m/s²"],
+		"terminal_fall_speed": ["0.5", "50", "0.5", "suffix: m/s"],
+		"landing_silent_speed": ["0", "10", "0.1", "suffix: m/s"],
+		"landing_full_speed": ["0.1", "20", "0.1", "suffix: m/s"],
+		"landing_max_gain": ["0", "1", "0.01"],
+		"landing_max_range": ["0", "10", "0.1", "suffix: m"],
+	}
+	for property_name: String in expected:
+		var property := _hint_of("WaveCat", property_name)
+		assert_int(property["type"]).is_equal(TYPE_FLOAT)
+		assert_int(property["hint"]).is_equal(PROPERTY_HINT_RANGE)
+		var hint_string: String = property["hint_string"]
+		var tokens: PackedStringArray = hint_string.split(",")
+		for token: String in expected[property_name]:
+			assert_bool(tokens.has(token)).is_true()

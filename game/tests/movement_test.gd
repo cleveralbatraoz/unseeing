@@ -1,13 +1,16 @@
 extends GdUnitTestSuite
 ## The hero's walk against real physics: a careful pace on open ground,
-## a flat map with no vertical drift, and walls that truly stop the body.
+## controlled supported motion with no vertical drift, and walls that truly
+## stop the body.
 
 const TICKS := 30
+const DT := 1.0 / 60.0
 
 var _player: UnseeingPlayer
 
 
 func before_test() -> void:
+	_add_box(Vector3(0.0, -0.05, 0.0), Vector3(20.0, 0.1, 20.0))
 	_player = auto_free(UnseeingPlayer.new())
 	_player.pulses = Pulses.new()
 	_player.position = Vector3(0, 0.9, 0)
@@ -30,14 +33,31 @@ func _add_box(center: Vector3, size: Vector3) -> void:
 	add_child(body)
 
 
-## The player owns its camera: the viewmodel reports a bob offset, and the
-## player alone moves the eye around the fixed base height.
-func test_head_bob_moves_camera_around_base() -> void:
-	_player.set_head_bob(0.02)
-	var base := UnseeingPlayer.cam_base_y()
-	assert_float(_player.camera.position.y).is_equal_approx(base + 0.02, 0.0001)
-	_player.set_head_bob(0.0)
-	assert_float(_player.camera.position.y).is_equal_approx(base, 0.0001)
+## The eye's height is committed only by an atomic hero frame: a real
+## HeroBody drives one nonzero-bob frame and the camera lands exactly at
+## base + bob — and no raw `set_head_bob` or `request_cane_sweep` door
+## remains registered for anything else to move it through.
+func test_head_bob_is_committed_only_by_an_atomic_hero_frame() -> void:
+	_player.set_physics_process(false)
+	var hero: HeroBody = auto_free(HeroBody.new())
+	hero.player = _player
+	hero.camera = _player.camera
+	hero.pulses = _player.pulses
+	hero.cane_mat = ShaderMaterial.new()
+	hero.body_mat = ShaderMaterial.new()
+	add_child(hero)
+	var now := 0.0
+	for frame: int in 10:
+		now += DT
+		_player.velocity = Vector3(0, 0, -UnseeingPlayer.speed())
+		hero.update(now, DT)
+	assert_bool(hero.bob_offset != 0.0).is_true()
+	# one hand-derived f32 ULP at the eye's ~0.7 magnitude
+	assert_float(_player.camera.position.y).is_equal_approx(
+		UnseeingPlayer.cam_base_y() + hero.bob_offset, 5.960464477539063e-8
+	)
+	assert_bool(ClassDB.class_has_method("UnseeingPlayer", "set_head_bob", true)).is_false()
+	assert_bool(ClassDB.class_has_method("UnseeingPlayer", "request_cane_sweep", true)).is_false()
 
 
 ## No silent nulls: a player without its injected pulse pool reports the miss
@@ -63,8 +83,8 @@ func test_move_actions_register_once() -> void:
 
 
 ## Open ground: TICKS physics frames of forward input advance the hero along
-## its facing at ~SPEED, and the flat-map law holds — velocity.y is zero on
-## every single tick.
+## its facing at ~SPEED, and controlled supported motion keeps velocity.y
+## exactly zero on every single tick.
 func test_open_floor_walk_at_speed() -> void:
 	await get_tree().physics_frame
 	var start := _player.global_position

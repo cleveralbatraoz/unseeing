@@ -8,7 +8,7 @@
 
 use godot::builtin::Vector3;
 
-use crate::pulse_pool::{MAXP, PulsePool, fade_tail};
+use crate::pulse_pool::{MAXP, PulsePool, decode_packed, fade_tail};
 
 /// Whether a slot ever held a sound, and whether it still does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,8 +84,9 @@ fn slot(pool: &PulsePool, index: usize, now: f64) -> SlotObservation {
     let max_r = f64::from(dat.y);
     let speed = f64::from(dat.z);
     // The shader's own decode of the packed lane.
-    let kind = (f64::from(dat.w) / 10.0).floor() as i32;
-    let gain = (f64::from(dat.w) % 10.0) / 9.0;
+    let (kind_lane, gain_lane) = decode_packed(dat.w);
+    let kind = kind_lane as i32;
+    let gain = f64::from(gain_lane);
     let end = birth + max_r / speed + fade_tail(kind);
     let age = now - birth;
     let state = if end >= now {
@@ -182,6 +183,19 @@ mod tests {
         assert_eq!(s.kind, 2);
         assert!((s.gain - 0.8).abs() < 0.001, "got {}", s.gain);
         assert_eq!(s.origin, Vector3::ONE);
+    }
+
+    /// GLSL `mod` uses `x - y * floor(x / y)`, unlike Rust's signed
+    /// remainder. A negative future kind must therefore still expose the
+    /// non-negative gain packed beside it.
+    #[test]
+    fn glsl_packed_gain_decode_matches_negative_kind_mod_semantics() {
+        let mut pool = PulsePool::new();
+        pool.emit_omni(-1, Vector3::ZERO, 6.0, 5.5, 0.5, 0.0)
+            .unwrap();
+        let observed = slots(&pool, 0.5);
+        assert_eq!(observed[0].kind, -1);
+        assert_eq!(observed[0].gain, 0.5);
     }
 
     /// A slot past its end is Expired, distinct from Never — the pool

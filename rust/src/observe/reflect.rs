@@ -29,7 +29,9 @@ use godot::builtin::Vector3;
 
 use crate::clustering::{self, RayHit};
 use crate::echo_queue::EchoQueue;
+use crate::pulse_pool::{CheckedWave, OMNI_COS, WaveOrigin};
 use crate::ray_fan;
+use crate::temporal::prepare_time;
 
 /// How many collected explanations an observer keeps before the oldest
 /// falls off. A debugging loop that requests and never collects must not
@@ -64,8 +66,16 @@ pub const REFUSED_CLOCK: &str =
 
 /// A NaN origin or normal casts rays nowhere and reports positions no
 /// agent can act on.
-pub const REFUSED_GEOMETRY: &str =
-    "reflection request refused: at and normal must be finite — a non-finite origin casts nothing";
+pub const REFUSED_GEOMETRY: &str = "reflection request refused: origin, normal, and derived fan geometry must remain finite in f32";
+
+/// The checked live caster supplies representable hits, but the pure
+/// explanation remains total over its explicit hit slice. One unschedulable
+/// kept point refuses the whole answer instead of disappearing.
+pub const REFUSED_APPOINTMENT: &str =
+    "reflection explanation refused: echo appointment is not representable";
+
+pub const REFUSED_HIT: &str =
+    "reflection fan refused: physics server returned malformed hit geometry";
 
 /// One question: the sound whose reflections are being explained, as it
 /// would have been emitted. The kind, the loudness and the space are all
@@ -88,52 +98,191 @@ pub struct ReflectionRequest {
     pub now: f64,
 }
 
-impl ReflectionRequest {
-    /// Why this question cannot be answered, if it cannot.
-    ///
-    /// Checked once, at the boundary, BEFORE a frame is promised: a
-    /// request that could only ever produce infinities is refused in the
-    /// layer's own one-key grammar rather than answered with numbers that
-    /// cross the wire as `null`. Total over every float, NaN included.
-    #[must_use]
-    pub fn refusal(&self) -> Option<&'static str> {
-        // finiteness FIRST, so the ordered comparison that follows never
-        // sees a NaN — `NaN <= 0.0` is false, and a bare `<= 0.0` test
-        // would quietly accept it
-        if !self.speed.is_finite() || self.speed <= 0.0 {
-            return Some(REFUSED_SPEED);
-        }
-        if !self.max_r.is_finite() || self.max_r <= 0.0 {
-            return Some(REFUSED_MAX_R);
-        }
-        if !self.now.is_finite() {
-            return Some(REFUSED_CLOCK);
-        }
-        if !self.at.is_finite() || !self.normal.is_finite() {
-            return Some(REFUSED_GEOMETRY);
-        }
-        None
+/// A reflection fan whose complete caller-supplied geometry has been proved
+/// representable before any queue, pool, or physics-space mutation. The
+/// retained directions and f32 reach are the exact values the engine caster
+/// consumes, so no unchecked arithmetic is repeated at the boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CheckedReflectionRequest {
+    request: ReflectionRequest,
+    ray_origin: Vector3,
+    reach_lane: f32,
+    directions: Vec<Vector3>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReflectionValueError {
+    field: &'static str,
+    reason: &'static str,
+}
+
+impl ReflectionValueError {
+    fn new(field: &'static str, reason: &'static str) -> Self {
+        Self { field, reason }
     }
 
-    /// Where the rays actually start: lifted off the birth surface, or
-    /// they would begin inside the struck collider and answer from places
-    /// the wave never reached.
-    #[must_use]
-    pub fn ray_origin(&self) -> Vector3 {
-        self.at + self.normal * clustering::RAY_ORIGIN_LIFT
+    pub(crate) fn field(self) -> &'static str {
+        self.field
     }
 
-    /// How far a ray of this fan may travel. The single commonest answer
-    /// to "why did that wall stay silent" is that it stands past this.
-    #[must_use]
-    pub fn reach(&self) -> f64 {
-        clustering::ray_length(self.max_r)
+    pub(crate) fn reason(self) -> &'static str {
+        self.reason
+    }
+}
+
+impl CheckedReflectionRequest {
+    pub(crate) fn prepare(request: ReflectionRequest) -> Result<Self, ReflectionValueError> {
+        for (lane, field) in [request.normal.x, request.normal.y, request.normal.z]
+            .into_iter()
+            .zip(["normal.x", "normal.y", "normal.z"])
+        {
+            if !lane.is_finite() {
+                return Err(ReflectionValueError::new(field, REFUSED_GEOMETRY));
+            }
+        }
+        let now = prepare_time(request.now)
+            .map_err(|_| ReflectionValueError::new("now", REFUSED_CLOCK))?;
+        CheckedWave::prepare(
+            0,
+            request.at,
+            request.max_r,
+            request.speed,
+            1.0,
+            now,
+            Vector3::ZERO,
+            OMNI_COS,
+        )
+        .map_err(|error| {
+            let reason = match error.field() {
+                "speed" | "end" | "ring_time" => REFUSED_SPEED,
+                "max_r" => REFUSED_MAX_R,
+                _ => REFUSED_GEOMETRY,
+            };
+            ReflectionValueError::new(error.field(), reason)
+        })?;
+
+        let normal = request.normal;
+        if normal != Vector3::ZERO {
+            let length_squared = normal.x * normal.x + normal.y * normal.y + normal.z * normal.z;
+            if !length_squared.is_finite() || length_squared <= 0.0 {
+                return Err(ReflectionValueError::new("normal", REFUSED_GEOMETRY));
+            }
+        }
+        let ray_origin = request.at + normal * clustering::RAY_ORIGIN_LIFT;
+        if !ray_origin.is_finite() {
+            return Err(ReflectionValueError::new("ray_origin", REFUSED_GEOMETRY));
+        }
+        let reach = clustering::ray_length(request.max_r);
+        let reach_lane = reach as f32;
+        if !reach_lane.is_finite() || reach_lane <= 0.0 {
+            return Err(ReflectionValueError::new("reach", REFUSED_GEOMETRY));
+        }
+
+        let mut directions = Vec::with_capacity(ray_fan::RAYS);
+        for index in 0..ray_fan::RAYS {
+            let direction = ray_fan::fan_direction(index);
+            let dot = direction.dot(normal);
+            if !dot.is_finite() {
+                return Err(ReflectionValueError::new("fan.dot", REFUSED_GEOMETRY));
+            }
+            if normal == Vector3::ZERO || dot >= ray_fan::SHADOW_DOT {
+                let endpoint = ray_origin + direction * reach_lane;
+                if !endpoint.is_finite() {
+                    return Err(ReflectionValueError::new("fan.endpoint", REFUSED_GEOMETRY));
+                }
+                directions.push(direction);
+            }
+        }
+
+        Ok(Self {
+            request,
+            ray_origin,
+            reach_lane,
+            directions,
+        })
     }
 
-    /// The directions this request would cast — the nominal fan culled to
-    /// the hemisphere in front of the birth surface.
-    pub fn directions(&self) -> impl Iterator<Item = Vector3> {
-        ray_fan::fan_directions(self.normal)
+    pub(crate) fn ray_origin(&self) -> Vector3 {
+        self.ray_origin
+    }
+
+    pub(crate) fn request(&self) -> ReflectionRequest {
+        self.request
+    }
+
+    pub(crate) fn reach_lane(&self) -> f32 {
+        self.reach_lane
+    }
+
+    pub(crate) fn directions(&self) -> impl Iterator<Item = Vector3> + '_ {
+        self.directions.iter().copied()
+    }
+}
+
+/// One physics-server hit proved safe for clustering and echo-origin
+/// construction. The engine dictionary is untrusted; this owner validates
+/// every lane and the derived f32 distance before a hit enters a cell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct CheckedRayHit(RayHit);
+
+impl CheckedRayHit {
+    pub(crate) fn prepare(
+        position: Vector3,
+        normal: Vector3,
+        request: &CheckedReflectionRequest,
+    ) -> Result<Self, ReflectionValueError> {
+        for (lane, field) in [position.x, position.y, position.z].into_iter().zip([
+            "hit.position.x",
+            "hit.position.y",
+            "hit.position.z",
+        ]) {
+            if !lane.is_finite() {
+                return Err(ReflectionValueError::new(field, REFUSED_HIT));
+            }
+        }
+        WaveOrigin::try_new(position).map_err(|error| {
+            let field = match error.axis() {
+                "x" => "hit.position.x",
+                "y" => "hit.position.y",
+                _ => "hit.position.z",
+            };
+            ReflectionValueError::new(field, REFUSED_HIT)
+        })?;
+        for (lane, field) in [normal.x, normal.y, normal.z].into_iter().zip([
+            "hit.normal.x",
+            "hit.normal.y",
+            "hit.normal.z",
+        ]) {
+            if !lane.is_finite() {
+                return Err(ReflectionValueError::new(field, REFUSED_HIT));
+            }
+        }
+        let normal_length_squared = normal.x * normal.x + normal.y * normal.y + normal.z * normal.z;
+        if !normal_length_squared.is_finite() || normal_length_squared <= 0.0 {
+            return Err(ReflectionValueError::new("hit.normal", REFUSED_HIT));
+        }
+        let dist = (position - request.ray_origin()).length();
+        if !dist.is_finite() || dist < 0.0 || dist > request.reach_lane() {
+            return Err(ReflectionValueError::new("hit.distance", REFUSED_HIT));
+        }
+        let echo_origin = position + normal * clustering::SURFACE_OFFSET;
+        WaveOrigin::try_new(echo_origin).map_err(|error| {
+            let field = match error.axis() {
+                "x" => "hit.echo_origin.x",
+                "y" => "hit.echo_origin.y",
+                _ => "hit.echo_origin.z",
+            };
+            ReflectionValueError::new(field, REFUSED_HIT)
+        })?;
+        Ok(Self(RayHit {
+            position,
+            normal,
+            dist,
+        }))
+    }
+
+    pub(crate) fn ray_hit(self) -> RayHit {
+        self.0
     }
 }
 
@@ -211,13 +360,13 @@ impl ReflectionExplanation {
 /// `rays_cast` is passed in rather than derived: the caster knows how many
 /// queries it truly made, and a count re-derived here could disagree with
 /// the rays whose results are being explained.
-#[must_use]
-pub fn explain_clustering(
-    request: &ReflectionRequest,
+pub(crate) fn explain_clustering(
+    request: &CheckedReflectionRequest,
     rays_cast: usize,
     hits: &[RayHit],
-) -> ReflectionExplanation {
-    let budget = clustering::echo_budget(request.max_echoes);
+) -> Result<ReflectionExplanation, &'static str> {
+    let raw = request.request();
+    let budget = clustering::echo_budget(raw.max_echoes);
     let self_surface_drops = hits
         .iter()
         .filter(|hit| clustering::is_self_surface(hit.dist))
@@ -228,11 +377,12 @@ pub fn explain_clustering(
     // the cap in a second place, and the two would drift.
     let cells_found = clustering::cluster_hits(hits.iter().copied(), usize::MAX).len();
     let kept = clustering::cluster_hits(hits.iter().copied(), budget);
-    ReflectionExplanation {
-        at: request.at,
+    let points = appointments(request, &kept)?;
+    Ok(ReflectionExplanation {
+        at: raw.at,
         origin: request.ray_origin(),
-        normal: request.normal,
-        reach: request.reach(),
+        normal: raw.normal,
+        reach: f64::from(request.reach_lane()),
         fan_size: ray_fan::RAYS,
         rays_cast,
         rays_struck: hits.len(),
@@ -246,8 +396,8 @@ pub fn explain_clustering(
         cells_found,
         budget,
         dropped_past_budget: cells_found.saturating_sub(kept.len()),
-        points: appointments(request, &kept),
-    }
+        points,
+    })
 }
 
 /// When each surviving point would answer, and how loudly.
@@ -256,22 +406,27 @@ pub fn explain_clustering(
 /// the queue's own rather than a second copy of them — and so that asking
 /// the question cannot possibly reach the queue the game drains.
 fn appointments(
-    request: &ReflectionRequest,
+    request: &CheckedReflectionRequest,
     kept: &[clustering::SurfaceHit],
-) -> Vec<ClusteredPoint> {
+) -> Result<Vec<ClusteredPoint>, &'static str> {
+    let raw = request.request();
     let mut scratch = EchoQueue::new();
+    let mut points = Vec::with_capacity(kept.len());
     for hit in kept {
-        scratch.schedule(request.now, hit.dist, hit.point, UNIT_GAIN, request.speed);
-    }
-    kept.iter()
-        .zip(scratch.pending())
-        .map(|(hit, echo)| ClusteredPoint {
+        scratch
+            .schedule(raw.now, hit.dist, hit.point, UNIT_GAIN, raw.speed)
+            .map_err(|_| REFUSED_APPOINTMENT)?;
+        let Some(echo) = scratch.pending().last() else {
+            return Err(REFUSED_APPOINTMENT);
+        };
+        points.push(ClusteredPoint {
             point: hit.point,
             dist: hit.dist,
             at_t: echo.at_t,
             gain_fraction: echo.gain,
-        })
-        .collect()
+        });
+    }
+    Ok(points)
 }
 
 /// What a collected explanation turned out to be.
@@ -310,7 +465,7 @@ pub enum Collected {
 #[derive(Debug, Default)]
 pub struct ExplanationLedger {
     next_id: i64,
-    waiting: Vec<(i64, ReflectionRequest)>,
+    waiting: Vec<(i64, CheckedReflectionRequest)>,
     ready: Vec<(i64, Answer)>,
 }
 
@@ -318,7 +473,7 @@ impl ExplanationLedger {
     /// Book a question and return its id. Ids start at 1, so 0 is never a
     /// valid one — a caller that dropped the return value cannot collect
     /// somebody else's answer by accident.
-    pub fn request(&mut self, request: ReflectionRequest) -> i64 {
+    pub(crate) fn request(&mut self, request: CheckedReflectionRequest) -> i64 {
         self.next_id = self.next_id.saturating_add(1);
         self.waiting.push((self.next_id, request));
         if self.waiting.len() > EXPLANATION_MEMORY {
@@ -330,8 +485,17 @@ impl ExplanationLedger {
     /// Every question waiting on a physics frame, removed from the book.
     /// The caster answers them; anything it fails to answer is simply
     /// forgotten, which reads as an unknown id rather than a lie.
-    pub fn take_requests(&mut self) -> Vec<(i64, ReflectionRequest)> {
+    pub(crate) fn take_requests(&mut self) -> Vec<(i64, CheckedReflectionRequest)> {
         std::mem::take(&mut self.waiting)
+    }
+
+    /// Allocate an id for an impossible request and file its answer without
+    /// ever placing unchecked geometry in the physics-frame queue.
+    pub(crate) fn refuse(&mut self, reason: &'static str) -> i64 {
+        self.next_id = self.next_id.saturating_add(1);
+        let id = self.next_id;
+        self.answer(id, Answer::Refused(reason));
+        id
     }
 
     /// File an answer, ageing out the oldest once the book is full.
@@ -376,6 +540,14 @@ mod tests {
         }
     }
 
+    fn checked(request: ReflectionRequest) -> CheckedReflectionRequest {
+        CheckedReflectionRequest::prepare(request).expect("test request must be representable")
+    }
+
+    fn checked_tap() -> CheckedReflectionRequest {
+        checked(tap())
+    }
+
     fn hit(position: Vector3, dist: f32) -> RayHit {
         RayHit {
             position,
@@ -406,7 +578,8 @@ mod tests {
             hit(Vector3::new(0.0, 0.0, 4.0), 3.0),
             hit(Vector3::new(3.0, 0.0, 0.0), 4.0),
         ];
-        let e = explain_clustering(&tap(), 20, &hits);
+        let e =
+            explain_clustering(&checked_tap(), 20, &hits).expect("the tap schedules every point");
         assert_eq!(e.rays_cast, 20);
         assert_eq!(e.rays_struck, 3);
         assert_eq!(e.rays_missed(), 17);
@@ -425,7 +598,8 @@ mod tests {
             hit(Vector3::new(4.20, 0.0, 4.2), 1.8),
             hit(Vector3::new(4.30, 0.0, 4.3), 2.4),
         ];
-        let e = explain_clustering(&tap(), 26, &hits);
+        let e =
+            explain_clustering(&checked_tap(), 26, &hits).expect("the tap schedules every point");
         assert_eq!(e.rays_struck, 4);
         assert_eq!(e.cells_found, 1);
         assert_eq!(e.merged_into_cells, 3);
@@ -448,7 +622,8 @@ mod tests {
             max_echoes: 2,
             ..tap()
         };
-        let e = explain_clustering(&request, 26, &hits);
+        let request = checked(request);
+        let e = explain_clustering(&request, 26, &hits).expect("the tap schedules every point");
         assert_eq!(e.budget, 2);
         assert_eq!(e.cells_found, 5);
         assert_eq!(e.clusters_kept(), 2);
@@ -467,7 +642,8 @@ mod tests {
             hit(Vector3::new(3.1, 0.0, 4.0), 0.1),
             hit(Vector3::new(6.0, 0.0, 4.0), 3.0),
         ];
-        let e = explain_clustering(&tap(), 26, &hits);
+        let e =
+            explain_clustering(&checked_tap(), 26, &hits).expect("the tap schedules every point");
         assert_eq!(e.rays_struck, 2);
         assert_eq!(e.self_surface_drops, 1);
         assert_eq!(e.merged_into_cells, 0);
@@ -481,7 +657,7 @@ mod tests {
     /// list is empty. Silence with nothing behind it.
     #[test]
     fn a_fan_that_struck_nothing_still_explains_itself() {
-        let e = explain_clustering(&tap(), 17, &[]);
+        let e = explain_clustering(&checked_tap(), 17, &[]).expect("an empty fan is representable");
         assert_eq!(e.rays_cast, 17);
         assert_eq!(e.rays_missed(), 17);
         assert_eq!(e.cells_found, 0);
@@ -494,7 +670,12 @@ mod tests {
     /// Restating either law here is what this test exists to prevent.
     #[test]
     fn appointments_match_the_echo_books_own_law() {
-        let e = explain_clustering(&tap(), 26, &[hit(Vector3::new(6.0, 0.0, 4.0), 2.75)]);
+        let e = explain_clustering(
+            &checked_tap(),
+            26,
+            &[hit(Vector3::new(6.0, 0.0, 4.0), 2.75)],
+        )
+        .expect("the tap schedules every point");
         let point = e.points[0];
         assert!((point.at_t - (10.0 + 2.75 / 5.5)).abs() < 1e-12);
         assert!((point.gain_fraction - 0.55 / (1.0 + 2.75 * 0.4)).abs() < 1e-12);
@@ -504,12 +685,12 @@ mod tests {
     /// surface, reaching 0.8 of the wave's range and never past 6 m.
     #[test]
     fn the_fan_starts_off_the_surface_and_reaches_the_clamped_length() {
-        let request = tap();
+        let request = checked_tap();
         assert_eq!(
             request.ray_origin(),
             Vector3::new(3.0, clustering::RAY_ORIGIN_LIFT, 4.0)
         );
-        assert!((request.reach() - 4.8).abs() < 1e-9);
+        assert_eq!(request.reach_lane().to_bits(), 4.8_f32.to_bits());
         // the birth surface culls the fan: fewer directions than nominal,
         // and never zero
         let cast = request.directions().count();
@@ -519,12 +700,12 @@ mod tests {
     /// An airborne sound culls nothing — the whole fan is cast.
     #[test]
     fn an_airborne_request_casts_the_whole_fan() {
-        let request = ReflectionRequest {
+        let request = checked(ReflectionRequest {
             normal: Vector3::ZERO,
             ..tap()
-        };
+        });
         assert_eq!(request.directions().count(), ray_fan::RAYS);
-        assert_eq!(request.ray_origin(), request.at);
+        assert_eq!(request.ray_origin(), request.request().at);
     }
 
     /// A negative budget answers nothing, exactly as the engine's own
@@ -535,7 +716,9 @@ mod tests {
             max_echoes: -3,
             ..tap()
         };
-        let e = explain_clustering(&request, 26, &[hit(Vector3::new(6.0, 0.0, 4.0), 3.0)]);
+        let request = checked(request);
+        let e = explain_clustering(&request, 26, &[hit(Vector3::new(6.0, 0.0, 4.0), 3.0)])
+            .expect("a zero budget schedules no points");
         assert_eq!(e.budget, 0);
         assert_eq!(e.cells_found, 1);
         assert_eq!(e.dropped_past_budget, 1);
@@ -552,7 +735,10 @@ mod tests {
     fn a_wavefront_that_cannot_travel_is_refused() {
         for speed in [0.0, -5.5, f64::NAN, f64::INFINITY] {
             let request = ReflectionRequest { speed, ..tap() };
-            assert_eq!(request.refusal(), Some(REFUSED_SPEED), "speed {speed}");
+            let error = CheckedReflectionRequest::prepare(request)
+                .expect_err("an invalid speed must not enter the fan");
+            assert_eq!(error.reason(), REFUSED_SPEED, "speed {speed}");
+            assert!(matches!(error.field(), "speed" | "end"));
         }
     }
 
@@ -562,7 +748,10 @@ mod tests {
     fn a_range_that_cannot_reach_is_refused() {
         for max_r in [0.0, -6.0, f64::NAN, f64::INFINITY] {
             let request = ReflectionRequest { max_r, ..tap() };
-            assert_eq!(request.refusal(), Some(REFUSED_MAX_R), "max_r {max_r}");
+            let error = CheckedReflectionRequest::prepare(request)
+                .expect_err("an invalid range must not enter the fan");
+            assert_eq!(error.reason(), REFUSED_MAX_R, "max_r {max_r}");
+            assert_eq!(error.field(), "max_r");
         }
     }
 
@@ -570,38 +759,145 @@ mod tests {
     #[test]
     fn a_non_finite_clock_or_origin_is_refused() {
         assert_eq!(
-            ReflectionRequest {
+            CheckedReflectionRequest::prepare(ReflectionRequest {
                 now: f64::NAN,
                 ..tap()
-            }
-            .refusal(),
-            Some(REFUSED_CLOCK)
+            })
+            .expect_err("a nonfinite clock must not enter the fan")
+            .reason(),
+            REFUSED_CLOCK
         );
         assert_eq!(
-            ReflectionRequest {
+            CheckedReflectionRequest::prepare(ReflectionRequest {
                 at: Vector3::new(f32::NAN, 0.0, 0.0),
                 ..tap()
-            }
-            .refusal(),
-            Some(REFUSED_GEOMETRY)
+            })
+            .expect_err("a nonfinite origin must not enter the fan")
+            .reason(),
+            REFUSED_GEOMETRY
         );
         assert_eq!(
-            ReflectionRequest {
+            CheckedReflectionRequest::prepare(ReflectionRequest {
                 normal: Vector3::new(0.0, f32::INFINITY, 0.0),
                 ..tap()
-            }
-            .refusal(),
-            Some(REFUSED_GEOMETRY)
+            })
+            .expect_err("a nonfinite normal must not enter the fan")
+            .reason(),
+            REFUSED_GEOMETRY
         );
+    }
+
+    #[test]
+    fn checked_reflection_geometry_refuses_nan_and_overflowing_normals_before_fan_arithmetic() {
+        for (normal, field) in [
+            (Vector3::new(f32::NAN, 0.0, 0.0), "normal.x"),
+            (Vector3::new(f32::MIN_POSITIVE, 0.0, 0.0), "normal"),
+            (Vector3::new(f32::MAX, -f32::MAX, f32::MAX), "normal"),
+        ] {
+            let error = CheckedReflectionRequest::prepare(ReflectionRequest { normal, ..tap() })
+                .expect_err("poisoned normal arithmetic must not reach the fan");
+            assert_eq!(error.reason(), REFUSED_GEOMETRY);
+            assert_eq!(error.field(), field);
+        }
+
+        let checked = CheckedReflectionRequest::prepare(tap())
+            .expect("the shipped tap geometry must be fully representable");
+        assert!(checked.ray_origin().is_finite());
+        assert!(checked.reach_lane().is_finite());
+        assert!(checked.reach_lane() > 0.0);
+        let directions: Vec<Vector3> = checked.directions().collect();
+        assert!(!directions.is_empty());
+        for direction in directions {
+            assert!(direction.dot(tap().normal).is_finite());
+            assert!((checked.ray_origin() + direction * checked.reach_lane()).is_finite());
+        }
+    }
+
+    #[test]
+    fn observer_ledger_and_explanation_keep_one_checked_geometry_image() {
+        let checked = CheckedReflectionRequest::prepare(tap())
+            .expect("the observer may book only a fully checked request");
+        let expected = checked.clone();
+        let mut ledger = ExplanationLedger::default();
+
+        let id = ledger.request(checked);
+        let mut taken = ledger.take_requests();
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].0, id);
+        assert_eq!(taken[0].1, expected);
+        let explanation = explain_clustering(&taken.remove(0).1, 4, &[])
+            .expect("the exact checked image reaches explanation");
+        assert_eq!(explanation.rays_cast, 4);
+    }
+
+    #[test]
+    fn checked_engine_hit_refuses_poisoned_position_normal_and_distance_before_clustering() {
+        let request = CheckedReflectionRequest::prepare(tap()).unwrap();
+        let origin = request.ray_origin();
+        let reach = request.reach_lane();
+        let valid = CheckedRayHit::prepare(origin + Vector3::RIGHT, Vector3::LEFT, &request)
+            .expect("a finite in-segment surface hit is admissible");
+        assert_eq!(valid.ray_hit().dist.to_bits(), 1.0_f32.to_bits());
+
+        for (position, normal, expected_field) in [
+            (
+                Vector3::new(f32::NAN, 0.0, 0.0),
+                Vector3::LEFT,
+                "hit.position.x",
+            ),
+            (
+                Vector3::new(1_000_002.0_f32.next_up(), 0.0, 0.0),
+                Vector3::LEFT,
+                "hit.position.x",
+            ),
+            (
+                origin + Vector3::RIGHT,
+                Vector3::new(f32::NAN, 0.0, 0.0),
+                "hit.normal.x",
+            ),
+            (
+                origin + Vector3::RIGHT,
+                Vector3::new(f32::MAX, -f32::MAX, f32::MAX),
+                "hit.normal",
+            ),
+            (
+                origin + Vector3::RIGHT,
+                Vector3::new(f32::MIN_POSITIVE, 0.0, 0.0),
+                "hit.normal",
+            ),
+            (
+                origin + Vector3::RIGHT * reach.next_up(),
+                Vector3::LEFT,
+                "hit.distance",
+            ),
+        ] {
+            let error = CheckedRayHit::prepare(position, normal, &request)
+                .expect_err("malformed physics-server output must refuse the whole fan");
+            assert_eq!(error.field(), expected_field);
+        }
+
+        let boundary_request = CheckedReflectionRequest::prepare(ReflectionRequest {
+            at: Vector3::new(999_997.25, 0.0, 0.0),
+            normal: Vector3::ZERO,
+            ..tap()
+        })
+        .expect("the request itself stays inside the closed origin envelope");
+        let error = CheckedRayHit::prepare(
+            Vector3::new(1_000_002.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            &boundary_request,
+        )
+        .expect_err("the lifted echo origin must stay inside the same envelope");
+        assert_eq!(error.field(), "hit.echo_origin.x");
     }
 
     /// The shipped cane tap passes, and every number an accepted request
     /// produces is finite — which is what keeps `null` off the wire.
     #[test]
     fn an_accepted_request_produces_only_finite_numbers() {
-        let request = tap();
-        assert_eq!(request.refusal(), None);
-        let e = explain_clustering(&request, 14, &[hit(Vector3::new(6.0, 0.0, 4.0), 3.0)]);
+        let request = checked_tap();
+        let e = explain_clustering(&request, 14, &[hit(Vector3::new(6.0, 0.0, 4.0), 3.0)])
+            .expect("the accepted request schedules every point");
         assert!(e.reach.is_finite());
         for point in &e.points {
             assert!(point.dist.is_finite());
@@ -610,8 +906,29 @@ mod tests {
         }
     }
 
+    /// The checked engine-hit owner prevents this poisoned point in the live
+    /// path, but the explanation remains total over its pure hit slice: an
+    /// unrepresentable appointment refuses the whole answer rather than
+    /// silently dropping one cluster and presenting an incomplete ledger.
+    #[test]
+    fn an_unrepresentable_appointment_refuses_the_whole_explanation() {
+        let request = checked_tap();
+        let refusal = explain_clustering(
+            &request,
+            1,
+            &[hit(Vector3::new(1_000_003.0, 0.0, 0.0), 4.8)],
+        )
+        .expect_err("a failed appointment must refuse the explanation");
+        assert_eq!(
+            refusal,
+            "reflection explanation refused: echo appointment is not representable"
+        );
+    }
+
     fn explanation() -> Answer {
-        Answer::Explained(Box::new(explain_clustering(&tap(), 4, &[])))
+        Answer::Explained(Box::new(
+            explain_clustering(&checked_tap(), 4, &[]).expect("an empty fan is representable"),
+        ))
     }
 
     /// The three-state contract: pending until the frame runs, the answer
@@ -619,7 +936,7 @@ mod tests {
     #[test]
     fn a_request_is_pending_then_answered_once_then_unknown() {
         let mut ledger = ExplanationLedger::default();
-        let id = ledger.request(tap());
+        let id = ledger.request(checked_tap());
         assert_eq!(ledger.collect(id), Collected::Pending);
         let taken = ledger.take_requests();
         assert_eq!(taken.len(), 1);
@@ -640,8 +957,8 @@ mod tests {
     #[test]
     fn ids_are_unique_and_start_at_one() {
         let mut ledger = ExplanationLedger::default();
-        let first = ledger.request(tap());
-        let second = ledger.request(tap());
+        let first = ledger.request(checked_tap());
+        let second = ledger.request(checked_tap());
         assert_eq!(first, 1);
         assert_eq!(second, 2);
         assert_eq!(ledger.collect(0), Collected::Unknown);
@@ -655,7 +972,7 @@ mod tests {
         let mut ledger = ExplanationLedger::default();
         let mut ids = Vec::new();
         for _ in 0..(EXPLANATION_MEMORY + 2) {
-            let id = ledger.request(tap());
+            let id = ledger.request(checked_tap());
             ledger.take_requests();
             ledger.answer(id, explanation());
             ids.push(id);
@@ -677,7 +994,7 @@ mod tests {
     fn waiting_questions_age_out_rather_than_growing_forever() {
         let mut ledger = ExplanationLedger::default();
         let ids: Vec<i64> = (0..(EXPLANATION_MEMORY + 2))
-            .map(|_| ledger.request(tap()))
+            .map(|_| ledger.request(checked_tap()))
             .collect();
         assert_eq!(ledger.collect(ids[0]), Collected::Unknown);
         assert_eq!(ledger.collect(ids[1]), Collected::Unknown);
@@ -691,7 +1008,7 @@ mod tests {
     #[test]
     fn answering_at_once_withdraws_the_waiting_question() {
         let mut ledger = ExplanationLedger::default();
-        let id = ledger.request(tap());
+        let id = ledger.request(checked_tap());
         ledger.answer(id, Answer::Refused("no space"));
         assert!(ledger.take_requests().is_empty());
         assert_eq!(
@@ -706,7 +1023,7 @@ mod tests {
     #[test]
     fn a_refusal_is_carried_through_as_a_refusal() {
         let mut ledger = ExplanationLedger::default();
-        let id = ledger.request(tap());
+        let id = ledger.request(checked_tap());
         ledger.take_requests();
         ledger.answer(id, Answer::Refused("no space"));
         assert_eq!(

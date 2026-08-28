@@ -188,6 +188,9 @@ GODOT="$GODOT" "$DIR/tools/probe_editor_level.sh" || { echo "ci: editor-level pr
 echo "ci: editor-prefab probe (reusable scenes stay composition-only)"
 GODOT="$GODOT" "$DIR/tools/probe_editor_prefabs.sh" || { echo "ci: editor-prefab probe FAILED"; exit 1; }
 
+echo "ci: editor-cat probe (the ancestor-placement warning tracks a live edit)"
+GODOT="$GODOT" "$DIR/tools/probe_editor_cat.sh" || { echo "ci: editor-cat probe FAILED"; exit 1; }
+
 # Pure ClassDB census, one mode, no editor/run duality to prove — so unlike
 # its three siblings above it needs no tools/probe_*.sh wrapper, just the
 # same import-then-invoke shape the boot check already uses. It exists so

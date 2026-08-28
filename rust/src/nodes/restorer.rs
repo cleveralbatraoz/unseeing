@@ -1,117 +1,161 @@
-//! The write side of reproduction — `WaveRestorer`.
+//! The write side of reproduction: validate everything, then write once.
 //!
-//! Sibling of [`super::observer`] and its exact opposite: the observer
-//! reads every system and drives none, this one drives every system and
-//! reads none. It adds no law either. It parses a blob with the observer's
-//! own parser, walks the subsystem restore doors in one fixed order, and
-//! then asks the OBSERVER to capture the world it just wrote and compares
-//! the two states with the pure functions in [`crate::reproduce`].
-//!
-//! ── WHY THE PROOF RE-USES THE OBSERVER ──
-//!
-//! There is exactly one implementation of "what this world is", and it
-//! lives on the observer. A restorer that read the world back its own way
-//! would be proving that its writer agrees with its reader — a closed
-//! loop that passes with both of them wrong about the same field. Going
-//! back through `capture_state` means the proof is taken by the same code
-//! the blob itself came out of, so agreement means the world really is the
-//! captured instant.
-//!
-//! ── THE ORDER, AND WHY IT IS THAT ORDER ──
-//!
-//! 1. Parse — a malformed blob is refused with the parser's own dotted
-//!    path, before any handle is even fetched.
-//! 2. Header — format version, then the level scene. Both are cheap, both
-//!    are fatal, and both are checked before a single field is written.
-//! 3. Pool and echo book, through one core handle: they are one state.
-//! 4. The hero — body, eye, cane clocks, wave out-tray, viewmodel. The
-//!    CLOCK lands here, with `tick`.
-//! 5. The cats, positionally: the blob encodes them in scene order.
-//! 6. The sources — AFTER the clock, which is the whole point. A cadence
-//!    gate re-pinned before `now` moved would be measured against the old
-//!    instant, and the jumped-clock law would buy each source one
-//!    spurious beat on the very next frame.
-//! 7. The proof.
-//!
-//! It has no per-frame life of its own — no `_process`, no
-//! `_physics_process`, nothing to gate — so it needs no process mode: a
-//! paused tree stops the engine's callbacks and never a direct call, and
-//! being called on a frozen world is the only way this node is ever meant
-//! to work.
-//!
-//! ── WHAT A REFUSAL MEANS ──
-//!
-//! Everything through step 2 refuses with the world untouched. From step 3
-//! on, a refusal means the world has been partly written and is NOT the
-//! blob: the transaction cannot roll the engine back (undoing a restore
-//! would need the same doors that just failed), so a refused verdict is
-//! fatal to the run, never a warning to carry on past. The composition
-//! root does roll back the half it owns — see
-//! [`UnseeingGame::restore_blob`](super::game::UnseeingGame).
+//! [`WaveRestorer::preflight`] is read-only. It parses the complete format-2
+//! artifact, verifies the artifact's exact stored hash, resolves every live
+//! target, and asks each state owner to construct a checked prepared value.
+//! No scene, environment, pool, actor, source or warning state is changed on
+//! that path. [`WaveRestorer::commit`] consumes only those prepared values;
+//! after its first assignment there is no artifact-validation or repair path.
+//! The observer's final recapture is an internal postcondition over code that
+//! was already admitted, not a late opportunity to reject the artifact.
 
 use godot::classes::Node;
 use godot::prelude::*;
 
-use super::cat::WaveCat;
+use super::cat::{PreparedCatState, WaveCat};
 use super::hero::HeroBody;
 use super::level::WaveLevel;
 use super::observer::{NO_POOL, WaveObserver, hex64, parse_blob, pulse_core, unavailable};
-use super::player::UnseeingPlayer;
+use super::player::{PreparedPlayerState, UnseeingPlayer};
 use super::source::SoundSource;
-use crate::echo_queue::EchoQueue;
-use crate::pulse_pool::PulsePool;
-use crate::reproduce::{CaptureState, FORMAT_VERSION, first_divergence, state_hash};
+use crate::cat_body::{CatPose, PreparedCatPose, PreparedTail, Tail};
+use crate::cat_brain::{CatBrain, PreparedCatBrain};
+use crate::cat_gait::{CatGait, PreparedCatGait};
+use crate::demo_tap::{DemoTap, PreparedDemoTap};
+use crate::echo_queue::{EchoQueue, PreparedEchoQueue};
+use crate::ffi::WaveCore;
+use crate::flicker::{Flicker, FlickerState, PreparedFlicker};
+use crate::pulse_pool::{PreparedPulsePool, PulsePool};
+use crate::reproduce::{
+    CaptureState, FORMAT_VERSION, RestoreValueError, first_divergence, state_hash,
+};
+use crate::sound_source::{Cadence, PreparedCadence};
+use crate::temporal::{PreparedTime, prepare_time};
+use crate::viewmodel::{PreparedViewmodel, Viewmodel};
 
-/// No level: there is no world to write into, and no scene name to check
-/// the blob's own against.
 const NO_LEVEL: &str = "restorer was never injected a level";
-
-/// The level was injected and has since been freed. A scene reload leaves
-/// the handle looking perfectly valid, and writing through it would take
-/// the game down with the restore.
 const DEAD_LEVEL: &str = "the injected level has been freed";
-
-/// No hero: a blob carries the hero whole, so there is nothing partial to
-/// usefully apply without one.
 const NO_PLAYER: &str = "restorer was never injected the hero";
-
 const DEAD_PLAYER: &str = "the injected hero has been freed";
-
-/// No hero body: the viewmodel — the footstep clock included — lives
-/// there and on no other node, exactly as the capture side has it.
 const NO_BODY: &str = "restorer was never injected the hero body — the viewmodel clocks live there";
-
 const DEAD_BODY: &str = "the injected hero body has been freed";
-
-/// No observer: then there is no way to take the second capture, and a
-/// restore that cannot prove itself must not claim to have happened.
 const NO_OBSERVER: &str = "restorer was never injected the observer — the proof is its capture";
-
 const DEAD_OBSERVER: &str = "the injected observer has been freed";
 
-/// The write side of [`WaveObserver`]: it applies a captured blob to the
-/// running game as one refuse-or-succeed transaction, and proves the fit
-/// by re-capturing.
+/// The composition root's environment after each temporal owner has checked
+/// its own complete domain. Fields are visible only to the sibling game node,
+/// which owns the corresponding live values and performs the assignments.
+#[derive(Debug, Clone)]
+pub(super) struct PreparedEnv {
+    pub(super) now: PreparedTime,
+    pub(super) demo_checked: bool,
+    pub(super) demo_armed: bool,
+    pub(super) demo: PreparedDemoTap,
+    pub(super) flicker: PreparedFlicker,
+    pub(super) flicker_rng_state: u64,
+}
+
+struct PreparedWaveState {
+    pool: PreparedPulsePool,
+    echoes: PreparedEchoQueue,
+}
+
+struct PreparedHeroRestore {
+    player: PreparedPlayerState,
+    viewmodel: PreparedViewmodel,
+}
+
+struct PreparedCatRestore {
+    cat: PreparedCatState,
+}
+
+struct PreparedSourceRestore {
+    handle: DynGd<Node, dyn SoundSource>,
+    name: String,
+    cadence: PreparedCadence,
+}
+
+struct RestoreTargets {
+    core: Gd<WaveCore>,
+    player: Gd<UnseeingPlayer>,
+    body: Gd<HeroBody>,
+    cats: Vec<Gd<WaveCat>>,
+    sources: Vec<DynGd<Node, dyn SoundSource>>,
+    observer: Gd<WaveObserver>,
+}
+
+/// A whole restore transaction whose artifact and runtime dependencies were
+/// proven usable without a write.
+pub(super) struct PreparedRestore {
+    expected: CaptureState,
+    expected_hash: u64,
+    env: PreparedEnv,
+    waves: PreparedWaveState,
+    hero: PreparedHeroRestore,
+    cats: Vec<PreparedCatRestore>,
+    sources: Vec<PreparedSourceRestore>,
+    targets: RestoreTargets,
+}
+
+/// An assignment-complete transaction awaiting only an independent live
+/// readback. It cannot reject or repair input: every artifact law was proven
+/// before the first write.
+pub(super) struct CommittedRestore {
+    expected: CaptureState,
+    expected_hash: u64,
+    observer: Gd<WaveObserver>,
+}
+
+impl CommittedRestore {
+    pub(super) fn verify(self, live_now: f64, live_env: &VarDictionary) -> VarDictionary {
+        let fresh = match self.observer.bind().capture_state(live_now, live_env) {
+            Ok(fresh) => fresh,
+            Err(reason) => {
+                return unavailable(&format!(
+                    "internal restore defect: postcondition capture failed: {reason}"
+                ));
+            }
+        };
+        if let Some(field) = first_divergence(&self.expected, &fresh) {
+            return unavailable(&format!(
+                "internal restore defect: prepared commit diverged at {field}"
+            ));
+        }
+        let fresh_hash = state_hash(&fresh);
+        if fresh_hash != self.expected_hash {
+            return unavailable(&format!(
+                "internal restore defect: prepared commit hash {} differs from expected {}",
+                hex64(fresh_hash),
+                hex64(self.expected_hash)
+            ));
+        }
+        let mut verdict = VarDictionary::new();
+        verdict.set("restored", true);
+        verdict.set("hash", hex64(fresh_hash).as_str());
+        verdict
+    }
+}
+
+impl PreparedRestore {
+    pub(super) fn env(&self) -> &PreparedEnv {
+        &self.env
+    }
+}
+
+/// The observer's opposite: a dormant node invoked only while the game root
+/// holds the tree paused.
 #[derive(GodotClass)]
 #[class(init, base=Node)]
 pub struct WaveRestorer {
     level: Option<Gd<WaveLevel>>,
     player: Option<Gd<UnseeingPlayer>>,
-    /// The hero's BODY, a separate handle because it is a separate node —
-    /// the same split the observer's capture side has.
     body: Option<Gd<HeroBody>>,
-    /// The reader, held by the writer: the proof is the observer's own
-    /// capture of the world this node just wrote.
     observer: Option<Gd<WaveObserver>>,
     base: Base<Node>,
 }
 
 #[godot_api]
 impl WaveRestorer {
-    /// Hand the restorer the systems to write, and the observer to prove
-    /// against. Called once by the composition root; nothing is owned,
-    /// only borrowed — and every handle is re-checked for validity on each
-    /// call, because a freed node leaves a handle that still looks fine.
     #[func]
     pub(super) fn inject(
         &mut self,
@@ -125,142 +169,67 @@ impl WaveRestorer {
         self.body = body;
         self.observer = observer;
     }
-
-    /// Apply `blob` to the running world, then prove it.
-    ///
-    /// `env_after` is `UnseeingGame`'s Rust-owned env group, taken AFTER the
-    /// composition root applied the blob's env half. The clock, demo-tap
-    /// schedule and flicker envelope lie outside this restorer's injected
-    /// level/player/body/observer contract, so the owner passes them
-    /// explicitly rather than this adapter reaching sideways into it.
-    ///
-    /// `{"restored": true, "hash": "<16 hex>"}` on success, where the hash
-    /// is the restored world's own — computed from the second capture, not
-    /// copied from the blob, so a caller comparing it against the blob's is
-    /// comparing two measurements rather than one number with itself.
-    /// Otherwise the one-key refusal every boundary here speaks.
-    #[func]
-    pub(super) fn restore(
-        &mut self,
-        blob: VarDictionary,
-        env_after: VarDictionary,
-    ) -> VarDictionary {
-        match self.transact(&blob, &env_after) {
-            Ok(hash) => {
-                let mut verdict = VarDictionary::new();
-                verdict.set("restored", true);
-                verdict.set("hash", hash.as_str());
-                verdict
-            }
-            Err(reason) => unavailable(&reason),
-        }
-    }
 }
 
 impl WaveRestorer {
-    /// The transaction, in the module docs' order.
-    fn transact(
-        &mut self,
-        blob: &VarDictionary,
-        env_after: &VarDictionary,
-    ) -> Result<String, String> {
+    /// Read, resolve and validate the entire transaction. Every `bind()` here
+    /// is immutable; every constructor called returns a prepared owner value.
+    pub(super) fn preflight(&self, blob: &VarDictionary) -> Result<PreparedRestore, String> {
         let state = parse_blob(blob)?;
-        self.check_header(&state)?;
-        self.restore_waves(&state)?;
-        self.restore_hero(&state)?;
-        self.restore_cats(&state)?;
-        self.restore_sources(&state)?;
-        self.prove(&state, env_after)
-    }
-
-    /// The two facts that decide whether this blob belongs to this build
-    /// and this map at all. Both name BOTH sides: "wrong version" without
-    /// the two numbers sends the reader to find out which is which.
-    fn check_header(&self, state: &CaptureState) -> Result<(), String> {
+        let expected_hash = exact_stored_hash(blob)?;
+        let canonical_hash = state_hash(&state);
+        if expected_hash != canonical_hash {
+            return Err(format!(
+                "the blob's stored hash disagrees with its canonical state: stored {}, canonical {} — the artifact was edited or corrupted",
+                hex64(expected_hash),
+                hex64(canonical_hash)
+            ));
+        }
         if state.format_version != FORMAT_VERSION {
             return Err(format!(
                 "the blob is capture format {}, and this build restores format {FORMAT_VERSION}",
                 state.format_version
             ));
         }
-        let scene = self.live_level()?.get_scene_file_path().to_string();
+
+        let level = self.live_level()?.clone();
+        let scene = level.get_scene_file_path().to_string();
         if state.level_scene != scene {
             return Err(format!(
                 "the blob was captured in {} and this game is running {scene}",
                 state.level_scene
             ));
         }
-        Ok(())
-    }
-
-    /// The pool and the echo book, through one core handle and one door.
-    fn restore_waves(&mut self, state: &CaptureState) -> Result<(), String> {
-        let level = self.live_level()?.clone();
-        // the level's borrow ends here: the core is a different object,
-        // and binding it mutably while the level is bound would be two
-        // live borrows across one restore
-        let core = pulse_core(&level.bind());
-        let Some(mut core) = core else {
-            return Err(NO_POOL.to_string());
-        };
-        core.bind_mut().restore_state(
-            PulsePool::from_slots(&state.slots),
-            EchoQueue::from_pending(state.echoes.clone()),
-        );
-        Ok(())
-    }
-
-    /// The hero: where the body stands and how fast, where the eye looks,
-    /// the cane's two clocks and its queued intent, the waves already
-    /// asked for, and the viewmodel's whole state machine.
-    ///
-    /// The CLOCK lands here — `tick` — and everything dated against it
-    /// (the sources, below) is placed afterwards.
-    fn restore_hero(&mut self, state: &CaptureState) -> Result<(), String> {
-        let hero = &state.hero;
-        let mut player = self.live_player()?.clone();
-        let mut body = self.live_body()?.clone();
-        player.set_global_position(hero.position);
-        player.set_velocity(hero.velocity);
-        let mut rotation = player.get_rotation();
-        rotation.y = hero.yaw as f32;
-        player.set_rotation(rotation);
-        {
-            let mut player = player.bind_mut();
-            player.set_eye_pitch(hero.pitch);
-            player.last_tap = hero.last_tap;
-            player.tap_target = hero.tap_target;
-            player.tick(state.env.now);
-            // the out-tray is rebuilt, never added to: a restore onto a
-            // non-empty queue would emit the captured waves AND whatever
-            // the live world had not drained yet
-            player.clear_wave_queue();
-            for wave in &hero.queued_waves {
-                player.queue_wave(
-                    wave.kind,
-                    wave.at,
-                    wave.max_r,
-                    wave.speed,
-                    wave.gain,
-                    wave.echoes,
-                    wave.normal,
-                );
+        let player = self.live_player()?.clone();
+        let body = self.live_body()?.clone();
+        let observer = self.live_observer()?.clone();
+        observer
+            .bind()
+            .validate_restore_graph(&level, &player, &body)?;
+        let (core, cats, live_sources) = {
+            let level = level.bind();
+            let core = pulse_core(&level).ok_or_else(|| NO_POOL.to_string())?;
+            for (index, cat) in level.cat_handles().iter().enumerate() {
+                if !cat.is_instance_valid() {
+                    return Err(format!(
+                        "the level's cat restore target at index {index} has been freed"
+                    ));
+                }
             }
-            player.restore_tap_queued(hero.tap_queued);
-        }
-        body.bind_mut().restore_vm(hero.viewmodel);
-        Ok(())
-    }
+            for (index, source) in level.source_handles().iter().enumerate() {
+                if !source.is_instance_valid() {
+                    return Err(format!(
+                        "the level's source restore target at index {index} has been freed"
+                    ));
+                }
+            }
+            (
+                core,
+                level.cat_handles().to_vec(),
+                level.source_handles().to_vec(),
+            )
+        };
 
-    /// Every cat, positionally — the order the blob encodes them in.
-    ///
-    /// A cat's `now` is not in the blob and is not restored here: the
-    /// composition root hands every cat the clock each frame before it
-    /// ticks, and nothing reads it in between, so the field is re-supplied
-    /// rather than carried (the capture side made the same call).
-    fn restore_cats(&mut self, state: &CaptureState) -> Result<(), String> {
-        let level = self.live_level()?.clone();
-        let cats: Vec<Gd<WaveCat>> = level.bind().cat_handles().to_vec();
         if cats.len() != state.cats.len() {
             return Err(format!(
                 "the blob carries {} cats and this level has {}",
@@ -268,30 +237,56 @@ impl WaveRestorer {
                 cats.len()
             ));
         }
-        for (mut cat, capture) in cats.into_iter().zip(&state.cats) {
-            cat.bind_mut().restore_state(capture);
-        }
-        Ok(())
-    }
-
-    /// Every source's beat appointment, re-pinned AFTER the clock landed.
-    ///
-    /// Identity is checked, not assumed: the blob names its sources, and a
-    /// scene whose sources are the same in number but not in name would
-    /// otherwise have the fan's appointment written onto the radio — two
-    /// gates that then both look plausible and neither of which is the
-    /// captured one.
-    fn restore_sources(&mut self, state: &CaptureState) -> Result<(), String> {
-        let level = self.live_level()?.clone();
-        let sources: Vec<DynGd<Node, dyn SoundSource>> = level.bind().source_handles().to_vec();
-        if sources.len() != state.sources.len() {
+        if live_sources.len() != state.sources.len() {
             return Err(format!(
                 "the blob carries {} sound sources and this level has {}",
                 state.sources.len(),
-                sources.len()
+                live_sources.len()
             ));
         }
-        for (mut source, capture) in sources.into_iter().zip(&state.sources) {
+
+        let env = prepare_env(&state)?;
+        let waves = PreparedWaveState {
+            pool: PulsePool::prepare_restore(&state.slots, env.now).map_err(string_error)?,
+            echoes: EchoQueue::prepare_restore(state.echoes.clone()).map_err(string_error)?,
+        };
+        let hero = PreparedHeroRestore {
+            player: player
+                .bind()
+                .prepare_restore(&state.hero, env.now)
+                .map_err(string_error)?,
+            viewmodel: Viewmodel::prepare_restore(state.hero.viewmodel).map_err(string_error)?,
+        };
+        if body.bind().capture_vm().is_none() {
+            return Err("hero.viewmodel: the runtime hero body is not built".to_string());
+        }
+
+        let mut prepared_cats = Vec::with_capacity(cats.len());
+        for (index, (cat, capture)) in cats.iter().zip(&state.cats).enumerate() {
+            let prefix = format!("cats[{index}]");
+            let brain: PreparedCatBrain = CatBrain::prepare_restore(capture.brain)
+                .map_err(|error| string_error(error.prefixed(&prefix)))?;
+            let gait: PreparedCatGait = CatGait::prepare_restore(capture.gait)
+                .map_err(|error| string_error(error.prefixed(&prefix)))?;
+            let pose: PreparedCatPose = CatPose::prepare_restore(capture.pose)
+                .map_err(|error| string_error(error.prefixed(&prefix)))?;
+            let tail: PreparedTail = Tail::prepare_restore(capture.tail)
+                .map_err(|error| string_error(error.prefixed(&prefix)))?;
+            let presence = Cadence::prepare_restore(
+                crate::cat_gait::PRESENCE_EVERY,
+                capture.presence_next,
+                true,
+            )
+            .map_err(|error| string_error(error.prefixed(&prefix)))?;
+            let prepared = cat
+                .bind()
+                .prepare_restore(capture, brain, gait, pose, tail, presence, env.now)
+                .map_err(|error| string_error(error.prefixed(&prefix)))?;
+            prepared_cats.push(PreparedCatRestore { cat: prepared });
+        }
+
+        let mut prepared_sources = Vec::with_capacity(live_sources.len());
+        for (index, (source, capture)) in live_sources.iter().zip(&state.sources).enumerate() {
             let name = source.clone().into_gd().get_name().to_string();
             if name != capture.name {
                 return Err(format!(
@@ -299,32 +294,89 @@ impl WaveRestorer {
                     capture.name
                 ));
             }
-            source.dyn_bind_mut().restore_appointment(capture.next_emit);
+            let prefix = format!("sources[{index}]");
+            let cadence = source
+                .dyn_bind()
+                .prepare_appointment(capture.next_emit)
+                .map_err(|error| string_error(error.prefixed(&prefix)))?;
+            prepared_sources.push(PreparedSourceRestore {
+                handle: source.clone(),
+                name,
+                cadence,
+            });
         }
-        Ok(())
+
+        Ok(PreparedRestore {
+            expected: state,
+            expected_hash,
+            env,
+            waves,
+            hero,
+            cats: prepared_cats,
+            sources: prepared_sources,
+            targets: RestoreTargets {
+                core,
+                player,
+                body,
+                cats,
+                sources: live_sources,
+                observer,
+            },
+        })
     }
 
-    /// The proof: capture the world that was just written, through the
-    /// observer, and compare it against the blob field by field.
-    ///
-    /// The hash handed back is the SECOND capture's. A verdict that echoed
-    /// the blob's own hash back would agree with itself no matter what the
-    /// world holds.
-    fn prove(&self, state: &CaptureState, env_after: &VarDictionary) -> Result<String, String> {
-        let observer = self.live_observer()?.clone();
-        let fresh = observer.bind().capture_state(state.env.now, env_after)?;
-        if let Some(field) = first_divergence(state, &fresh) {
-            return Err(format!(
-                "restore diverged at {field} — the blob and the restored world disagree"
-            ));
+    /// Consume prepared values in a fixed assignment-only order. Any verdict
+    /// after the writes diagnoses an internal postcondition failure; artifact
+    /// validity was completely decided by `preflight`.
+    pub(super) fn commit(&mut self, prepared: PreparedRestore) -> CommittedRestore {
+        let PreparedRestore {
+            expected,
+            expected_hash,
+            env: _,
+            waves,
+            hero,
+            cats,
+            sources,
+            targets,
+        } = prepared;
+        let RestoreTargets {
+            mut core,
+            mut player,
+            mut body,
+            cats: live_cats,
+            sources: resolved_sources,
+            observer,
+        } = targets;
+
+        core.bind_mut()
+            .install_prepared_state(waves.pool, waves.echoes);
+        {
+            let mut player = player.bind_mut();
+            player.install_prepared(hero.player);
         }
-        Ok(hex64(state_hash(&fresh)))
+        body.bind_mut().install_prepared_vm(hero.viewmodel);
+        for (mut cat, prepared_cat) in live_cats.into_iter().zip(cats) {
+            cat.bind_mut().install_prepared(prepared_cat.cat);
+        }
+        // The duplicated resolved list is deliberately consumed here: it is
+        // the preflight census pinned into the transaction, while each source
+        // prepared value carries the exact matched typed handle it installs.
+        drop(resolved_sources);
+        for mut source in sources {
+            let _matched_name = source.name;
+            source
+                .handle
+                .dyn_bind_mut()
+                .install_prepared_appointment(source.cadence);
+        }
+
+        CommittedRestore {
+            expected,
+            expected_hash,
+            observer,
+        }
     }
 
-    /// The level, if there is one and it still exists — the same rule the
-    /// observer applies to every handle it was given, for the same reason:
-    /// a freed node's handle still looks valid, and the tool must refuse a
-    /// torn-down scene rather than write through it.
     fn live_level(&self) -> Result<&Gd<WaveLevel>, &'static str> {
         live(self.level.as_ref(), NO_LEVEL, DEAD_LEVEL)
     }
@@ -342,9 +394,47 @@ impl WaveRestorer {
     }
 }
 
-/// One injected handle, or the reason it cannot be used. Never cloned
-/// before the validity check: cloning a `Gd<T>` whose instance is gone
-/// panics, so a freed node has to be caught on the borrowed reference.
+fn prepare_env(state: &CaptureState) -> Result<PreparedEnv, String> {
+    let env = state.env;
+    Ok(PreparedEnv {
+        now: prepare_time(env.now).map_err(string_error)?,
+        demo_checked: env.demo_checked,
+        demo_armed: env.demo_armed,
+        demo: DemoTap::prepare_restore(env.demo_next).map_err(string_error)?,
+        flicker: Flicker::prepare_restore(FlickerState {
+            t: env.flicker_t,
+            level: env.flicker_level,
+            drop_until: env.flicker_drop_until,
+            next_drop: env.flicker_next_drop,
+        })
+        .map_err(string_error)?,
+        flicker_rng_state: env.flicker_rng_state as u64,
+    })
+}
+
+fn exact_stored_hash(blob: &VarDictionary) -> Result<u64, String> {
+    let value = blob
+        .get("hash")
+        .ok_or_else(|| "field hash: missing".to_string())?;
+    let text = value
+        .try_to::<GString>()
+        .map_err(|_| "field hash: expected a string".to_string())?
+        .to_string();
+    if text.len() != 16
+        || !text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("field hash: expected exactly 16 lowercase hex characters".to_string());
+    }
+    u64::from_str_radix(&text, 16)
+        .map_err(|_| "field hash: expected exactly 16 lowercase hex characters".to_string())
+}
+
+fn string_error(error: RestoreValueError) -> String {
+    error.to_string()
+}
+
 fn live<'a, T: GodotClass>(
     handle: Option<&'a Gd<T>>,
     missing: &'static str,

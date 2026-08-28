@@ -28,6 +28,27 @@
 # belong here. Widening this to everything would make the cheapest gate
 # in the pipeline flaky, which is worse than the hole it used to have.
 #
+# A second, deliberately narrow category sits beside that one exception
+# rather than inside it: request-scoped refusals. The totality law this
+# project holds (AGENTS.md: every function total over its declared domain,
+# no panics on untrusted input) means a class-style message can still open
+# a per-REQUEST refusal rather than a boot failure — a malformed emit or
+# reflection request, an unrepresentable echo, a non-finite tick clock, a
+# hero body not yet built at restore time. None of those says anything
+# about whether the game booted, and none belongs in the pattern above.
+# They are enumerated, not inferred, in test/ci_boot_error_gate.sh's
+# REQUEST_REFUSALS table, bound the same way as the WaveCore exception
+# above: an explicit opening AND the one file that owns it, so a message
+# with an enumerated opening printed from anywhere else still fails the
+# census, and a genuinely new refusal message anywhere not on the table
+# still fails it too. As of this writing that table holds
+# WaveCore.emit_reflecting, WaveCore.tick and Pulses.emit (all three from
+# rust/src/ffi.rs — the FFI boundary that turns a malformed request into a
+# `godot_error!` rather than a panic) and hero.viewmodel (from
+# rust/src/nodes/restorer.rs — a restore that finds no built hero body to
+# install a saved viewmodel into). Keep this list and that table in step by
+# hand; nothing here derives one from the other.
+#
 # WaveWall and WaveRun are here for classes that only WARN today (wall.rs,
 # run.rs, including the quarter-turn snap). That is on purpose and it is not speculative
 # widening: the volume a message is said at is a run-time choice —

@@ -32,7 +32,8 @@ use godot::prelude::*;
 
 use super::solid::mesh_first_label;
 use crate::render;
-use crate::sound_source::{Cadence, SOURCE_KIND, Voice};
+use crate::reproduce::RestoreValueError;
+use crate::sound_source::{Cadence, PreparedCadence, SOURCE_KIND, Voice};
 
 /// The two per-instance shader parameters carrying a source's STANDING
 /// acoustic image. Both are INSTANCE uniforms, not material uniforms,
@@ -133,12 +134,15 @@ pub trait SoundSource {
     /// whole image instead of competing with half of it.
     fn set_image(&mut self, image: render::reveal::SourceImage);
 
-    /// Re-pin this source's beat appointment to a captured date. Called
-    /// by the restorer AFTER the clock lands, so the jumped-clock law
-    /// (one beat per jump) never fires on a restore. Required, not
-    /// defaulted: a source that cannot restore its gate is a source a
-    /// blob cannot carry, and the compiler says so at the source.
-    fn restore_appointment(&mut self, next: f64);
+    /// Check a captured appointment against this source's private authored
+    /// cadence without changing its rig. Required, not defaulted: only the
+    /// concrete source knows which interval its cadence owner will read.
+    fn prepare_appointment(&self, next: f64) -> Result<PreparedCadence, RestoreValueError>;
+
+    /// Install the already-checked appointment. This door is assignment
+    /// only, so a restore cannot discover a semantic failure after writes
+    /// have begun.
+    fn install_prepared_appointment(&mut self, cadence: PreparedCadence);
 }
 
 /// The organs every sound source has, whatever its body looks like: the
@@ -183,8 +187,8 @@ impl SourceRig {
     /// Replace the rig's gate wholesale — the restore door. The limbs are
     /// untouched: geometry is derived from the scene, only the clock is
     /// state.
-    pub(crate) fn restore_cadence(&mut self, cadence: Cadence) {
-        self.cadence = cadence;
+    pub(crate) fn install_prepared_cadence(&mut self, cadence: PreparedCadence) {
+        self.cadence = Cadence::from_prepared(cadence);
     }
 
     /// Build one limb: a mesh instance drawn through the injected skin,

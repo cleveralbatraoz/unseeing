@@ -100,7 +100,7 @@ func _judge_radio(editor: bool) -> void:
 
 
 func _judge_cat(editor: bool) -> void:
-	var collider := _cat.get_node_or_null("CatCollider")
+	var collider := _cat.get_node_or_null("CatCollider") as CollisionShape3D
 	var skin := _cat.get_node_or_null("CatSkin") as MeshInstance3D
 	if editor:
 		_check("editor: the cat builds its collider", collider != null)
@@ -118,6 +118,72 @@ func _judge_cat(editor: bool) -> void:
 		# processing enabled; "does not tick" above is what actually holds
 		# the line today.
 		_check("editor: the cat has not moved", _cat.position.is_equal_approx(_cat_born_at))
+
+		var capsule := collider.shape as CapsuleShape3D if collider != null else null
+		if capsule != null:
+			# `datum` is a difference near 0.0, assembled from ~0.17-magnitude
+			# operands: `_cat.position.y` (0.0) and `collider.position.y`
+			# (Rust-computed `COL_HEIGHT * 0.5`), minus `capsule.height * 0.5`
+			# (also Rust-computed, read back through the same live collider).
+			# A true single f32 ULP at magnitude ~0.17 is ~1.49e-8, but that
+			# bound isn't honestly claimable here: nothing proves the two
+			# independently-rounded Rust f32 values agree with each other to
+			# the bit. `1.0e-7` is the same cross-language convention
+			# `cat_elevation_test.gd` and `player_elevation_test.gd` each
+			# hold their own equivalent capsule-datum checks to, for the
+			# identical reason.
+			var datum := _cat.position.y + collider.position.y - capsule.height * 0.5
+			_check(
+				"editor: the cat collider bottom meets the flat datum within 1.0e-7",
+				absf(datum) <= 1.0e-7
+			)
+		else:
+			_check("editor: the cat collider bottom meets the flat datum within 1.0e-7", false)
+
+		# Typed as WaveCat (not the `_cat: CharacterBody3D` field) so the
+		# direct calls below resolve statically: gdext registers
+		# `get_configuration_warnings`/`motion_config_snapshot` on WaveCat
+		# itself, not on the base engine class GDScript's static checker
+		# sees through the field.
+		var cat := _cat as WaveCat
+		# `ready()` returns before ever validating/installing the active
+		# motion config in editor mode (a blueprint cat never physics-ticks,
+		# so it never needs one) — the field's own `#[init(val=...)]` is the
+		# ONLY thing that can hold this line in the editor. Checked before
+		# any `.set(...)` below, which stages a fresh active config as a
+		# side effect and would otherwise mask a wrong `#[init]` default.
+		var snapshot: PackedFloat64Array = cat.call("motion_config_snapshot")
+		_check(
+			(
+				"editor: the cat's motion config snapshot is CAT_DEFAULT even though ready() never"
+				+ " validates one in editor mode"
+			),
+			snapshot == PackedFloat64Array([9.8, 20.0, 1.5, 4.0, 0.60, 2.5])
+		)
+
+		# An out-of-order threshold pair must reach BOTH the virtual warning
+		# read the Inspector's triangle uses and the registered callable
+		# forwarder tests reach through `.call(...)` — the same text, same
+		# channel contract every warning-bearing node in this codebase keeps.
+		cat.set("landing_silent_speed", 8.0)
+		cat.set("landing_full_speed", 7.0)
+		var expected_warning := "landing full speed 7 m/s must be greater than silent speed 8 m/s"
+		var virtual_warnings := cat.get_configuration_warnings()
+		_check(
+			"editor: an invalid threshold pair reaches the virtual warning channel",
+			virtual_warnings.size() == 1 and virtual_warnings[0] == expected_warning
+		)
+		var callable_warnings: PackedStringArray = cat.call("get_configuration_warnings")
+		_check(
+			"editor: the same warning reaches the registered callable forwarder",
+			callable_warnings.size() == 1 and callable_warnings[0] == expected_warning
+		)
+		cat.set("landing_full_speed", 9.0)
+		var cleared_callable: PackedStringArray = cat.call("get_configuration_warnings")
+		_check(
+			"editor: a complementary valid edit clears both warning channels",
+			cat.get_configuration_warnings().is_empty() and cleared_callable.is_empty()
+		)
 	else:
 		_check("run uninjected: the cat builds nothing", _cat.get_child_count() == 0)
 

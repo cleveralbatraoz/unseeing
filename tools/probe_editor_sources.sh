@@ -73,7 +73,7 @@ run_mode() {
   fi
 }
 
-run_mode editor 11 -e
+run_mode editor 16 -e
 run_mode run 3
 
 echo "probe: sources OK — blueprint limbs in the editor, silence uninjected at run time"

@@ -15,6 +15,9 @@
 
 use godot::builtin::Vector3;
 
+use crate::reproduce::RestoreValueError;
+use crate::support_motion::{ActorPosition, MotionValueError, PosePoint};
+
 /// Walk-cycle rate, rad/s of leg and swing phase while moving.
 pub const WALK_RATE: f64 = 7.4;
 
@@ -102,37 +105,114 @@ pub struct LegPose {
     pub shoe: Vector3,
 }
 
-/// One leg's pose for the current walk phase. `s` is the side (+1 right,
-/// -1 left, mirrored by a half-turn phase shift); `p` the player's world
-/// position, `fw`/`rv` the flattened forward and right vectors.
-#[must_use]
+/// The checked horizontal frame used by player leg placement.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlanarAxes {
+    forward: Vector3,
+    right: Vector3,
+}
+
+impl PlanarAxes {
+    /// Validate and normalize two horizontal directions. Vertical source
+    /// lanes are checked before being deliberately replaced by positive zero.
+    pub fn try_new(forward: Vector3, right: Vector3) -> Result<Self, MotionValueError> {
+        for (field, value) in [
+            ("planar_axes.forward.x", forward.x),
+            ("planar_axes.forward.y", forward.y),
+            ("planar_axes.forward.z", forward.z),
+            ("planar_axes.right.x", right.x),
+            ("planar_axes.right.y", right.y),
+            ("planar_axes.right.z", right.z),
+        ] {
+            if !value.is_finite() {
+                return Err(MotionValueError::non_finite(field));
+            }
+        }
+
+        fn normalize_horizontal(
+            value: Vector3,
+            field: &'static str,
+        ) -> Result<Vector3, MotionValueError> {
+            let x = f64::from(value.x);
+            let z = f64::from(value.z);
+            let length = x.hypot(z);
+            if length == 0.0 {
+                return Err(MotionValueError::zero_vector(field));
+            }
+            Ok(Vector3::new((x / length) as f32, 0.0, (z / length) as f32))
+        }
+
+        Ok(Self {
+            forward: normalize_horizontal(forward, "planar_axes.forward")?,
+            right: normalize_horizontal(right, "planar_axes.right")?,
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn forward(self) -> Vector3 {
+        self.forward
+    }
+
+    #[must_use]
+    pub(crate) fn right(self) -> Vector3 {
+        self.right
+    }
+}
+
+/// The two closed sides of the player's mirrored gait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegSide {
+    Left,
+    Right,
+}
+
+/// One flat leg pose for the current walk phase — hero_body.gd's frozen
+/// arithmetic, bit for bit. Support never enters this law: elevation is
+/// added exactly once, by `hero_visual`'s single body transport pass.
 pub fn leg_pose(
-    p: Vector3,
-    fw: Vector3,
-    rv: Vector3,
+    p: ActorPosition,
+    axes: PlanarAxes,
     leg_phase: f64,
     walk_amp: f64,
-    s: i32,
-) -> LegPose {
-    let ph = leg_phase + if s < 0 { std::f64::consts::PI } else { 0.0 };
+    side: LegSide,
+) -> Result<LegPose, MotionValueError> {
+    if !leg_phase.is_finite() {
+        return Err(MotionValueError::non_finite("leg_phase"));
+    }
+    if !walk_amp.is_finite() {
+        return Err(MotionValueError::non_finite("walk_amp"));
+    }
+
+    let p = p.world();
+    let fw = axes.forward();
+    let rv = axes.right();
+    let side_sign = match side {
+        LegSide::Left => -1.0_f32,
+        LegSide::Right => 1.0_f32,
+    };
+    let ph = leg_phase
+        + if side == LegSide::Left {
+            std::f64::consts::PI
+        } else {
+            0.0
+        };
     let thigh_a = 0.5 * ph.sin() * walk_amp;
     let knee_a = (0.95 * (ph - 0.9).sin()).max(0.0) * walk_amp;
     let shin_a = thigh_a - knee_a;
-    let hip = Vector3::new(p.x, 0.90, p.z) + rv * 0.07 * s as f32 - fw * 0.20;
-    // GDScript widened each component into its 64-bit floats and narrowed
-    // on assignment; the same story here, operation for operation.
+    let hip = Vector3::new(p.x, 0.90, p.z) + rv * 0.07 * side_sign - fw * 0.20;
     let mut knee = hip + fw * (thigh_a.sin() as f32) * 0.45;
     knee.y = (f64::from(hip.y) - thigh_a.cos() * 0.45) as f32;
     let mut ankle = knee + fw * (shin_a.sin() as f32) * 0.45;
     ankle.y = (f64::from(knee.y) - shin_a.cos() * 0.45).max(0.07) as f32;
     let mut shoe = ankle + fw * 0.08;
     shoe.y = (f64::from(ankle.y) - 0.02).max(0.065) as f32;
-    LegPose {
-        hip,
-        knee,
-        ankle,
-        shoe,
-    }
+
+    Ok(LegPose {
+        hip: PosePoint::try_new(hip)?.world(),
+        knee: PosePoint::try_new(knee)?.world(),
+        ankle: PosePoint::try_new(ankle)?.world(),
+        shoe: PosePoint::try_new(shoe)?.world(),
+    })
 }
 
 /// Everything a Viewmodel is, as data — `step_t`/`step_side` included, or
@@ -173,7 +253,65 @@ pub struct Viewmodel {
     step_side: i32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PreparedViewmodel(Viewmodel);
+
 impl Viewmodel {
+    pub fn prepare_restore(
+        capture: ViewmodelCapture,
+    ) -> Result<PreparedViewmodel, RestoreValueError> {
+        for (field, value) in [
+            ("walk_amp", capture.walk_amp),
+            ("leg_phase", capture.leg_phase),
+            ("swing_phase", capture.swing_phase),
+            ("cane_swing", capture.cane_swing),
+            ("sway_x", capture.sway_x),
+            ("sway_y", capture.sway_y),
+            ("last_yaw", capture.last_yaw),
+            ("last_pitch", capture.last_pitch),
+            ("step_t", capture.step_t),
+        ] {
+            if !value.is_finite() {
+                return Err(RestoreValueError::new(
+                    format!("hero.viewmodel.{field}"),
+                    "must be finite",
+                ));
+            }
+        }
+        if !(capture.leg_phase * 2.0).is_finite() {
+            return Err(RestoreValueError::new(
+                "hero.viewmodel.leg_phase",
+                "must remain finite when doubled for the immediate bob expression",
+            ));
+        }
+        for (field, value, min, max) in [
+            ("walk_amp", capture.walk_amp, 0.0, 1.0),
+            ("cane_swing", capture.cane_swing, -0.26, 0.26),
+            ("sway_x", capture.sway_x, -SWAY_X_CLAMP, SWAY_X_CLAMP),
+            ("sway_y", capture.sway_y, -SWAY_Y_CLAMP, SWAY_Y_CLAMP),
+            ("step_t", capture.step_t, 0.0, STEP_EVERY),
+        ] {
+            if value < min || value > max {
+                return Err(RestoreValueError::new(
+                    format!("hero.viewmodel.{field}"),
+                    "is outside its valid range",
+                ));
+            }
+        }
+        if !matches!(capture.step_side, -1 | 1) {
+            return Err(RestoreValueError::new(
+                "hero.viewmodel.step_side",
+                "must be -1 or 1",
+            ));
+        }
+        Ok(PreparedViewmodel(Self::restore(capture)))
+    }
+
+    #[must_use]
+    pub fn from_prepared(value: PreparedViewmodel) -> Self {
+        value.0
+    }
+
     /// A fresh viewmodel, caching the current look so the first frame
     /// reads zero look-delta — hero_body.gd's `_ready`. The footstep
     /// clock starts SPENT (`_step_t := 0.0`): a fresh walker steps at
@@ -323,8 +461,44 @@ impl Viewmodel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::support_motion::{ActorPosition, MotionValueProblem};
 
     const DT: f64 = 1.0 / 60.0;
+
+    #[test]
+    fn prepared_restore_rejects_invalid_viewmodel_side_or_blend() {
+        let mut capture = Viewmodel::new(0.0, 0.0).capture();
+        capture.walk_amp = 1.25;
+        let error = Viewmodel::prepare_restore(capture).expect_err("blend must be refused");
+        assert_eq!(error.path, "hero.viewmodel.walk_amp");
+
+        let mut capture = Viewmodel::new(0.0, 0.0).capture();
+        capture.step_side = 0;
+        let error = Viewmodel::prepare_restore(capture).expect_err("side must be refused");
+        assert_eq!(error.path, "hero.viewmodel.step_side");
+    }
+
+    #[test]
+    fn prepared_restore_rejects_a_leg_phase_whose_double_is_not_finite() {
+        let mut poisoned = Viewmodel::new(0.0, 0.0).capture();
+        poisoned.leg_phase = f64::MAX;
+        let error = Viewmodel::prepare_restore(poisoned)
+            .expect_err("the immediate doubled phase must remain finite");
+        assert_eq!(error.path, "hero.viewmodel.leg_phase");
+
+        let largest_safe = f64::MAX / 2.0;
+        assert!((largest_safe * 2.0).is_finite());
+        assert!((largest_safe.next_up() * 2.0).is_infinite());
+        for boundary in [largest_safe, -largest_safe] {
+            let mut accepted = Viewmodel::new(0.0, 0.0).capture();
+            accepted.leg_phase = boundary;
+            let mut restored = Viewmodel::from_prepared(
+                Viewmodel::prepare_restore(accepted).expect("adjacent safe boundary must pass"),
+            );
+            let pose = restored.advance(0.0, 0.0, 0.0, 0.0, 0.0, -10.0);
+            assert!(pose.bob.is_finite());
+        }
+    }
 
     fn walker() -> Viewmodel {
         Viewmodel::new(0.0, 0.0)
@@ -471,15 +645,15 @@ mod tests {
     /// the ankle's own 0.07 clamp.
     #[test]
     fn shoes_stay_on_or_above_the_floor() {
-        let p = Vector3::new(0.0, 0.9, 0.0);
-        let fw = Vector3::new(0.0, 0.0, -1.0);
-        let rv = Vector3::new(1.0, 0.0, 0.0);
+        let p = ActorPosition::try_new(Vector3::new(0.0, 0.9, 0.0)).unwrap();
+        let axes =
+            PlanarAxes::try_new(Vector3::new(0.0, 0.0, -1.0), Vector3::new(1.0, 0.0, 0.0)).unwrap();
         for amp10 in 0..=10 {
             let amp = f64::from(amp10) / 10.0;
             for i in 0..200 {
                 let phase = f64::from(i) * 0.05;
-                for s in [-1, 1] {
-                    let leg = leg_pose(p, fw, rv, phase, amp, s);
+                for side in [LegSide::Left, LegSide::Right] {
+                    let leg = leg_pose(p, axes, phase, amp, side).unwrap();
                     assert!(leg.shoe.y >= 0.0649);
                     assert!(leg.ankle.y >= 0.07 - 1e-6);
                 }
@@ -492,11 +666,11 @@ mod tests {
     /// strikes at t + PI, shoes included.
     #[test]
     fn legs_mirror_half_a_cycle_apart() {
-        let p = Vector3::new(0.0, 0.9, 0.0);
-        let fw = Vector3::new(0.0, 0.0, -1.0);
-        let rv = Vector3::new(1.0, 0.0, 0.0);
-        let left = leg_pose(p, fw, rv, 1.3, 1.0, -1);
-        let right = leg_pose(p, fw, rv, 1.3 + std::f64::consts::PI, 1.0, 1);
+        let p = ActorPosition::try_new(Vector3::new(0.0, 0.9, 0.0)).unwrap();
+        let axes =
+            PlanarAxes::try_new(Vector3::new(0.0, 0.0, -1.0), Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        let left = leg_pose(p, axes, 1.3, 1.0, LegSide::Left).unwrap();
+        let right = leg_pose(p, axes, 1.3 + std::f64::consts::PI, 1.0, LegSide::Right).unwrap();
         // same gait, opposite hips: the z/y trajectories coincide
         assert!((f64::from(left.shoe.z) - f64::from(right.shoe.z)).abs() < 1e-5);
         assert!((f64::from(left.shoe.y) - f64::from(right.shoe.y)).abs() < 1e-5);
@@ -508,12 +682,125 @@ mod tests {
     /// birthplace the gdUnit suite pins to ±0.07.
     #[test]
     fn shoes_ride_the_hip_offsets() {
-        let p = Vector3::new(0.0, 0.9, 0.0);
+        let p = ActorPosition::try_new(Vector3::new(0.0, 0.9, 0.0)).unwrap();
+        let axes =
+            PlanarAxes::try_new(Vector3::new(0.0, 0.0, -1.0), Vector3::new(1.0, 0.0, 0.0)).unwrap();
+        for (side, expected_x) in [(LegSide::Left, -0.07), (LegSide::Right, 0.07)] {
+            let leg = leg_pose(p, axes, 2.2, 1.0, side).unwrap();
+            assert!((f64::from(leg.shoe.x) - expected_x).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn leg_pose_preserves_the_legacy_flat_joint_bits() {
+        let position = ActorPosition::try_new(Vector3::new(2.0, 0.9, -3.0)).unwrap();
+        let axes =
+            PlanarAxes::try_new(Vector3::new(0.0, 0.0, -1.0), Vector3::new(1.0, 0.0, 0.0)).unwrap();
+
+        let leg = leg_pose(position, axes, 0.0, 0.0, LegSide::Right).unwrap();
+        for (actual, expected) in [
+            (leg.hip, Vector3::new(2.07, 0.90, -2.80)),
+            (leg.knee, Vector3::new(2.07, 0.45, -2.80)),
+            (leg.ankle, Vector3::new(2.07, 0.07, -2.80)),
+            // The shoe Z is the old two-operation f32 path
+            // `(-3 - -0.20) + -0.08`, not a once-rounded -2.88 literal.
+            (
+                leg.shoe,
+                Vector3::new(2.07, 0.065, f32::from_bits(3_224_916_459)),
+            ),
+        ] {
+            assert_eq!(actual.x.to_bits(), expected.x.to_bits());
+            assert_eq!(actual.y.to_bits(), expected.y.to_bits());
+            assert_eq!(actual.z.to_bits(), expected.z.to_bits());
+        }
+
+        // A striding frame, re-derived from hero_body.gd's frozen loop:
+        // f64 trig, f32 narrowing exactly where GDScript assigned into a
+        // Vector3 lane — the walking half of the bit pin.
+        let phase = 1.3;
+        let amp = 1.0;
+        let leg = leg_pose(position, axes, phase, amp, LegSide::Right).unwrap();
+        let thigh_a = 0.5 * phase.sin() * amp;
+        let knee_a = (0.95 * (phase - 0.9_f64).sin()).max(0.0) * amp;
+        let shin_a = thigh_a - knee_a;
         let fw = Vector3::new(0.0, 0.0, -1.0);
-        let rv = Vector3::new(1.0, 0.0, 0.0);
-        for s in [-1, 1] {
-            let leg = leg_pose(p, fw, rv, 2.2, 1.0, s);
-            assert!((f64::from(leg.shoe.x) - 0.07 * f64::from(s)).abs() < 1e-6);
+        let hip = Vector3::new(2.0, 0.90, -3.0) + Vector3::new(1.0, 0.0, 0.0) * 0.07 - fw * 0.20;
+        let mut knee = hip + fw * (thigh_a.sin() as f32) * 0.45;
+        knee.y = (f64::from(hip.y) - thigh_a.cos() * 0.45) as f32;
+        let mut ankle = knee + fw * (shin_a.sin() as f32) * 0.45;
+        ankle.y = (f64::from(knee.y) - shin_a.cos() * 0.45).max(0.07) as f32;
+        let mut shoe = ankle + fw * 0.08;
+        shoe.y = (f64::from(ankle.y) - 0.02).max(0.065) as f32;
+        for (actual, expected) in [
+            (leg.hip, hip),
+            (leg.knee, knee),
+            (leg.ankle, ankle),
+            (leg.shoe, shoe),
+        ] {
+            assert_eq!(actual.x.to_bits(), expected.x.to_bits());
+            assert_eq!(actual.y.to_bits(), expected.y.to_bits());
+            assert_eq!(actual.z.to_bits(), expected.z.to_bits());
+        }
+    }
+
+    #[test]
+    fn leg_pose_rejects_poisoned_axes_phase_and_amplitude_without_output() {
+        let position = ActorPosition::try_new(Vector3::new(0.0, 0.9, 0.0)).unwrap();
+        for poisoned in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            for (forward, right) in [
+                (Vector3::new(poisoned, 0.0, -1.0), Vector3::RIGHT),
+                (Vector3::FORWARD, Vector3::new(1.0, poisoned, 0.0)),
+            ] {
+                let error = PlanarAxes::try_new(forward, right).unwrap_err();
+                assert_eq!(error.problem(), MotionValueProblem::NonFinite);
+            }
+        }
+        for (forward, right) in [
+            (Vector3::ZERO, Vector3::RIGHT),
+            (Vector3::FORWARD, Vector3::ZERO),
+            (Vector3::UP, Vector3::RIGHT),
+            (Vector3::FORWARD, Vector3::UP),
+        ] {
+            let error = PlanarAxes::try_new(forward, right).unwrap_err();
+            assert_eq!(error.problem(), MotionValueProblem::ZeroVector);
+        }
+        let axes = PlanarAxes::try_new(Vector3::FORWARD, Vector3::RIGHT).unwrap();
+        for phase in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = leg_pose(position, axes, phase, 0.0, LegSide::Right)
+                .expect_err("poisoned phase must produce no leg pose");
+            assert_eq!(error.problem(), MotionValueProblem::NonFinite);
+        }
+        for amplitude in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let error = leg_pose(position, axes, 0.0, amplitude, LegSide::Right)
+                .expect_err("poisoned amplitude must produce no leg pose");
+            assert_eq!(error.problem(), MotionValueProblem::NonFinite);
+        }
+    }
+
+    /// The flat law is total right at the actor envelope: bounded joint
+    /// offsets near 1.25 m cannot cross the 2 m pose margin
+    /// (`MAX_POSE_COORD_M` - `MAX_ACTOR_COORD_M`), and every flat Y lane
+    /// is a constant, so the extreme corner poses without refusal.
+    #[test]
+    fn leg_pose_admits_the_actor_envelope_edge_without_refusal() {
+        let axes = PlanarAxes::try_new(Vector3::FORWARD, Vector3::RIGHT).unwrap();
+        for sign in [1.0_f32, -1.0] {
+            let position = ActorPosition::try_new(Vector3::new(
+                sign * crate::support_motion::MAX_ACTOR_COORD_M,
+                0.9,
+                sign * crate::support_motion::MAX_ACTOR_COORD_M,
+            ))
+            .unwrap();
+            for side in [LegSide::Left, LegSide::Right] {
+                let leg = leg_pose(position, axes, 1.3, 1.0, side)
+                    .expect("the envelope edge is inside the flat law's domain");
+                for joint in [leg.hip, leg.knee, leg.ankle, leg.shoe] {
+                    for lane in [joint.x, joint.y, joint.z] {
+                        assert!(lane.abs() <= crate::support_motion::MAX_POSE_COORD_M);
+                    }
+                }
+                assert_eq!(leg.hip.y.to_bits(), 0.90_f32.to_bits());
+            }
         }
     }
 

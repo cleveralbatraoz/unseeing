@@ -5,9 +5,31 @@
 //! limit here makes those pure transitions share the same complete domain;
 //! the Godot composition root only applies their returned values.
 
+use crate::reproduce::RestoreValueError;
+
 /// Largest simulation instant whose 60 Hz successor remains distinguishable
 /// after narrowing to the shader's 32-bit time representation.
 pub(crate) const RENDERER_VISIBLE_TIME_HORIZON: f64 = 262_144.0;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PreparedTime(f64);
+
+pub(crate) fn prepare_time(value: f64) -> Result<PreparedTime, RestoreValueError> {
+    if value.is_finite() && (0.0..=RENDERER_VISIBLE_TIME_HORIZON).contains(&value) {
+        Ok(PreparedTime(value))
+    } else {
+        Err(RestoreValueError::new(
+            "env.now",
+            "must be finite and inside the renderer-visible time horizon",
+        ))
+    }
+}
+
+impl PreparedTime {
+    pub(crate) fn value(self) -> f64 {
+        self.0
+    }
+}
 
 /// Advance the simulated clock over the complete `f64` input domain.
 ///
@@ -38,7 +60,17 @@ pub(crate) fn valid_time_or_zero(value: f64) -> (f64, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{advance_clock, valid_time_or_zero};
+    use super::{advance_clock, prepare_time, valid_time_or_zero};
+    use crate::demo_tap::DemoTap;
+
+    #[test]
+    fn prepared_restore_rejects_invalid_time_or_demo_appointment() {
+        let error = prepare_time(-0.25).expect_err("negative time must be refused");
+        assert_eq!(error.path, "env.now");
+        let error = DemoTap::prepare_restore(f64::INFINITY)
+            .expect_err("infinite appointment must be refused");
+        assert_eq!(error.path, "env.demo_next");
+    }
 
     /// Reaching the finite horizon exactly is a valid transition, not a
     /// saturation repair that should warn at the engine boundary.

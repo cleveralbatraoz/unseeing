@@ -20,17 +20,13 @@
 //! `process()` on the `INode3D` impl auto-enables per-frame processing —
 //! desired here, so there is no `set_process` dance to add.
 //!
-//! The env trio (`capture_env`/`apply_env`/`restore_blob`) is
-//! `main.gd:204-286` verbatim: the nine environment fields this composition
-//! root owns (the clock, the demo tap's schedule, the flicker envelope and
-//! RNG state), and the
-//! transaction that applies a whole capture blob back — pause bracket,
-//! the observer's `env_of` refusal short-circuit, the previous env kept
-//! for rollback, and the one asymmetry that is NOT a bug: a POST-WRITE
-//! hash mismatch (the artifact disagreeing with its own claimed hash)
-//! refuses WITHOUT rolling back, because the world really was restored
-//! and is internally consistent — it simply is not the instant the file
-//! claims to hold.
+//! The env trio owns the nine environment fields (clock, demo schedule,
+//! flicker envelope and RNG state). `restore_blob` freezes the tree, asks
+//! the restorer for a complete read-only prepared transaction, then installs
+//! its [`PreparedEnv`] and commits the remaining prepared owners. Invalid
+//! artifact syntax, hash, environment, handles or subsystem values therefore
+//! return before any write or repair warning; the legacy `apply_env` surface
+//! remains only for its direct boundary tests.
 //!
 //! `main.tscn` boots `UnseeingGame` as its root — this class IS the
 //! boot root of the shipped path. The retired GDScript composition root is
@@ -57,11 +53,12 @@ use super::hero::HeroBody;
 use super::level::WaveLevel;
 use super::observer::{WaveObserver, unavailable};
 use super::player::UnseeingPlayer;
-use super::restorer::WaveRestorer;
+use super::restorer::{PreparedEnv, WaveRestorer};
 use super::settings::SettingsMenu;
 use crate::demo_tap::DemoTap;
 use crate::ffi::WaveCore;
 use crate::flicker::{Flicker, FlickerState};
+use crate::support_motion::{MotionConfigError, MotionConfigField, SupportMotionConfig};
 use crate::temporal::{advance_clock, valid_time_or_zero};
 
 /// The perceptual ladder's world layer — real depth, everything but the
@@ -75,13 +72,13 @@ const PRIORITY_SOURCES: i32 = 20;
 /// The deterministic-run seed every armed switch shares.
 const SEED: u64 = 0x5EED;
 
-/// `restore_blob` was called before `ready()` wired an observer — there is
-/// no reader to ask `env_of` at all.
-const NO_OBSERVER: &str = "the root holds no observer — restore_blob has nothing to ask env_of";
-
 /// `restore_blob` was called before `ready()` wired a restorer — there is
 /// no writer to hand the parsed blob to.
 const NO_RESTORER: &str = "the root holds no restorer — restore_blob has nothing to write through";
+const DEAD_RESTORER: &str =
+    "the root restorer has been freed — restore_blob has no live transaction owner";
+const NO_RNG: &str =
+    "the root RNG is absent or has been freed — restore_blob has no exact stream target";
 
 /// Unseeing — the complete shipped composition root.
 #[derive(GodotClass)]
@@ -92,6 +89,49 @@ pub struct UnseeingGame {
     #[export]
     #[var]
     level_scene: Option<Gd<PackedScene>>,
+    /// Downward acceleration in metres per second squared. This authored
+    /// Player setting is checked with the other five motion fields and is
+    /// applied only when the Player is constructed.
+    #[export(range = (0.1, 30.0, 0.1, suffix = " m/s²"))]
+    #[var(get = get_player_fall_acceleration, set = set_player_fall_acceleration)]
+    #[init(val = 9.8)]
+    player_fall_acceleration: f64,
+    /// Maximum downward speed in metres per second. This authored Player
+    /// setting is checked with the other five motion fields and is applied
+    /// only when the Player is constructed.
+    #[export(range = (0.5, 50.0, 0.5, suffix = " m/s"))]
+    #[var(get = get_player_terminal_fall_speed, set = set_player_terminal_fall_speed)]
+    #[init(val = 20.0)]
+    player_terminal_fall_speed: f64,
+    /// Landing speed in metres per second at or below which no landing wave
+    /// is authored. It must remain below Player Landing Full Speed; either
+    /// threshold may be staged first and the pair is checked at construction.
+    #[export(range = (0.0, 10.0, 0.1, suffix = " m/s"))]
+    #[var(get = get_player_landing_silent_speed, set = set_player_landing_silent_speed)]
+    #[init(val = 1.5)]
+    player_landing_silent_speed: f64,
+    /// Landing speed in metres per second at which the authored landing wave
+    /// reaches full strength. It must exceed Player Landing Silent Speed;
+    /// either threshold may be staged first and the pair is checked at
+    /// construction.
+    #[export(range = (0.1, 20.0, 0.1, suffix = " m/s"))]
+    #[var(get = get_player_landing_full_speed, set = set_player_landing_full_speed)]
+    #[init(val = 4.0)]
+    player_landing_full_speed: f64,
+    /// Maximum authored landing-wave gain. This unitless Player setting is
+    /// checked with the other five motion fields and is applied only when the
+    /// Player is constructed.
+    #[export(range = (0.0, 1.0, 0.01))]
+    #[var(get = get_player_landing_max_gain, set = set_player_landing_max_gain)]
+    #[init(val = 0.85)]
+    player_landing_max_gain: f64,
+    /// Maximum authored landing-wave radius in metres. This Player setting is
+    /// checked with the other five motion fields and is applied only when the
+    /// Player is constructed.
+    #[export(range = (0.0, 10.0, 0.1, suffix = " m"))]
+    #[var(get = get_player_landing_max_range, set = set_player_landing_max_range)]
+    #[init(val = 5.0)]
+    player_landing_max_range: f64,
     /// The world skin — real depth, every solid and the hero's own body.
     #[init(val = ShaderMaterial::new_gd())]
     #[var]
@@ -350,7 +390,15 @@ impl INode3D for UnseeingGame {
         // one's clock from this same handle.
         self.cat_children = level.bind().cats();
 
+        let player_config = match self.staged_player_motion_config() {
+            Ok(config) => config,
+            Err(error) => {
+                godot_error!("UnseeingGame: invalid player motion configuration — {error}");
+                return;
+            }
+        };
         let mut player = UnseeingPlayer::new_alloc();
+        player.bind_mut().inject_motion_config(player_config);
         player.set("pulses", &core.clone().upcast::<RefCounted>().to_variant());
         player.set_position(level.bind().spawn_pos());
         let mut rotation = player.get_rotation();
@@ -524,6 +572,66 @@ impl UnseeingGame {
         self.cat_children.clone()
     }
 
+    #[func]
+    fn get_player_fall_acceleration(&self) -> f64 {
+        self.player_fall_acceleration
+    }
+
+    #[func]
+    fn set_player_fall_acceleration(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::FallAcceleration, value);
+    }
+
+    #[func]
+    fn get_player_terminal_fall_speed(&self) -> f64 {
+        self.player_terminal_fall_speed
+    }
+
+    #[func]
+    fn set_player_terminal_fall_speed(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::TerminalFallSpeed, value);
+    }
+
+    #[func]
+    fn get_player_landing_silent_speed(&self) -> f64 {
+        self.player_landing_silent_speed
+    }
+
+    #[func]
+    fn set_player_landing_silent_speed(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::LandingSilentSpeed, value);
+    }
+
+    #[func]
+    fn get_player_landing_full_speed(&self) -> f64 {
+        self.player_landing_full_speed
+    }
+
+    #[func]
+    fn set_player_landing_full_speed(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::LandingFullSpeed, value);
+    }
+
+    #[func]
+    fn get_player_landing_max_gain(&self) -> f64 {
+        self.player_landing_max_gain
+    }
+
+    #[func]
+    fn set_player_landing_max_gain(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::LandingMaxGain, value);
+    }
+
+    #[func]
+    fn get_player_landing_max_range(&self) -> f64 {
+        self.player_landing_max_range
+    }
+
+    #[func]
+    fn set_player_landing_max_range(&mut self, value: f64) {
+        self.try_stage_player_motion_field(MotionConfigField::LandingMaxRange, value);
+    }
+
     /// The RNG's own seed, widened to the wire-friendly integer width —
     /// `main.gd`'s `_flicker._rng.state` neighbour, not itself: this is
     /// the SEED, the fixed starting point, while the capture's
@@ -582,11 +690,10 @@ impl UnseeingGame {
     /// Put a captured env group back — the write side of
     /// [`Self::capture_env`], the exact nine fields it reads and the only
     /// half of a blob no other Rust node can write.
-    /// `main.gd::apply_env` verbatim: every value is ASSIGNED, never
-    /// validated — `env_of` already did that on the way out of the blob's
-    /// text spelling, and a native env handed straight from
-    /// [`Self::capture_env`] (the round-trip and restore-transaction paths)
-    /// needs no validation at all.
+    /// This legacy callable deliberately retains its repairing boundary law
+    /// for direct engine tests. Artifact restore never calls it: preflight
+    /// constructs [`PreparedEnv`] and the private assignment-only door below
+    /// consumes that value without warning or repair.
     #[func]
     fn apply_env(&mut self, env: VarDictionary) {
         let (now, repaired_now) = valid_time_or_zero(dict_f64(&env, "now"));
@@ -608,79 +715,117 @@ impl UnseeingGame {
         }
     }
 
-    /// Apply a captured blob to this running game — the one call the
-    /// suites and the reproduction probes make. `main.gd::restore_blob`
-    /// verbatim: freeze first (state must not move between the env half
-    /// and the engine half), ask the observer to translate the blob's env
-    /// group, apply it, hand the whole blob to the restorer, and roll the
-    /// env back on any refusal the transaction can still name a field for.
-    ///
-    /// The one asymmetry that is NOT a bug: a POST-WRITE hash mismatch —
-    /// the artifact's own claimed hash disagreeing with the world just
-    /// restored — refuses WITHOUT rolling the env back. The restore
-    /// itself succeeded and the world is internally consistent; it is
-    /// simply not the instant the file claims to hold, so undoing it
-    /// would throw away a good restore over a bad label on the file.
+    /// Restore a blob through a complete read-only preflight, followed by
+    /// assignment-only environment and subsystem installs. The tree stays
+    /// frozen across both phases and its incoming pause state is preserved.
+    /// Every artifact refusal returns before the environment, world or
+    /// warning latch is touched; any post-write refusal is necessarily an
+    /// internal prepared-commit defect rather than late validation.
     #[func]
     fn restore_blob(&mut self, blob: VarDictionary) -> VarDictionary {
         let was_paused = self.is_paused();
         self.set_paused(true);
 
-        let Some(observer) = self.observer.clone() else {
+        let Some(mut rng) = self
+            .rng
+            .as_ref()
+            .filter(|rng| rng.is_instance_valid())
+            .cloned()
+        else {
             self.set_paused(was_paused);
-            return unavailable(NO_OBSERVER);
+            return unavailable(NO_RNG);
         };
-        let env = observer.bind().env_of(blob.clone());
-        if env.contains_key("unavailable") {
-            self.set_paused(was_paused);
-            return env;
-        }
-
-        let previous = self.capture_env();
-        self.apply_env(env);
-
-        let Some(mut restorer) = self.restorer.clone() else {
-            self.apply_env(previous);
+        let Some(restorer) = self.restorer.as_ref() else {
             self.set_paused(was_paused);
             return unavailable(NO_RESTORER);
         };
-        let mut verdict = restorer
-            .bind_mut()
-            .restore(blob.clone(), self.capture_env());
-        if verdict.contains_key("unavailable") {
-            self.apply_env(previous);
-        } else {
-            // `main.gd::restore_blob` verbatim, mismatched defaults and
-            // all: the COMPARE reads a missing key as "" (a blob with a
-            // genuinely empty hash must not spuriously read as missing),
-            // while the MESSAGE reads it as "<missing>" (legible when it
-            // truly is absent) — two defaults for one key, on purpose.
-            let stored_for_compare = blob
-                .get("hash")
-                .and_then(|v| v.try_to::<GString>().ok())
-                .unwrap_or_default();
-            let restored = verdict
-                .get("hash")
-                .and_then(|v| v.try_to::<GString>().ok())
-                .unwrap_or_default();
-            if stored_for_compare != restored {
-                let stored_for_message = blob
-                    .get("hash")
-                    .and_then(|v| v.try_to::<GString>().ok())
-                    .unwrap_or_else(|| GString::from("<missing>"));
-                verdict = unavailable(&format!(
-                    "the blob's stored hash disagrees with the restored world: stored \
-                     {stored_for_message}, restored {restored} — the artifact was edited or \
-                     corrupted"
-                ));
-            }
+        if !restorer.is_instance_valid() {
+            self.set_paused(was_paused);
+            return unavailable(DEAD_RESTORER);
         }
+        let mut restorer = restorer.clone();
+        let prepared = match restorer.bind().preflight(&blob) {
+            Ok(prepared) => prepared,
+            Err(reason) => {
+                self.set_paused(was_paused);
+                return unavailable(&reason);
+            }
+        };
+        self.apply_prepared_env(prepared.env(), &mut rng);
+        let committed = restorer.bind_mut().commit(prepared);
+        let live_now = self.now;
+        let live_env = self.capture_env();
+        let verdict = committed.verify(live_now, &live_env);
         self.set_paused(was_paused);
         verdict
     }
 }
 
 impl UnseeingGame {
+    fn staged_player_motion_config(&self) -> Result<SupportMotionConfig, MotionConfigError> {
+        SupportMotionConfig::try_new(
+            self.player_fall_acceleration,
+            self.player_terminal_fall_speed,
+            self.player_landing_silent_speed,
+            self.player_landing_full_speed,
+            self.player_landing_max_gain,
+            self.player_landing_max_range,
+        )
+    }
+
+    fn try_stage_player_motion_field(&mut self, field: MotionConfigField, value: f64) {
+        let mut candidate = [
+            self.player_fall_acceleration,
+            self.player_terminal_fall_speed,
+            self.player_landing_silent_speed,
+            self.player_landing_full_speed,
+            self.player_landing_max_gain,
+            self.player_landing_max_range,
+        ];
+        candidate[match field {
+            MotionConfigField::FallAcceleration => 0,
+            MotionConfigField::TerminalFallSpeed => 1,
+            MotionConfigField::LandingSilentSpeed => 2,
+            MotionConfigField::LandingFullSpeed => 3,
+            MotionConfigField::LandingMaxGain => 4,
+            MotionConfigField::LandingMaxRange => 5,
+        }] = value;
+
+        let accepted = match SupportMotionConfig::try_new(
+            candidate[0],
+            candidate[1],
+            candidate[2],
+            candidate[3],
+            candidate[4],
+            candidate[5],
+        ) {
+            Ok(_) | Err(MotionConfigError::ThresholdOrder { .. }) => true,
+            Err(_) => false,
+        };
+        if !accepted {
+            return;
+        }
+        match field {
+            MotionConfigField::FallAcceleration => self.player_fall_acceleration = value,
+            MotionConfigField::TerminalFallSpeed => self.player_terminal_fall_speed = value,
+            MotionConfigField::LandingSilentSpeed => self.player_landing_silent_speed = value,
+            MotionConfigField::LandingFullSpeed => self.player_landing_full_speed = value,
+            MotionConfigField::LandingMaxGain => self.player_landing_max_gain = value,
+            MotionConfigField::LandingMaxRange => self.player_landing_max_range = value,
+        }
+    }
+
+    /// Install only owner-checked environment values. Unlike the public
+    /// legacy `apply_env` test surface, this door cannot repair or warn.
+    fn apply_prepared_env(&mut self, env: &PreparedEnv, rng: &mut Gd<RandomNumberGenerator>) {
+        self.now = env.now.value();
+        self.demo_checked = env.demo_checked;
+        self.demo.armed = env.demo_armed;
+        self.demo.install_prepared(env.demo);
+        self.flicker = Flicker::from_prepared(env.flicker);
+        rng.set_state(env.flicker_rng_state);
+    }
+
     /// One warning per node lifetime is enough to expose a repaired engine or
     /// restore boundary without turning a repeated bad delta into log spam.
     fn report_temporal_repair(&mut self) {
@@ -851,5 +996,29 @@ mod tests {
         assert!(post_quad_visible(true, Some("?demo")));
         assert!(post_quad_visible(true, None));
         assert!(post_quad_visible(false, Some("?gprobe")));
+    }
+}
+
+#[cfg(all(test, feature = "editor-docs"))]
+mod editor_docs_tests {
+    #[test]
+    fn player_motion_property_purpose_units_and_threshold_rule_reach_editor_docs() {
+        let xml = godot::docs::gather_xml_docs()
+            .find(|xml| xml.contains("<class name=\"UnseeingGame\""))
+            .expect("UnseeingGame must register an editor-docs XML class");
+        for phrase in [
+            "Downward acceleration in metres per second squared",
+            "Maximum downward speed in metres per second",
+            "must remain below Player Landing Full Speed",
+            "must exceed Player Landing Silent Speed",
+            "Maximum authored landing-wave gain",
+            "Maximum authored landing-wave radius in metres",
+            "applied only when the Player is constructed",
+        ] {
+            assert!(
+                xml.contains(phrase),
+                "UnseeingGame editor XML omitted `{phrase}`: {xml}"
+            );
+        }
     }
 }

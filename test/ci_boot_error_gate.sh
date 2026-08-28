@@ -223,6 +223,54 @@ uncovered_openings() { # uncovered_openings <exception-prefix> <exception-home>
   done
 }
 
+# The second documented category (issue #64's fix-2): request-scoped
+# refusals. Not a boot or composition failure — a malformed per-request
+# wave/reflection/tick input, or a hero body not yet built at restore time
+# — so it must never join BOOT_ERROR_PATTERN (ci/boot_error_pattern.sh
+# argues at length against widening that pattern, and this fix does not
+# reopen that argument). But it must also never be forgiven by inference —
+# "anything under ffi.rs", "any opening with a dot" — because that would
+# silently swallow the next real boot-failure class introduced there. So:
+# an ENUMERATED table of (opening, home file) pairs, read off the actual
+# source at the time each was reviewed. ci/boot_error_pattern.sh's header
+# names the same four as the documentation of record; this table is where
+# the gate actually enforces it, so keep the two in step by hand.
+REQUEST_REFUSALS="WaveCore.emit_reflecting $SRC/ffi.rs
+WaveCore.tick $SRC/ffi.rs
+Pulses.emit $SRC/ffi.rs
+hero.viewmodel $SRC/nodes/restorer.rs"
+
+# Drop from a census (stdin, one "<prefix> <file>:<line>" per line) every
+# line whose (prefix, home file) pair appears in <table> (arg 1, the same
+# "prefix home" shape as REQUEST_REFUSALS above, one pair per line).
+# Deliberately its own function rather than a second exception folded into
+# uncovered_openings: that keeps the ONE legacy Pulses.emit/pulse_pool.rs
+# exception — with its own stricter pin on the exact message text and the
+# single emitter count below — provably untouched by this table, rather
+# than merged into one rule neither test could pin on its own. Bound the
+# same way as that legacy exception even so: prefix AND home together, so
+# the same prefix opened from a file that is not its enumerated home is
+# left for uncovered_openings (or a human) to report like anything else.
+strip_request_refusals() { # strip_request_refusals <table>
+  table="$1"
+  while read -r prefix at; do
+    [ -n "$prefix" ] || continue
+    home="${at%:*}"
+    hit=0
+    while read -r r_prefix r_home; do
+      [ -n "$r_prefix" ] || continue
+      if [ "$prefix" = "$r_prefix" ] && [ "$home" = "$r_home" ]; then
+        hit=1
+        break
+      fi
+    done <<REQUEST_TABLE_EOF
+$table
+REQUEST_TABLE_EOF
+    [ "$hit" = 1 ] && continue
+    printf '%s %s\n' "$prefix" "$at"
+  done
+}
+
 # --- the readers' own fixtures ---
 # Everything below this line reads rust/src/ and reports what it found
 # there, so a reader that has quietly stopped matching reports an empty
@@ -366,6 +414,37 @@ else
   bad "the verdict misread its fixture — got [$VERDICT_GOT], expected [$VERDICT_WANT]"
 fi
 
+# strip_request_refusals's own fixture, over a hand-written table rather
+# than the real REQUEST_REFUSALS, so this proves the FUNCTION's logic —
+# prefix AND home together — independent of whatever the real table holds
+# today. Two things this must show that the legacy-exception test above
+# does not: the same prefix survives from an unenumerated home (proving
+# this is an enumeration, not "Pulses.emit is fine everywhere"), and an
+# entry the OTHER mechanism already forgives (Pulses.emit in
+# pulse_pool.rs) survives here too, because this function has never heard
+# of it — the two forgiveness mechanisms stay provably separate.
+STRIP_GOT="$(strip_request_refusals "WaveCore.emit_reflecting rust/src/ffi.rs
+Pulses.emit rust/src/ffi.rs
+hero.viewmodel rust/src/nodes/restorer.rs" <<'STRIP_FIXTURE'
+WaveCore.emit_reflecting rust/src/ffi.rs:145
+WaveCore.emit_reflecting rust/src/nodes/level.rs:9
+Pulses.emit rust/src/ffi.rs:614
+Pulses.emit rust/src/pulse_pool.rs:31
+hero.viewmodel rust/src/nodes/restorer.rs:261
+hero.viewmodel rust/src/nodes/observer.rs:5
+SoundBell rust/src/bell_plan.rs:12
+STRIP_FIXTURE
+)"
+STRIP_WANT="WaveCore.emit_reflecting rust/src/nodes/level.rs:9
+Pulses.emit rust/src/pulse_pool.rs:31
+hero.viewmodel rust/src/nodes/observer.rs:5
+SoundBell rust/src/bell_plan.rs:12"
+if [ "$STRIP_GOT" = "$STRIP_WANT" ]; then
+  ok "strip_request_refusals drops every enumerated (prefix, home) pair and leaves everything else untouched — including the same prefix from an unenumerated home, and the legacy pulse_pool.rs exception it knows nothing about"
+else
+  bad "strip_request_refusals misread its fixture — got [$STRIP_GOT], expected [$STRIP_WANT]"
+fi
+
 # --- derived, and read four ways ---
 # Reading the macro SITES alone stopped being enough the moment the message
 # text moved where the two-layer rule wants it: built in the pure,
@@ -375,6 +454,77 @@ fi
 # ci/pipeline.sh's grep catch the line Godot prints? All four read rust/src/
 # directly rather than trusting the hand-copied literals above, which can go
 # stale together with BOOT_ERROR_PATTERN and stay green together.
+
+# The one documented exception, and it is a PREFIX with a home, not a call
+# site: WaveCore's REFUSAL_MESSAGE deliberately keeps pulses.gd's legacy
+# "Pulses.emit:" text instead of a class name (see ci/boot_error_pattern.sh),
+# and one refused wave request does not mean the level shipped broken the way
+# a starved superface class does. Pinning the prefix AND the file that owns it is
+# what keeps it a single exception rather than a category: a different
+# opening, or this one anywhere else, is reported like any other violation.
+#
+# Defined here, above both readers that need it (SITES right below, CENSUS
+# further down), because a literal head at its OWN call site can name this
+# exact exception too — it is the CENSUS reader's forgiveness first, and
+# the SITES reader below reaches for the same pair rather than growing a
+# second copy of it.
+EXCEPT_PREFIX="Pulses.emit"
+EXCEPT_HOME="$SRC/pulse_pool.rs"
+
+# The single (prefix, home) membership test both the legacy exception and
+# the enumerated REQUEST_REFUSALS table answer to: forgiven iff the pair
+# matches the legacy exception exactly, or matches one line of <table>
+# exactly. Fully parameterised (nothing read off a global here) so its own
+# fixture below can hand-derive every branch without depending on what
+# EXCEPT_PREFIX/EXCEPT_HOME/REQUEST_REFUSALS happen to hold today. The
+# CENSUS reader further down does NOT call this — it already has
+# strip_request_refusals (the table) piped into uncovered_openings (the
+# legacy exception) as two separately fixtured stages, and duplicating
+# that here would be a second, divergeable copy of the same rule. This
+# function exists so the SITES reader gets the identical two-stage answer
+# without growing a third implementation of either stage.
+pair_forgiven() { # pair_forgiven <prefix> <home> <legacy-prefix> <legacy-home> <table>
+  [ "$1" = "$3" ] && [ "$2" = "$4" ] && return 0
+  while read -r r_prefix r_home; do
+    [ -n "$r_prefix" ] || continue
+    [ "$1" = "$r_prefix" ] && [ "$2" = "$r_home" ] && return 0
+  done <<PAIR_TABLE_EOF
+$5
+PAIR_TABLE_EOF
+  return 1
+}
+
+# pair_forgiven's own fixture — hand-derived, not read off REQUEST_REFUSALS,
+# so a mutation that drops the home half of either comparison (matching by
+# prefix alone) fails HERE, fast, rather than only in a full-tree plant.
+PF_LEGACY_P="Pulses.emit"
+PF_LEGACY_H="rust/src/pulse_pool.rs"
+PF_TABLE="WaveCore.tick rust/src/ffi.rs"
+if pair_forgiven "$PF_LEGACY_P" "$PF_LEGACY_H" "$PF_LEGACY_P" "$PF_LEGACY_H" "$PF_TABLE"; then
+  ok "pair_forgiven accepts the legacy exception's own (prefix, home)"
+else
+  bad "pair_forgiven rejected the legacy exception's own (prefix, home) — the SITES reader would report it as a NEW violation"
+fi
+if pair_forgiven "$PF_LEGACY_P" "rust/src/nodes/stranger.rs" "$PF_LEGACY_P" "$PF_LEGACY_H" "$PF_TABLE"; then
+  bad "pair_forgiven accepted the legacy exception's PREFIX from a file that is not its home — the legacy exception has widened into a prefix-wide pass"
+else
+  ok "pair_forgiven rejects the legacy exception's prefix from an unenumerated home"
+fi
+if pair_forgiven "WaveCore.tick" "rust/src/ffi.rs" "$PF_LEGACY_P" "$PF_LEGACY_H" "$PF_TABLE"; then
+  ok "pair_forgiven accepts an enumerated REQUEST_REFUSALS pair"
+else
+  bad "pair_forgiven rejected an enumerated REQUEST_REFUSALS pair — the SITES reader would report every one of them"
+fi
+if pair_forgiven "WaveCore.tick" "rust/src/nodes/level.rs" "$PF_LEGACY_P" "$PF_LEGACY_H" "$PF_TABLE"; then
+  bad "pair_forgiven accepted an enumerated PREFIX from a file that is not its enumerated home — prefix-and-home binding is broken"
+else
+  ok "pair_forgiven rejects an enumerated prefix from a file that is not its enumerated home"
+fi
+if pair_forgiven "SoundBell" "rust/src/bell_plan.rs" "$PF_LEGACY_P" "$PF_LEGACY_H" "$PF_TABLE"; then
+  bad "pair_forgiven accepted a prefix that appears in neither the legacy exception nor the table"
+else
+  ok "pair_forgiven rejects a prefix that is neither the legacy exception nor in the table"
+fi
 
 # (1) SITES — what each godot_error! writes at the head of its OWN message.
 # "ERROR: <head>" goes to the same pattern ci/pipeline.sh greps the boot log
@@ -413,9 +563,26 @@ for site in $SITES; do
     continue
   fi
   HEADED=$((HEADED + 1))
-  if ! printf '%s\n' "ERROR: $HEAD" | grep -qiE "$BOOT_ERROR_PATTERN"; then
-    bad "$SRC prints \"ERROR: $HEAD\" at $site and BOOT_ERROR_PATTERN does not catch it — this class would boot-check silently"
+  if printf '%s\n' "ERROR: $HEAD" | grep -qiE "$BOOT_ERROR_PATTERN"; then
+    continue
   fi
+  # A literal head that does not match BOOT_ERROR_PATTERN directly may
+  # still be an enumerated request-scoped refusal, or the one legacy
+  # Pulses.emit exception — the SAME forgiveness the CENSUS reader further
+  # down applies (via pair_forgiven, above), reached for here too because
+  # a message written with its own leading text (rather than relayed from
+  # a pure module) is seen by THIS reader first and must not be reported
+  # as a second, different violation of the same fact.
+  SITE_PREFIX="$(printf '%s' "$HEAD" | sed -n 's/^\([A-Za-z_][A-Za-z0-9_.]*\): .*$/\1/p')"
+  if [ -z "$SITE_PREFIX" ]; then
+    SITE_PREFIX="$(printf '%s' "$HEAD" | sed -n 's/^\([A-Za-z_][A-Za-z0-9_.]*\) '\''.*$/\1/p')"
+  fi
+  SITE_HOME="${site%:*}"
+  if [ -n "$SITE_PREFIX" ] &&
+    pair_forgiven "$SITE_PREFIX" "$SITE_HOME" "$EXCEPT_PREFIX" "$EXCEPT_HOME" "$REQUEST_REFUSALS"; then
+    continue
+  fi
+  bad "$SRC prints \"ERROR: $HEAD\" at $site and BOOT_ERROR_PATTERN does not catch it — this class would boot-check silently"
 done
 
 if [ "$HEADED" -gt 0 ]; then
@@ -439,16 +606,6 @@ fi
 # here even though not one macro site mentions the name.
 CENSUS="$(cd "$DIR" && diagnostic_census "$SRC")"
 
-# The one documented exception, and it is a PREFIX with a home, not a call
-# site: WaveCore's REFUSAL_MESSAGE deliberately keeps pulses.gd's legacy
-# "Pulses.emit:" text instead of a class name (see ci/boot_error_pattern.sh),
-# and one refused wave request does not mean the level shipped broken the way
-# a starved superface class does. Pinning the prefix AND the file that owns it is
-# what keeps it a single exception rather than a category: a different
-# opening, or this one anywhere else, is reported like any other violation.
-EXCEPT_PREFIX="Pulses.emit"
-EXCEPT_HOME="$SRC/pulse_pool.rs"
-
 if [ -z "$CENSUS" ]; then
   bad "the census read zero class-style openings out of $SRC — diagnostic_census has stopped reading"
 else
@@ -467,9 +624,10 @@ else
     bad "the census read $CENSUSED openings and every one of them is under $SRC/nodes/ — it is aimed too narrowly, and every opening built in a pure module is invisible to it"
   fi
 
-  UNCOVERED="$(printf '%s\n' "$CENSUS" | uncovered_openings "$EXCEPT_PREFIX" "$EXCEPT_HOME")"
+  UNCOVERED="$(printf '%s\n' "$CENSUS" | strip_request_refusals "$REQUEST_REFUSALS" |
+    uncovered_openings "$EXCEPT_PREFIX" "$EXCEPT_HOME")"
   if [ -z "$UNCOVERED" ]; then
-    ok "every class-style opening under $SRC prints a line BOOT_ERROR_PATTERN catches, bar the forgiven \"$EXCEPT_PREFIX\" in $EXCEPT_HOME"
+    ok "every class-style opening under $SRC prints a line BOOT_ERROR_PATTERN catches, bar the forgiven \"$EXCEPT_PREFIX\" in $EXCEPT_HOME and the enumerated request-scoped refusals"
   else
     # Fed by here-doc, not by a pipe: down a pipe `bad` would set FAIL in a
     # subshell that then exits, and this whole half would print its failures
@@ -584,6 +742,48 @@ PLANT
     bad "a NotAnEngineClass built in a pure module and relayed by a node did NOT turn this gate red — the derived half above is decorative"
   else
     ok "a class built in a pure module and relayed by a node turns this gate red, end to end — the composition works, not just the parts"
+  fi
+
+  # Two more compositions this project's issue #64 fix-2 must not become a
+  # hole for: the request-scoped-refusal category is an ENUMERATED table,
+  # not "anything in an enumerated file" and not "this opening, anywhere".
+  # Both plants live in ffi.rs itself — the enumerated home of three of the
+  # four table entries — precisely because that is where a blanket
+  # would-be exemption would be easiest to mistake for correct.
+
+  cp -R "$DIR/$SRC" "$FIX/request_unlisted"
+  # A request-scoped-shaped refusal ("WaveCore....: ...") that nobody has
+  # reviewed and added to REQUEST_REFUSALS. If ffi.rs itself were forgiven
+  # wholesale, this would vanish; it must not.
+  cat >>"$FIX/request_unlisted/ffi.rs" <<'PLANT'
+
+/// A request refusal this campaign never reviewed or enumerated.
+fn planted_unlisted_refusal() -> String {
+    "WaveCore.unlisted_refusal: this reason was never enumerated — refused".to_string()
+}
+PLANT
+  if (BOOT_GATE_SRC="$FIX/request_unlisted" sh "$0" >/dev/null 2>&1); then
+    bad "a request-scoped refusal opening NOT in REQUEST_REFUSALS did not turn this gate red, even written in an enumerated home file — the category has widened into a free pass for the file instead of staying a table"
+  else
+    ok "an unenumerated request-refusal opening turns this gate red even from inside an enumerated home file — the category is a table, not a file-wide exemption"
+  fi
+
+  cp -R "$DIR/$SRC" "$FIX/request_wrong_home"
+  # An ENUMERATED opening ("hero.viewmodel"), planted outside its one
+  # enumerated home (rust/src/nodes/restorer.rs). If forgiveness followed
+  # the prefix alone, this would vanish too; it must not.
+  cat >>"$FIX/request_wrong_home/nodes/level.rs" <<'PLANT'
+
+/// The enumerated opening "hero.viewmodel", said from a file that is not
+/// its one enumerated home.
+fn planted_wrong_home() -> String {
+    "hero.viewmodel: planted outside its enumerated home".to_string()
+}
+PLANT
+  if (BOOT_GATE_SRC="$FIX/request_wrong_home" sh "$0" >/dev/null 2>&1); then
+    bad "the enumerated opening \"hero.viewmodel\" planted outside restorer.rs did NOT turn this gate red — the new category is forgiving the prefix alone, not prefix AND home"
+  else
+    ok "an enumerated request-refusal opening planted outside its one home file still turns this gate red — prefix-and-home binding holds for the new category too"
   fi
 fi
 

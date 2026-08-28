@@ -34,6 +34,11 @@ enabled=PackedStringArray("res://addons/gdUnit4/plugin.cfg")
 ; Version bumps go through ci/vendor-gdunit4.sh update <tag> instead.
 settings/common/update_notification_enabled=false
 
+[layer_names]
+
+3d_physics/layer_2="Controlled Actor"
+3d_physics/layer_3="Airborne Actor"
+
 [display]
 
 window/size/viewport_width=1280

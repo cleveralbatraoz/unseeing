@@ -71,9 +71,18 @@ func _on_frame() -> void:
 
 func _capture_leg() -> void:
 	if _frames == T_FRAMES:
+		# Leave one request in the hero's out-tray at the capture boundary. The
+		# live leg emits it on the following physics tick; the restore leg must
+		# carry the format-2 gate and emit it on its corresponding tick.
+		_main.player.queue_wave(2, Vector3(1.875, 0.375, -2.625), 4.75, 5.25, 0.625, 2, Vector3.UP)
 		var blob: Dictionary = _main.observer.capture(_main.now, _main.capture_env())
 		if blob.has("unavailable"):
 			push_error("restore probe: capture refused: %s" % blob["unavailable"])
+			quit(2)
+			return
+		var format_fault := _format2_activation_fault(blob)
+		if not format_fault.is_empty():
+			push_error("restore probe: format-2 activation capture fault: %s" % format_fault)
 			quit(2)
 			return
 		var out := FileAccess.open(_blob_path, FileAccess.WRITE)
@@ -88,10 +97,9 @@ func _capture_leg() -> void:
 		_print_hash_and_quit()
 
 
-## Any refusal here is fatal and prints NO hash. A restore that gave up
-## partway through has left the world half-written by design (the
-## transaction rolls back only what it can), and hashing that is hashing a
-## world nothing ever lived in.
+## Any refusal here is fatal and prints NO hash. Artifact refusals are
+## preflight-atomic; a post-write refusal now denotes an internal prepared
+## commit defect, whose world is equally ineligible for a comparison hash.
 func _restore_leg() -> void:
 	if _frames == 1:
 		var text := FileAccess.get_file_as_string(_blob_path)
@@ -104,6 +112,11 @@ func _restore_leg() -> void:
 			quit(2)
 			return
 		var blob := raw as Dictionary
+		var format_fault := _format2_activation_fault(blob)
+		if not format_fault.is_empty():
+			push_error("restore probe: format-2 activation blob fault: %s" % format_fault)
+			quit(2)
+			return
 		var verdict: Dictionary = _main.restore_blob(blob)
 		if verdict.has("unavailable"):
 			push_error("restore probe: restore refused: %s" % verdict["unavailable"])
@@ -111,6 +124,78 @@ func _restore_leg() -> void:
 			return
 	if _frames == 1 + N_FRAMES:
 		_print_hash_and_quit()
+
+
+## Probe the live adapter capability at the same boundary as the future
+## comparison: format 2 is final and ACTIVE. In this fixed probe scene the
+## hero stands on the world floor and every cat walks on it, so their motion
+## must carry a genuine support contact, not the dormant defaults format 2
+## shipped with before Task 3 activated it. Both actors stay
+## suppression-clear and every queued gate is open.
+func _format2_activation_fault(blob: Dictionary) -> String:
+	var fault := ""
+	if blob.get("format_version") != 2:
+		fault = "format_version"
+	var hero: Dictionary = blob.get("hero", {})
+	if fault.is_empty() and not _is_live_motion(hero.get("motion", {})):
+		fault = "hero.motion"
+	if fault.is_empty() and hero.get("footstep_suppression_pending", true):
+		fault = "hero.footstep_suppression_pending"
+	var waves: Array = hero.get("queued_waves", [])
+	if fault.is_empty() and waves.is_empty():
+		fault = "hero.queued_waves"
+	for wave: Dictionary in waves:
+		if fault.is_empty() and wave.get("gate") != "always":
+			fault = "hero.queued_waves.gate"
+	for cat: Dictionary in blob.get("cats", []):
+		if fault.is_empty() and not _is_live_motion(cat.get("motion", {})):
+			fault = "cats.motion"
+		var gait: Dictionary = cat.get("gait", {})
+		var support_y: String = str(gait.get("support_y", "<missing>"))
+		for group_name: String in ["planted", "aim"]:
+			for point: Array in gait.get(group_name, []):
+				if fault.is_empty() and (point.size() != 3 or str(point[1]) != support_y):
+					fault = "cats.gait.%s" % group_name
+	return fault
+
+
+## Well formed and LIVE: a known phase kind, and a support contact that is
+## present and structurally complete — the shape a standing actor's motion
+## must take, never the initial/airborne-without-ground defaults. A landing
+## is not required (nothing in the probe scene falls), but if one is present
+## it must be structurally complete too, so a capture path that starts
+## writing a landing cannot silently write a hollow one.
+func _is_live_motion(value: Variant) -> bool:
+	if typeof(value) != TYPE_DICTIONARY:
+		return false
+	var motion := value as Dictionary
+	var phase: Dictionary = motion.get("phase", {})
+	var kind: Variant = phase.get("kind")
+	if kind != "controlled" and kind != "airborne":
+		return false
+	if not _is_complete_support(motion.get("support")):
+		return false
+	var landing: Variant = motion.get("last_landing")
+	if landing == null:
+		return true
+	if typeof(landing) != TYPE_DICTIONARY:
+		return false
+	return _is_complete_support((landing as Dictionary).get("support"))
+
+
+## A support dict is structurally complete when it carries a point and a
+## normal, each three components — the shape `support_dict` in the Rust
+## writer always produces for a real contact, and the one a dormant default
+## or a broken writer cannot fake by accident.
+func _is_complete_support(value: Variant) -> bool:
+	if typeof(value) != TYPE_DICTIONARY:
+		return false
+	var support := value as Dictionary
+	return _is_three_component(support.get("point")) and _is_three_component(support.get("normal"))
+
+
+func _is_three_component(value: Variant) -> bool:
+	return typeof(value) == TYPE_ARRAY and (value as Array).size() == 3
 
 
 func _print_hash_and_quit() -> void:
