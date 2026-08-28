@@ -536,6 +536,135 @@ func test_lossy_cat_yaw_and_poisoned_brain_refuse_before_writes() -> void:
 	await _assert_atomic_refusal(main, brain_blob, "cats[0].brain.speed")
 
 
+## The cross-owner guard's own refusal, hand-triggered: a cat body yaw that
+## is itself a perfectly canonical f32 image — just not brain.yaw's — must
+## be refused by name, not merely by field path. This is the RED half of
+## the two-libm acceptance fixture below: it pins that the guard demands
+## bit-for-bit agreement with brain.yaw's own canonical image
+## (`prepare_cat_snapshot_links`, rust/src/nodes/cat.rs:1949-1961) and
+## nothing looser, before the green case proves a CORRECTLY linked,
+## hand-authored artifact still restores.
+func test_cross_owner_yaw_guard_refuses_a_body_yaw_matching_the_wrong_owners_image() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	var cat: Dictionary = (blob["cats"] as Array)[0]
+	var brain: Dictionary = cat["brain"]
+	var pose: Dictionary = cat["pose"]
+	# 0.1 has no exact f32 representation (see rust/src/nodes/cat.rs
+	# `copied_cat_state_requires_the_exact_producer_relationships`), so
+	# ActorYaw::try_new (support_motion.rs:507-514, only finite and
+	# |v| <= f32::MAX) lets it through untouched, and the narrowing inside
+	# `prepare_cat_snapshot_links` (cat.rs:1942, `brain_yaw as f32`) is
+	# genuinely exercised rather than a no-op.
+	brain["yaw"] = "0.1"
+	pose["yaw"] = "0.1"  # must bit-match brain.yaw exactly (cat.rs:1924-1929)
+	# f64::from(0.2_f32), hand-derived without running anything: 0.2 = 0.1*2,
+	# and multiplying an IEEE value by an exact power of two only shifts its
+	# exponent (the mantissa is untouched, no rounding), so 0.2_f32 shares
+	# 0.1_f32's mantissa fraction one exponent higher. Widened to f64 that is
+	# exactly double 0.1_f32's own widened value (derived in the green case
+	# below as 0.100000001490116119384765625):
+	#   0.100000001490116119384765625 * 2 = 0.20000000298023223876953125
+	# This is a DIFFERENT in-domain f32's own canonical image — the trailing
+	# `try_replacing_yaw` re-check (cat.rs:1962-1967) would accept it on its
+	# own terms — yet it is not bit-equal to brain.yaw's image, isolating
+	# the cross-owner check at cat.rs:1956-1961 from that trailing guard.
+	cat["yaw"] = "0.20000000298023223876953125"
+	_install_canonical_hash(main, blob)
+	# quoting cat.rs:1959's own refusal text, not just the field path it
+	# is filed under, so a change to either the check or its wording here
+	# fails the assertion that names the exact break.
+	await _assert_atomic_refusal(
+		main, blob, "cats[0].yaw: must match the wire law's canonical f32 image of brain.yaw"
+	)
+
+
+## Issue #82's acceptance fixture (Task 3,
+## docs/superpowers/plans/2026-08-28-deterministic-rotation-wire.md): every
+## rotation-validated lane below is hand-derived decimal TEXT, never a value
+## this machine's libm produced. A blob's floats cross as Rust-written
+## decimal text (`Floats::Text`), so writing the exact intended bits as
+## digits — never copying a program's printed output — is the only way to
+## build a fixture whose correctness cannot depend on which libm captured
+## it. This test passing here (macOS, local) and in CI (Linux) is the
+## two-libm proof the spec's acceptance item 2 asks for; wasm follows by
+## construction because the wire law contains no platform-dependent op.
+##
+## Constraints traced before choosing a single literal (file:line):
+## - hero.yaw / hero.pitch: `exact_f32_lane` (player.rs:1647-1658) demands
+##   the stored f64 round-trip losslessly through the f32 lane Godot
+##   stores. `try_replacing_yaw`/`try_replacing_pitch` (player.rs:1282-1288,
+##   1297-1303; support_motion.rs:349-364, 386-401) then rebuild the FULL
+##   rotation from the LIVE untouched X/Z (body) or Y/Z (eye) lanes and
+##   require the wire law's `canonicalize_lane` (support_motion.rs:445-467)
+##   to return every lane bit-identical — true here only because the
+##   fixture never rotates the hero body off yaw or tilts the eye off
+##   pitch, so those untouched lanes are already `+0.0`, and the authored
+##   lane itself is non-zero and inside the closed domain
+##   `[-PI_F32, PI_F32]` (support_motion.rs:15), landing on
+##   `canonicalize_lane`'s identity branch. hero.pitch is also range-gated
+##   to `PITCH_LIMIT` = 1.35 (player.rs:69, 1224).
+## - cat brain.yaw / pose.yaw: `ActorYaw::try_new` (support_motion.rs:
+##   506-515, used by cat_brain.rs:350-352 and cat_body.rs:146-148) only
+##   demands finite and `|value| <= f32::MAX` — no f32 round-trip
+##   requirement, so 0.1 (no exact f32 image) passes through both
+##   untouched.
+## - `prepare_cat_snapshot_links` (cat.rs:1920-1968, called from
+##   `prepare_restore` at cat.rs:1537-1548 with the cat's LIVE
+##   `get_rotation()` as the untouched X/Z carrier) then demands, in
+##   order: pose.yaw bit-equal to brain.yaw (1924-1929); brain.yaw as f32
+##   finite (1942-1948); and the cat's top-level yaw bit-equal to
+##   `f64::from(brain_yaw as f32)`, the wire law's canonical f32 image of
+##   brain.yaw (1949-1961); before a trailing `try_replacing_yaw`
+##   (1962-1967) re-checks the assembled full rotation the same way the
+##   hero's does.
+## - `observer.rs`'s own parse (`group.f64`, observer.rs:2257,
+##   `parse_cat`/`parse_brain`/`parse_pose`, observer.rs:2791-2818) is
+##   syntax-only decimal-text-to-f64 parsing with no semantic gate, so
+##   every domain rule above is enforced solely by the owners named above.
+func test_hand_authored_rotation_lanes_restore_and_verify_on_any_libm() -> void:
+	var main := await _boot_ticked()
+	await _lively(main)
+	var blob := _copy(main.observer.capture(main.now, main.capture_env()))
+	var hero: Dictionary = blob["hero"]
+	# Dyadic (power-of-two-denominator) decimals: exact in both f32 and
+	# f64, so `exact_f32_lane`'s narrow-then-widen bit check cannot fail on
+	# any correctly-rounded decimal parser, regardless of platform.
+	hero["yaw"] = "0.25"
+	hero["pitch"] = "-0.5"
+	var cat: Dictionary = (blob["cats"] as Array)[0]
+	var brain: Dictionary = cat["brain"]
+	var pose: Dictionary = cat["pose"]
+	brain["yaw"] = "0.1"
+	pose["yaw"] = "0.1"
+	# f64::from(0.1_f32), hand-derived: the nearest binary32 to 0.1 has
+	# mantissa fraction 0x4CCCCD over 2^23 and exponent 2^-4 (0.1 = 1.6 *
+	# 2^-4; 1.6's repeating binary fraction 1.100110011...₂ rounds up at
+	# its 24th significant bit because the discarded tail is nonzero past
+	# the halfway point). Widened to f64 with no further rounding (an f32
+	# significand always fits exactly inside an f64 one):
+	#   (2^23 + 0x4CCCCD) / 2^23 * 2^-4 = 13421773 / 2^27
+	#     = 0.1 + 0.2 / 2^27 = 0.1 + 0.000000001490116119384765625
+	#     = 0.100000001490116119384765625
+	var cat_body_yaw_text := "0.100000001490116119384765625"
+	cat["yaw"] = cat_body_yaw_text
+	_install_canonical_hash(main, blob)
+	var verdict: Dictionary = main.restore_blob(blob)
+	assert_str(str(verdict.get("unavailable", ""))).is_empty()
+	assert_str(verdict["hash"]).is_equal(blob["hash"])
+	var fresh: Dictionary = main.observer.capture(main.now, main.capture_env())
+	assert_str(str(fresh.get("unavailable", ""))).is_empty()
+	assert_str(fresh["hash"]).is_equal(blob["hash"])
+	# Post-restore ENGINE state, not just the observer's own postcondition:
+	# the cat's local rotation.y (verbatim-euler seam, Task 1) carries the
+	# authored body yaw's own f32 image bit-for-bit — proof the wire
+	# actually reached Godot's stored euler, not merely a Rust-side struct.
+	var cats := main.cats()
+	assert_int(cats.size()).is_equal(1)
+	assert_str(_f32_bits(cats[0].rotation.y)).is_equal(_f32_bits(cat_body_yaw_text.to_float()))
+
+
 func test_cat_pose_position_mismatch_on_x_or_y_or_z_refuses_before_writes() -> void:
 	var main := await _boot_ticked()
 	await _lively(main)
