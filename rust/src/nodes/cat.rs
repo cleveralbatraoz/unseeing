@@ -1011,9 +1011,13 @@ impl ICharacterBody3D for WaveCat {
             // rides the node when the designer drags it; the runtime mesh
             // stays world-space + top_level as before. No brain, no clock:
             // an editor-ticking cat would walk the viewport and Ctrl+S
-            // would save its drift into the scene.
+            // would save its drift into the scene. `process()` stays ON
+            // here, though — `set_physics_process(false)` alone freezes the
+            // pose — so `check_ancestor_placement`'s own poll (mirroring
+            // `WaveWall`'s `ready()`/`process()` pair, `wall.rs:136-140,197`)
+            // can watch a designer drag/rotate an ancestor live; see that
+            // function's doc for why this is the only mode it polls in.
             self.base_mut().set_physics_process(false);
-            self.base_mut().set_process(false);
             self.build_editor_pose();
             return;
         }
@@ -1257,6 +1261,17 @@ impl ICharacterBody3D for WaveCat {
     }
 
     fn process(&mut self, _dt: f64) {
+        // Editor-only poll (this cat's own precedent: `WaveWall::process`,
+        // `wall.rs:197-199`, which only ever runs when `ready()` staged
+        // `set_process(editor)` true). A runtime cat never re-enters here
+        // for this reason — its ancestor chain is authored geometry that
+        // does not change after scene load — but a designer dragging or
+        // rotating an ancestor while editing must see the warning raise
+        // AND clear with no scene reload, so this re-runs the same check
+        // `ready()` already ran once on entry.
+        if Engine::singleton().is_editor_hint() {
+            self.check_ancestor_placement();
+        }
         if !self.mesh_dirty {
             return; // pose unchanged since the last rebuild — no wasted work
         }
@@ -1721,11 +1736,20 @@ impl WaveCat {
     }
 
     /// Checks this cat's placement against the rotation seam's identity-
-    /// ancestor law and raises or clears the dual-channel warning. Called
-    /// once from `ready()` (editor and runtime alike): a level's ancestor
-    /// chain is authored geometry and does not change after scene load, the
-    /// same assumption `WaveWall`'s own ancestor law makes at its own entry
-    /// points.
+    /// ancestor law and raises or clears the dual-channel warning.
+    ///
+    /// Called once from `ready()` (editor and runtime alike) so a fresh
+    /// scene load classifies placement immediately, and again every editor
+    /// frame from `process()` — exactly `WaveWall`'s own precedent
+    /// (`wall.rs:136-140` stages `set_process(editor)`; `wall.rs:197-199`'s
+    /// `process()` re-polls only there). An earlier version of this comment
+    /// claimed ready()-once parity with `WaveWall`'s ancestor law; that was
+    /// false; `WaveWall` polls every editor frame precisely so a designer
+    /// who rotates or repairs an ancestor while editing sees the warning
+    /// triangle raise AND clear with no scene reload, and this now does the
+    /// same. Runtime gameplay never re-polls — a level's ancestor chain is
+    /// authored geometry that does not change after scene load, which is
+    /// why `WaveWall`'s own `process()` stays off there too.
     fn check_ancestor_placement(&mut self) {
         let chain = self.ancestor_chain();
         let bases: Vec<Basis> = chain.iter().map(|(_, basis)| *basis).collect();
