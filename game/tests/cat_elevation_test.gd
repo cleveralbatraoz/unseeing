@@ -965,6 +965,42 @@ func test_cat_at_scene_root_stays_silent_on_the_placement_warning() -> void:
 	assert_array(cat.call("get_configuration_warnings")).is_empty()
 
 
+## `get_configuration_warnings` composes threshold_warning and
+## ancestor_warning with two INDEPENDENT `if`s, never an `if`/`else if` —
+## the two laws are unrelated (a knob-ordering mistake and a scene-placement
+## mistake) and a designer who made both must see both icons, not have the
+## second one hide behind the first. A cat under a rotated ancestor AND
+## carrying an out-of-order landing threshold pair must report both lines,
+## in the same threshold-then-ancestor order the function pushes them.
+func test_cat_reports_both_threshold_and_ancestor_warnings_at_once() -> void:
+	var room: Node3D = auto_free(Node3D.new())
+	room.name = "TiltedRoom"
+	room.rotation = Vector3(0.0, PI / 2.0, 0.0)
+	var cat := WaveCat.new()
+	cat.name = "TiltedCat"
+	cat.pulses = Pulses.new()
+	cat.data_mat = ShaderMaterial.new()
+	room.add_child(cat)
+	var ancestor_warning := (
+		"WaveCat: cat rotation is stored as local euler, so every ancestor between this cat "
+		+ "and the scene root must carry an identity basis; ancestor 'TiltedRoom' does not. "
+		+ "Move this cat under an untransformed ancestor, or clear that ancestor's own "
+		+ "rotation, scale, or shear, to satisfy the placement law and clear this warning."
+	)
+	var runtime_warning := "WaveCat 'TiltedCat': " + ancestor_warning.trim_prefix("WaveCat: ")
+	var enter := func() -> void: add_child(room)
+	await assert_error(enter).is_push_warning(runtime_warning)
+	cat.set("landing_silent_speed", 8.0)
+	cat.set("landing_full_speed", 7.0)
+	var threshold_warning := "landing full speed 7 m/s must be greater than silent speed 8 m/s"
+	assert_array(cat.get_configuration_warnings()).contains_exactly(
+		[threshold_warning, ancestor_warning]
+	)
+	assert_array(cat.call("get_configuration_warnings")).contains_exactly(
+		[threshold_warning, ancestor_warning]
+	)
+
+
 ## Task 1's seam change itself: the cat's per-tick yaw write moved from
 ## set_global_rotation to set_rotation (LOCAL). A single cat is placed under
 ## a parent rotated PI/2 about Y, with its OWN local rotation hand-set to
