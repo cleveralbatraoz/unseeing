@@ -1956,7 +1956,7 @@ fn prepare_cat_snapshot_links(
     if links.body_yaw.to_bits() != f64::from(canonical.world().y).to_bits() {
         return Err(RestoreValueError::new(
             "yaw",
-            "must match the canonical f32 engine image of brain.yaw",
+            "must match the wire law's canonical f32 image of brain.yaw",
         ));
     }
     GodotRotation::try_replacing_yaw(current_full, links.body_yaw as f32).map_err(|_| {
@@ -3017,13 +3017,22 @@ mod tests {
     #[test]
     fn copied_cat_state_requires_the_exact_producer_relationships() {
         let current_full = Vector3::new(0.25, 0.0, 0.125);
-        let brain_yaw = -0.5_f64;
-        let canonical_body_yaw = f64::from(
-            GodotRotation::canonicalize_replacing_yaw(current_full, brain_yaw as f32)
-                .unwrap()
-                .world()
-                .y,
-        );
+        // 0.1 has no exact f32 representation. Narrowing brain_yaw to f32
+        // (the lane Godot actually stores) and widening it back to f64
+        // changes the bit pattern even though the value stays finite and
+        // well inside the wire domain — under the arithmetic wire law an
+        // in-domain lane IS its own canonical image, so
+        // canonicalize_replacing_yaw takes the identity branch and hands
+        // back exactly that narrowed-then-widened value. This is the
+        // isolating case the cross-owner guard needs: a body_yaw that
+        // already IS brain_yaw's own canonical image (so the trailing
+        // `try_replacing_yaw` guard would accept it on its own terms) yet
+        // is NOT bit-equal to brain_yaw itself (so only the cross-owner
+        // equality guard — comparing body_yaw against brain_yaw's f32
+        // image — can independently reject a mismatch; if it were
+        // deleted, the trailing guard would wave this value through).
+        let brain_yaw = 0.1_f64;
+        let canonical_body_yaw = f64::from(brain_yaw as f32);
         assert_ne!(canonical_body_yaw.to_bits(), brain_yaw.to_bits());
         prepare_cat_snapshot_links(
             current_full,
@@ -3039,21 +3048,11 @@ mod tests {
         )
         .unwrap();
 
-        // A body_yaw that already IS the canonical f32 engine image of some
-        // yaw (so the trailing `try_replacing_yaw` guard would accept it on
-        // its own terms) but of a DIFFERENT yaw than brain_yaw (so it is not
-        // the canonical image the cross-owner equality guard demands). Only
-        // the first guard can reject this value; if that guard were deleted,
-        // the second would wave it through. Derived through
-        // `canonicalize_replacing_yaw` at test runtime, never a hard-coded
-        // bit pattern, per the cross-platform-libm caution on this file.
-        let other_yaw = 0.9_f32;
-        let owned_by_other_yaw = f64::from(
-            GodotRotation::canonicalize_replacing_yaw(current_full, other_yaw)
-                .unwrap()
-                .world()
-                .y,
-        );
+        // A body_yaw that is some OTHER in-domain yaw's canonical image
+        // (0.2, distinct from brain_yaw's narrowed image) — bit-equal to
+        // ITS OWN owner's yaw, but not to brain_yaw's.
+        let other_yaw = 0.2_f32;
+        let owned_by_other_yaw = f64::from(other_yaw);
         assert_ne!(
             owned_by_other_yaw.to_bits(),
             canonical_body_yaw.to_bits(),
@@ -3102,12 +3101,12 @@ mod tests {
             ),
             (
                 "yaw",
-                "must match the canonical f32 engine image of brain.yaw",
+                "must match the wire law's canonical f32 image of brain.yaw",
                 [0.2, brain_yaw, brain_yaw, 0.375, 0.375, 0.625, 0.625],
             ),
             (
                 "yaw",
-                "must match the canonical f32 engine image of brain.yaw",
+                "must match the wire law's canonical f32 image of brain.yaw",
                 [
                     owned_by_other_yaw,
                     brain_yaw,

@@ -1,9 +1,18 @@
-use godot::builtin::{Basis, EulerOrder, Transform3D, Vector3};
+use godot::builtin::{Basis, Transform3D, Vector3};
 use std::fmt;
 
 pub const MAX_ACCEL_DT_S: f64 = 1.0 / 15.0;
 pub const MAX_ACTOR_COORD_M: f32 = 1_000_000.0;
 pub const MAX_POSE_COORD_M: f32 = 1_000_002.0;
+
+/// The wire-canonical domain boundary (Decision 1,
+/// `docs/superpowers/specs/2026-08-28-deterministic-rotation-wire-design.md`):
+/// the nearest f32 to pi. IEEE-754 round-to-nearest rounds pi's true value
+/// UP to reach this f32 (there is no f32 between true pi and this one on
+/// the low side), so `PI_F32` is strictly greater than
+/// `std::f64::consts::PI`. `atan2` can return exactly `PI_F32`, so the
+/// wire domain is closed at both ends: `[-PI_F32, PI_F32]`, not half-open.
+const PI_F32: f32 = std::f32::consts::PI;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MotionConfigField {
@@ -320,17 +329,12 @@ pub struct GodotRotation(Vector3);
 
 impl GodotRotation {
     pub fn canonicalize(euler_radians: Vector3) -> Result<Self, MotionValueError> {
-        let mut current = FiniteRotation::try_new(euler_radians)?.world();
-        for _ in 0..16 {
-            let mapped =
-                Basis::from_euler(EulerOrder::YXZ, current).get_euler_with(EulerOrder::YXZ);
-            FiniteRotation::try_new(mapped)?;
-            if rotation_lanes_equivalent(current, mapped) {
-                return Ok(Self(canonical_wire_rotation(mapped)));
-            }
-            current = mapped;
-        }
-        Err(MotionValueError::inconsistent_state("rotation"))
+        let rotation = FiniteRotation::try_new(euler_radians)?.world();
+        Ok(Self(Vector3::new(
+            canonicalize_lane(rotation.x),
+            canonicalize_lane(rotation.y),
+            canonicalize_lane(rotation.z),
+        )))
     }
 
     pub fn try_canonical(euler_radians: Vector3) -> Result<Self, MotionValueError> {
@@ -421,12 +425,45 @@ impl GodotRotation {
     }
 }
 
-fn canonical_wire_rotation(rotation: Vector3) -> Vector3 {
-    Vector3::new(
-        if rotation.x == 0.0 { 0.0 } else { rotation.x },
-        if rotation.y == 0.0 { 0.0 } else { rotation.y },
-        if rotation.z == 0.0 { 0.0 } else { rotation.z },
-    )
+/// The arithmetic wire law for a single rotation lane (Decision 1,
+/// `docs/superpowers/specs/2026-08-28-deterministic-rotation-wire-design.md`):
+/// no trig, no engine roundtrip — every operation is an IEEE 754 basic
+/// operation (equality, comparison, remainder, add/subtract, cast), each
+/// exactly specified, so this law is bit-identical across x86_64, arm64,
+/// and wasm32.
+///
+/// ORDER IS LOAD-BEARING. The closed-domain check runs BEFORE any f64 wrap
+/// arithmetic, and must: `PI_F32` (the nearest f32 to pi) is strictly
+/// greater than `f64::consts::PI`, because pi's true value has no f32
+/// below it to round to, while f64 has enough precision to sit below pi
+/// instead. A lane already sitting at the closed boundary (`+PI_F32`) is
+/// therefore numerically "greater than pi" by that f32-vs-f64 gap alone —
+/// if the wrap arithmetic saw it first, it would read as needing a `-TAU`
+/// correction and corrupt an exact fixed point into a value near negative
+/// pi. Checking domain membership first, in f32, and returning
+/// bit-identically on a hit is what keeps `+PI_F32` and `-PI_F32` exact.
+fn canonicalize_lane(lane: f32) -> f32 {
+    if lane == 0.0 {
+        // `+0.0 == -0.0` under IEEE 754, so this one comparison catches
+        // both engine zero spellings and spells the wire's own zero `+0.0`.
+        return 0.0;
+    }
+    if (-PI_F32..=PI_F32).contains(&lane) {
+        return lane;
+    }
+    // `%` on floats is IEEE `fmod`, EXACT by specification: the result
+    // needs no rounding and is representable without loss, so every
+    // conforming platform returns identical bits for the same inputs.
+    // This exactness is the only reason the law may leave f32 for f64 at
+    // all — the wrap below cannot introduce platform drift.
+    let mut wrapped = f64::from(lane) % std::f64::consts::TAU;
+    if wrapped > std::f64::consts::PI {
+        wrapped -= std::f64::consts::TAU;
+    } else if wrapped < -std::f64::consts::PI {
+        wrapped += std::f64::consts::TAU;
+    }
+    let narrowed = wrapped as f32;
+    if narrowed == 0.0 { 0.0 } else { narrowed }
 }
 
 fn rotation_lanes_equal_bits(a: Vector3, b: Vector3) -> bool {
@@ -434,13 +471,6 @@ fn rotation_lanes_equal_bits(a: Vector3, b: Vector3) -> bool {
         .into_iter()
         .zip([b.x, b.y, b.z])
         .all(|(left, right)| left.to_bits() == right.to_bits())
-}
-
-fn rotation_lanes_equivalent(a: Vector3, b: Vector3) -> bool {
-    [a.x, a.y, a.z]
-        .into_iter()
-        .zip([b.x, b.y, b.z])
-        .all(|(left, right)| left.to_bits() == right.to_bits() || (left == 0.0 && right == 0.0))
 }
 
 fn rotation_lane_equivalent(left: f32, right: f32) -> bool {
@@ -1558,36 +1588,191 @@ mod tests {
         assert_eq!(rotation.yaw().radians().to_bits(), (-0.0_f64).to_bits());
     }
 
-    #[test]
-    fn godot_rotation_refuses_a_noncanonical_exact_f32_yaw() {
-        let requested = Vector3::new(0.0, 4.0, 0.0);
-        let error = GodotRotation::try_canonical(requested)
-            .expect_err("Godot rewrites this exact-f32 Euler angle");
-        assert_eq!(error.field(), "rotation");
+    // --- Decision 1: the arithmetic wire law --------------------------
+    // docs/superpowers/specs/2026-08-28-deterministic-rotation-wire-design.md
 
-        let basis_image =
-            godot::builtin::Basis::from_euler(godot::builtin::EulerOrder::YXZ, requested)
-                .get_euler_with(godot::builtin::EulerOrder::YXZ);
-        let canonical = GodotRotation::canonicalize(basis_image)
-            .expect("the Basis/Euler image must have a stable wire spelling")
+    #[test]
+    fn godot_rotation_canonicalize_is_identity_on_in_domain_bits() {
+        // 0.25, -0.5, and 0.125 are each finite, nonzero, and well inside
+        // the closed domain [-PI_F32, PI_F32] (PI_F32 ~= 3.14159274), so
+        // the law's identity branch must hand every bit back unchanged —
+        // no arithmetic at all.
+        let requested = Vector3::new(0.25, -0.5, 0.125);
+        let canonical = GodotRotation::canonicalize(requested)
+            .expect("in-domain lanes are always canonicalizable")
             .world();
-        let checked = GodotRotation::try_canonical(canonical)
-            .expect("the stable Basis/Euler serialization must be canonical");
-        for (actual, expected) in [checked.world().x, checked.world().y, checked.world().z]
-            .into_iter()
-            .zip([canonical.x, canonical.y, canonical.z])
-        {
-            assert_eq!(actual.to_bits(), expected.to_bits());
+        assert_eq!(canonical.x.to_bits(), 0.25_f32.to_bits());
+        assert_eq!(canonical.y.to_bits(), (-0.5_f32).to_bits());
+        assert_eq!(canonical.z.to_bits(), 0.125_f32.to_bits());
+        GodotRotation::try_canonical(requested)
+            .expect("an already-canonical triple must be accepted bit-exactly");
+    }
+
+    #[test]
+    fn godot_rotation_canonicalize_admits_both_closed_domain_ends() {
+        // PI_F32 (0x40490FDB) is the nearest f32 to pi and sits ABOVE true
+        // pi; atan2 can return it exactly, so the wire domain is CLOSED at
+        // both +PI_F32 and -PI_F32, not half-open. Both must pass through
+        // bit-identically (the identity branch, never the wrap branch).
+        let pi = f32::from_bits(0x4049_0FDB);
+        assert_eq!(pi, PI_F32);
+        for lane in [pi, -pi] {
+            let requested = Vector3::new(lane, 0.0, 0.0);
+            let canonical = GodotRotation::canonicalize(requested)
+                .expect("the closed domain ends are canonicalizable")
+                .world();
+            assert_eq!(canonical.x.to_bits(), lane.to_bits());
+            GodotRotation::try_canonical(requested)
+                .expect("the closed domain ends are already canonical");
         }
     }
 
     #[test]
+    fn godot_rotation_wraps_the_first_f32_above_pi_into_the_closed_domain() {
+        // 0x40490FDC is PI_F32 + 1 ULP (0x...FDB + 1 = 0x...FDC): the
+        // first f32 that fails the closed check, by the smallest possible
+        // margin. Hand-derivation of its wrapped image, following the
+        // algorithm exactly:
+        //   lane_f64 = f64::from(lane)              -- exact widen, bits
+        //     0x400921FB80000000 (PI_F32's 23-bit mantissa, zero-padded
+        //     to 52 bits; same exponent field, unbiased exponent 1).
+        //   m = lane_f64 % TAU_f64                   -- fmod is exact;
+        //     0 < lane_f64 (~3.14159298) < TAU_f64 (~6.283185307), so
+        //     m = lane_f64 unchanged.
+        //   m > PI_F64 (3.14159265358979311...)? lane_f64 is PI_F32
+        //     (already > PI_F64) plus one more ULP, so yes:
+        //     wrapped = lane_f64 - TAU_f64.
+        //   lane_f64 and TAU_f64 sit within a factor of 2 of each other
+        //     (TAU_f64 / 2 = PI_F64 <= lane_f64 <= 2 * TAU_f64), so by
+        //     Sterbenz's lemma the subtraction is exact: the f64 result
+        //     is bits 0xC00921FB28885A30 (-3.141592327748434...).
+        //   Cast to f32 (correctly rounded): bits 0xC0490FD9.
+        // 0xC0490FD9 has smaller magnitude than -PI_F32 (0xC0490FDB), so
+        // it lands inside the closed domain.
+        let lane = f32::from_bits(0x4049_0FDC);
+        assert!(lane > PI_F32, "the fixture must sit outside the domain");
+        let canonical = GodotRotation::canonicalize(Vector3::new(0.0, lane, 0.0))
+            .expect("an out-of-domain finite yaw still canonicalizes")
+            .world();
+        assert_eq!(canonical.y.to_bits(), 0xC049_0FD9_u32);
+        assert!(canonical.y.abs() <= PI_F32);
+
+        // Idempotence: the wrapped image is itself in-domain, so a second
+        // pass must take the identity branch and return the same bits.
+        let repeated = GodotRotation::canonicalize(Vector3::new(0.0, canonical.y, 0.0))
+            .expect("canonicalization must remain total at its own output")
+            .world();
+        assert_eq!(repeated.y.to_bits(), canonical.y.to_bits());
+    }
+
+    #[test]
+    fn godot_rotation_wraps_four_radians_to_the_f32_image_of_four_minus_tau() {
+        // Hand-derivation, following the algorithm exactly:
+        //   4.0 % TAU_f64 = 4.0                      -- fmod is exact;
+        //     0 <= 4.0 < TAU_f64 (~6.283185307179586), so the remainder is
+        //     the dividend unchanged.
+        //   4.0 > PI_F64 (~3.14159265)? yes, so wrapped = 4.0 - TAU_f64.
+        //   TAU_f64 = 2 * PI_f64 exactly (an exact doubling: same mantissa
+        //     bits 0x921FB54442D18, exponent bumped by one). 4.0 and
+        //     TAU_f64 share the SAME binary exponent (2^2, since
+        //     4 <= 4.0 and 4 <= TAU_f64 < 8), so the subtraction is an
+        //     exact same-exponent mantissa subtraction (Sterbenz's
+        //     lemma also applies: TAU_f64 / 2 <= 4.0 <= 2 * TAU_f64):
+        //     the f64 result is exactly bits 0xC00243F6A8885A30
+        //     (-2.2831853071795862...).
+        //   Cast that f64 to f32 (correctly rounded; the rounding bit at
+        //     mantissa position 24 is 0, so truncation applies): bits
+        //     0xC0121FB5 (-2.2831852436065674...).
+        let canonical = GodotRotation::canonicalize(Vector3::new(0.0, 4.0, 0.0))
+            .expect("an out-of-domain finite yaw still canonicalizes")
+            .world();
+        assert_eq!(canonical.y.to_bits(), 0xC012_1FB5_u32);
+        assert!(canonical.y.abs() <= PI_F32);
+        assert!(GodotRotation::try_canonical(Vector3::new(0.0, 4.0, 0.0)).is_err());
+
+        let repeated = GodotRotation::canonicalize(Vector3::new(0.0, canonical.y, 0.0))
+            .expect("canonicalization must remain total at its own output")
+            .world();
+        assert_eq!(repeated.y.to_bits(), canonical.y.to_bits());
+    }
+
+    #[test]
+    fn godot_rotation_wrap_is_total_over_the_extreme_finite_f32_lanes() {
+        // f32::MAX and -f32::MAX are the most extreme finite lanes the
+        // domain admits (FiniteRotation rejects only non-finite values).
+        // The wrap must reach a finite, in-domain result without
+        // panicking or emitting NaN/infinity: this is the law's totality
+        // boundary, not a bit-exact fixture. The resulting bits ARE
+        // pinned — by fmod's specified exactness plus one deterministic
+        // rounding on the final f32 cast — but hand-deriving them from
+        // f32::MAX's magnitude by tracing 128-bit-scale binary arithmetic
+        // is not a productive use of a code comment, so this test proves
+        // the property that actually matters for totality: idempotence.
+        for lane in [f32::MAX, -f32::MAX] {
+            let canonical = GodotRotation::canonicalize(Vector3::new(0.0, lane, 0.0))
+                .expect("f32::MAX must still canonicalize")
+                .world();
+            assert!(
+                canonical.y.is_finite(),
+                "wrap must never produce NaN or infinity"
+            );
+            assert!(
+                canonical.y.abs() <= PI_F32,
+                "wrap must land inside the closed domain"
+            );
+            let repeated = GodotRotation::canonicalize(Vector3::new(0.0, canonical.y, 0.0))
+                .expect("canonicalization must remain total at its own output")
+                .world();
+            assert_eq!(repeated.y.to_bits(), canonical.y.to_bits());
+        }
+    }
+
+    #[test]
+    fn godot_rotation_canonicalize_is_idempotent_over_hand_picked_lanes() {
+        // Both zero spellings, both closed-domain ends, a subnormal, an
+        // ordinary in-domain value, and an already-wrapped result: every
+        // one of these must be a fixed point of canonicalize.
+        let fixed_points = [
+            0.0_f32,
+            -0.0_f32,
+            PI_F32,
+            -PI_F32,
+            f32::from_bits(0x0000_0001), // smallest positive subnormal
+            1.0_f32,
+            f32::from_bits(0xC012_1FB5), // the wrapped image of 4.0 rad
+        ];
+        for lane in fixed_points {
+            let once = GodotRotation::canonicalize(Vector3::new(0.0, lane, 0.0))
+                .expect("every fixture lane is finite")
+                .world()
+                .y;
+            let twice = GodotRotation::canonicalize(Vector3::new(0.0, once, 0.0))
+                .expect("canonicalization must remain total at its own output")
+                .world()
+                .y;
+            assert_eq!(
+                once.to_bits(),
+                twice.to_bits(),
+                "canonicalize must be idempotent for lane {lane:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn godot_rotation_refuses_a_noncanonical_exact_f32_yaw() {
+        // 4.0 rad (~229 degrees) lies well outside the closed wire domain
+        // [-PI_F32, PI_F32] (PI_F32 ~= 3.14159274). Under the arithmetic
+        // wire law this is refused for being OUT OF DOMAIN — there is no
+        // engine roundtrip involved, and no platform-dependent reasoning
+        // about what an engine trig call "would rewrite it to".
+        let requested = Vector3::new(0.0, 4.0, 0.0);
+        let error = GodotRotation::try_canonical(requested)
+            .expect_err("yaw 4.0 lies outside the closed wire domain [-PI_F32, PI_F32]");
+        assert_eq!(error.field(), "rotation");
+    }
+
+    #[test]
     fn godot_rotation_accepts_the_zero_rotation_a_new_node_produces() {
-        let canonical =
-            godot::builtin::Basis::from_euler(godot::builtin::EulerOrder::YXZ, Vector3::ZERO)
-                .get_euler_with(godot::builtin::EulerOrder::YXZ);
-        assert_eq!(canonical.x.to_bits(), (-0.0_f32).to_bits());
-        assert_eq!(Vector3::ZERO.x.to_bits(), 0.0_f32.to_bits());
         for spelling in [Vector3::ZERO, Vector3::new(-0.0, -0.0, -0.0)] {
             let serialized = GodotRotation::canonicalize(spelling)
                 .expect("both engine zero spellings must have one stable serialization");
@@ -1651,14 +1836,14 @@ mod tests {
             }
         }
 
-        let complete = Vector3::new(
-            f32::from_bits(0x3e80_0000),
-            f32::from_bits(0xbf00_0001),
-            f32::from_bits(0x3e00_0000),
-        );
+        // Under the arithmetic wire law, canonicalize is identity on any
+        // in-domain triple: (0.25, -0.5, 0.125) IS its own canonical
+        // image, bit-for-bit — no engine roundtrip introduces a different
+        // fixed point the way the deleted trig law once did.
+        let complete = Vector3::new(0.25, -0.5, 0.125);
         assert_bits(
-            GodotRotation::canonicalize(Vector3::new(0.25, -0.5, 0.125))
-                .expect("the known YXZ image must converge")
+            GodotRotation::canonicalize(complete)
+                .expect("an in-domain triple canonicalizes to itself")
                 .world(),
             complete,
         );
@@ -1676,56 +1861,60 @@ mod tests {
 
     #[test]
     fn godot_rotation_lane_replacement_refuses_an_untouched_noncanonical_lane() {
-        let complete = Vector3::new(
-            f32::from_bits(0x3e80_0000),
-            f32::from_bits(0xbf00_0001),
-            f32::from_bits(0x3e00_0000),
-        );
+        let complete = Vector3::new(0.25, -0.5, 0.125);
         GodotRotation::try_replacing_yaw(Vector3::new(4.0, 0.0, complete.z), complete.y)
-            .expect_err("an untouched noncanonical X lane must be refused");
+            .expect_err("an untouched out-of-domain X lane must be refused");
         GodotRotation::try_replacing_pitch(Vector3::new(0.0, 4.0, complete.z), complete.x)
-            .expect_err("an untouched noncanonical Y lane must be refused");
+            .expect_err("an untouched out-of-domain Y lane must be refused");
         GodotRotation::try_replacing_yaw(Vector3::new(0.0, 0.0, 4.0), 0.0)
-            .expect_err("an isolated noncanonical roll must not hide behind a canonical yaw");
+            .expect_err("an isolated out-of-domain roll must not hide behind a canonical yaw");
         GodotRotation::try_replacing_pitch(Vector3::new(0.0, 4.0, 0.0), 0.0)
-            .expect_err("an isolated noncanonical yaw must not hide behind a canonical pitch");
+            .expect_err("an isolated out-of-domain yaw must not hide behind a canonical pitch");
     }
 
     #[test]
-    fn godot_rotation_canonicalizing_lane_replacement_allows_owned_ulp_only() {
-        let expected = Vector3::new(
-            f32::from_bits(0x3e80_0000),
-            f32::from_bits(0xbf00_0001),
-            f32::from_bits(0x3e00_0000),
-        );
-        let yaw_current = Vector3::new(expected.x, 0.0, expected.z);
-        let yaw = GodotRotation::canonicalize_replacing_yaw(yaw_current, -0.5)
-            .expect("the owned yaw lane may move to its canonical f32 image")
-            .world();
-        assert_eq!(yaw.x.to_bits(), yaw_current.x.to_bits());
-        assert_eq!(yaw.z.to_bits(), yaw_current.z.to_bits());
-        assert_eq!(yaw.y.to_bits(), expected.y.to_bits());
-        assert_ne!(yaw.y.to_bits(), (-0.5_f32).to_bits());
+    fn godot_rotation_canonicalizing_lane_replacement_wraps_only_the_out_of_domain_owned_lane() {
+        let complete = Vector3::new(0.25, -0.5, 0.125);
 
-        let pitch_current = Vector3::new(0.0, expected.y, expected.z);
-        let pitch = GodotRotation::canonicalize_replacing_pitch(pitch_current, expected.x)
-            .expect("canonical pitch replacement must preserve Y/Z")
+        // An out-of-domain owned yaw (4.0) is wrapped to its hand-derived
+        // image (0xC0121FB5 — see
+        // godot_rotation_wraps_four_radians_to_the_f32_image_of_four_minus_tau
+        // for the derivation), while the untouched X/Z lanes keep their
+        // exact bits.
+        let yaw_current = Vector3::new(complete.x, 0.0, complete.z);
+        let wrapped_yaw = GodotRotation::canonicalize_replacing_yaw(yaw_current, 4.0)
+            .expect("an out-of-domain owned yaw still wraps to a canonical image")
             .world();
-        for (actual, expected) in [pitch.x, pitch.y, pitch.z]
-            .into_iter()
-            .zip([expected.x, expected.y, expected.z])
-        {
-            assert_eq!(actual.to_bits(), expected.to_bits());
-        }
+        assert_eq!(wrapped_yaw.x.to_bits(), yaw_current.x.to_bits());
+        assert_eq!(wrapped_yaw.z.to_bits(), yaw_current.z.to_bits());
+        assert_eq!(wrapped_yaw.y.to_bits(), 0xC012_1FB5_u32);
 
-        let decoy_yaw = GodotRotation::canonicalize_replacing_yaw(expected, 0.5)
-            .expect("the external restore decoy must preserve X/Z")
+        // An in-domain owned yaw is untouched: under the wire law an
+        // in-domain lane IS its own canonical image, so it passes through
+        // verbatim rather than moving by even one ULP.
+        let identity_yaw = GodotRotation::canonicalize_replacing_yaw(yaw_current, complete.y)
+            .expect("an in-domain owned yaw canonicalizes to itself")
             .world();
-        assert_ne!(decoy_yaw.y.to_bits(), expected.y.to_bits());
-        let decoy_pitch = GodotRotation::canonicalize_replacing_pitch(expected, -0.25)
-            .expect("the external restore decoy must preserve Y/Z")
+        assert_eq!(identity_yaw.y.to_bits(), complete.y.to_bits());
+        assert_eq!(identity_yaw.x.to_bits(), yaw_current.x.to_bits());
+        assert_eq!(identity_yaw.z.to_bits(), yaw_current.z.to_bits());
+
+        // The pitch sibling behaves identically: out-of-domain wraps,
+        // in-domain passes through verbatim.
+        let pitch_current = Vector3::new(0.0, complete.y, complete.z);
+        let wrapped_pitch = GodotRotation::canonicalize_replacing_pitch(pitch_current, 4.0)
+            .expect("an out-of-domain owned pitch still wraps to a canonical image")
             .world();
-        assert_ne!(decoy_pitch.x.to_bits(), expected.x.to_bits());
+        assert_eq!(wrapped_pitch.y.to_bits(), pitch_current.y.to_bits());
+        assert_eq!(wrapped_pitch.z.to_bits(), pitch_current.z.to_bits());
+        assert_eq!(wrapped_pitch.x.to_bits(), 0xC012_1FB5_u32);
+
+        let identity_pitch = GodotRotation::canonicalize_replacing_pitch(pitch_current, complete.x)
+            .expect("an in-domain owned pitch canonicalizes to itself")
+            .world();
+        assert_eq!(identity_pitch.x.to_bits(), complete.x.to_bits());
+        assert_eq!(identity_pitch.y.to_bits(), pitch_current.y.to_bits());
+        assert_eq!(identity_pitch.z.to_bits(), pitch_current.z.to_bits());
     }
 
     #[test]

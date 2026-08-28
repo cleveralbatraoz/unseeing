@@ -132,9 +132,10 @@ const DEAD_BODY: &str = "the injected hero body has been freed";
 const NO_VM: &str = "the hero body never built its viewmodel — the game is not running";
 
 /// [`GodotRotation::canonicalize_replacing_yaw`] found the hero's body
-/// rotation is not the stable Basis/Euler spelling. Classified as an
-/// ABSENCE (folds into a snapshot's `unknown`) rather than an invalid
-/// motion value: it is a fact about the ROTATION channel, not the
+/// rotation's X/Z lanes are not wire-canonical — outside the arithmetic
+/// wire law's closed domain `[-PI_F32, PI_F32]`. Classified as an ABSENCE
+/// (folds into a snapshot's `unknown`) rather than an invalid motion
+/// value: it is a fact about the ROTATION channel, not the
 /// position/velocity/identity invariant [`ActorMotionObservation`] checks.
 const NONCANONICAL_HERO_BODY: &str = "the hero body does not preserve its configured X/Z rotation";
 
@@ -176,9 +177,9 @@ const BAD_ENV: &str = "the env group is missing or malformed: ";
 /// [`HeroObservation`], kept distinct because a snapshot and a capture
 /// treat them differently. `Absent` covers every way the hero is
 /// legitimately not there to read this frame — never injected, freed, no
-/// eye built yet, a rotation Godot has not yet canonicalized — and a
-/// snapshot folds it into `unknown`. `Invalid` covers a poisoned physical
-/// value the engine handed back: never a legitimate absence, so it
+/// eye built yet, a rotation lane outside the wire law's closed domain —
+/// and a snapshot folds it into `unknown`. `Invalid` covers a poisoned
+/// physical value the engine handed back: never a legitimate absence, so it
 /// refuses the WHOLE snapshot exactly as a capture already refuses on any
 /// `read_hero` failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

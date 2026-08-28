@@ -686,10 +686,16 @@ func test_a_freed_observer_player_refuses_capture_before_any_handle_call() -> vo
 
 func test_capture_refuses_noncanonical_omitted_rotation_lanes_in_every_actor_route() -> void:
 	var main := await _boot_ticked()
-	# Each setter creates a real Godot Basis, and each getter below is its first
-	# YXZ Euler image. The owned lane is already stable on the second map while
-	# one omitted lane is not, so replacing omitted lanes with synthetic zeroes
-	# would silently accept an artifact that exact restore cannot reproduce.
+	# Each `.rotation =` assignment below is Godot's LOCAL euler setter, which
+	# stores its argument VERBATIM with no trig and no Basis roundtrip
+	# (docs/superpowers/specs/2026-08-28-deterministic-rotation-wire-design.md,
+	# Decision 1's evidence). yaw_witness's Y lane (-2.6510882) sits inside the
+	# wire law's closed domain [-PI_F32, PI_F32] (PI_F32 ~= 3.14159265), so it
+	# is the OWNED yaw the read path narrows without complaint; its Z lane
+	# (-3.7417357) has magnitude > PI_F32, so it is the OMITTED lane the read
+	# path must still find non-canonical. Replacing omitted lanes with
+	# synthetic zeroes would silently accept an artifact that exact restore
+	# cannot reproduce.
 	var yaw_witness := Vector3(-2.0493662, -2.6510882, -3.7417357)
 	main.player.rotation = yaw_witness
 	var refused: Dictionary = main.observer.capture(main.now, main.capture_env())
@@ -709,7 +715,15 @@ func test_capture_refuses_noncanonical_omitted_rotation_lanes_in_every_actor_rou
 	var cats := main.cats()
 	assert_int(cats.size()).is_equal(1)
 	var cat: WaveCat = cats[0]
-	cat.global_rotation = yaw_witness
+	# The cat's rotation seam (Decision 2, same spec) stores and reads LOCAL
+	# euler verbatim too, so `cat.rotation =` reproduces the hero body's
+	# omitted-Z-lane fixture exactly. `cat.global_rotation =` would NOT: that
+	# setter builds a real Basis from the given euler and marks the local
+	# euler cache dirty, so the next `cat.rotation` read re-derives euler from
+	# the basis via the ENGINE's own atan2/asin — and that decomposition
+	# always lands X in [-pi/2, pi/2] and Y/Z in (-pi, pi], fully inside the
+	# wire domain, so it would never exercise this refusal at all.
+	cat.rotation = yaw_witness
 	refused = main.observer.capture(main.now, main.capture_env())
 	assert_str(str(refused.get("unavailable", ""))).contains(
 		"cat body does not preserve its configured X/Z rotation"
