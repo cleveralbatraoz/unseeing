@@ -245,11 +245,30 @@ fn prepare_cat_ready(
 /// velocity, one move, and the post-move support scan) — brain, gait, tail
 /// and wave emission are pure values the tick and its caller carry
 /// alongside it, never behind this port.
+///
+/// Rotation crosses this port as LOCAL euler
+/// (`Node3D::rotation`/`set_rotation`), not global: the tick applies the
+/// motion law's world yaw as the cat's own local rotation directly, which
+/// Godot stores and returns verbatim. That substitution is exact only under
+/// the placement law below: every ancestor between the cat and the scene
+/// root must carry an identity basis, so local IS global there. A cat
+/// placed under a rotated/scaled/sheared ancestor still ticks (this port
+/// does not refuse), but its LOCAL rotation then diverges from the world
+/// yaw the brain intended; `WaveCat::check_ancestor_placement` is what
+/// raises the warning naming the violation.
+///
+/// `write_rotation` is also the euler-cache invariant's only lever:
+/// `controlled_cat_tick` calls it not only to command a new yaw, but to
+/// re-assert the current one, unconditionally, after every operation that
+/// dirties Godot's local-euler cache (`move_and_slide_once`,
+/// `write_global_transform`) — see that function's own doc for the full
+/// invariant. A caller of this port must never assume a `write_rotation`
+/// call encodes a fresh decision; it may be a verbatim echo instead.
 trait CatMotionPort {
     fn read_global_transform(&mut self) -> Transform3D;
-    fn read_global_rotation(&mut self) -> Vector3;
+    fn read_rotation(&mut self) -> Vector3;
     fn read_velocity(&mut self) -> Vector3;
-    fn write_global_rotation(&mut self, rotation: Vector3);
+    fn write_rotation(&mut self, rotation: Vector3);
     fn write_velocity(&mut self, velocity: Vector3);
     fn move_and_slide_once(&mut self);
     fn is_on_floor(&mut self) -> bool;
@@ -274,16 +293,16 @@ impl CatMotionPort for WaveCat {
         self.base().get_global_transform()
     }
 
-    fn read_global_rotation(&mut self) -> Vector3 {
-        self.base().get_global_rotation()
+    fn read_rotation(&mut self) -> Vector3 {
+        self.base().get_rotation()
     }
 
     fn read_velocity(&mut self) -> Vector3 {
         self.base().get_velocity()
     }
 
-    fn write_global_rotation(&mut self, rotation: Vector3) {
-        self.base_mut().set_global_rotation(rotation);
+    fn write_rotation(&mut self, rotation: Vector3) {
+        self.base_mut().set_rotation(rotation);
     }
 
     fn write_velocity(&mut self, velocity: Vector3) {
@@ -629,12 +648,19 @@ fn refuse_cat_motion<P: CatMotionPort>(
 fn rollback_cat_motion<P: CatMotionPort>(
     port: &mut P,
     saved_transform: Transform3D,
+    saved_rotation: Vector3,
     phase: &'static str,
     reason: CatTickReason,
 ) -> CatTickFault {
     // Order is part of the transaction: reinstate the complete body pose,
-    // stop every commanded lane, then make the refusal inert.
+    // re-assert the pre-tick rotation the same euler-cache invariant the
+    // success path keeps (`write_global_transform` dirties the cache the
+    // same way `move_and_slide` does, so without this the reinstated cat
+    // would read back an engine-derived re-derivation of its rotation
+    // rather than the exact value the transaction is restoring), stop
+    // every commanded lane, then make the refusal inert.
     port.write_global_transform(saved_transform);
+    port.write_rotation(saved_rotation);
     port.write_velocity(Vector3::ZERO);
     port.disable_processing();
     CatTickFault { phase, reason }
@@ -646,6 +672,22 @@ fn rollback_cat_motion<P: CatMotionPort>(
 /// mutated until the caller commits a returned success, so a refusal at
 /// any stage leaves brain, gait, tail and motion state exactly as they
 /// were before this call.
+///
+/// Euler-cache invariant: this tick leaves the node's local-euler cache
+/// authoritative, holding exactly the law's own rotation lanes, on every
+/// exit path. `move_and_slide_once` and `rollback_cat_motion`'s own
+/// `write_global_transform` both dirty that cache unconditionally, on every
+/// tick, regardless of phase or whether a yaw command fired — Godot always
+/// re-derives euler from the basis via trig on the next read once dirtied,
+/// which is not guaranteed to reproduce the same bits as the value the law
+/// actually holds. So every exit re-asserts: the success path writes
+/// `final_rotation` (the commanded rotation if the policy produced one,
+/// else the value already there) right after move and right after the
+/// post-move validation read; every rollback path re-asserts
+/// `rotation_before` right after reinstating `saved_transform`. Physics
+/// itself is unaffected — the existing pre-move write is untouched, so the
+/// solver sees exactly the same world it always did; only what a LATER
+/// reader (a capture, an ancestor probe) observes changes.
 fn controlled_cat_tick<P: CatMotionPort>(
     port: &mut P,
     prior: &CatControlledState,
@@ -661,10 +703,9 @@ fn controlled_cat_tick<P: CatMotionPort>(
     let last_pos = ActorPosition::try_new(prior.last_pos).map_err(|error| {
         refuse_cat_motion(port, "physics prior position", CatTickReason::Motion(error))
     })?;
-    let rotation_before =
-        FiniteRotation::try_new(port.read_global_rotation()).map_err(|error| {
-            refuse_cat_motion(port, "physics rotation", CatTickReason::Motion(error))
-        })?;
+    let rotation_before = FiniteRotation::try_new(port.read_rotation()).map_err(|error| {
+        refuse_cat_motion(port, "physics rotation", CatTickReason::Motion(error))
+    })?;
     ActorVelocity::try_new(port.read_velocity()).map_err(|error| {
         refuse_cat_motion(port, "physics velocity", CatTickReason::Motion(error))
     })?;
@@ -723,11 +764,19 @@ fn controlled_cat_tick<P: CatMotionPort>(
 
     // Every fallible pre-move conversion is complete. Only now may yaw
     // mutate — and only when the policy actually produced a command.
-    if let Some(command) = yaw_command {
+    // `final_rotation` is kept regardless of whether one fired: it is
+    // exactly what this tick's law holds the rotation to be — the
+    // commanded value when the policy produced one, otherwise the value
+    // already there — and the euler-cache invariant below re-asserts it
+    // verbatim once Godot's own move dirties the cache.
+    let final_rotation = if let Some(command) = yaw_command {
         let mut commanded_rotation = rotation_before.world();
         commanded_rotation.y = command.godot_lane();
-        port.write_global_rotation(commanded_rotation);
-    }
+        port.write_rotation(commanded_rotation);
+        commanded_rotation
+    } else {
+        rotation_before.world()
+    };
 
     let prepared = prepare(prior.motion, desired, duration, config);
     port.write_velocity(prepared.command().world_velocity());
@@ -739,19 +788,34 @@ fn controlled_cat_tick<P: CatMotionPort>(
             return Err(rollback_cat_motion(
                 port,
                 saved_transform,
+                rotation_before.world(),
                 "post-move transform",
                 CatTickReason::Motion(error),
             ));
         }
     };
-    if let Err(error) = FiniteRotation::try_new(port.read_global_rotation()) {
+    if let Err(error) = FiniteRotation::try_new(port.read_rotation()) {
         return Err(rollback_cat_motion(
             port,
             saved_transform,
+            rotation_before.world(),
             "post-move rotation",
             CatTickReason::Motion(error),
         ));
     }
+    // Euler-cache invariant: `move_and_slide_once` just called Godot's own
+    // `set_global_transform`, which dirties the local-euler cache
+    // unconditionally — regardless of whether orientation itself changed,
+    // and regardless of whether a yaw command fired this tick. Left dirty,
+    // the NEXT read of rotation (a capture, an ancestor probe, this same
+    // node re-entering `ready()`) forces Godot to re-derive euler from the
+    // basis via trig instead of returning the law's own value verbatim,
+    // which is not guaranteed to reproduce the same bits on every platform.
+    // Re-assert here, unconditionally and after the read above (which must
+    // keep validating engine-derived state, not skip past it): every exit
+    // from this point on is this same success path or a rollback that
+    // performs its own re-assert after reinstating the saved transform.
+    port.write_rotation(final_rotation);
     let new_position = transform_after.position();
     let (support, collider_id) = match read_cat_post_move_support(port, transform_after) {
         Ok(value) => value,
@@ -759,6 +823,7 @@ fn controlled_cat_tick<P: CatMotionPort>(
             return Err(rollback_cat_motion(
                 port,
                 saved_transform,
+                rotation_before.world(),
                 "post-move support",
                 CatTickReason::Support(error),
             ));
@@ -770,6 +835,7 @@ fn controlled_cat_tick<P: CatMotionPort>(
             return Err(rollback_cat_motion(
                 port,
                 saved_transform,
+                rotation_before.world(),
                 "post-move velocity",
                 CatTickReason::Motion(error),
             ));
@@ -790,6 +856,7 @@ fn controlled_cat_tick<P: CatMotionPort>(
                 return Err(rollback_cat_motion(
                     port,
                     saved_transform,
+                    rotation_before.world(),
                     "post-move speed",
                     CatTickReason::Motion(error),
                 ));
@@ -802,6 +869,7 @@ fn controlled_cat_tick<P: CatMotionPort>(
             return Err(rollback_cat_motion(
                 port,
                 saved_transform,
+                rotation_before.world(),
                 "gait advance",
                 CatTickReason::Motion(error),
             ));
@@ -820,6 +888,7 @@ fn controlled_cat_tick<P: CatMotionPort>(
             return Err(rollback_cat_motion(
                 port,
                 saved_transform,
+                rotation_before.world(),
                 "pose",
                 CatTickReason::Motion(error),
             ));
@@ -831,6 +900,7 @@ fn controlled_cat_tick<P: CatMotionPort>(
             return Err(rollback_cat_motion(
                 port,
                 saved_transform,
+                rotation_before.world(),
                 "skeleton",
                 CatTickReason::Motion(error),
             ));
@@ -842,6 +912,7 @@ fn controlled_cat_tick<P: CatMotionPort>(
             return Err(rollback_cat_motion(
                 port,
                 saved_transform,
+                rotation_before.world(),
                 "tail root",
                 CatTickReason::Motion(error),
             ));
@@ -851,6 +922,7 @@ fn controlled_cat_tick<P: CatMotionPort>(
         return Err(rollback_cat_motion(
             port,
             saved_transform,
+            rotation_before.world(),
             "tail support transport",
             CatTickReason::Motion(error),
         ));
@@ -866,6 +938,7 @@ fn controlled_cat_tick<P: CatMotionPort>(
         return Err(rollback_cat_motion(
             port,
             saved_transform,
+            rotation_before.world(),
             "tail advance",
             CatTickReason::Motion(error),
         ));
@@ -979,7 +1052,7 @@ impl ICharacterBody3D for WaveCat {
         // child or a mind. A poisoned transform must leave no half-built cat.
         let prepared = match prepare_cat_ready(
             self.base().get_global_transform(),
-            self.base().get_global_rotation(),
+            self.base().get_rotation(),
             self.roam_size,
         ) {
             Ok(prepared) => prepared,
@@ -1390,7 +1463,7 @@ impl WaveCat {
         let gait = self.gait.as_ref().ok_or("cat gait was never built")?;
         let tail = self.tail.as_ref().ok_or("cat tail was never built")?;
         let pose = self.pose.as_ref().ok_or("cat pose was never built")?;
-        let body_rotation = self.base().get_global_rotation();
+        let body_rotation = self.base().get_rotation();
         let yaw = GodotRotation::canonicalize_replacing_yaw(body_rotation, body_rotation.y)
             .map_err(|_| "cat body does not preserve its configured X/Z rotation")?
             .world()
@@ -1462,7 +1535,7 @@ impl WaveCat {
             RestoreValueError::new(path, rule)
         })?;
         let rotation = prepare_cat_snapshot_links(
-            self.base().get_global_rotation(),
+            self.base().get_rotation(),
             CatSnapshotLinks {
                 body_yaw: capture.yaw,
                 brain_yaw: capture.brain.yaw,
@@ -1529,7 +1602,7 @@ impl WaveCat {
     /// repair, narrowing or semantic branch after the transaction starts.
     pub(super) fn install_prepared(&mut self, value: PreparedCatState) {
         self.base_mut().set_global_position(value.position);
-        self.base_mut().set_global_rotation(value.rotation);
+        self.base_mut().set_rotation(value.rotation);
         self.base_mut().set_velocity(value.velocity);
         self.motion_state = value.motion;
         self.support_collider_id = None;
@@ -2016,7 +2089,7 @@ mod tests {
             }
         }
 
-        fn read_global_rotation(&mut self) -> Vector3 {
+        fn read_rotation(&mut self) -> Vector3 {
             self.trace.push(MotionTrace::ReadRotation);
             if self.moved {
                 self.post_rotation
@@ -2034,7 +2107,7 @@ mod tests {
             }
         }
 
-        fn write_global_rotation(&mut self, rotation: Vector3) {
+        fn write_rotation(&mut self, rotation: Vector3) {
             self.trace.push(MotionTrace::SetRotation(rotation));
             self.pre_rotation = rotation;
         }
@@ -2293,6 +2366,64 @@ mod tests {
         );
     }
 
+    fn rotation_trace(port: &FakeCatMotionPort) -> Vec<MotionTrace> {
+        port.trace
+            .iter()
+            .copied()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    MotionTrace::ReadRotation
+                        | MotionTrace::SetRotation(_)
+                        | MotionTrace::MoveAndSlide
+                )
+            })
+            .collect()
+    }
+
+    /// The euler-cache invariant, success path: Godot's own
+    /// `move_and_slide` dirties the local-euler cache unconditionally (it
+    /// rewrites the whole transform, so the cached euler is invalidated
+    /// even though this fixture's orientation never actually changes), so
+    /// a later reader — a capture, an ancestor probe — must never be left
+    /// to re-derive the law's own rotation via trig instead of reading it
+    /// back verbatim. The tick re-asserts the exact commanded rotation
+    /// right after move AND right after the post-move validation read
+    /// (which must keep reading engine-derived state, not skip past it) —
+    /// never before: physics must see exactly today's world, so the
+    /// existing pre-move write stays exactly where it was.
+    #[test]
+    fn cat_controlled_tick_reasserts_the_commanded_rotation_after_move_and_the_post_move_read() {
+        let seed = FakeCatMotionPort::valid();
+        let prior = controlled_state(&seed);
+        let mut port = seed.clone();
+        // CatBrain::new seeds a fixed 0.8s Pause that never touches yaw, so
+        // the policy's own command matches the pre-tick rotation exactly —
+        // the reassert's job is proven by its PRESENCE and POSITION in the
+        // trace, not by a changed number.
+        let commanded = seed.pre_rotation;
+        controlled_cat_tick(
+            &mut port,
+            &prior,
+            1.0 / 60.0,
+            SupportMotionConfig::CAT_DEFAULT,
+        )
+        .expect("a completely finite tick must commit");
+        assert_eq!(
+            rotation_trace(&port),
+            vec![
+                MotionTrace::ReadRotation,
+                MotionTrace::SetRotation(commanded),
+                MotionTrace::MoveAndSlide,
+                MotionTrace::ReadRotation,
+                MotionTrace::SetRotation(commanded),
+            ],
+            "a successful tick must re-assert the commanded rotation right after the post-move \
+             validation read, not only before move: {:?}",
+            port.trace
+        );
+    }
+
     /// A grounded tick whose achieved Y differs from the prior tick's — a
     /// real step up or down, not a hover at constant elevation — must carry
     /// the tail's `transport_y(support_delta_y)` exactly once. A doubled
@@ -2463,14 +2594,23 @@ mod tests {
         );
     }
 
-    /// The frozen airborne policy must never invoke a yaw setter, not even
-    /// to write back the exact value already there: comparing rotation
-    /// VALUES before and after (as the GDScript suite does) cannot catch a
-    /// policy that recommits the same yaw every tick, so this asserts the
-    /// port's own effect trace carries no `SetRotation` at all while
-    /// airborne.
+    /// The frozen airborne policy commands no NEW rotation — it never
+    /// consults the brain, never computes a yaw — but the euler-cache
+    /// invariant still holds even here: `move_and_slide` dirties the cache
+    /// on every tick regardless of phase, and this is not hypothetical —
+    /// measured directly, an airborne cat that this port NEVER writes to at
+    /// all already reads back a corrupted, engine-derived pitch after a
+    /// handful of ticks (`asin(-0.0) = -0.0` where the law only ever wrote
+    /// `+0.0`), invisible to every existing check because none of them
+    /// read the pitch lane. So this tick still calls `write_rotation`
+    /// exactly once, echoing `rotation_before` verbatim: an echo of what
+    /// was already there, never a value the policy itself chose. This
+    /// replaces an older, stricter "zero calls" version of this law: that
+    /// version protected a claim it never actually verified (no engine
+    /// bytes move while airborne) — Godot's own transform machinery
+    /// already breaks that claim independent of any write this port makes.
     #[test]
-    fn cat_airborne_policy_never_calls_a_yaw_setter_even_to_write_the_same_value() {
+    fn cat_airborne_tick_reasserts_the_frozen_rotation_but_commands_no_new_value() {
         let seed = FakeCatMotionPort::valid();
         let mut prior = controlled_state(&seed);
         prior.motion = MotionState::restore(
@@ -2491,13 +2631,16 @@ mod tests {
             SupportMotionConfig::CAT_DEFAULT,
         )
         .expect("a completely finite airborne tick must commit");
-        assert!(
-            !port
-                .trace
-                .iter()
-                .any(|event| matches!(event, MotionTrace::SetRotation(_))),
-            "an airborne tick must never invoke a yaw setter, even to write back the same \
-             value: {:?}",
+        assert_eq!(
+            rotation_trace(&port),
+            vec![
+                MotionTrace::ReadRotation,
+                MotionTrace::MoveAndSlide,
+                MotionTrace::ReadRotation,
+                MotionTrace::SetRotation(seed.pre_rotation),
+            ],
+            "a frozen tick must still re-assert the pre-tick rotation exactly once after move, \
+             even though the policy commanded nothing: {:?}",
             port.trace
         );
     }
@@ -2552,25 +2695,45 @@ mod tests {
         }
     }
 
+    /// The euler-cache invariant, rollback path: `rollback_cat_motion`'s
+    /// own `write_global_transform(saved_transform)` dirties the cache the
+    /// same way `move_and_slide` does, so a rollback must re-assert
+    /// `rotation_before` — the exact pre-tick value the reinstated
+    /// transform corresponds to — right after reinstating it, or a
+    /// captured rolled-back cat would read an engine-derived re-derivation
+    /// of that value instead of the value itself.
+    ///
+    /// Two distinct trace shapes are both legitimate here, not a
+    /// contradiction: the "post-move transform" and "post-move rotation"
+    /// checks fail BEFORE the success path's own euler-cache reassert ever
+    /// runs (only the pre-move write, then the rollback's reassert, appear),
+    /// while every later stage (support, velocity, gait, pose, ...) fails
+    /// AFTER that reassert already ran once on the way past — so those
+    /// cases carry it twice: once as "the tick believed it was succeeding",
+    /// once more as the rollback's own restoration. Both are correct: the
+    /// LAST write is always the rollback's, which is what a subsequent read
+    /// actually observes.
     #[test]
-    fn cat_post_move_poison_writes_exact_saved_transform_then_zero_velocity_then_disables() {
+    fn cat_post_move_poison_writes_exact_saved_transform_then_rotation_then_zero_velocity_then_disables()
+     {
         let seed = FakeCatMotionPort::valid();
         let prior = controlled_state(&seed);
-        let mut cases = Vec::new();
+        let mut early_cases = Vec::new();
         for lane in 0..12 {
             let mut port = seed.clone();
             port.post_transform = poison_transform_lane(port.post_transform, lane);
-            cases.push(port);
+            early_cases.push(port);
         }
         for lane in 0..3 {
             let mut port = seed.clone();
             port.post_rotation = poison_vector_lane(port.post_rotation, lane);
-            cases.push(port);
+            early_cases.push(port);
         }
+        let mut late_cases = Vec::new();
         for lane in 0..3 {
             let mut port = seed.clone();
             port.post_velocity = poison_vector_lane(port.post_velocity, lane);
-            cases.push(port);
+            late_cases.push(port);
         }
         for lane in 0..6 {
             let mut port = seed.clone();
@@ -2582,10 +2745,10 @@ mod tests {
                 fact.normal = poison_vector_lane(fact.normal, lane - 3);
             }
             port.slides = vec![Some(vec![fact])];
-            cases.push(port);
+            late_cases.push(port);
         }
 
-        for mut port in cases {
+        for mut port in early_cases {
             let saved = port.pre_transform;
             let result = controlled_cat_tick(
                 &mut port,
@@ -2603,10 +2766,44 @@ mod tests {
                     MotionTrace::SetVelocity(Vector3::ZERO),
                     MotionTrace::MoveAndSlide,
                     MotionTrace::SetTransform(saved),
+                    MotionTrace::SetRotation(seed.pre_rotation),
                     MotionTrace::SetVelocity(Vector3::ZERO),
                     MotionTrace::Disable,
                 ],
-                "a post-move refusal must restore the saved transform, zero velocity, then disable"
+                "a post-move transform/rotation refusal (before the success path's own \
+                 reassert runs) must restore the saved transform, re-assert the pre-tick \
+                 rotation once, zero velocity, then disable: {:?}",
+                port.trace
+            );
+        }
+
+        for mut port in late_cases {
+            let saved = port.pre_transform;
+            let result = controlled_cat_tick(
+                &mut port,
+                &prior,
+                1.0 / 60.0,
+                SupportMotionConfig::CAT_DEFAULT,
+            );
+            assert!(result.is_err(), "a poisoned post-move sample was accepted");
+            assert_transform_bits_eq(port.post_transform, saved);
+            assert_eq!(port.post_velocity, Vector3::ZERO);
+            assert_eq!(
+                port.effect_trace(),
+                [
+                    MotionTrace::SetRotation(seed.pre_rotation),
+                    MotionTrace::SetVelocity(Vector3::ZERO),
+                    MotionTrace::MoveAndSlide,
+                    MotionTrace::SetRotation(seed.pre_rotation),
+                    MotionTrace::SetTransform(saved),
+                    MotionTrace::SetRotation(seed.pre_rotation),
+                    MotionTrace::SetVelocity(Vector3::ZERO),
+                    MotionTrace::Disable,
+                ],
+                "a post-move support/velocity refusal (after the success path's own reassert \
+                 already ran once) must still end on the rollback's own restoration of the \
+                 saved transform and pre-tick rotation: {:?}",
+                port.trace
             );
         }
     }

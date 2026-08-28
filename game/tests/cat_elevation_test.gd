@@ -234,8 +234,18 @@ func test_cat_walks_off_a_platform_with_fixed_trajectory() -> void:
 ## Airborne, the cat's mind is wholly frozen: the canonical capture blob's
 ## whole `brain` dictionary — mood, target, rng word, blocked counter, every
 ## hidden field — stays byte-identical tick after tick, and the observable
-## yaw an outside poke leaves behind survives untouched, proving no yaw
-## setter runs even to rewrite the same value.
+## yaw an outside poke leaves behind survives untouched. This no longer
+## means no yaw setter ever runs: `controlled_cat_tick`'s euler-cache
+## invariant (`rust/src/nodes/cat.rs`) re-asserts the frozen rotation
+## verbatim every tick, since `move_and_slide` dirties Godot's own
+## local-euler cache regardless of phase. What this test actually pins is
+## that the WRITTEN VALUE never changes — the reassert only ever echoes
+## `rotation_before`, never a value the frozen policy chose. (The
+## rotated-parent test elsewhere in this file is what pins the reassert's
+## bit-exactness itself; capturing a "before" pitch snapshot here, AFTER
+## the cat is already airborne, cannot do the same job — by then any
+## corruption this fix prevents has already happened once, silently, so it
+## would already be baked into the "before" snapshot too.)
 func test_airborne_cat_keeps_brain_and_yaw_frozen() -> void:
 	var main: UnseeingGame = auto_free(
 		WORLD_FIXTURE.game(WORLD_FIXTURE.DEFAULT_EXTENTS, false, false, true)
@@ -269,9 +279,12 @@ func test_airborne_cat_keeps_brain_and_yaw_frozen() -> void:
 	assert_float(cat.rotation.y).is_equal(yaw_before)
 
 
-## The airborne selector never invokes a yaw setter: an externally poked
+## The airborne selector never commands a NEW rotation: an externally poked
 ## rotation value the frozen policy would never itself choose survives
-## every airborne tick untouched.
+## every airborne tick untouched. The euler-cache invariant still calls
+## `write_rotation` every tick here (see the sibling brain-freeze test's own
+## updated doc) — this test's contract is on the VALUE, not on whether any
+## setter call happened at all.
 func test_airborne_cat_policy_produces_no_yaw_command() -> void:
 	var cat := _add_cat_direct(Vector3(0.0, 6.0, 0.0))
 	var airborne: bool = await ELEVATION_FIXTURE.poll_physics(
@@ -950,6 +963,55 @@ func test_cat_at_scene_root_stays_silent_on_the_placement_warning() -> void:
 	var cat := _add_cat_direct(Vector3.ZERO)
 	assert_array(cat.get_configuration_warnings()).is_empty()
 	assert_array(cat.call("get_configuration_warnings")).is_empty()
+
+
+## Task 1's seam change itself: the cat's per-tick yaw write moved from
+## set_global_rotation to set_rotation (LOCAL). A single cat is placed under
+## a parent rotated PI/2 about Y, with its OWN local rotation hand-set to
+## `INITIAL_YAW` before entering the tree. `CatBrain::new` always seeds a
+## fixed 0.8 s `Pause` (`cat_brain.rs`) whose branch never touches `self.yaw`,
+## and `MotionState::initial()` starts `Controlled` (never `Airborne`), so
+## `cat_control_policy` calls `AdvanceBrain` unconditionally on tick one
+## regardless of floor presence — the very first controlled tick re-commands
+## exactly `INITIAL_YAW` with no seed, RNG or timing dependency, letting one
+## physics frame with no floor stand in for "the first controlled write".
+##
+## The read-back is bit-exact on every platform because of the tick's own
+## euler-cache invariant (`controlled_cat_tick`, `rust/src/nodes/cat.rs`),
+## not because of any property of this platform's trig library: every
+## operation that dirties Godot's local-euler cache — `set_rotation`'s own
+## composition against this rotated parent, then `move_and_slide`'s own
+## `set_global_transform` — is followed by an unconditional re-assert of
+## exactly the value the law commands, so what this test reads back was
+## never re-derived by Godot's own basis-to-euler extraction. That
+## extraction is exactly what the second assertion below rules out as an
+## accidental pass: a pure-yaw rotation's pitch lane extracts as
+## `asin(-0.0)`, and IEEE 754 defines that as `-0.0`, not the `+0.0` the law
+## actually wrote — a platform-free sign flip, not a fixed point of luck.
+## Without the invariant this second assertion goes red on every platform
+## that follows IEEE 754, not only this one.
+func test_cat_local_rotation_follows_the_motion_law_independent_of_a_rotated_parent() -> void:
+	const INITIAL_YAW := 1.0
+	var room: Node3D = auto_free(Node3D.new())
+	room.rotation = Vector3(0.0, PI / 2.0, 0.0)
+	add_child(room)
+	var cat := WaveCat.new()
+	cat.pulses = Pulses.new()
+	cat.data_mat = ShaderMaterial.new()
+	cat.rotation = Vector3(0.0, INITIAL_YAW, 0.0)
+	room.add_child(cat)
+	await get_tree().physics_frame
+	await get_tree().process_frame
+	assert_str(_f32_bits(cat.rotation.y)).is_equal(_f32_bits(INITIAL_YAW))
+	# The platform-free discriminator: a pure-yaw rotation's pitch lane must
+	# stay the exact +0.0 the law wrote (bits 00000000), never the -0.0 IEEE
+	# 754's asin(-0.0) produces when Godot re-derives euler from the basis.
+	# cat.rotation.x arrives in GDScript widened to f64; narrow it back to
+	# f32 the same way _f32_bits already does for every other lane here.
+	assert_str(_f32_bits(cat.rotation.x)).is_equal(_f32_bits(0.0))
+	# Sanity: the rotated parent really does compose into the GLOBAL frame,
+	# so the pass above is not vacuous.
+	assert_str(_f32_bits(cat.global_rotation.y)).is_not_equal(_f32_bits(INITIAL_YAW))
 
 
 ## The eleven solver properties from the shared table, hand-asserted one at
